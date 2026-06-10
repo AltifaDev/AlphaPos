@@ -27,8 +27,8 @@ struct SyncResponse: Codable {
 final class NetworkService {
     static let shared = NetworkService()
     
-    lazy var baseURL: URL = AppConfig.supabaseRestURL
-    private lazy var anonKey: String = AppConfig.supabaseAnonKey
+    var baseURL: URL { AppConfig.supabaseRestURL }
+    private var anonKey: String { AppConfig.supabaseAnonKey }
     
     @ObservationIgnored
     private lazy var session: URLSession = {
@@ -434,26 +434,49 @@ final class NetworkService {
                 employmentType: dict["employment_type"] as? String ?? "monthly",
                 payRate: dict["pay_rate"] as? Double ?? 0.0,
                 username: dict["username"] as? String ?? "",
-                role: dict["role"] as? String ?? "Staff"
+                role: dict["role"] as? String ?? "Staff",
+                pinCode: dict["pin_code"] as? String
             )
         }
     }
 
-    func verifyPin(employeeId: String, pinDigits: String) async throws -> Bool {
+    private func constantTimeCompare(_ a: String, _ b: String) -> Bool {
+        guard a.count == b.count else { return false }
+        let aBytes = [UInt8](a.utf8)
+        let bBytes = [UInt8](b.utf8)
+        var result: UInt8 = 0
+        for i in 0..<aBytes.count {
+            result |= aBytes[i] ^ bBytes[i]
+        }
+        return result == 0
+    }
+
+    func verifyPin(employeeId: String, pinDigits: String, expectedPinHash: String? = nil) async throws -> Bool {
         let inputData = Data(pinDigits.utf8)
         let hashed = CryptoKit.SHA256.hash(data: inputData)
         let pinHash = hashed.compactMap { String(format: "%02x", $0) }.joined()
         
-        let payload: [String: Any] = [
-            "employee_id": employeeId,
-            "pin_digits": pinHash
-        ]
-        
-        let data = try await sendSupabaseRequest(method: "POST", endpoint: "employees/verify", payload: payload)
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let verified = json["verified"] as? Bool {
-            return verified
+        // 1. Local / pre-loaded verification (Offline fallback)
+        if let expected = expectedPinHash {
+            return constantTimeCompare(pinHash, expected)
         }
+        
+        // 2. Database verification (Direct column query fallback)
+        do {
+            let data = try await sendSupabaseRequest(method: "GET", endpoint: "employees", queryItems: [
+                URLQueryItem(name: "id", value: "eq.\(employeeId)"),
+                URLQueryItem(name: "select", value: "pin_code")
+            ])
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+               let firstResult = json.first,
+               let dbPinCode = firstResult["pin_code"] as? String {
+                return constantTimeCompare(pinHash, dbPinCode)
+            }
+        } catch {
+            print("verifyPin error: \(error.localizedDescription)")
+            throw error
+        }
+        
         return false
     }
     

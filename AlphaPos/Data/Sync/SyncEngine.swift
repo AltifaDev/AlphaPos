@@ -162,6 +162,9 @@ final class SyncEngine: ObservableObject {
             // Pull menu items from Supabase (single source of truth)
             await pullMenuItemsFromSupabase(modelContext)
             
+            // Pull promotions from Supabase
+            await pullPromotionsFromSupabase(modelContext)
+            
             // Pull mobile customer orders from cloud
             await pullCustomerOrders(modelContext)
             
@@ -592,6 +595,100 @@ final class SyncEngine: ObservableObject {
             } catch {
                 print("SyncEngine [Promotion Sync Error]: \(error.localizedDescription)")
             }
+        }
+    }
+    
+    private func pullPromotionsFromSupabase(_ modelContext: ModelContext) async {
+        do {
+            let remotePromos = try await NetworkManager.shared.fetchPromotionsFromSupabase()
+            guard !remotePromos.isEmpty else { return }
+            
+            // Fetch existing local promotions
+            let localPromos = (try? modelContext.fetch(FetchDescriptor<Promotion>())) ?? []
+            
+            var localPromosById: [String: Promotion] = [:]
+            for promo in localPromos {
+                localPromosById[promo.id.uuidString.lowercased()] = promo
+            }
+            
+            var didChange = false
+            let df = ISO8601DateFormatter()
+            
+            for remote in remotePromos {
+                guard let idStr = remote["id"] as? String,
+                      let id = UUID(uuidString: idStr),
+                      let title = remote["title"] as? String else { continue }
+                
+                let desc = remote["promo_description"] as? String
+                let imageData = remote["image_data"] as? String
+                
+                let isActive: Bool
+                if let boolVal = remote["is_active"] as? Bool {
+                    isActive = boolVal
+                } else if let intVal = remote["is_active"] as? Int {
+                    isActive = intVal != 0
+                } else if let doubleVal = remote["is_active"] as? Double {
+                    isActive = doubleVal != 0.0
+                } else {
+                    isActive = true
+                }
+                
+                let isDeleted: Bool
+                if let boolVal = remote["is_deleted"] as? Bool {
+                    isDeleted = boolVal
+                } else if let intVal = remote["is_deleted"] as? Int {
+                    isDeleted = intVal != 0
+                } else if let doubleVal = remote["is_deleted"] as? Double {
+                    isDeleted = doubleVal != 0.0
+                } else {
+                    isDeleted = false
+                }
+                
+                let updatedAtStr = remote["updated_at"] as? String ?? ""
+                let updatedAt = df.date(from: updatedAtStr) ?? Date()
+                
+                if let existing = localPromosById[idStr.lowercased()] {
+                    if isDeleted {
+                        modelContext.delete(existing)
+                        didChange = true
+                    } else if existing.isSynced || updatedAt > existing.updatedAt {
+                        var changed = false
+                        if existing.title != title { existing.title = title; changed = true }
+                        if existing.promoDescription != desc { existing.promoDescription = desc; changed = true }
+                        if existing.imageData != imageData { existing.imageData = imageData; changed = true }
+                        if existing.isActive != isActive { existing.isActive = isActive; changed = true }
+                        if changed {
+                            existing.isSynced = true
+                            existing.updatedAt = updatedAt
+                            didChange = true
+                        }
+                    }
+                } else if !isDeleted {
+                    let newPromo = Promotion(
+                        id: id,
+                        title: title,
+                        promoDescription: desc,
+                        imageData: imageData,
+                        isActive: isActive,
+                        isSynced: true,
+                        isDeleted: false,
+                        updatedAt: updatedAt
+                    )
+                    modelContext.insert(newPromo)
+                    didChange = true
+                }
+            }
+            
+            if didChange {
+                try? modelContext.save()
+                #if DEBUG
+                print("SyncEngine [PullPromotions]: Updated SwiftData from Supabase (\(remotePromos.count) items)")
+                #endif
+            }
+        } catch {
+            #if DEBUG
+            print("SyncEngine [PullPromotions]: Skipped or failed: \(error.localizedDescription)")
+            #endif
         }
     }
     

@@ -53,6 +53,20 @@ struct Employee: Codable, Identifiable, Hashable {
     let payRate: Double
     let username: String
     let role: String
+    let pinCode: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case firstName = "first_name"
+        case lastName = "last_name"
+        case phone
+        case nationalId = "national_id"
+        case employmentType = "employment_type"
+        case payRate = "pay_rate"
+        case username
+        case role
+        case pinCode = "pin_code"
+    }
 }
 
 struct Timecard: Codable, Identifiable, Hashable {
