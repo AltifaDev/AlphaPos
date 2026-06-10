@@ -1089,7 +1089,7 @@ struct TableDetailView: View {
                                     
                                     // QR Code Link Row
                                     HStack(spacing: 8) {
-                                        Text("https://order.alphapos.com/table/\(table.tableNumber)?token=\(session.sessionToken.prefix(8))")
+                                        Text("https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&token=\(session.sessionToken.prefix(8))")
                                             .font(.system(.caption2, design: .monospaced))
                                             .foregroundColor(.appAccent)
                                             .lineLimit(1)
@@ -1099,7 +1099,7 @@ struct TableDetailView: View {
                                             .cornerRadius(APRadius.sm)
                                         
                                         Button(action: {
-                                            dynamicQRUrl = "https://order.alphapos.com/table/\(table.tableNumber)?token=\(session.sessionToken)"
+                                            dynamicQRUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&token=\(session.sessionToken)"
                                             showingQRPopover = true
                                         }) {
                                             Image(systemName: "qrcode")

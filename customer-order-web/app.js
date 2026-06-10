@@ -851,10 +851,15 @@ class AlphaPosApp {
         const urlParams = new URLSearchParams(window.location.search);
         const table = urlParams.get('table');
         const merchant = urlParams.get('merchant');
+        const token = urlParams.get('token');
 
         // Validate table number: must be a positive integer
         if (table && /^\d+$/.test(table)) {
             this.tableNumber = table;
+        }
+
+        if (token) {
+            this.sessionToken = token;
         }
         
         // Only allow merchant override if a valid config exists
