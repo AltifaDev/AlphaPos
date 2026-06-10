@@ -30,6 +30,7 @@ struct TableView: View {
     @AppStorage("logged_in_email") private var loggedInEmail = "owner@alphapos.com"
     @State private var isLayoutManagerAuthorized = false
     @State private var showingManagerPinSheet = false
+    @State private var showingBatchQRSheet = false
     @State private var pendingAuthAction: AuthAction? = nil
     
     enum AuthAction {
@@ -103,6 +104,9 @@ struct TableView: View {
                         pendingAuthAction = nil
                     }
                 )
+            }
+            .sheet(isPresented: $showingBatchQRSheet) {
+                BatchQRCodePrintView(tables: tables)
             }
     }
     
@@ -651,6 +655,32 @@ struct TableView: View {
                 .foregroundColor(.textSecondary)
         }
     }
+
+    @ViewBuilder
+    private var printQRCodesButton: some View {
+        Button(action: {
+            showingBatchQRSheet = true
+            APHaptic.trigger()
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "qrcode")
+                    .foregroundColor(.appAccent)
+                Text("Print QR Codes")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.textSecondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.appSurfaceHigh)
+            .cornerRadius(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.appBorderSubtle, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
     
     @ViewBuilder
     private var compactHeader: some View {
@@ -658,6 +688,7 @@ struct TableView: View {
             HStack {
                 headerTitleAndStatus
                 Spacer()
+                printQRCodesButton
                 findTableButton
             }
             HStack {
@@ -676,6 +707,7 @@ struct TableView: View {
         HStack(spacing: 16) {
             headerTitleAndStatus
             Spacer()
+            printQRCodesButton
             findTableButton
             floorPicker
             lockPanZoomButton
