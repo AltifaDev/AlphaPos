@@ -13,6 +13,7 @@ struct ServiceRequest: Identifiable, Codable, Hashable {
     var createdAt: String
 }
 
+@MainActor
 final class SyncEngine: ObservableObject {
     static let shared = SyncEngine()
     
@@ -36,17 +37,17 @@ final class SyncEngine: ObservableObject {
     @Published var lastSyncedAt: Date? = nil
     @Published var activeRequests: [ServiceRequest] = []
     private var cachedModelContext: ModelContext?
-    private static let alertTimesLock = OSAllocatedUnfairLock()
-    private static var _lastAlertTimes: [UUID: Date] = [:]
-    static func getAlertTime(_ key: UUID) -> Date? {
+    nonisolated(unsafe) private static let alertTimesLock = OSAllocatedUnfairLock()
+    nonisolated(unsafe) private static var _lastAlertTimes: [UUID: Date] = [:]
+    nonisolated static func getAlertTime(_ key: UUID) -> Date? {
         alertTimesLock.lock(); defer { alertTimesLock.unlock() }
         return _lastAlertTimes[key]
     }
-    static func setAlertTime(_ key: UUID, _ value: Date) {
+    nonisolated static func setAlertTime(_ key: UUID, _ value: Date) {
         alertTimesLock.lock(); defer { alertTimesLock.unlock() }
         _lastAlertTimes[key] = value
     }
-    static func removeAlertTime(_ key: UUID) {
+    nonisolated static func removeAlertTime(_ key: UUID) {
         alertTimesLock.lock(); defer { alertTimesLock.unlock() }
         _lastAlertTimes.removeValue(forKey: key)
     }
@@ -63,18 +64,20 @@ final class SyncEngine: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self = self else { return }
-            #if DEBUG
-            print("SyncEngine: App returned to foreground. Reconnecting WebSocket...")
-            #endif
-            
-            // Cancel existing WebSocket task
-            self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
-            self.webSocketTask = nil
-            
-            if let context = self.cachedModelContext {
-                self.startRealtimeSync(modelContext: context)
-                Task {
-                    await self.syncAll(modelContext: context)
+            Task { @MainActor in
+                #if DEBUG
+                print("SyncEngine: App returned to foreground. Reconnecting WebSocket...")
+                #endif
+                
+                // Cancel existing WebSocket task
+                self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
+                self.webSocketTask = nil
+                
+                if let context = self.cachedModelContext {
+                    self.startRealtimeSync(modelContext: context)
+                    Task {
+                        await self.syncAll(modelContext: context)
+                    }
                 }
             }
         }
@@ -117,75 +120,61 @@ final class SyncEngine: ObservableObject {
     // Asynchronous task to sync all unsynced data
     func syncAll(modelContext: ModelContext) async {
         // Initialize Realtime WebSocket task
-        await MainActor.run {
-            self.startRealtimeSync(modelContext: modelContext)
-        }
+        self.startRealtimeSync(modelContext: modelContext)
         
         guard await NetworkManager.shared.isConnected() else {
             #if DEBUG
             print("SyncEngine: Device is offline. Sync task aborted.")
             #endif
-            await MainActor.run {
-                self.syncStatus = .offline
-            }
+            self.syncStatus = .offline
             return
         }
         
-        await MainActor.run {
-            self.syncStatus = .syncing
-        }
+        self.syncStatus = .syncing
         
         #if DEBUG
         print("SyncEngine: Initiating data synchronization...")
         #endif
         
-        do {
-            // Push local POS edits to cloud
-            await syncMerchant()
-            await syncTables(modelContext)
-            await syncTableSessions(modelContext)
-            await syncEmployees(modelContext)
-            await syncOrders(modelContext)
-            await syncPayments(modelContext)
-            await syncTimecards(modelContext)
-            await syncInventoryTransactions(modelContext)
-            await syncMenuItems(modelContext)
-            await syncPromotions(modelContext)
-            await syncPurchaseOrders(modelContext)
-            await syncDeliveryPrices(modelContext)
-            await syncPrinters(modelContext)
-            await syncPrintRoutingRules(modelContext)
-            
-            // Pull remote tables from cloud
-            await pullRestaurantTables(modelContext)
-            
-            // Pull menu items from Supabase (single source of truth)
-            await pullMenuItemsFromSupabase(modelContext)
-            
-            // Pull promotions from Supabase
-            await pullPromotionsFromSupabase(modelContext)
-            
-            // Pull mobile customer orders from cloud
-            await pullCustomerOrders(modelContext)
-            
-            // Pull active table sessions
-            await pullActiveSessions(modelContext)
-            
-            // Pull active service requests
-            await syncServiceRequests()
-            
-            // Check for delayed orders and dispatch alerts
-            await checkForDelayedOrders(modelContext: modelContext)
-            
-            await MainActor.run {
-                self.syncStatus = .idle
-                self.lastSyncedAt = Date()
-            }
-        } catch {
-            await MainActor.run {
-                self.syncStatus = .error
-            }
-        }
+        // Push local POS edits to cloud
+        await syncMerchant()
+        await syncTables(modelContext)
+        await syncTableSessions(modelContext)
+        await syncEmployees(modelContext)
+        await syncOrders(modelContext)
+        await syncPayments(modelContext)
+        await syncTimecards(modelContext)
+        await syncInventoryTransactions(modelContext)
+        await syncMenuItems(modelContext)
+        await syncPromotions(modelContext)
+        await syncPurchaseOrders(modelContext)
+        await syncDeliveryPrices(modelContext)
+        await syncPrinters(modelContext)
+        await syncPrintRoutingRules(modelContext)
+        
+        // Pull remote tables from cloud
+        await pullRestaurantTables(modelContext)
+        
+        // Pull menu items from Supabase (single source of truth)
+        await pullMenuItemsFromSupabase(modelContext)
+        
+        // Pull promotions from Supabase
+        await pullPromotionsFromSupabase(modelContext)
+        
+        // Pull mobile customer orders from cloud
+        await pullCustomerOrders(modelContext)
+        
+        // Pull active table sessions
+        await pullActiveSessions(modelContext)
+        
+        // Pull active service requests
+        await syncServiceRequests()
+        
+        // Check for delayed orders and dispatch alerts
+        await checkForDelayedOrders(modelContext: modelContext)
+        
+        self.syncStatus = .idle
+        self.lastSyncedAt = Date()
         
         #if DEBUG
         print("SyncEngine: Sync completed.")
@@ -567,35 +556,47 @@ final class SyncEngine: ObservableObject {
     }
     
     private func syncPromotions(_ modelContext: ModelContext) async {
+        NSLog("SyncEngine: syncPromotions started")
         let descriptor = FetchDescriptor<Promotion>(
             predicate: #Predicate<Promotion> { $0.isDeleted == true || $0.isSynced == false }
         )
         
-        guard let promotions = try? modelContext.fetch(descriptor), !promotions.isEmpty else { return }
+        guard let promotions = try? modelContext.fetch(descriptor) else {
+            NSLog("SyncEngine: syncPromotions failed to fetch descriptor")
+            return
+        }
+        
+        NSLog("SyncEngine: syncPromotions found \(promotions.count) promotion(s) to sync")
         
         for promotion in promotions {
+            NSLog("SyncEngine: promotion to sync: \(promotion.title) (id: \(promotion.id.uuidString)), isDeleted: \(promotion.isDeleted), isSynced: \(promotion.isSynced)")
             if promotion.isDeleted {
                 do {
+                    NSLog("SyncEngine: Attempting to delete promotion on server: \(promotion.id.uuidString)")
                     let success = try await NetworkManager.shared.deletePromotionOnServer(id: promotion.id)
+                    NSLog("SyncEngine: deletePromotionOnServer returned \(success)")
                     if success {
                         modelContext.delete(promotion)
                         try modelContext.save()
+                        NSLog("SyncEngine: Successfully deleted promotion locally: \(promotion.id.uuidString)")
                     }
                 } catch {
-                    print("SyncEngine [Promotion Delete Error]: \(error.localizedDescription)")
+                    NSLog("SyncEngine [Promotion Delete Error]: \(error.localizedDescription)")
                 }
                 continue
             }
             
             do {
+                NSLog("SyncEngine: Attempting to upload promotion to server: \(promotion.title) (id: \(promotion.id.uuidString))")
                 let success = try await NetworkManager.shared.uploadPromotion(promotion: promotion)
                 if success {
                     promotion.isSynced = true
                     promotion.updatedAt = Date()
                     try modelContext.save()
+                    NSLog("SyncEngine: Successfully synced promotion to server: \(promotion.title) (id: \(promotion.id.uuidString))")
                 }
             } catch {
-                print("SyncEngine [Promotion Sync Error]: \(error.localizedDescription)")
+                NSLog("SyncEngine [Promotion Sync Error]: \(error.localizedDescription)")
             }
         }
     }
@@ -1297,9 +1298,7 @@ final class SyncEngine: ObservableObject {
                 }
             }
             
-            await MainActor.run {
-                self.activeRequests = newRequests
-            }
+            self.activeRequests = newRequests
         } catch {
             print("SyncEngine [Service Requests Sync Error]: \(error.localizedDescription)")
         }
@@ -1347,7 +1346,7 @@ final class SyncEngine: ObservableObject {
         task.resume()
         
         // Listen to incoming messages
-        listenToWebSocket(modelContext: modelContext)
+        listenToWebSocket()
         
         // Join realtime topic
         joinRealtimeTopic()
@@ -1359,42 +1358,49 @@ final class SyncEngine: ObservableObject {
         reconnectAttempt = 0
     }
     
-    private func listenToWebSocket(modelContext: ModelContext) {
+    private func listenToWebSocket() {
         webSocketTask?.receive { [weak self] result in
             guard let self = self else { return }
-            switch result {
-            case .success(let message):
-                switch message {
-                case .string(let text):
-                    self.handleWebSocketMessage(text, modelContext: modelContext)
-                case .data(let data):
-                    if let text = String(data: data, encoding: .utf8) {
+            Task { @MainActor in
+                guard let modelContext = self.cachedModelContext else { return }
+                switch result {
+                case .success(let message):
+                    switch message {
+                    case .string(let text):
                         self.handleWebSocketMessage(text, modelContext: modelContext)
+                    case .data(let data):
+                        if let text = String(data: data, encoding: .utf8) {
+                            self.handleWebSocketMessage(text, modelContext: modelContext)
+                        }
+                    @unknown default:
+                        break
                     }
-                @unknown default:
-                    break
-                }
-                // Keep listening
-                self.listenToWebSocket(modelContext: modelContext)
-            case .failure(let error):
-                print("SyncEngine WebSocket error: \(error.localizedDescription)")
-                self.webSocketTask = nil
-                self.heartbeatTimer?.invalidate()
-                self.heartbeatTimer = nil
-                
-                // Exponential backoff: 2s → 4s → 8s → 16s → 30s max
-                let delay = min(maxReconnectDelay, pow(2.0, Double(reconnectAttempt)) * 1.0)
-                // Add jitter (±25%) to prevent thundering herd
-                let jitter = delay * Double.random(in: -0.25...0.25)
-                let finalDelay = max(1.0, delay + jitter)
-                reconnectAttempt += 1
-                
-                #if DEBUG
-                print("SyncEngine: Reconnecting in \(String(format: "%.1f", finalDelay))s (attempt \(reconnectAttempt))")
-                #endif
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + finalDelay) {
-                    self.startRealtimeSync(modelContext: modelContext)
+                    // Keep listening
+                    self.listenToWebSocket()
+                case .failure(let error):
+                    print("SyncEngine WebSocket error: \(error.localizedDescription)")
+                    self.webSocketTask = nil
+                    self.heartbeatTimer?.invalidate()
+                    self.heartbeatTimer = nil
+                    
+                    // Exponential backoff: 2s → 4s → 8s → 16s → 30s max
+                    let delay = min(self.maxReconnectDelay, pow(2.0, Double(self.reconnectAttempt)) * 1.0)
+                    // Add jitter (±25%) to prevent thundering herd
+                    let jitter = delay * Double.random(in: -0.25...0.25)
+                    let finalDelay = max(1.0, delay + jitter)
+                    self.reconnectAttempt += 1
+                    
+                    #if DEBUG
+                    print("SyncEngine: Reconnecting in \(String(format: "%.1f", finalDelay))s (attempt \(self.reconnectAttempt))")
+                    #endif
+                    
+                    DispatchQueue.main.asyncAfter(deadline: .now() + finalDelay) {
+                        Task { @MainActor in
+                            if let context = self.cachedModelContext {
+                                self.startRealtimeSync(modelContext: context)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1438,22 +1444,26 @@ final class SyncEngine: ObservableObject {
         heartbeatTimer?.invalidate()
         heartbeatTimer = nil
         
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: true) { [weak self] timer in
-            guard let self = self, let task = self.webSocketTask else {
-                timer.invalidate()
-                return
-            }
-            let heartbeat: [String: Any] = [
-                "topic": "phoenix",
-                "event": "heartbeat",
-                "payload": [:],
-                "ref": "heartbeat"
-            ]
-            if let data = try? JSONSerialization.data(withJSONObject: heartbeat, options: []),
-               let jsonString = String(data: data, encoding: .utf8) {
-                task.send(.string(jsonString)) { error in
-                    if let error = error {
-                        print("SyncEngine heartbeat failed: \(error)")
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            Task { @MainActor in
+                guard let task = self.webSocketTask else {
+                    self.heartbeatTimer?.invalidate()
+                    self.heartbeatTimer = nil
+                    return
+                }
+                let heartbeat: [String: Any] = [
+                    "topic": "phoenix",
+                    "event": "heartbeat",
+                    "payload": [:],
+                    "ref": "heartbeat"
+                ]
+                if let data = try? JSONSerialization.data(withJSONObject: heartbeat, options: []),
+                   let jsonString = String(data: data, encoding: .utf8) {
+                    task.send(.string(jsonString)) { error in
+                        if let error = error {
+                            print("SyncEngine heartbeat failed: \(error)")
+                        }
                     }
                 }
             }
@@ -1506,7 +1516,7 @@ final class SyncEngine: ObservableObject {
         realtimeDebounceWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
-            Task {
+            Task { @MainActor in
                 #if DEBUG
                 print("SyncEngine [Realtime]: Database change detected. Performing debounced pull...")
                 #endif

@@ -314,9 +314,13 @@ final class NetworkService {
         ])
         
         let sessions = (try? JSONSerialization.jsonObject(with: sessionsData) as? [[String: Any]]) ?? []
-        let activeSessionsMap = Dictionary(uniqueKeysWithValues: sessions.compactMap { dict -> (String, [String: Any])? in
+        let activeSessionsMap = Dictionary(sessions.compactMap { dict -> (String, [String: Any])? in
             guard let tableNum = dict["table_number"] as? String else { return nil }
             return (tableNum, dict)
+        }, uniquingKeysWith: { (first, second) in
+            let firstCreated = first["created_at"] as? String ?? ""
+            let secondCreated = second["created_at"] as? String ?? ""
+            return firstCreated >= secondCreated ? first : second
         })
         
         let ordersData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
