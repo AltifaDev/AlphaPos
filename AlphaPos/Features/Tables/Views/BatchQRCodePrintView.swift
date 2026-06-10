@@ -10,6 +10,7 @@ struct BatchQRCodePrintView: View {
     @State private var qrCodeCache: [UUID: UIImage] = [:]
     @State private var zoomedTable: RestaurantTable? = nil
     @State private var animateEntrance = false
+    @Namespace private var qrZoomNamespace
     
     // Grid layout for 3 columns on A4 width
     private let columns = [
@@ -35,9 +36,13 @@ struct BatchQRCodePrintView: View {
                                     table: table,
                                     qrImage: qrCodeCache[table.id],
                                     index: index,
-                                    animateEntrance: animateEntrance
+                                    animateEntrance: animateEntrance,
+                                    namespace: qrZoomNamespace,
+                                    isZoomed: zoomedTable?.id == table.id
                                 ) {
-                                    zoomedTable = table
+                                    withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                                        zoomedTable = table
+                                    }
                                 }
                             }
                         }
@@ -68,10 +73,7 @@ struct BatchQRCodePrintView: View {
             // Zoomed overlay presentation
             if let table = zoomedTable {
                 zoomedOverlay(for: table)
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.85).combined(with: .opacity),
-                        removal: .scale(scale: 0.9).combined(with: .opacity)
-                    ))
+                    .transition(.opacity)
             }
         }
         .onAppear {
@@ -80,8 +82,6 @@ struct BatchQRCodePrintView: View {
                 animateEntrance = true
             }
         }
-        // Spring animation for overlay zoom
-        .animation(.spring(response: 0.38, dampingFraction: 0.76), value: zoomedTable != nil)
     }
     
     /// Generates QR Code on background thread to keep main thread buttery smooth
@@ -121,20 +121,23 @@ struct BatchQRCodePrintView: View {
     }
     
     /// Zoomed Single Table QR Code Overlay
-    @ViewBuilder
     private func zoomedOverlay(for table: RestaurantTable) -> some View {
         ZStack {
             Color.black.opacity(0.55)
                 .ignoresSafeArea()
                 .onTapGesture {
-                    zoomedTable = nil
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.85)) {
+                        zoomedTable = nil
+                    }
                 }
             
             VStack(spacing: 20) {
                 HStack {
                     Spacer()
                     Button(action: {
-                        zoomedTable = nil
+                        withAnimation(.spring(response: 0.38, dampingFraction: 0.85)) {
+                            zoomedTable = nil
+                        }
                     }) {
                         Image(systemName: "xmark.circle.fill")
                             .font(.title2)
@@ -155,6 +158,7 @@ struct BatchQRCodePrintView: View {
                         .resizable()
                         .interpolation(.none)
                         .frame(width: 280, height: 280)
+                        .matchedGeometryEffect(id: "qr_image_\(table.id)", in: qrZoomNamespace)
                         .padding(16)
                         .background(Color.white)
                         .cornerRadius(12)
@@ -205,6 +209,7 @@ struct BatchQRCodePrintView: View {
                 RoundedRectangle(cornerRadius: 16)
                     .stroke(Color.appBorderSubtle, lineWidth: 1)
             )
+            .matchedGeometryEffect(id: "card_container_\(table.id)", in: qrZoomNamespace)
         }
     }
     
@@ -314,21 +319,31 @@ struct TableQRCard: View {
     let table: RestaurantTable
     let qrImage: UIImage?
     let index: Int
-    let animateEntrance: varBool = false // Wait, let's fix syntax
+    let animateEntrance: Bool
+    let namespace: Namespace.ID
+    let isZoomed: Bool
     let action: () -> Void
     
     @State private var isPressed = false
     
     // Explicit initializer since we have custom defaults
-    init(table: RestaurantTable, qrImage: UIImage?, index: Int, animateEntrance: Bool, action: @escaping () -> Void) {
+    init(
+        table: RestaurantTable,
+        qrImage: UIImage?,
+        index: Int,
+        animateEntrance: Bool,
+        namespace: Namespace.ID,
+        isZoomed: Bool,
+        action: @escaping () -> Void
+    ) {
         self.table = table
         self.qrImage = qrImage
         self.index = index
         self.animateEntrance = animateEntrance
+        self.namespace = namespace
+        self.isZoomed = isZoomed
         self.action = action
     }
-    
-    private let animateEntrance: Bool
     
     var body: some View {
         VStack(spacing: 8) {
@@ -342,6 +357,7 @@ struct TableQRCard: View {
                     .resizable()
                     .interpolation(.none)
                     .frame(width: 140, height: 140)
+                    .matchedGeometryEffect(id: "qr_image_\(table.id)", in: namespace, isSource: !isZoomed)
                     .padding(8)
                     .background(Color.white)
                     .cornerRadius(8)
@@ -365,9 +381,10 @@ struct TableQRCard: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.appBorderSubtle, lineWidth: 1)
         )
+        .matchedGeometryEffect(id: "card_container_\(table.id)", in: namespace, isSource: !isZoomed)
         // Squishy micro-interaction scaling effect on press
         .scaleEffect(isPressed ? 0.96 : 1.0)
-        .opacity(animateEntrance ? 1.0 : 0.0)
+        .opacity(animateEntrance ? (isZoomed ? 0.01 : 1.0) : 0.0)
         .scaleEffect(animateEntrance ? 1.0 : 0.92)
         // Cascading spring animation entry
         .animation(.spring(response: 0.45, dampingFraction: 0.78).delay(Double(index) * 0.035), value: animateEntrance)
