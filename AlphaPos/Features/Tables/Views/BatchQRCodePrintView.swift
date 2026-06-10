@@ -94,7 +94,7 @@ struct BatchQRCodePrintView: View {
     private func generateQRCode(from string: String) -> UIImage? {
         if let filter = CIFilter(name: "CIQRCodeGenerator") {
             filter.setValue(string.data(using: .utf8), forKey: "inputMessage")
-            let transform = CGAffineTransform(scaleX: 10, scaleY: 10)
+            let transform = CGAffineTransform(scaleX: 10, y: 10)
             if let output = filter.outputImage?.transformed(by: transform) {
                 let context = CIContext()
                 if let cgImage = context.createCGImage(output, from: output.extent) {
