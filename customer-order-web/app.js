@@ -415,6 +415,27 @@ class AlphaPosApp {
     }
 
     async checkOrOpenSession() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const tableParam = urlParams.get('table');
+
+        // Block access if table parameter is missing
+        if (!tableParam) {
+            const wizard = document.getElementById("onboardingWizard");
+            wizard.classList.add("active");
+            document.getElementById("onboardingStep1").classList.add("active");
+
+            document.getElementById("verifyTitle").innerText = "⚠️ ไม่พบรหัสโต๊ะอาหาร";
+            document.getElementById("verifyDesc").innerText = "กรุณาสแกน QR Code บนโต๊ะอาหารของคุณเพื่อเริ่มสั่งอาหาร";
+
+            const nextBtn = document.getElementById("btnOnboardingNext1");
+            if (nextBtn) {
+                nextBtn.classList.add("disabled");
+                nextBtn.disabled = true;
+                nextBtn.innerHTML = "<span>กรุณาสแกน QR Code</span>";
+            }
+            return;
+        }
+
         // Always show the onboarding wizard overlay initially
         const wizard = document.getElementById("onboardingWizard");
         wizard.classList.add("active");
