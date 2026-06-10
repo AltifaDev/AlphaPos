@@ -458,7 +458,7 @@ final class NetworkService {
         
         // 1. Local / pre-loaded verification (Offline fallback)
         if let expected = expectedPinHash {
-            return constantTimeCompare(pinHash, expected)
+            return constantTimeCompare(pinHash, expected) || constantTimeCompare(pinDigits, expected)
         }
         
         // 2. Database verification (Direct column query fallback)
@@ -470,7 +470,7 @@ final class NetworkService {
             if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
                let firstResult = json.first,
                let dbPinCode = firstResult["pin_code"] as? String {
-                return constantTimeCompare(pinHash, dbPinCode)
+                return constantTimeCompare(pinHash, dbPinCode) || constantTimeCompare(pinDigits, dbPinCode)
             }
         } catch {
             print("verifyPin error: \(error.localizedDescription)")

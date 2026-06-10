@@ -960,7 +960,7 @@ struct PayrollDashboardView: View {
             enableLoginAccess = true
             empUsername = user.username
             empPassword = "" // Secure
-            empPin = user.pinCodeHash ?? ""
+            empPin = "" // Leave empty for security and edit flow
             empRoleId = user.role?.id
         } else {
             enableLoginAccess = false
@@ -1066,13 +1066,14 @@ struct PayrollDashboardView: View {
         
         if enableLoginAccess {
             let userEmail = empEmail.isEmpty ? nil : empEmail
-            let pinValue = empPin.isEmpty ? nil : empPin
             
             if let user = targetEmp.user {
                 user.username = empUsername.lowercased()
                 user.email = userEmail
                 user.role = selectedRole
-                user.pinCodeHash = pinValue
+                if !empPin.isEmpty {
+                    user.pinCodeHash = SecurityHelper.sha256(empPin)
+                }
                 if !empPassword.isEmpty {
                     user.passwordHash = SecurityHelper.sha256(empPassword)
                 }
@@ -1080,6 +1081,7 @@ struct PayrollDashboardView: View {
                 user.isSynced = false
             } else {
                 let pHash = empPassword.isEmpty ? "default_hash" : SecurityHelper.sha256(empPassword)
+                let pinValue = empPin.isEmpty ? nil : SecurityHelper.sha256(empPin)
                 let newUser = User(
                     username: empUsername.lowercased(),
                     email: userEmail,
@@ -1398,7 +1400,7 @@ struct PayrollDashboardView: View {
                         SecureField(editingEmployee == nil ? "Password" : "New Password (Optional)", text: $empPassword)
                             .textInputAutocapitalization(.never)
                         
-                        TextField("Login PIN (4-6 Digits)", text: $empPin)
+                        TextField(editingEmployee == nil ? "Login PIN (4-6 Digits)" : "New PIN (Optional)", text: $empPin)
                             .keyboardType(.numberPad)
                         
                         Picker("Access Role", selection: $empRoleId) {

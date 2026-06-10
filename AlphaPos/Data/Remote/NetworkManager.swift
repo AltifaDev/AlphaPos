@@ -631,20 +631,15 @@ final class NetworkManager {
             "updated_at": formatter.string(from: promotion.updatedAt)
         ]
         
-        var supabaseSuccess = false
-        do {
-            _ = try await sendSupabaseRequest(
-                method: "POST",
-                endpoint: "promotions",
-                queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
-                payload: payload
-            )
-            supabaseSuccess = true
-        } catch {
-            print("NetworkManager: Supabase promotion upload failed: \(error.localizedDescription)")
-        }
+        // 1. Upload to Supabase (propagates errors)
+        _ = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "promotions",
+            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+            payload: payload
+        )
         
-        var localSuccess = false
+        // 2. Upload to local server (best effort)
         if let localURL = URL(string: "http://127.0.0.1:8080/v1/promotions") {
             var req = URLRequest(url: localURL)
             req.httpMethod = "POST"
@@ -652,16 +647,13 @@ final class NetworkManager {
             req.timeoutInterval = 1.5
             do {
                 req.httpBody = try JSONSerialization.data(withJSONObject: payload)
-                let (_, response) = try await URLSession.shared.data(for: req)
-                if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
-                    localSuccess = true
-                }
+                _ = try await URLSession.shared.data(for: req)
             } catch {
                 print("NetworkManager: Local server promotion upload failed: \(error.localizedDescription)")
             }
         }
         
-        return supabaseSuccess || localSuccess
+        return true
     }
     
     // MARK: - Purchase Orders Sync
