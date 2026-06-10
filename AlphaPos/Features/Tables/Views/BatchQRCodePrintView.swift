@@ -6,7 +6,10 @@ struct BatchQRCodePrintView: View {
     @AppStorage("active_merchant_id") private var activeMerchantId = "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
     @Environment(\.dismiss) private var dismiss
     
+    // QR Code Image Cache to prevent main-thread lag during renders
+    @State private var qrCodeCache: [UUID: UIImage] = [:]
     @State private var zoomedTable: RestaurantTable? = nil
+    @State private var animateEntrance = false
     
     // Grid layout for 3 columns on A4 width
     private let columns = [
@@ -27,47 +30,13 @@ struct BatchQRCodePrintView: View {
                             .padding(.top)
                         
                         LazyVGrid(columns: columns, spacing: 24) {
-                            ForEach(tables) { table in
-                                VStack(spacing: 8) {
-                                    Text("Table \(table.tableNumber)")
-                                        .font(.headline)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(.textPrimary)
-                                    
-                                    let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
-                                    
-                                    if let qrImage = generateQRCode(from: qrUrl) {
-                                        Image(uiImage: qrImage)
-                                            .resizable()
-                                            .interpolation(.none)
-                                            .frame(width: 140, height: 140)
-                                            .padding(8)
-                                            .background(Color.white)
-                                            .cornerRadius(8)
-                                            .shadow(color: Color.black.opacity(0.08), radius: 3)
-                                    } else {
-                                        Image(systemName: "qrcode")
-                                            .resizable()
-                                            .frame(width: 140, height: 140)
-                                            .foregroundColor(.appBorderSubtle)
-                                    }
-                                    
-                                    Text("table=\(table.tableNumber)")
-                                        .font(.system(.caption2, design: .monospaced))
-                                        .foregroundColor(.textSecondary)
-                                        .lineLimit(1)
-                                        .padding(.top, 2)
-                                }
-                                .padding(.vertical, 16)
-                                .padding(.horizontal, 10)
-                                .background(Color.appSurface)
-                                .cornerRadius(12)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color.appBorderSubtle, lineWidth: 1)
-                                )
-                                .contentShape(Rectangle())
-                                .onTapGesture {
+                            ForEach(Array(tables.enumerated()), id: \.element.id) { index, table in
+                                TableQRCard(
+                                    table: table,
+                                    qrImage: qrCodeCache[table.id],
+                                    index: index,
+                                    animateEntrance: animateEntrance
+                                ) {
                                     zoomedTable = table
                                 }
                             }
@@ -99,14 +68,45 @@ struct BatchQRCodePrintView: View {
             // Zoomed overlay presentation
             if let table = zoomedTable {
                 zoomedOverlay(for: table)
-                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    .transition(.asymmetric(
+                        insertion: .scale(scale: 0.85).combined(with: .opacity),
+                        removal: .scale(scale: 0.9).combined(with: .opacity)
+                    ))
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: zoomedTable != nil)
+        .onAppear {
+            generateAllQRCodes()
+            withAnimation(.spring(response: 0.65, dampingFraction: 0.85)) {
+                animateEntrance = true
+            }
+        }
+        // Spring animation for overlay zoom
+        .animation(.spring(response: 0.38, dampingFraction: 0.76), value: zoomedTable != nil)
     }
     
-    /// Generates high-quality CIQRCode Image
-    private func generateQRCode(from string: String) -> UIImage? {
+    /// Generates QR Code on background thread to keep main thread buttery smooth
+    private func generateAllQRCodes() {
+        let tablesCopy = self.tables
+        let merchantId = self.activeMerchantId
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            var temporaryCache: [UUID: UIImage] = [:]
+            
+            for table in tablesCopy {
+                let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(merchantId)"
+                if let image = generateQRCodeSync(from: qrUrl) {
+                    temporaryCache[table.id] = image
+                }
+            }
+            
+            DispatchQueue.main.async {
+                self.qrCodeCache = temporaryCache
+            }
+        }
+    }
+    
+    /// Synchronous QR Code Generator helper (runs inside background queue)
+    private func generateQRCodeSync(from string: String) -> UIImage? {
         if let filter = CIFilter(name: "CIQRCodeGenerator") {
             filter.setValue(string.data(using: .utf8), forKey: "inputMessage")
             let transform = CGAffineTransform(scaleX: 10, y: 10)
@@ -150,7 +150,7 @@ struct BatchQRCodePrintView: View {
                 
                 let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
                 
-                if let qrImage = generateQRCode(from: qrUrl) {
+                if let qrImage = qrCodeCache[table.id] {
                     Image(uiImage: qrImage)
                         .resizable()
                         .interpolation(.none)
@@ -159,6 +159,9 @@ struct BatchQRCodePrintView: View {
                         .background(Color.white)
                         .cornerRadius(12)
                         .shadow(color: Color.black.opacity(0.12), radius: 8)
+                } else {
+                    ProgressView()
+                        .frame(width: 312, height: 312)
                 }
                 
                 VStack(spacing: 8) {
@@ -207,21 +210,17 @@ struct BatchQRCodePrintView: View {
     
     /// Generates and shares A4 formatted PDF
     private func exportToPDF() {
-        // A4 page size in points: 595.2 width x 841.8 height
         let pdfRenderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 595.2, height: 841.8))
-        
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("AlphaPos_Table_QRCodes.pdf")
         
         do {
             try pdfRenderer.writePDF(to: url) { context in
-                // Grid calculation settings (3 columns x 4 rows = 12 QR codes per A4 page)
                 let itemsPerPage = 12
                 let totalPages = Int(ceil(Double(tables.count) / Double(itemsPerPage)))
                 
                 for pageIndex in 0..<totalPages {
                     context.beginPage()
                     
-                    // Header text
                     let title = "AlphaPos - Table Self-Ordering QR Codes"
                     let font = UIFont.boldSystemFont(ofSize: 16)
                     let attributes: [NSAttributedString.Key: Any] = [
@@ -230,7 +229,6 @@ struct BatchQRCodePrintView: View {
                     ]
                     title.draw(at: CGPoint(x: 36, y: 36), withAttributes: attributes)
                     
-                    // Draw separator line under header
                     let drawContext = context.cgContext
                     drawContext.setStrokeColor(UIColor.lightGray.cgColor)
                     drawContext.setLineWidth(0.5)
@@ -256,29 +254,24 @@ struct BatchQRCodePrintView: View {
                         let x = startX + col * colWidth
                         let y = startY + row * rowHeight
                         
-                        // Draw box/card borders
                         let cardRect = CGRect(x: x + 5, y: y + 5, width: colWidth - 10, height: rowHeight - 10)
                         drawContext.setFillColor(UIColor(white: 0.98, alpha: 1.0).cgColor)
                         drawContext.fill(cardRect)
                         drawContext.setStrokeColor(UIColor(white: 0.85, alpha: 1.0).cgColor)
                         drawContext.setLineWidth(1.0)
                         
-                        // Rounded rectangle for card border
                         let path = UIBezierPath(roundedRect: cardRect, cornerRadius: 8)
                         path.stroke()
                         
-                        // Table Number text
                         let tableName = "Table \(table.tableNumber)"
                         let nameFont = UIFont.boldSystemFont(ofSize: 13)
                         tableName.draw(at: CGPoint(x: x + 20, y: y + 20), withAttributes: [.font: nameFont, .foregroundColor: UIColor.black])
                         
-                        // Generate QR Code image and draw it inside card
                         let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
-                        if let qrImage = generateQRCode(from: qrUrl) {
+                        if let qrImage = generateQRCodeSync(from: qrUrl) {
                             qrImage.draw(in: CGRect(x: x + (colWidth - 100) / 2, y: y + 45, width: 100, height: 100))
                         }
                         
-                        // Link text
                         let linkText = "Scan to Order"
                         let linkFont = UIFont.systemFont(ofSize: 9)
                         let linkAttributes: [NSAttributedString.Key: Any] = [
@@ -288,7 +281,6 @@ struct BatchQRCodePrintView: View {
                         linkText.draw(at: CGPoint(x: x + (colWidth - linkText.size(withAttributes: linkAttributes).width) / 2, y: y + 155), withAttributes: linkAttributes)
                     }
                     
-                    // Footer text
                     let footerText = "Page \(pageIndex + 1) of \(totalPages)"
                     let footerFont = UIFont.systemFont(ofSize: 8)
                     let footerAttributes: [NSAttributedString.Key: Any] = [
@@ -299,7 +291,6 @@ struct BatchQRCodePrintView: View {
                 }
             }
             
-            // Present Activity Sheet
             if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let rootVC = windowScene.windows.first?.rootViewController {
                 let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
@@ -315,5 +306,81 @@ struct BatchQRCodePrintView: View {
         } catch {
             print("Failed to write PDF: \(error)")
         }
+    }
+}
+
+/// A premium, squishy micro-interactive card button for table grid items
+struct TableQRCard: View {
+    let table: RestaurantTable
+    let qrImage: UIImage?
+    let index: Int
+    let animateEntrance: varBool = false // Wait, let's fix syntax
+    let action: () -> Void
+    
+    @State private var isPressed = false
+    
+    // Explicit initializer since we have custom defaults
+    init(table: RestaurantTable, qrImage: UIImage?, index: Int, animateEntrance: Bool, action: @escaping () -> Void) {
+        self.table = table
+        self.qrImage = qrImage
+        self.index = index
+        self.animateEntrance = animateEntrance
+        self.action = action
+    }
+    
+    private let animateEntrance: Bool
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            Text("Table \(table.tableNumber)")
+                .font(.headline)
+                .fontWeight(.bold)
+                .foregroundColor(.textPrimary)
+            
+            if let qrImage = qrImage {
+                Image(uiImage: qrImage)
+                    .resizable()
+                    .interpolation(.none)
+                    .frame(width: 140, height: 140)
+                    .padding(8)
+                    .background(Color.white)
+                    .cornerRadius(8)
+                    .shadow(color: Color.black.opacity(0.08), radius: 3)
+            } else {
+                ProgressView()
+                    .frame(width: 156, height: 156)
+            }
+            
+            Text("table=\(table.tableNumber)")
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundColor(.textSecondary)
+                .lineLimit(1)
+                .padding(.top, 2)
+        }
+        .padding(.vertical, 16)
+        .padding(.horizontal, 10)
+        .background(Color.appSurface)
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.appBorderSubtle, lineWidth: 1)
+        )
+        // Squishy micro-interaction scaling effect on press
+        .scaleEffect(isPressed ? 0.96 : 1.0)
+        .opacity(animateEntrance ? 1.0 : 0.0)
+        .scaleEffect(animateEntrance ? 1.0 : 0.92)
+        // Cascading spring animation entry
+        .animation(.spring(response: 0.45, dampingFraction: 0.78).delay(Double(index) * 0.035), value: animateEntrance)
+        .animation(.spring(response: 0.22, dampingFraction: 0.65), value: isPressed)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            APHaptic.trigger()
+            action()
+        }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in isPressed = true }
+                .onEnded { _ in isPressed = false }
+        )
     }
 }
