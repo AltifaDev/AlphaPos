@@ -1,0 +1,772 @@
+import Foundation
+import SwiftData
+import SwiftUI
+
+// MARK: - Cart Items View Representation Struct
+
+struct CartItem: Identifiable {
+    let id = UUID()
+    let item: MenuItem
+    let selectedModifiers: [Modifier]
+    var quantity: Int = 1
+    var notes: String = ""
+    
+    /// Use totalPriceDecimal for accurate currency calculations (avoids floating-point errors).
+    /// totalPrice is kept for backward compatibility but may lose precision.
+    var totalPrice: Double {
+        let modifierCost = selectedModifiers.reduce(0.0) { $0 + $1.extraPrice }
+        return (item.price + modifierCost) * Double(quantity)
+    }
+    
+    var totalPriceDecimal: Decimal {
+        let modifierCost = selectedModifiers.reduce(Decimal.zero) { $0 + ($1.extraPriceDecimal) }
+        return (item.priceDecimal + modifierCost) * Decimal(quantity)
+    }
+    
+    func isEqual(to other: CartItem) -> Bool {
+        guard item.id == other.item.id else { return false }
+        let selfIds = selectedModifiers.map { $0.id }.sorted()
+        let otherIds = other.selectedModifiers.map { $0.id }.sorted()
+        return selfIds == otherIds && notes == other.notes
+    }
+}
+
+struct FocusTarget: Equatable {
+    let triggerId = UUID()
+    let itemId: UUID
+    
+    static func == (lhs: FocusTarget, rhs: FocusTarget) -> Bool {
+        lhs.triggerId == rhs.triggerId
+    }
+}
+
+// MARK: - POS View Model
+
+@Observable
+@MainActor
+final class POSViewModel {
+    var modelContext: ModelContext?
+    
+    // Cart and configuration states
+    var cart: [CartItem] = []
+    var lastAddedItem: FocusTarget? = nil
+    var selectedCategory: Category?
+    var selectedItemForCustomization: MenuItem?
+    var selectedPaymentMethod = "QR PromptPay"
+    var selectedTableNumber = "1"
+    var selectedOrderType = "dine_in"
+    var guestCount: Int = 2
+    var cashierName: String = "Alex M."
+    var currentQueueNumber: String = ""
+    var currentBillNumber: String = ""
+    var currentOrderDateString: String = ""
+    
+    var deliveryBrand: String? = nil
+    var deliveryGP: Double = 0.0
+    var deliveryAdFee: Double = 0.0
+    var deliveryAdFeeIsPct: Bool = false
+    var deliveryOtherFee: Double = 0.0
+
+    init(modelContext: ModelContext? = nil) {
+        self.modelContext = modelContext
+    }
+    
+    // MARK: - POS Session Synchronization
+    
+    func syncFromSession(_ session: TableSession?) {
+        if let session = session {
+            guestCount = session.guestCount
+            cashierName = session.cashierName
+            selectedOrderType = "dine_in"
+            currentBillNumber = "AP-\(session.id.uuidString.prefix(6).uppercased())"
+            if let q = session.queueNumber {
+                currentQueueNumber = q
+            } else {
+                let tableNum = session.table?.tableNumber ?? "0"
+                let newQ = "Q-\(tableNum)-\(session.id.uuidString.prefix(3).uppercased())"
+                session.queueNumber = newQ
+                currentQueueNumber = newQ
+                try? modelContext?.save()
+            }
+            currentOrderDateString = DateFormatter.shortDateTimeFormat().string(from: session.startedAt)
+        } else {
+            selectedOrderType = "take_out"
+            currentBillNumber = "AP-NEW"
+            if currentQueueNumber.isEmpty {
+                currentQueueNumber = "Q-\(Int.random(in: 100...999))"
+            }
+            currentOrderDateString = DateFormatter.shortDateTimeFormat().string(from: Date())
+        }
+    }
+    
+    func updateGuestCount(_ newCount: Int, session: TableSession?) {
+        guestCount = newCount
+        if let session = session {
+            session.guestCount = newCount
+            try? modelContext?.save()
+        }
+    }
+    
+    func updateCashierName(_ name: String, session: TableSession?) {
+        cashierName = name
+        if let session = session {
+            session.cashierName = name
+            try? modelContext?.save()
+        }
+    }
+
+    func updateOrderType(_ type: String) {
+        selectedOrderType = type
+    }
+    
+    // MARK: - Financial Calculations
+    
+    var cartSubtotal: Double {
+        cart.reduce(0.0) { $0 + $1.totalPrice }
+    }
+    
+    var cartTax: Double {
+        let taxType = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
+        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
+        let hasGlobalOverride = UserDefaults.standard.object(forKey: "store_tax_rate") != nil
+        let taxRate = hasGlobalOverride ? globalTaxRate : 7.0
+        
+        var totalTax = 0.0
+        for cartItem in cart {
+            let lineTotal = cartItem.totalPrice
+            let itemTaxRate = cartItem.item.taxRate
+            // Use global rate if set, otherwise fallback to item-specific taxRate
+            let rate = hasGlobalOverride ? taxRate : itemTaxRate
+            let isInclusive = taxType == "inclusive"
+            
+            if isInclusive {
+                totalTax += lineTotal * (rate / (100 + rate))
+            } else {
+                totalTax += lineTotal * (rate / 100)
+            }
+        }
+        return totalTax
+    }
+    
+    var cartServiceCharge: Double {
+        if selectedOrderType == "take_out" || selectedOrderType == "delivery" {
+            return 0.0
+        }
+        let serviceChargeRate = UserDefaults.standard.object(forKey: "store_service_charge_rate") as? Double ?? 10.0
+        return cartSubtotal * (serviceChargeRate / 100.0)
+    }
+    
+    var cartTotal: Double {
+        let taxType = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
+        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
+        let hasGlobalOverride = UserDefaults.standard.object(forKey: "store_tax_rate") != nil
+        let taxRate = hasGlobalOverride ? globalTaxRate : 7.0
+        
+        var totalAmount = 0.0
+        for cartItem in cart {
+            let lineTotal = cartItem.totalPrice
+            let itemTaxRate = cartItem.item.taxRate
+            let rate = hasGlobalOverride ? taxRate : itemTaxRate
+            let isInclusive = taxType == "inclusive"
+            
+            if isInclusive {
+                totalAmount += lineTotal
+            } else {
+                totalAmount += lineTotal * (1.0 + rate / 100)
+            }
+        }
+        return totalAmount + cartServiceCharge
+    }
+    
+    // MARK: - Cart Operations
+    
+    func selectItem(_ item: MenuItem) {
+        // If menu item has recipes/modifier groups, open customize screen, else add straight to cart
+        if item.modifierGroupsRelations.isEmpty {
+            addToCart(item, modifiers: [])
+        } else {
+            selectedItemForCustomization = item
+        }
+    }
+    
+    func addToCart(_ item: MenuItem, modifiers: [Modifier]) {
+        let cartItem = CartItem(item: item, selectedModifiers: modifiers)
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+            if let idx = cart.firstIndex(where: { $0.isEqual(to: cartItem) }) {
+                cart[idx].quantity += 1
+                lastAddedItem = FocusTarget(itemId: cart[idx].id)
+            } else {
+                cart.append(cartItem)
+                lastAddedItem = FocusTarget(itemId: cartItem.id)
+            }
+        }
+        APHaptic.trigger()
+    }
+    
+    func increaseQty(_ item: CartItem) {
+        if let idx = cart.firstIndex(where: { $0.id == item.id }) {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                cart[idx].quantity += 1
+                lastAddedItem = FocusTarget(itemId: cart[idx].id)
+            }
+            APHaptic.trigger()
+        }
+    }
+    
+    func decreaseQty(_ item: CartItem) {
+        if let idx = cart.firstIndex(where: { $0.id == item.id }) {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                if cart[idx].quantity > 1 {
+                    cart[idx].quantity -= 1
+                } else {
+                    cart.remove(at: idx)
+                }
+            }
+            APHaptic.trigger()
+        }
+    }
+    
+    func removeFromCart(at offsets: IndexSet) {
+        cart.remove(atOffsets: offsets)
+    }
+    
+    // MARK: - Checkout Stock Deduct Logic
+    
+    private func fetchActiveBranch(context: ModelContext) -> Branch? {
+        if let activeIdString = UserDefaults.standard.string(forKey: "active_branch_id"),
+           let activeUUID = UUID(uuidString: activeIdString) {
+            let branchDesc = FetchDescriptor<Branch>()
+            if let branches = try? context.fetch(branchDesc) {
+                return branches.first(where: { $0.id == activeUUID })
+            }
+        }
+        return nil
+    }
+    
+    func processCheckout(tableSession: TableSession? = nil) {
+        guard let modelContext = modelContext else { return }
+        let activeBranch = fetchActiveBranch(context: modelContext)
+        
+        // 1. Create the Order
+        let finalOrderNum = currentBillNumber == "AP-NEW" ? "ORD-\(DateFormatter.orderDateFormat().string(from: Date()))-\(Int.random(in: 100...999))" : currentBillNumber
+        let order = Order(
+            orderNumber: finalOrderNum,
+            tableSession: tableSession,
+            orderType: selectedOrderType,
+            status: "preparing", // direct to kitchen status
+            subtotal: cartSubtotal,
+            tax: cartTax,
+            serviceCharge: cartServiceCharge,
+            discount: 0.0,
+            total: cartTotal,
+            branch: activeBranch,
+            guestCount: guestCount,
+            cashierName: cashierName,
+            queueNumber: currentQueueNumber.isEmpty ? nil : currentQueueNumber,
+            deliveryBrand: selectedOrderType == "delivery" ? deliveryBrand : nil,
+            deliveryGP: selectedOrderType == "delivery" ? deliveryGP : 0.0,
+            deliveryAdFee: selectedOrderType == "delivery" ? deliveryAdFee : 0.0,
+            deliveryAdFeeIsPct: selectedOrderType == "delivery" ? deliveryAdFeeIsPct : false,
+            deliveryOtherFee: selectedOrderType == "delivery" ? deliveryOtherFee : 0.0
+        )
+        
+        modelContext.insert(order)
+        
+        // 2. Add OrderItems and simulate stock deduction locally
+        for cartItem in cart {
+            let orderItem = OrderItem(
+                quantity: cartItem.quantity,
+                unitPrice: cartItem.item.price,
+                notes: cartItem.notes,
+                status: "cooking" // direct to kitchen
+            )
+            orderItem.menuItem = cartItem.item
+            orderItem.order = order
+            modelContext.insert(orderItem)
+            
+            // Link modifiers selected
+            for mod in cartItem.selectedModifiers {
+                let orderItemMod = OrderItemModifier(orderItem: orderItem, modifier: mod, price: mod.extraPrice)
+                modelContext.insert(orderItemMod)
+            }
+            
+            // Local client stock deduction (Offline-First trigger simulation)
+            deductIngredientsLocally(for: cartItem, activeBranch: activeBranch)
+        }
+        
+        // 3. Process payment record
+        let payment = Payment(paymentMethod: selectedPaymentMethod, amount: cartTotal)
+        payment.order = order
+        modelContext.insert(payment)
+        
+        try? modelContext.save()
+        cart.removeAll()
+        if tableSession == nil {
+            currentQueueNumber = ""
+        }
+        APHaptic.trigger()
+        
+        // Trigger background sync task
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
+    }
+    
+    private func deductIngredientsLocally(for cartItem: CartItem, activeBranch: Branch?) {
+        guard let modelContext = modelContext else { return }
+        
+        // Base menu recipes deduction
+        for recipe in cartItem.item.recipes {
+            if let ingredient = recipe.inventoryItem {
+                var localItem = ingredient
+                if let activeBranch = activeBranch, ingredient.branch?.id != activeBranch.id {
+                    let itemDesc = FetchDescriptor<InventoryItem>()
+                    if let allItems = try? modelContext.fetch(itemDesc),
+                       let match = allItems.first(where: { $0.branch?.id == activeBranch.id && ($0.sku == ingredient.sku || $0.name == ingredient.name) }) {
+                        localItem = match
+                    }
+                }
+                
+                let qtyDeducted = recipe.quantityRequired * Double(cartItem.quantity)
+                localItem.currentQuantity -= qtyDeducted
+                localItem.updatedAt = Date()
+                localItem.isSynced = false
+                
+                let txn = InventoryTransaction(
+                    item: localItem,
+                    transactionType: "sell",
+                    quantity: -qtyDeducted,
+                    notes: "Local POS checkout deduct for \(cartItem.item.name) (Qty: \(cartItem.quantity))",
+                    branch: activeBranch
+                )
+                modelContext.insert(txn)
+            }
+        }
+        
+        // Modifier recipes deduction
+        for mod in cartItem.selectedModifiers {
+            if let ingredient = mod.inventoryItemLink, let reqQty = mod.quantityRequired {
+                var localItem = ingredient
+                if let activeBranch = activeBranch, ingredient.branch?.id != activeBranch.id {
+                    let itemDesc = FetchDescriptor<InventoryItem>()
+                    if let allItems = try? modelContext.fetch(itemDesc),
+                       let match = allItems.first(where: { $0.branch?.id == activeBranch.id && ($0.sku == ingredient.sku || $0.name == ingredient.name) }) {
+                        localItem = match
+                    }
+                }
+                
+                let qtyDeducted = reqQty * Double(cartItem.quantity)
+                localItem.currentQuantity -= qtyDeducted
+                localItem.updatedAt = Date()
+                localItem.isSynced = false
+                
+                let txn = InventoryTransaction(
+                    item: localItem,
+                    transactionType: "sell",
+                    quantity: -qtyDeducted,
+                    notes: "Local POS checkout modifier (\(mod.name)) deduct (Qty: \(cartItem.quantity))",
+                    branch: activeBranch
+                )
+                modelContext.insert(txn)
+            }
+        }
+    }
+    
+    // MARK: - Database Mock Seed data
+    
+    func seedSampleMenu() {
+        guard let modelContext = modelContext else { return }
+        SampleDataSeeder.seedAll(modelContext: modelContext)
+    }
+}
+
+// MARK: - Reusable Sample Data Seeder
+
+@MainActor
+final class SampleDataSeeder {
+    static func clearAllData(modelContext: ModelContext) {
+        // Fetch and delete each model type explicitly to avoid complex existential issues in SwiftData
+        if let items = try? modelContext.fetch(FetchDescriptor<Role>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<User>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<Employee>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<EmployeeShift>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<Timecard>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<RegisterSession>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<Supplier>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<Branch>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<PurchaseOrder>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<PurchaseOrderItem>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<DeliveryPrice>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let tables = try? modelContext.fetch(FetchDescriptor<RestaurantTable>()) {
+            for item in tables { modelContext.delete(item) }
+        }
+        if let sessions = try? modelContext.fetch(FetchDescriptor<TableSession>()) {
+            for item in sessions { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<MenuItem>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let categories = try? modelContext.fetch(FetchDescriptor<Category>()) {
+            for item in categories { modelContext.delete(item) }
+        }
+        if let groups = try? modelContext.fetch(FetchDescriptor<ModifierGroup>()) {
+            for item in groups { modelContext.delete(item) }
+        }
+        if let modifiers = try? modelContext.fetch(FetchDescriptor<Modifier>()) {
+            for item in modifiers { modelContext.delete(item) }
+        }
+        if let rels = try? modelContext.fetch(FetchDescriptor<MenuItemModifierGroup>()) {
+            for item in rels { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<InventoryItem>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let recipes = try? modelContext.fetch(FetchDescriptor<Recipe>()) {
+            for item in recipes { modelContext.delete(item) }
+        }
+        if let orders = try? modelContext.fetch(FetchDescriptor<Order>()) {
+            for item in orders { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<OrderItem>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let mods = try? modelContext.fetch(FetchDescriptor<OrderItemModifier>()) {
+            for item in mods { modelContext.delete(item) }
+        }
+        if let payments = try? modelContext.fetch(FetchDescriptor<Payment>()) {
+            for item in payments { modelContext.delete(item) }
+        }
+        if let txns = try? modelContext.fetch(FetchDescriptor<InventoryTransaction>()) {
+            for item in txns { modelContext.delete(item) }
+        }
+        try? modelContext.save()
+    }
+    
+    static func seedTables(modelContext: ModelContext) {
+        // Delete existing tables first
+        if let tables = try? modelContext.fetch(FetchDescriptor<RestaurantTable>()) {
+            for table in tables {
+                modelContext.delete(table)
+            }
+        }
+        
+        let sampleTables = [
+            // Floor 1 Tables
+            RestaurantTable(
+                tableNumber: "1", capacity: 2, status: "vacant",
+                qrCodeIdentifier: "t1_static_hash", positionX: 40, positionY: 40, floor: 1
+            ),
+            RestaurantTable(
+                tableNumber: "2", capacity: 4, status: "vacant",
+                qrCodeIdentifier: "t2_static_hash", positionX: 200, positionY: 40, floor: 1
+            ),
+            RestaurantTable(
+                tableNumber: "3", capacity: 4, status: "vacant",
+                qrCodeIdentifier: "t3_static_hash", positionX: 380, positionY: 40, floor: 1
+            ),
+            RestaurantTable(
+                tableNumber: "4", capacity: 6, status: "vacant",
+                qrCodeIdentifier: "t4_static_hash", positionX: 40, positionY: 200, floor: 1
+            ),
+            RestaurantTable(
+                tableNumber: "5", capacity: 8, status: "vacant",
+                qrCodeIdentifier: "t5_static_hash", positionX: 320, positionY: 200, floor: 1
+            ),
+            RestaurantTable(
+                tableNumber: "VIP 1", capacity: 10, status: "vacant",
+                qrCodeIdentifier: "tvip1_static_hash", positionX: 140, positionY: 360, floor: 1
+            ),
+            // Floor 2 Tables
+            RestaurantTable(
+                tableNumber: "201", capacity: 4, status: "vacant",
+                qrCodeIdentifier: "t201_static_hash", positionX: 60, positionY: 60, floor: 2
+            ),
+            RestaurantTable(
+                tableNumber: "202", capacity: 4, status: "vacant",
+                qrCodeIdentifier: "t202_static_hash", positionX: 240, positionY: 60, floor: 2
+            ),
+            RestaurantTable(
+                tableNumber: "203", capacity: 6, status: "vacant",
+                qrCodeIdentifier: "t203_static_hash", positionX: 420, positionY: 60, floor: 2
+            ),
+            // Floor 3 Tables
+            RestaurantTable(
+                tableNumber: "301 (ROOF)", capacity: 8, status: "vacant",
+                qrCodeIdentifier: "t301_static_hash", positionX: 120, positionY: 120, floor: 3
+            )
+        ]
+        
+        for table in sampleTables {
+            modelContext.insert(table)
+        }
+        try? modelContext.save()
+    }
+    
+    static func seedRolesAndEmployeesIfEmpty(modelContext: ModelContext) {
+        let roles = (try? modelContext.fetch(FetchDescriptor<Role>())) ?? []
+        if roles.isEmpty {
+            let roleManager = Role(name: "Store Manager", roleDescription: "Full administrative and settings access.")
+            let roleCashier = Role(name: "Cashier", roleDescription: "Checkout, payments, and order entry.")
+            let roleWaitstaff = Role(name: "Waitstaff", roleDescription: "Table ordering and service requests.")
+            let roleKitchen = Role(name: "Kitchen Staff", roleDescription: "Kitchen display system access.")
+            
+            modelContext.insert(roleManager)
+            modelContext.insert(roleCashier)
+            modelContext.insert(roleWaitstaff)
+            modelContext.insert(roleKitchen)
+            
+            // Seed default users and employees if empty
+            let employees = (try? modelContext.fetch(FetchDescriptor<Employee>())) ?? []
+            if employees.isEmpty {
+                let user1 = User(username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: roleManager)
+                let user2 = User(username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: roleWaitstaff)
+                modelContext.insert(user1)
+                modelContext.insert(user2)
+                
+                let emp1 = Employee(user: user1, firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0)
+                let emp2 = Employee(user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0)
+                modelContext.insert(emp1)
+                modelContext.insert(emp2)
+            }
+            
+            try? modelContext.save()
+        }
+    }
+    
+    static func autoSeedIfOutdated(modelContext: ModelContext) {
+        seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
+        let categories = (try? modelContext.fetch(FetchDescriptor<Category>())) ?? []
+        if categories.isEmpty {
+            seedAll(modelContext: modelContext)
+            return
+        }
+        
+        let oldCategoryNames = ["Burgers & Mains", "Coffee & Drinks"]
+        let hasOldCategories = categories.contains(where: { oldCategoryNames.contains($0.name) })
+        
+        let menuItems = (try? modelContext.fetch(FetchDescriptor<MenuItem>())) ?? []
+        let oldMenuItemNames = ["Classic Cheese Burger", "Espresso Hot", "Latte Iced",
+                                "Crispy Golden Spring Rolls", "Royal Emerald Green Curry",
+                                "Signature River Prawn Pad Thai", "Traditional Thai Iced Tea"]
+        let hasOldMenuItems = menuItems.contains(where: { oldMenuItemNames.contains($0.name) })
+        let isMissingNewItems = menuItems.count < 50
+        
+        if hasOldCategories || hasOldMenuItems || isMissingNewItems {
+            #if DEBUG
+            print("SampleDataSeeder [AutoSeed]: Outdated or mismatched menu items detected. Re-seeding...")
+            #endif
+            seedAll(modelContext: modelContext)
+        }
+    }
+    
+    static func seedAll(modelContext: ModelContext) {
+        clearAllData(modelContext: modelContext)
+        
+        // 1. Seed Tables
+        let sampleTables = [
+            // Floor 1 Tables
+            RestaurantTable(
+                tableNumber: "1", capacity: 2, status: "vacant",
+                qrCodeIdentifier: "t1_static_hash", positionX: 40, positionY: 40, floor: 1
+            ),
+            RestaurantTable(
+                tableNumber: "2", capacity: 4, status: "vacant",
+                qrCodeIdentifier: "t2_static_hash", positionX: 200, positionY: 40, floor: 1
+            ),
+            RestaurantTable(
+                tableNumber: "3", capacity: 4, status: "vacant",
+                qrCodeIdentifier: "t3_static_hash", positionX: 380, positionY: 40, floor: 1
+            ),
+            RestaurantTable(
+                tableNumber: "4", capacity: 6, status: "vacant",
+                qrCodeIdentifier: "t4_static_hash", positionX: 40, positionY: 200, floor: 1
+            ),
+            RestaurantTable(
+                tableNumber: "5", capacity: 8, status: "vacant",
+                qrCodeIdentifier: "t5_static_hash", positionX: 320, positionY: 200, floor: 1
+            ),
+            RestaurantTable(
+                tableNumber: "VIP 1", capacity: 10, status: "vacant",
+                qrCodeIdentifier: "tvip1_static_hash", positionX: 140, positionY: 360, floor: 1
+            ),
+            // Floor 2 Tables
+            RestaurantTable(
+                tableNumber: "201", capacity: 4, status: "vacant",
+                qrCodeIdentifier: "t201_static_hash", positionX: 60, positionY: 60, floor: 2
+            ),
+            RestaurantTable(
+                tableNumber: "202", capacity: 4, status: "vacant",
+                qrCodeIdentifier: "t202_static_hash", positionX: 240, positionY: 60, floor: 2
+            ),
+            RestaurantTable(
+                tableNumber: "203", capacity: 6, status: "vacant",
+                qrCodeIdentifier: "t203_static_hash", positionX: 420, positionY: 60, floor: 2
+            ),
+            // Floor 3 Tables
+            RestaurantTable(
+                tableNumber: "301 (ROOF)", capacity: 8, status: "vacant",
+                qrCodeIdentifier: "t301_static_hash", positionX: 120, positionY: 120, floor: 3
+            )
+        ]
+        
+        for table in sampleTables {
+            modelContext.insert(table)
+        }
+        
+        // 2. Ingredients (Inventory Items)
+        let prawns = InventoryItem(name: "Giant River Prawn", sku: "ING-PRAWN", unit: "piece", currentQuantity: 200, reorderLevel: 30, costPrice: 50.0)
+        let noodles = InventoryItem(name: "Rice Noodles", sku: "ING-NOODLE", unit: "g", currentQuantity: 10000, reorderLevel: 2000, costPrice: 0.05)
+        let chicken = InventoryItem(name: "Chicken Breast", sku: "ING-CHICKEN", unit: "g", currentQuantity: 8000, reorderLevel: 1500, costPrice: 0.12)
+        let curryPaste = InventoryItem(name: "Green Curry Paste", sku: "ING-CURRY", unit: "g", currentQuantity: 3000, reorderLevel: 500, costPrice: 0.08)
+        let coconutMilk = InventoryItem(name: "Coconut Milk", sku: "ING-COCONUT", unit: "ml", currentQuantity: 15000, reorderLevel: 3000, costPrice: 0.04)
+        let beefShank = InventoryItem(name: "Beef Shank", sku: "ING-BEEF", unit: "g", currentQuantity: 5000, reorderLevel: 1000, costPrice: 0.25)
+        let mango = InventoryItem(name: "Honey Mango", sku: "ING-MANGO", unit: "piece", currentQuantity: 150, reorderLevel: 25, costPrice: 15.0)
+        let sweetRice = InventoryItem(name: "Glutinous Rice", sku: "ING-SWEETRICE", unit: "g", currentQuantity: 10000, reorderLevel: 2000, costPrice: 0.03)
+        let teaLeaves = InventoryItem(name: "Thai Tea Leaves", sku: "ING-TEA", unit: "g", currentQuantity: 2000, reorderLevel: 500, costPrice: 0.3)
+        
+        modelContext.insert(prawns)
+        modelContext.insert(noodles)
+        modelContext.insert(chicken)
+        modelContext.insert(curryPaste)
+        modelContext.insert(coconutMilk)
+        modelContext.insert(beefShank)
+        modelContext.insert(mango)
+        modelContext.insert(sweetRice)
+        modelContext.insert(teaLeaves)
+        
+        // 3. Categories
+        let mainsCat = Category(name: "Main Dishes")
+        let appCat = Category(name: "Appetizers")
+        let drinkCat = Category(name: "Beverages")
+        
+        modelContext.insert(mainsCat)
+        modelContext.insert(appCat)
+        modelContext.insert(drinkCat)
+        
+        // 4. Modifiers Setup (preserved for future use)
+        let sugarGroup = ModifierGroup(name: "Sweetness Level", minSelection: 1, maxSelection: 1)
+        let extraGroup = ModifierGroup(name: "Extras Options", minSelection: 0, maxSelection: 1)
+        
+        modelContext.insert(sugarGroup)
+        modelContext.insert(extraGroup)
+        
+        let sugarNormal = Modifier(modifierGroup: sugarGroup, name: "Sweet Normal", extraPrice: 0.0)
+        let sugarLess = Modifier(modifierGroup: sugarGroup, name: "Sweet 50%", extraPrice: 0.0)
+        let sugarNone = Modifier(modifierGroup: sugarGroup, name: "Unsweetened", extraPrice: 0.0)
+        
+        modelContext.insert(sugarNormal)
+        modelContext.insert(sugarLess)
+        modelContext.insert(sugarNone)
+        
+        // 5. Isan Menu Items — 25 Mains
+        let items: [MenuItem] = [
+            // Mains (25)
+            MenuItem(id: "isan1", name: "Classic Som Tum Thai", itemDescription: "Green papaya salad with peanuts, dried shrimp, lime, palm sugar, and fish sauce.", price: 85.0, imageUrl: "https://images.unsplash.com/photo-1626132647523-66f5bf380027?w=400&q=80", category: mainsCat, isBestseller: true),
+            MenuItem(id: "isan2", name: "Som Tum Boo Plarah", itemDescription: "Papaya salad with fermented fish sauce, salted crab, and fresh Thai herbs.", price: 90.0, imageUrl: "https://images.unsplash.com/photo-1625813506062-0aeb1d7a094b?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan3", name: "Som Tum Korat", itemDescription: "Papaya salad combining Som Tum Thai and Boo Plarah styles with rice noodles.", price: 95.0, imageUrl: "https://images.unsplash.com/photo-1617470703128-26a0fc9af10f?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan4", name: "Som Tum Suan Pak", itemDescription: "Herbal papaya salad with seasonal Isan wild vegetables and bitter herbs.", price: 100.0, imageUrl: "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan5", name: "Som Tum Tard Platter", itemDescription: "Platter-sized papaya salad served with boiled eggs, pork cracklings, and noodles.", price: 220.0, imageUrl: "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan6", name: "Tum Corn with Salted Egg", itemDescription: "Sweet yellow corn salad tossed with rich salted egg yolk and lime juice.", price: 110.0, imageUrl: "https://images.unsplash.com/photo-1551248429-40975aa4de74?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan7", name: "Tum Cucumber (Tum Tang)", itemDescription: "Spicy cucumber salad with fermented fish sauce, chilies, and garlic.", price: 80.0, imageUrl: "https://images.unsplash.com/photo-1603052875302-d376b7c0638a?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan8", name: "Tum Tray Seafood", itemDescription: "Papaya salad platter served with giant river prawns, green mussels, and squid.", price: 250.0, imageUrl: "https://images.unsplash.com/photo-1534422298391-e4f8c172dddb?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan9", name: "Spicy Minced Pork Larb", itemDescription: "Minced pork salad with roasted ground rice, mint, lime, and dried chili.", price: 120.0, imageUrl: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=400&q=80", category: mainsCat, isBestseller: true),
+            MenuItem(id: "isan10", name: "Spicy Minced Chicken Larb", itemDescription: "Minced chicken breast salad seasoned with Isan herbs and fresh lime juice.", price: 120.0, imageUrl: "https://images.unsplash.com/photo-1606787366850-de6330128bfc?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan11", name: "Spicy Minced Duck Larb", itemDescription: "Authentic minced duck salad seasoned with roasted ground rice, mint, and galangal.", price: 140.0, imageUrl: "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan12", name: "Larb Woon Sen (Glass Noodle)", itemDescription: "Spicy glass noodle salad with minced pork, red onions, lime, and chilies.", price: 115.0, imageUrl: "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan13", name: "Larb Mushroom (Vegetarian)", itemDescription: "Vegetarian Larb with mixed forest mushrooms, mint, and roasted rice powder.", price: 105.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan14", name: "Nam Tok Moo (Pork Salad)", itemDescription: "Grilled sliced pork collar salad with roasted ground rice, chili, and fresh mint.", price: 130.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan15", name: "Nam Tok Neua (Beef Salad)", itemDescription: "Grilled sliced beef ribeye salad with authentic Isan herbs and lime dressing.", price: 160.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan16", name: "Sup Nor Mai (Bamboo Salad)", itemDescription: "Spicy warm shredded bamboo shoot salad infused with aromatic yanang leaf juice.", price: 95.0, imageUrl: "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan17", name: "Tom Zap Pork Ribs", itemDescription: "Hot, sour, and aromatic soup with tender pork ribs and fresh lemongrass.", price: 150.0, imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan18", name: "Tom Zap Beef Shank", itemDescription: "Spicy herbal soup with slow-braised beef shank, toasted rice, and fresh lime.", price: 180.0, imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan19", name: "Kaeng Om Pork (Isan Curry)", itemDescription: "Isan herbal soup with pork, dill, cabbage, pumpkin, and yanang juice.", price: 140.0, imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan20", name: "Kaeng Om Chicken", itemDescription: "Spicy herbal soup with chicken, dill, local vegetables, and roasted rice.", price: 135.0, imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan21", name: "Kaeng Pak Wahn with Ant Eggs", itemDescription: "Clear seasonal soup with wild star gooseberry leaves and premium ant eggs.", price: 150.0, imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan22", name: "Koi Neua (Beef Tartare)", itemDescription: "Isan-style raw minced beef salad with fresh chili, herbs, and bitter bile.", price: 175.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan23", name: "Sizzling Moo Nam Tok", itemDescription: "Sizzling hot plate of grilled pork neck tossed with lime, herbs, and roasted rice.", price: 165.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan24", name: "Yum Moo Yor (Pork Sausage)", itemDescription: "Spicy Vietnamese pork sausage salad with onions, tomatoes, and lime juice.", price: 110.0, imageUrl: "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80", category: mainsCat),
+            MenuItem(id: "isan25", name: "Yum Glass Noodle Seafood", itemDescription: "Spicy salad with glass noodles, fresh river prawns, squid, and celery.", price: 160.0, imageUrl: "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=400&q=80", category: mainsCat),
+            
+            // Appetizers (15)
+            MenuItem(id: "isan26", name: "Classic Gai Yang (Half)", itemDescription: "Charcoal-grilled marinated chicken served with sweet chili and spicy Jaew sauces.", price: 180.0, imageUrl: "https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?w=400&q=80", category: appCat, isFavorite: true, isBestseller: true),
+            MenuItem(id: "isan27", name: "Classic Gai Yang (Whole)", itemDescription: "Full-sized charcoal-grilled marinated chicken with authentic Isan spices.", price: 340.0, imageUrl: "https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?w=400&q=80", category: appCat),
+            MenuItem(id: "isan28", name: "Moo Ping with Sticky Rice", itemDescription: "Three skewers of grilled sweet pork served with warm steamed sticky rice.", price: 95.0, imageUrl: "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80", category: appCat, isBestseller: true),
+            MenuItem(id: "isan29", name: "Kor Moo Yang (Pork Neck)", itemDescription: "Sliced charcoal-grilled pork neck served with spicy tamarind Jaew dipping sauce.", price: 150.0, imageUrl: "https://images.unsplash.com/photo-1603048588665-791ca8aea617?w=400&q=80", category: appCat),
+            MenuItem(id: "isan30", name: "Suea Rong Hai (Crying Tiger)", itemDescription: "Charcoal-grilled marinated beef brisket served with dynamic chili Jaew sauce.", price: 220.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: appCat, isFavorite: true),
+            MenuItem(id: "isan31", name: "Isan Sausage Skewers", itemDescription: "Grilled fermented pork and rice sausage served with ginger and cabbage leaves.", price: 110.0, imageUrl: "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80", category: appCat),
+            MenuItem(id: "isan32", name: "Sai Krok E-San Moo (Balls)", itemDescription: "Grilled round fermented pork and garlic sausage balls served with fresh chilies.", price: 110.0, imageUrl: "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80", category: appCat),
+            MenuItem(id: "isan33", name: "Fried Larb Balls (Larb Tod)", itemDescription: "Deep-fried spicy minced pork balls with roasted ground rice and lime leaves.", price: 115.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: appCat),
+            MenuItem(id: "isan34", name: "Crispy Isan Chicken Wings", itemDescription: "Deep-fried marinated chicken wings tossed in garlic and light soy sauce.", price: 120.0, imageUrl: "https://images.unsplash.com/photo-1569058242253-92a9c755a0ec?w=400&q=80", category: appCat),
+            MenuItem(id: "isan35", name: "Deep Fried Pork Ribs", itemDescription: "Crispy deep-fried marinated pork ribs topped with crispy golden garlic.", price: 140.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: appCat),
+            MenuItem(id: "isan36", name: "Crispy Pork Crackling", itemDescription: "Crunchy deep-fried pork rinds, the perfect accompaniment for papaya salad.", price: 40.0, imageUrl: "https://images.unsplash.com/photo-1608039829572-78524f79c4c7?w=400&q=80", category: appCat),
+            MenuItem(id: "isan37", name: "Fried Sun-Dried Pork (Moo Dad Deaw)", itemDescription: "Deep-fried sweet and salty marinated sun-dried pork strips.", price: 130.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: appCat),
+            MenuItem(id: "isan38", name: "Fried Sun-Dried Beef (Neua Dad Deaw)", itemDescription: "Deep-fried marinated sun-dried beef strips served with chili sauce.", price: 160.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: appCat),
+            MenuItem(id: "isan39", name: "Grilled River Prawn (Single)", itemDescription: "Charcoal grilled giant river prawn served with spicy garlic seafood sauce.", price: 145.0, imageUrl: "https://images.unsplash.com/photo-1559314809-0d155014e29e?w=400&q=80", category: appCat, isFavorite: true),
+            MenuItem(id: "isan40", name: "Steamed Sticky Rice (Khao Niew)", itemDescription: "Warm steamed Thai glutinous rice served in a traditional bamboo basket.", price: 20.0, imageUrl: "https://images.unsplash.com/photo-1536304997881-a372c179924b?w=400&q=80", category: appCat),
+            
+            // Beverages (10)
+            MenuItem(id: "isan41", name: "Cold Chrysanthemum Tea", itemDescription: "Sweet and cooling herbal chrysanthemum infusion served over ice.", price: 45.0, imageUrl: "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80", category: drinkCat),
+            MenuItem(id: "isan42", name: "Cold Roselle Juice", itemDescription: "Sweet and tart herbal roselle flower tea served with ice cubes.", price: 45.0, imageUrl: "https://images.unsplash.com/photo-1497534446932-c925b458314e?w=400&q=80", category: drinkCat),
+            MenuItem(id: "isan43", name: "Lemongrass Pandan Iced Tea", itemDescription: "Fragrant iced tea brewed with fresh lemongrass stalk and sweet pandan leaves.", price: 50.0, imageUrl: "https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?w=400&q=80", category: drinkCat),
+            MenuItem(id: "isan44", name: "Traditional Thai Iced Milk Tea", itemDescription: "Sweet brewed orange Thai tea topped with evaporated milk over shaved ice.", price: 65.0, imageUrl: "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80", category: drinkCat, isBestseller: true),
+            MenuItem(id: "isan45", name: "Thai Black Tea (Cha Dum Yen)", itemDescription: "Sweetened dark brewed Thai tea served chilled over crushed ice.", price: 55.0, imageUrl: "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80", category: drinkCat),
+            MenuItem(id: "isan46", name: "Fresh Whole Young Coconut", itemDescription: "Freshly opened sweet young coconut juice with tender coconut flesh.", price: 80.0, imageUrl: "https://images.unsplash.com/photo-1526318896980-cf78c088247c?w=400&q=80", category: drinkCat, isFavorite: true),
+            MenuItem(id: "isan47", name: "Singha Lager Beer (Small)", itemDescription: "Premium clean Thai lager beer bottle, served chilled.", price: 95.0, imageUrl: "https://images.unsplash.com/photo-1608270586620-248524c67de9?w=400&q=80", category: drinkCat),
+            MenuItem(id: "isan48", name: "Chang Lager Beer (Small)", itemDescription: "Famous crisp and strong Thai lager beer, served ice-cold.", price: 90.0, imageUrl: "https://images.unsplash.com/photo-1608270586620-248524c67de9?w=400&q=80", category: drinkCat),
+            MenuItem(id: "isan49", name: "Sparkling Lime Pandan Soda", itemDescription: "Refreshing carbonated soda infused with fresh lime juice and pandan syrup.", price: 55.0, imageUrl: "https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?w=400&q=80", category: drinkCat),
+            MenuItem(id: "isan50", name: "Mineral Drinking Water", itemDescription: "Chilled bottled mineral drinking water served with a glass of ice.", price: 20.0, imageUrl: "https://images.unsplash.com/photo-1548865140-64a23cf87aee?w=400&q=80", category: drinkCat)
+        ]
+        
+        for item in items {
+            modelContext.insert(item)
+        }
+        
+        // 6. Link Thai Tea to Sweetness Level modifier group
+        if let thaiTea = items.first(where: { $0.name.contains("Traditional Thai Iced Milk Tea") }) {
+            let relationTeaSugar = MenuItemModifierGroup(menuItem: thaiTea, modifierGroup: sugarGroup)
+            modelContext.insert(relationTeaSugar)
+        }
+        
+        seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
+        
+        try? modelContext.save()
+    }
+}
+
+// MARK: - Date Formatter extension helper
+
+extension DateFormatter {
+    static func orderDateFormat() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd"
+        return formatter
+    }
+    
+    static func shortDateTimeFormat() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd MMM yyyy, HH:mm"
+        return formatter
+    }
+}

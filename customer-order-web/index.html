@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+    <title>AlphaPos | Mobile Self-Ordering</title>
+    <!-- Modern Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <!-- Supabase JS Client SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <!-- Onboarding Check-in Wizard Overlay -->
+    <div id="onboardingWizard" class="onboarding-overlay" role="dialog" aria-modal="true" aria-label="Table check-in wizard">
+        <!-- Step 1: Welcome & Verification -->
+        <div id="onboardingStep1" class="onboarding-card active">
+            <div class="onboarding-header">
+                <div class="logo-animation-container">
+                    <span class="logo-pulse-circle"></span>
+                    <span class="logo-pulse-circle delay-1"></span>
+                    <span class="logo-pulse-circle delay-2"></span>
+                    <span class="logo-icon">🍽️</span>
+                </div>
+                <h2>Welcome to Table <span id="welcomeTableNum">--</span></h2>
+                <p class="subtitle">AlphaPos Dining Experience</p>
+            </div>
+            
+            <div class="verification-status-box">
+                <div class="radar-container">
+                    <div class="radar-dot"></div>
+                    <div class="radar-ring"></div>
+                    <div class="radar-ring-2"></div>
+                </div>
+                <div class="verification-text">
+                    <div id="verifyTitle" class="verify-title font-outfit">Verifying Location...</div>
+                    <div id="verifyDesc" class="verify-desc">Checking GPS and Guest Wi-Fi proximity</div>
+                </div>
+            </div>
+            
+            <button id="btnOnboardingNext1" class="onboarding-next-btn disabled" disabled onclick="app.nextOnboardingStep()">
+                <span>Proceed to Check-in</span>
+            </button>
+        </div>
+
+        <!-- Step 2: Guest Pax Selection -->
+        <div id="onboardingStep2" class="onboarding-card">
+            <div class="onboarding-header">
+                <span class="onboarding-emoji">👥</span>
+                <h2>Select Number of Guests</h2>
+                <p>How many people are dining at your table?</p>
+            </div>
+            
+            <!-- Interactive Visual Table Layout -->
+            <div class="interactive-table-container">
+                <div class="interactive-table">
+                    <div class="table-center">
+                        <span class="table-center-text" id="interactiveTableText">Table<br><span id="tableLabelNum">--</span></span>
+                    </div>
+                    <div class="seats-container" id="interactiveSeatsContainer">
+                        <!-- Seats will be rendered dynamically -->
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Quick Selection Pills -->
+            <div class="guest-grid">
+                <button class="guest-pill active" onclick="app.setGuestCount(1)">1</button>
+                <button class="guest-pill" onclick="app.setGuestCount(2)">2</button>
+                <button class="guest-pill" onclick="app.setGuestCount(3)">3</button>
+                <button class="guest-pill" onclick="app.setGuestCount(4)">4</button>
+                <button class="guest-pill" onclick="app.setGuestCount(5)">5</button>
+                <button class="guest-pill" onclick="app.setGuestCount(6)">6</button>
+                <button class="guest-pill" onclick="app.setGuestCount(7)">7</button>
+                <button class="guest-pill" onclick="app.setGuestCount('8+')">8+</button>
+            </div>
+            
+            <div class="onboarding-action-row">
+                <button class="onboarding-back-btn" onclick="app.prevOnboardingStep()">Back</button>
+                <button id="startOrderBtn" class="start-order-btn" onclick="app.confirmGuestCount()">
+                    <span>Start Ordering</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 3: Setup & Loading Screen -->
+        <div id="onboardingStep3" class="onboarding-card">
+            <div class="onboarding-header">
+                <div class="success-checkmark-container">
+                    <svg class="checkmark-svg" viewBox="0 0 52 52">
+                        <circle class="checkmark-circle" cx="26" cy="26" r="25" fill="none"/>
+                        <path class="checkmark-check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
+                    </svg>
+                </div>
+                <h2>Check-in Complete!</h2>
+                <p id="loadingStatusText">Setting up your dining experience...</p>
+            </div>
+            <div class="setup-progress-bar">
+                <div class="setup-progress-fill" id="setupProgressFill"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-container">
+        <!-- Header HUD -->
+        <header class="app-header">
+            <div class="brand-section">
+                <span class="logo-dot"></span>
+                <h1 class="brand-title">AlphaPos</h1>
+            </div>
+            <div class="header-actions">
+                <button id="themeToggleBtn" class="theme-toggle-btn" aria-label="Toggle Theme" onclick="app.toggleTheme()">
+                    <span class="theme-toggle-icon">🌙</span>
+                </button>
+                <div class="table-badge" id="tableBadge">
+                    <span class="table-icon">🪑</span>
+                    <span class="table-text">Table --</span>
+                </div>
+            </div>
+        </header>
+
+
+        <!-- Dynamic Security HUD Banner (Hidden in CSS, runs in background) -->
+        <div id="securityBanner" class="security-banner checking">
+            <div class="banner-icon">📡</div>
+            <div class="banner-content">
+                <div class="banner-title" id="bannerTitle">Verifying Location...</div>
+                <div class="banner-desc" id="bannerDesc">Checking Wi-Fi and GPS signal...</div>
+            </div>
+            <div class="spinner" id="bannerSpinner"></div>
+        </div>
+
+        <!-- Promotions Banner Carousel -->
+        <div id="promotionsBannerContainer" class="promo-banner-container">
+            <div id="promotionsSlider" class="promo-slider">
+                <!-- Fallback / Initial slide -->
+                <div class="promo-slide active">
+                    <div class="promo-placeholder-bg"></div>
+                    <div class="promo-overlay">
+                        <h3 class="promo-title">ยินดีต้อนรับสู่ AlphaPos</h3>
+                        <p class="promo-desc">สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ</p>
+                    </div>
+                </div>
+            </div>
+            <div id="promoIndicators" class="promo-indicators">
+                <span class="indicator active"></span>
+            </div>
+        </div>
+
+        <!-- Main Navigation Tabs -->
+        <nav class="app-nav-tabs" role="tablist" aria-label="App sections">
+            <button id="navTabMenu" class="nav-tab active" role="tab" aria-selected="true" aria-controls="menuView" onclick="app.switchView('menu')">
+                <span class="nav-tab-icon">📖</span>
+                <span class="nav-tab-text">Menu</span>
+            </button>
+            <button id="navTabStatus" class="nav-tab" role="tab" aria-selected="false" aria-controls="statusView" onclick="app.switchView('status')">
+                <span class="nav-tab-icon">⏳</span>
+                <span class="nav-tab-text">Status</span>
+                <span id="statusTabBadge" class="status-tab-badge hide">0</span>
+            </button>
+            <button id="navTabService" class="nav-tab" role="tab" aria-selected="false" aria-controls="serviceView" onclick="app.switchView('service')">
+                <span class="nav-tab-icon">🛎️</span>
+                <span class="nav-tab-text">Call Staff</span>
+            </button>
+        </nav>
+
+        <!-- View Panel: Menu -->
+        <div id="menuView" class="view-panel active" role="tabpanel" aria-label="Menu">
+            <main id="main-content" class="menu-container">
+                <!-- Categories Slider -->
+                <div class="category-tabs-container">
+                    <div class="category-tabs" id="categoryTabs">
+                        <!-- Categories will be rendered dynamically -->
+                    </div>
+                </div>
+
+                <!-- Menu Grid -->
+                <section class="menu-section">
+                    <h2 class="section-title" id="currentCategoryTitle">Menu</h2>
+                    <div class="menu-grid" id="menuGrid">
+                        <!-- Menu items will be rendered dynamically -->
+                    </div>
+                </section>
+            </main>
+        </div>
+
+        <!-- View Panel: Order History & Status -->
+        <div id="statusView" class="view-panel hide" role="tabpanel" aria-label="Order status">
+            <div class="status-view-container">
+                <div class="status-header">
+                    <h2>Session Summary</h2>
+                    <div class="session-total-badge">
+                        <span class="label">Grand Total</span>
+                        <span id="sessionGrandTotal" class="price">฿0.00</span>
+                    </div>
+                </div>
+                
+                <div class="status-body">
+                    <div class="status-section">
+                        <h3>Active Orders Tracking</h3>
+                        <div id="activeOrdersList" class="status-list">
+                            <div class="empty-state">No active orders cooking.</div>
+                        </div>
+                    </div>
+                    
+                    <div class="status-section">
+                        <h3>Session Order History</h3>
+                        <div id="pastOrdersList" class="status-list">
+                            <div class="empty-state">No orders placed in this session yet.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- View Panel: Call Staff & Smart Service -->
+        <div id="serviceView" class="view-panel hide" role="tabpanel" aria-label="Call staff">
+            <div class="service-view-container">
+                <div class="service-header">
+                    <h2>Call Staff</h2>
+                    <p>Tap a request below to notify our service team. We'll be right over.</p>
+                </div>
+                
+                <div class="service-grid">
+                    <button class="service-capsule" onclick="app.sendServiceRequest('Bill (Cash)')">
+                        <span class="service-icon">💵</span>
+                        <span class="service-label">Pay Cash</span>
+                    </button>
+                    <button class="service-capsule" onclick="app.sendServiceRequest('Bill (Card)')">
+                        <span class="service-icon">💳</span>
+                        <span class="service-label">Pay Card</span>
+                    </button>
+                    <button class="service-capsule" onclick="app.sendServiceRequest('Bill (QR)')">
+                        <span class="service-icon">📱</span>
+                        <span class="service-label">Pay QR</span>
+                    </button>
+                    <button class="service-capsule" onclick="app.sendServiceRequest('Ice/Water')">
+                        <span class="service-icon">🥛</span>
+                        <span class="service-label">Get Water</span>
+                    </button>
+                    <button class="service-capsule" onclick="app.sendServiceRequest('Extra Utensils')">
+                        <span class="service-icon">🍴</span>
+                        <span class="service-label">Utensils</span>
+                    </button>
+                    <button class="service-capsule" onclick="app.sendServiceRequest('General Help')">
+                        <span class="service-icon">🙋‍♂️</span>
+                        <span class="service-label">Call Staff</span>
+                    </button>
+                </div>
+                
+                <div id="activeRequestNotification" class="active-request-box hide">
+                    <div class="pulse-ring"></div>
+                    <div class="request-status-text">Active Request: <span id="activeRequestType">--</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Floating Cart Bar -->
+        <div class="cart-bar-container" id="cartBar">
+            <div class="cart-bar-content" onclick="app.toggleCartDrawer(true)">
+                <div class="cart-badge">
+                    <span id="cartCount">0</span>
+                </div>
+                <div class="cart-summary">
+                    <span class="cart-summary-label">View Order</span>
+                    <span class="cart-total-price" id="cartTotal">฿0.00</span>
+                </div>
+                <button class="cart-view-btn">
+                    <span>Cart</span>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Shopping Cart Drawer (Slide-up modal) -->
+        <div class="cart-drawer-overlay" id="cartDrawerOverlay" onclick="app.toggleCartDrawer(false)" role="dialog" aria-modal="true" aria-label="Cart">
+            <div class="cart-drawer" onclick="event.stopPropagation()">
+                <div class="drawer-header">
+                    <div class="drawer-notch"></div>
+                    <div class="drawer-title-row">
+                        <h3>Your Order Tray</h3>
+                        <button class="close-drawer-btn" onclick="app.toggleCartDrawer(false)">✕</button>
+                    </div>
+                </div>
+                <div class="drawer-body">
+                    <div class="cart-items-list" id="cartItemsList">
+                        <!-- Cart items will be rendered dynamically -->
+                    </div>
+                </div>
+                <div class="drawer-footer">
+                    <div class="price-breakdown">
+                        <div class="breakdown-row">
+                            <span>Subtotal</span>
+                            <span id="breakdownSubtotal">฿0.00</span>
+                        </div>
+                        <div class="breakdown-row">
+                            <span>Service Charge (10%)</span>
+                            <span id="breakdownService">฿0.00</span>
+                        </div>
+                        <div class="breakdown-row">
+                            <span>Vat (7%)</span>
+                            <span id="breakdownTax">฿0.00</span>
+                        </div>
+                        <hr class="breakdown-divider">
+                        <div class="breakdown-row total-row">
+                            <span>Grand Total</span>
+                            <span class="grand-total-price" id="breakdownTotal">฿0.00</span>
+                        </div>
+                    </div>
+
+                    <!-- Action buttons based on status -->
+                    <div class="action-buttons-group">
+                        <button id="submitOrderBtn" class="primary-action-btn disabled" disabled onclick="app.submitOrder()">
+                            <span class="btn-text">Send to Kitchen</span>
+                            <div class="btn-spinner hide"></div>
+                        </button>
+                        <p class="location-warning-text" id="btnWarningText">Please connect to restaurant Wi-Fi or share your location to order.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Developer Simulator Panel (Floating toggle at the bottom for demo purposes) -->
+        <div class="dev-panel" id="devPanel">
+            <div class="dev-panel-header" onclick="app.toggleDevPanel()">
+                <div class="dev-title">🛠️ Hybrid Security Simulator</div>
+                <div class="dev-toggle-icon" id="devToggleIcon">▲</div>
+            </div>
+            <div class="dev-panel-body" id="devPanelBody">
+                <div class="dev-section">
+                    <label class="dev-label">Connection Network Type</label>
+                    <div class="dev-radio-group">
+                        <label class="dev-radio">
+                            <input type="radio" name="networkType" value="wifi" checked onchange="locationVerifier.simulateNetworkChange('wifi')">
+                            <span>Guest Wi-Fi (Same IP)</span>
+                        </label>
+                        <label class="dev-radio">
+                            <input type="radio" name="networkType" value="cellular" onchange="locationVerifier.simulateNetworkChange('cellular')">
+                            <span>Cellular 5G/4G (External IP)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="dev-section">
+                    <label class="dev-label">GPS Coordinate Simulation</label>
+                    <div class="dev-radio-group">
+                        <label class="dev-radio">
+                            <input type="radio" name="gpsLocation" value="inside" checked onchange="locationVerifier.simulateGpsChange('inside')">
+                            <span>Inside Restaurant (~15m)</span>
+                        </label>
+                        <label class="dev-radio">
+                            <input type="radio" name="gpsLocation" value="outside" onchange="locationVerifier.simulateGpsChange('outside')">
+                            <span>Outside Restaurant (~4.5km)</span>
+                        </label>
+                        <label class="dev-radio">
+                            <input type="radio" name="gpsLocation" value="denied" onchange="locationVerifier.simulateGpsChange('denied')">
+                            <span>GPS Denied / Off</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="dev-info-box">
+                    <div><strong>Restaurant Coordinate:</strong> <span class="monospaced">13.7563, 100.5018</span></div>
+                    <div><strong>Simulated Device IP:</strong> <span id="simulatedIp" class="monospaced">192.168.1.100</span></div>
+                    <div><strong>Calculated Distance:</strong> <span id="simulatedDistance" class="monospaced">0m</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Product Detail Modal -->
+    <div id="productDetailModal" class="product-modal-overlay" onclick="app.closeProductDetailModal()" role="dialog" aria-modal="true" aria-label="Product details">
+        <div class="product-modal-content" onclick="event.stopPropagation()">
+            <button class="close-modal-btn" onclick="app.closeProductDetailModal()">✕</button>
+            <div class="modal-hero-image" id="modalProductImage"></div>
+            <div class="modal-body">
+                <h2 class="modal-title" id="modalProductTitle">Product Title</h2>
+                <p class="modal-desc" id="modalProductDesc">Product description goes here.</p>
+                
+                <div id="modalModifiersSection" class="modifiers-section hide"></div>
+                
+                <div class="special-instructions-section">
+                    <label class="modal-input-label" for="specialInstructionsInput">Special Instructions (Optional)</label>
+                    <textarea id="specialInstructionsInput" placeholder="e.g. No spicy, extra vegetables, less sweet..."></textarea>
+                </div>
+                
+                <div class="modal-footer">
+                    <div class="modal-price" id="modalProductPrice">฿0.00</div>
+                    <button class="modal-add-btn" id="modalAddBtn" onclick="app.addProductFromModal()">Add to Cart</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true">Order Sent Successfully!</div>
+
+    <!-- Script imports -->
+    <script src="config.js"></script>
+    <script src="hybrid-location.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

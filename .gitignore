@@ -1,0 +1,44 @@
+# Secrets and Configuration
+.env
+.env.*
+*.plist
+!Config.plist.example
+!*.plist.example
+config.js
+!config.EXAMPLE.js
+config.json
+secrets*
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Build
+.build/
+*.build/
+DerivedData/
+*.xcworkspace/
+xcuserdata/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+build.log
+
+# Python Virtual Environment
+venv/
+customer-order-web/venv/
+node_modules/
+
