@@ -218,9 +218,9 @@ class AlphaPosApp {
         // Configuration (loaded from config.js or environment)
         const cfg = window.ALPHAPOS_CONFIG || {};
         this.supabaseUrl = cfg.supabaseUrl || 'https://sdmtkixrqkmwcpwoisrg.supabase.co';
-        this.supabaseKey = cfg.supabaseKey || '';
+        this.supabaseKey = cfg.supabaseKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNkbXRraXhycWttd2Nwd29pc3JnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NDIxNjAsImV4cCI6MjA5NjQxODE2MH0.rjLwVE0ShXIFoT0k982XO_lVCQMsA4uTKMW1Su-NUws';
         this.supabase = null;
-        this.merchantId = cfg.merchantId || '';
+        this.merchantId = cfg.merchantId || '163350b0-056d-4d5e-b5d4-24e7aac5ab6d';
         this._submitInProgress = false;
     }
 
