@@ -105,7 +105,7 @@ struct TableView: View {
                     }
                 )
             }
-            .sheet(isPresented: $showingBatchQRSheet) {
+            .fullScreenCover(isPresented: $showingBatchQRSheet) {
                 BatchQRCodePrintView(tables: tables)
             }
     }

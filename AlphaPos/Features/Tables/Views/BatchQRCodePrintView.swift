@@ -6,6 +6,8 @@ struct BatchQRCodePrintView: View {
     @AppStorage("active_merchant_id") private var activeMerchantId = "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
     @Environment(\.dismiss) private var dismiss
     
+    @State private var zoomedTable: RestaurantTable? = nil
+    
     // Grid layout for 3 columns on A4 width
     private let columns = [
         GridItem(.flexible(), spacing: 20),
@@ -14,80 +16,93 @@ struct BatchQRCodePrintView: View {
     ]
     
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("A4 Grid Layout Preview (3 Columns)")
-                        .font(.caption)
-                        .foregroundColor(.textSecondary)
-                        .padding(.horizontal)
-                        .padding(.top)
-                    
-                    LazyVGrid(columns: columns, spacing: 24) {
-                        ForEach(tables) { table in
-                            VStack(spacing: 8) {
-                                Text("Table \(table.tableNumber)")
-                                    .font(.headline)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.textPrimary)
-                                
-                                let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
-                                
-                                if let qrImage = generateQRCode(from: qrUrl) {
-                                    Image(uiImage: qrImage)
-                                        .resizable()
-                                        .interpolation(.none)
-                                        .frame(width: 140, height: 140)
-                                        .padding(8)
-                                        .background(Color.white)
-                                        .cornerRadius(8)
-                                        .shadow(color: Color.black.opacity(0.08), radius: 3)
-                                } else {
-                                    Image(systemName: "qrcode")
-                                        .resizable()
-                                        .frame(width: 140, height: 140)
-                                        .foregroundColor(.appBorderSubtle)
+        ZStack {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("A4 Grid Layout Preview (3 Columns) - Tap any QR Code to zoom")
+                            .font(.caption)
+                            .foregroundColor(.textSecondary)
+                            .padding(.horizontal)
+                            .padding(.top)
+                        
+                        LazyVGrid(columns: columns, spacing: 24) {
+                            ForEach(tables) { table in
+                                VStack(spacing: 8) {
+                                    Text("Table \(table.tableNumber)")
+                                        .font(.headline)
+                                        .fontWeight(.bold)
+                                        .foregroundColor(.textPrimary)
+                                    
+                                    let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
+                                    
+                                    if let qrImage = generateQRCode(from: qrUrl) {
+                                        Image(uiImage: qrImage)
+                                            .resizable()
+                                            .interpolation(.none)
+                                            .frame(width: 140, height: 140)
+                                            .padding(8)
+                                            .background(Color.white)
+                                            .cornerRadius(8)
+                                            .shadow(color: Color.black.opacity(0.08), radius: 3)
+                                    } else {
+                                        Image(systemName: "qrcode")
+                                            .resizable()
+                                            .frame(width: 140, height: 140)
+                                            .foregroundColor(.appBorderSubtle)
+                                    }
+                                    
+                                    Text("table=\(table.tableNumber)")
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundColor(.textSecondary)
+                                        .lineLimit(1)
+                                        .padding(.top, 2)
                                 }
-                                
-                                Text("table=\(table.tableNumber)")
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundColor(.textSecondary)
-                                    .lineLimit(1)
-                                    .padding(.top, 2)
+                                .padding(.vertical, 16)
+                                .padding(.horizontal, 10)
+                                .background(Color.appSurface)
+                                .cornerRadius(12)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color.appBorderSubtle, lineWidth: 1)
+                                )
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    zoomedTable = table
+                                }
                             }
-                            .padding(.vertical, 16)
-                            .padding(.horizontal, 10)
-                            .background(Color.appSurface)
-                            .cornerRadius(12)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.appBorderSubtle, lineWidth: 1)
-                            )
+                        }
+                        .padding(.horizontal)
+                    }
+                }
+                .background(Color.appBackground)
+                .navigationTitle("All Table QR Codes")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button("Close") {
+                            dismiss()
                         }
                     }
-                    .padding(.horizontal)
+                    
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button(action: {
+                            exportToPDF()
+                        }) {
+                            Label("Export PDF", systemImage: "doc.plaintext.fill")
+                                .foregroundColor(.appAccent)
+                        }
+                    }
                 }
             }
-            .background(Color.appBackground)
-            .navigationTitle("All Table QR Codes")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Close") {
-                        dismiss()
-                    }
-                }
-                
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: {
-                        exportToPDF()
-                    }) {
-                        Label("Export PDF", systemImage: "doc.plaintext.fill")
-                            .foregroundColor(.appAccent)
-                    }
-                }
+            
+            // Zoomed overlay presentation
+            if let table = zoomedTable {
+                zoomedOverlay(for: table)
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
             }
         }
+        .animation(.easeInOut(duration: 0.2), value: zoomedTable != nil)
     }
     
     /// Generates high-quality CIQRCode Image
@@ -103,6 +118,91 @@ struct BatchQRCodePrintView: View {
             }
         }
         return nil
+    }
+    
+    /// Zoomed Single Table QR Code Overlay
+    @ViewBuilder
+    private func zoomedOverlay(for table: RestaurantTable) -> some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    zoomedTable = nil
+                }
+            
+            VStack(spacing: 20) {
+                HStack {
+                    Spacer()
+                    Button(action: {
+                        zoomedTable = nil
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                
+                Text("Table \(table.tableNumber)")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .foregroundColor(.textPrimary)
+                
+                let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
+                
+                if let qrImage = generateQRCode(from: qrUrl) {
+                    Image(uiImage: qrImage)
+                        .resizable()
+                        .interpolation(.none)
+                        .frame(width: 280, height: 280)
+                        .padding(16)
+                        .background(Color.white)
+                        .cornerRadius(12)
+                        .shadow(color: Color.black.opacity(0.12), radius: 8)
+                }
+                
+                VStack(spacing: 8) {
+                    Text("Self-Ordering URL:")
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                    
+                    Text(qrUrl)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundColor(.appAccent)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                        .lineLimit(2)
+                    
+                    Button(action: {
+                        UIPasteboard.general.string = qrUrl
+                        APHaptic.trigger()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.on.doc")
+                            Text("Copy Link")
+                        }
+                        .font(.subheadline)
+                        .fontWeight(.bold)
+                        .foregroundColor(.appAccent)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.appAccent.opacity(0.1))
+                        .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
+                }
+            }
+            .padding(24)
+            .frame(width: 380)
+            .background(Color.appSurface)
+            .cornerRadius(16)
+            .shadow(color: Color.black.opacity(0.25), radius: 15)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.appBorderSubtle, lineWidth: 1)
+            )
+        }
     }
     
     /// Generates and shares A4 formatted PDF
