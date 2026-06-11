@@ -707,6 +707,11 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             self.handle_get_modifiers_config()
             return
 
+        # Serve config.js dynamically from environment variables
+        if path == "/config.js":
+            self.handle_get_config_js()
+            return
+
         # 10. Default: Serve static files
         self.handle_static_files(path)
 
@@ -1952,6 +1957,21 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(response_data)
         except Exception as e:
             self.send_error(500, f"Database error: {str(e)}")
+
+
+    def handle_get_config_js(self):
+        js_content = f"""window.ALPHAPOS_CONFIG = {{
+    supabaseUrl: '{SUPABASE_URL}',
+    supabaseKey: '{SUPABASE_ANON_KEY}',
+    merchantId: '{MERCHANT_ID}',
+    isProduction: {str(IS_PRODUCTION).lower()}
+}};"""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/javascript")
+        self.send_header("Access-Control-Allow-Origin", self._get_allowed_origin())
+        self.send_header("Content-Length", str(len(js_content)))
+        self.end_headers()
+        self.wfile.write(js_content.encode("utf-8"))
 
 
     # ==========================================
