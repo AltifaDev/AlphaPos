@@ -647,23 +647,74 @@ class AlphaPosApp {
             
             if (this.supabase) {
                 try {
-                    const sessionId = generateUUID();
-                    sessionToken = "session-" + sessionId.replace(/-/g, '').substring(0, 13);
-                    
-                    const { error } = await this.supabase
+                    // Check if there is already an active session for this table
+                    const { data: existingSession, error: fetchError } = await this.supabase
                         .from('table_sessions')
-                        .insert([{
-                            id: sessionId,
-                            table_number: this.tableNumber,
-                            session_token: sessionToken,
-                            is_active: 1,
-                            guest_count: guestCount,
-                            created_at: new Date().toISOString(),
-                            merchant_id: this.merchantId
-                        }]);
+                        .select('*')
+                        .eq('table_number', this.tableNumber)
+                        .eq('is_active', 1)
+                        .maybeSingle();
                         
-                    if (error) throw error;
-                    success = true;
+                    if (!fetchError && existingSession) {
+                        const sessionDate = new Date(existingSession.created_at);
+                        const today = new Date();
+                        const isToday = sessionDate.getDate() === today.getDate() &&
+                                        sessionDate.getMonth() === today.getMonth() &&
+                                        sessionDate.getFullYear() === today.getFullYear();
+                                        
+                        if (isToday) {
+                            console.log("Reusing existing active session for today:", existingSession.session_token);
+                            sessionToken = existingSession.session_token;
+                            success = true;
+                        } else {
+                            console.log("Stale active session from yesterday found. Closing it...");
+                            await this.supabase
+                                .from('table_sessions')
+                                .update({ is_active: 0, ended_at: new Date().toISOString() })
+                                .eq('id', existingSession.id);
+                        }
+                    }
+                    
+                    if (!success) {
+                        const sessionId = generateUUID();
+                        sessionToken = "session-" + sessionId.replace(/-/g, '').substring(0, 13);
+                        
+                        const { error } = await this.supabase
+                            .from('table_sessions')
+                            .insert([{
+                                id: sessionId,
+                                table_number: this.tableNumber,
+                                session_token: sessionToken,
+                                is_active: 1,
+                                guest_count: guestCount,
+                                created_at: new Date().toISOString(),
+                                merchant_id: this.merchantId
+                            }]);
+                            
+                        if (error) {
+                            // If a conflict still occurs (e.g. race condition), try fetching the active session one more time
+                            if (error.code === '23505' || String(error.message).includes('duplicate') || String(error.code) === '409') {
+                                const { data: retrySession, error: retryError } = await this.supabase
+                                    .from('table_sessions')
+                                    .select('session_token')
+                                    .eq('table_number', this.tableNumber)
+                                    .eq('is_active', 1)
+                                    .maybeSingle();
+                                    
+                                if (!retryError && retrySession) {
+                                    sessionToken = retrySession.session_token;
+                                    success = true;
+                                    console.log("Recovered from insert conflict, using active session:", sessionToken);
+                                } else {
+                                    throw error;
+                                }
+                            } else {
+                                throw error;
+                            }
+                        } else {
+                            success = true;
+                        }
+                    }
                 } catch (supabaseError) {
                     console.error("Supabase failed to open session, falling back to local server:", supabaseError);
                 }
