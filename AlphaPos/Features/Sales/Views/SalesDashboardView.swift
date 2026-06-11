@@ -52,10 +52,10 @@ struct SalesDashboardView: View {
             refreshData()
             triggerEntranceAnimations()
         }
-        .onChange(of: viewModel.summaryMode) { _ in refreshData() }
-        .onChange(of: viewModel.selectedDate) { _ in refreshData() }
-        .onChange(of: viewModel.selectedMonth) { _ in refreshData() }
-        .onChange(of: viewModel.selectedYear) { _ in refreshData() }
+        .onChange(of: viewModel.summaryMode) { refreshData() }
+        .onChange(of: viewModel.selectedDate) { refreshData() }
+        .onChange(of: viewModel.selectedMonth) { refreshData() }
+        .onChange(of: viewModel.selectedYear) { refreshData() }
         .sheet(isPresented: $showingShareSheet, content: {
             if let url = generatedPDFURL {
                 ShareSheet(activityItems: [url])

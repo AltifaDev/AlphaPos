@@ -392,7 +392,7 @@ struct InventoryView: View {
         let activeItems = filteredInventory
         let lowStockCount = activeItems.filter { $0.currentQuantity <= $0.reorderLevel }.count
         return HStack(spacing: APSpacing.md) {
-            statCard(title: "Total Items",   value: "\(activeItems.count)",  icon: "shippingbox.fill", color: Color(hex: "6C63FF"))
+            statCard(title: "Total Items",   value: "\(activeItems.count)",  icon: "shippingbox.fill", color: Color.appAccent)
             statCard(title: "Low Stock",     value: "\(lowStockCount)",    icon: "exclamationmark.triangle.fill", color: .appRose)
             statCard(title: "Transactions",  value: "\(filteredTransactionsList.count)", icon: "arrow.left.and.right.circle.fill", color: .appTeal)
         }
@@ -593,7 +593,7 @@ private struct TransactionLogRow: View {
         case "waste":
             return ("Waste", "trash.fill", .appRose, APGradient.destructive)
         case "sell":
-            return ("Sell", "cart.fill", Color(hex: "6C63FF"), APGradient.accent)
+            return ("Sell", "cart.fill", Color.appAccent, APGradient.accent)
         case "return_to_supplier":
             return ("Return", "arrow.uturn.left.circle.fill", .appAmber, APGradient.warning)
         case "transfer_out":
@@ -1001,7 +1001,7 @@ struct ItemMovementHistorySheet: View {
                         summaryCard(title: "On Hand", value: String(format: "%.1f %@", item.currentQuantity, item.unit), icon: "shippingbox.fill", color: .appAccent)
                         summaryCard(title: "Received", value: String(format: "%.1f", totalReceived), icon: "plus.circle.fill", color: .appTeal)
                         summaryCard(title: "Wasted", value: String(format: "%.1f", totalWasted), icon: "trash.fill", color: .appRose)
-                        summaryCard(title: "Sold", value: String(format: "%.1f", totalSold), icon: "cart.fill", color: Color(hex: "6C63FF"))
+                        summaryCard(title: "Sold", value: String(format: "%.1f", totalSold), icon: "cart.fill", color: Color.appAccent)
                     }
                     .padding(APSpacing.md)
                     .background(Color.appSurface)
@@ -1106,7 +1106,7 @@ struct ItemMovementHistorySheet: View {
             switch txn.transactionType {
             case "receive": return ("Receive", "plus.circle.fill", .appTeal)
             case "waste": return ("Waste", "trash.fill", .appRose)
-            case "sell": return ("Sell", "cart.fill", Color(hex: "6C63FF"))
+            case "sell": return ("Sell", "cart.fill", Color.appAccent)
             default: return ("Adjust", "arrow.left.and.right.circle.fill", .appAmber)
             }
         }()

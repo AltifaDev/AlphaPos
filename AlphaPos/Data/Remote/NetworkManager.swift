@@ -30,14 +30,6 @@ final class NetworkManager {
         UserDefaults.standard.object(forKey: "enable_web_ordering") as? Bool ?? true
     }
     
-    private var activeMerchantId: String {
-        let saved = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
-        if saved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return config.defaultMerchantId
-        }
-        return saved
-    }
-    
     private init() {}
     
     func isConnected() async -> Bool {
@@ -50,7 +42,7 @@ final class NetworkManager {
         request.setValue(anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(anonKey)", forHTTPHeaderField: "Authorization")
         
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         if !merchantId.isEmpty {
             request.setValue(merchantId, forHTTPHeaderField: "x-merchant-id")
         }
@@ -91,7 +83,7 @@ final class NetworkManager {
         request.setValue("Bearer \(anonKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         if !merchantId.isEmpty {
             request.setValue(merchantId, forHTTPHeaderField: "x-merchant-id")
         }
@@ -161,8 +153,8 @@ final class NetworkManager {
     // MARK: - API Upload Endpoints
     
     func uploadOrder(order: Order) async throws -> Bool {
-        let merchantId = activeMerchantId
-        let orderPayload: [String: Any] = [
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        var orderPayload: [String: Any] = [
             "id": order.id.uuidString,
             "order_number": order.orderNumber,
             "table_number": order.tableSession?.table?.tableNumber ?? "12",
@@ -177,6 +169,10 @@ final class NetworkManager {
             "delivery_ad_fee_is_pct": order.deliveryAdFeeIsPct,
             "delivery_other_fee": order.deliveryOtherFee
         ]
+        orderPayload["guest_count"] = order.guestCount
+        if let sessionToken = order.tableSession?.sessionToken {
+            orderPayload["session_token"] = sessionToken
+        }
         
         // 1. Insert order record
         _ = try await sendSupabaseRequest(method: "POST", endpoint: "orders", payload: orderPayload)
@@ -234,7 +230,7 @@ final class NetworkManager {
     }
     
     func createServiceRequest(tableNumber: String, type: String) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let payload: [String: Any] = [
             "id": UUID().uuidString,
             "table_number": tableNumber,
@@ -292,7 +288,7 @@ final class NetworkManager {
     }
     
     func uploadPayment(id: UUID, orderId: UUID?, amount: Double, method: String) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let payload: [String: Any] = [
             "id": id.uuidString,
             "order_id": orderId?.uuidString ?? "",
@@ -319,7 +315,7 @@ final class NetworkManager {
     }
     
     func uploadTimecard(id: UUID, employeeId: UUID, employeeName: String, clockIn: Date, clockOut: Date?, status: String, breakDuration: Int = 0, overtimeMinutes: Int = 0, notes: String? = nil, clockInConfidence: Double? = nil, clockOutConfidence: Double? = nil) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let formatter = ISO8601DateFormatter()
         var payload: [String: Any] = [
             "id": id.uuidString,
@@ -350,7 +346,7 @@ final class NetworkManager {
     }
     
     func uploadInventoryTransaction(id: UUID, itemName: String, quantity: Double, type: String) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let payload: [String: Any] = [
             "id": id.uuidString.lowercased(),
             "merchant_id": merchantId,
@@ -369,7 +365,7 @@ final class NetworkManager {
     }
     
     func uploadRestaurantTable(table: RestaurantTable) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let formatter = ISO8601DateFormatter()
         let payload: [String: Any] = [
             "id": table.id.uuidString.lowercased(),
@@ -396,7 +392,7 @@ final class NetworkManager {
     }
     
     func uploadTableSession(session: TableSession) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let formatter = ISO8601DateFormatter()
         var payload: [String: Any] = [
             "id": session.id.uuidString.lowercased(),
@@ -418,6 +414,33 @@ final class NetworkManager {
             queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
             payload: payload
         )
+        
+        // When a new active session is created, migrate any active orders on this table
+        // that have no session_token (or belong to a previous session) to use this session's token.
+        // This ensures iPhone Staff app can always find orders via session_token lookup.
+        if session.isActive, let tableNumber = session.table?.tableNumber, !tableNumber.isEmpty {
+            do {
+                _ = try await sendSupabaseRequest(
+                    method: "PATCH",
+                    endpoint: "orders",
+                    queryItems: [
+                        URLQueryItem(name: "table_number", value: "eq.\(tableNumber)"),
+                        URLQueryItem(name: "status", value: "not.in.(completed,cancelled)"),
+                        URLQueryItem(name: "session_token", value: "is.null")
+                    ],
+                    payload: ["session_token": session.sessionToken]
+                )
+                #if DEBUG
+                print("NetworkManager [Session]: Migrated null-token orders on table \(tableNumber) to session \(session.sessionToken)")
+                #endif
+            } catch {
+                // Non-fatal: orders will still be visible via timestamp fallback
+                #if DEBUG
+                print("NetworkManager [Session]: Order migration skipped: \(error.localizedDescription)")
+                #endif
+            }
+        }
+        
         return true
     }
     
@@ -431,7 +454,7 @@ final class NetworkManager {
     }
     
     func uploadEmployee(employee: Employee) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let username = employee.user?.username ?? "staff_\(employee.id.uuidString.prefix(8).lowercased())"
         let pinCode = employee.user?.pinCodeHash ?? "0000"
         let role = employee.user?.role?.name ?? "Staff"
@@ -503,7 +526,7 @@ final class NetworkManager {
     }
     
     func deleteMerchantOnServer() async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         _ = try await sendSupabaseRequest(
             method: "DELETE",
             endpoint: "merchants",
@@ -513,7 +536,7 @@ final class NetworkManager {
     }
     
     func wipeRemoteTransactionsAndSessions() async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         guard !merchantId.isEmpty else {
             throw NetworkError.serverError("No active merchant configured")
         }
@@ -556,7 +579,7 @@ final class NetworkManager {
     
     /// Upserts a single MenuItem from SwiftData to the Supabase `menu_items` table.
     func uploadMenuItem(item: MenuItem) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let catSlug = categorySlug(from: item.category?.name)
         
         let payload: [String: Any] = [
@@ -604,12 +627,17 @@ final class NetworkManager {
         return jsonArray
     }
     
-    /// Fetches all promotions for the active merchant from Supabase.
+    /// Fetches all active (non-deleted) promotions for the active merchant from Supabase.
     func fetchPromotionsFromSupabase() async throws -> [[String: Any]] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "promotions",
-            queryItems: [URLQueryItem(name: "select", value: "*")]
+            queryItems: [
+                URLQueryItem(name: "select", value: "*"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "is_deleted", value: "eq.0")
+            ]
         )
         guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw NetworkError.invalidResponse
@@ -618,7 +646,7 @@ final class NetworkManager {
     }
     
     func uploadPromotion(promotion: Promotion) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let formatter = ISO8601DateFormatter()
         let payload: [String: Any] = [
             "id": promotion.id.uuidString.lowercased(),
@@ -631,15 +659,20 @@ final class NetworkManager {
             "updated_at": formatter.string(from: promotion.updatedAt)
         ]
         
-        // 1. Upload to Supabase (propagates errors)
-        _ = try await sendSupabaseRequest(
-            method: "POST",
-            endpoint: "promotions",
-            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
-            payload: payload
-        )
+        var supabaseSuccess = false
+        do {
+            _ = try await sendSupabaseRequest(
+                method: "POST",
+                endpoint: "promotions",
+                queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+                payload: payload
+            )
+            supabaseSuccess = true
+        } catch {
+            print("NetworkManager: Supabase promotion upload failed: \(error.localizedDescription)")
+        }
         
-        // 2. Upload to local server (best effort)
+        var localSuccess = false
         if let localURL = URL(string: "http://127.0.0.1:8080/v1/promotions") {
             var req = URLRequest(url: localURL)
             req.httpMethod = "POST"
@@ -647,13 +680,16 @@ final class NetworkManager {
             req.timeoutInterval = 1.5
             do {
                 req.httpBody = try JSONSerialization.data(withJSONObject: payload)
-                _ = try await URLSession.shared.data(for: req)
+                let (_, response) = try await URLSession.shared.data(for: req)
+                if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
+                    localSuccess = true
+                }
             } catch {
                 print("NetworkManager: Local server promotion upload failed: \(error.localizedDescription)")
             }
         }
         
-        return true
+        return supabaseSuccess || localSuccess
     }
     
     // MARK: - Purchase Orders Sync
@@ -661,7 +697,7 @@ final class NetworkManager {
     /// Upserts a PurchaseOrder header and all its items to Supabase in a single sync call.
     /// Items are batch-upserted using on_conflict=id for idempotency.
     func uploadPurchaseOrder(purchaseOrder: PurchaseOrder) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let formatter = ISO8601DateFormatter()
         
         // 1. Upsert PO header
@@ -696,7 +732,7 @@ final class NetworkManager {
         // 2. Batch upsert all non-deleted items for this PO
         let activeItems = purchaseOrder.items.filter { !$0.isDeleted }
         if !activeItems.isEmpty {
-            var itemsPayload: [[String: Any]] = activeItems.map { item in
+            let itemsPayload: [[String: Any]] = activeItems.map { item in
                 var itemDict: [String: Any] = [
                     "id": item.id.uuidString.lowercased(),
                     "merchant_id": merchantId,
@@ -752,7 +788,7 @@ final class NetworkManager {
     /// Batch upserts all provided DeliveryPrice records to Supabase.
     /// DeliveryPrice has no isSynced flag — all prices are sent on every sync cycle.
     func uploadDeliveryPrices(_ deliveryPrices: [DeliveryPrice]) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         
         // Filter to prices that have a valid menu item link
         let validPrices: [[String: Any]] = deliveryPrices.compactMap { dp in
@@ -778,36 +814,51 @@ final class NetworkManager {
     }
     
     func deletePromotionOnServer(id: UUID) async throws -> Bool {
-        let payload = ["id": id.uuidString.lowercased()]
+        let idStr = id.uuidString.lowercased()
+        let formatter = ISO8601DateFormatter()
+        // Soft-delete: PATCH is_deleted=true so RLS (which allows PATCH but may block DELETE)
+        // works correctly. fetchPromotionsFromSupabase already filters is_deleted=eq.false.
+        let softDeletePayload: [String: Any] = [
+            "is_deleted": 1,
+            "updated_at": formatter.string(from: Date())
+        ]
         
-        // 1. Delete on Supabase (propagates errors)
-        _ = try await sendSupabaseRequest(
-            method: "DELETE",
-            endpoint: "promotions",
-            queryItems: [URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())")]
-        )
+        var supabaseSuccess = false
+        do {
+            _ = try await sendSupabaseRequest(
+                method: "PATCH",
+                endpoint: "promotions",
+                queryItems: [URLQueryItem(name: "id", value: "eq.\(idStr)")],
+                payload: softDeletePayload
+            )
+            supabaseSuccess = true
+        } catch {
+            print("NetworkManager: Supabase promotion soft-delete failed: \(error.localizedDescription)")
+        }
         
-        // 2. Delete on local server (best effort)
+        let legacyPayload = ["id": idStr]
         if let localURL = URL(string: "http://127.0.0.1:8080/v1/promotions/delete") {
             var req = URLRequest(url: localURL)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.timeoutInterval = 1.5
             do {
-                req.httpBody = try JSONSerialization.data(withJSONObject: payload)
-                _ = try await URLSession.shared.data(for: req)
+                req.httpBody = try JSONSerialization.data(withJSONObject: legacyPayload)
+                let (_, response) = try await URLSession.shared.data(for: req)
+                if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
+                }
             } catch {
                 print("NetworkManager: Local server promotion delete failed: \(error.localizedDescription)")
             }
         }
         
-        return true
+        return supabaseSuccess
     }
     
     // MARK: - Printers & Routing Rules Sync
     
     func uploadPrinter(_ printer: Printer) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let formatter = ISO8601DateFormatter()
         
         let payload: [String: Any] = [
@@ -846,7 +897,7 @@ final class NetworkManager {
     }
     
     func uploadPrintRoutingRule(_ rule: PrintRoutingRule) async throws -> Bool {
-        let merchantId = activeMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let formatter = ISO8601DateFormatter()
         
         guard let printerId = rule.printer?.id else {

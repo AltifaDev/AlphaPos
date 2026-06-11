@@ -127,17 +127,17 @@ extension Color {
     }
 
     // ── Accent ───────────────────────────────────────────────────────────────
-    /// Primary indigo-violet accent
+    /// Primary Royal Blue accent
     static var appAccent: Color {
-        resolveColor(lightHex: "5850EC", darkHex: "6C63FF")
+        resolveColor(lightHex: "1D4ED8", darkHex: "2D71F8")
     }
-    /// Secondary teal accent (used for positive/receive indicators)
+    /// Secondary Elf Green accent (used for positive/receive indicators)
     static var appTeal: Color {
-        resolveColor(lightHex: "059669", darkHex: "34D399")
+        resolveColor(lightHex: "1C8370", darkHex: "1C8370")
     }
-    /// Destructive rose (waste, clock-out, danger)
+    /// Destructive Coral Red (waste, clock-out, danger)
     static var appRose: Color {
-        resolveColor(lightHex: "DC2626", darkHex: "F43F5E")
+        resolveColor(lightHex: "FC4A4A", darkHex: "FC4A4A")
     }
     /// Warning amber
     static var appAmber: Color {
@@ -212,10 +212,10 @@ extension Color {
 
 enum APGradient {
 
-    /// Primary indigo → violet CTA gradient
+    /// Primary Royal Blue → Sky Blue CTA gradient
     static var accent: LinearGradient {
         LinearGradient(
-            colors: [Color.appAccent, Color(hex: "A855F7")],
+            colors: [Color.appAccent, Color(hex: "60A5FA")],
             startPoint: .leading, endPoint: .trailing
         )
     }
@@ -432,7 +432,7 @@ struct APChipStyle: ViewModifier {
                             .stroke(selected ? Color.clear : Color.appBorderSubtle, lineWidth: 1)
                     )
             )
-            .shadow(color: selected ? Color(hex: "6C63FF").opacity(0.4) : .clear,
+            .shadow(color: selected ? Color.appAccent.opacity(0.4) : .clear,
                     radius: 8, x: 0, y: 0)
     }
 }

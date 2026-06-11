@@ -82,7 +82,9 @@ struct TableDetailView: View {
                                         .font(.subheadline).fontWeight(.black)
                                         .foregroundColor(.textPrimary)
                                     Spacer()
-                                    APBadge(text: order.status.localized(for: appLanguage).capitalized, color: statusColor(for: order.status))
+                                    let isOrderAllServed = !order.items.isEmpty && order.items.allSatisfy { $0.status == "served" || $0.status == "cancelled" }
+                                    let statusToShow = isOrderAllServed ? "served" : order.status
+                                    APBadge(text: statusToShow.localized(for: appLanguage).capitalized, color: statusColor(for: statusToShow))
                                 }
                                 .padding(.vertical, 4)
                             ) {
@@ -402,7 +404,9 @@ struct TableDetailView: View {
                     orderNumber: orderNumber,
                     tableNumber: currentTable.tableNumber,
                     total: total,
-                    items: itemsPayload
+                    items: itemsPayload,
+                    sessionToken: currentTable.sessionToken,
+                    guestCount: currentTable.guestCount
                 )
                 await MainActor.run {
                     loadOrders()

@@ -23,7 +23,7 @@ struct DashboardIntegration: View {
 
 /// Example 2: Programmatically Creating Tables
 /// Helper function to batch create tables
-func createRestaurantLayout() {
+func createRestaurantLayout(modelContext: ModelContext) {
     let mockLayout: [(number: String, capacity: Int, x: Double, y: Double)] = [
         // Front section
         ("1", 2, 20, 20),
@@ -47,18 +47,17 @@ func createRestaurantLayout() {
         ("BAR 3", 1, 340, 280),
     ]
     
-    // This would typically be called with modelContext from your view
-    // for layout in mockLayout {
-    //     let table = RestaurantTable(
-    //         tableNumber: layout.number,
-    //         capacity: layout.capacity,
-    //         status: "vacant",
-    //         qrCodeIdentifier: "table_\(layout.number)_hash",
-    //         positionX: layout.x,
-    //         positionY: layout.y
-    //     )
-    //     modelContext.insert(table)
-    // }
+    for layout in mockLayout {
+        let table = RestaurantTable(
+            tableNumber: layout.number,
+            capacity: layout.capacity,
+            status: "vacant",
+            qrCodeIdentifier: "table_\(layout.number)_hash",
+            positionX: layout.x,
+            positionY: layout.y
+        )
+        modelContext.insert(table)
+    }
 }
 
 /// Example 3: Querying Tables by Various Criteria

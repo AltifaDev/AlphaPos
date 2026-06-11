@@ -103,7 +103,10 @@ final class POSViewModel {
         guestCount = newCount
         if let session = session {
             session.guestCount = newCount
+            session.isSynced = false
+            session.updatedAt = Date()
             try? modelContext?.save()
+            Task { _ = try? await NetworkManager.shared.uploadTableSession(session: session) }
         }
     }
     

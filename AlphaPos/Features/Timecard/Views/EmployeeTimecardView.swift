@@ -69,7 +69,7 @@ struct EmployeeTimecardView: View {
         return VStack(spacing: 0) {
             // Stats header
             HStack(spacing: APSpacing.md) {
-                statPill(icon: "person.3.fill",        value: "\(employees.count)", label: "Staff",       color: Color(hex: "6C63FF"))
+                statPill(icon: "person.3.fill",        value: "\(employees.count)", label: "Staff",       color: Color.appAccent)
                 statPill(icon: "clock.fill",            value: "\(clockedInCount)",  label: "Clocked In",  color: Color.appTeal)
                 statPill(icon: "checkmark.circle.fill", value: "\(approvedCount)",   label: "Approved",    color: Color.appAmber)
             }
@@ -377,7 +377,7 @@ struct BiometricFaceScannerSimulator: View {
                                 Circle()
                                     .stroke(
                                         mode == .clockIn
-                                        ? LinearGradient(colors: [.appTeal, Color(hex: "6C63FF")], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                        ? LinearGradient(colors: [.appTeal, Color.appAccent], startPoint: .topLeading, endPoint: .bottomTrailing)
                                         : LinearGradient(colors: [.appRose, .appAmber], startPoint: .topLeading, endPoint: .bottomTrailing),
                                         lineWidth: 2
                                     )

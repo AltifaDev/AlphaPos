@@ -42,3 +42,6 @@ venv/
 customer-order-web/venv/
 node_modules/
 
+# opencode config (may contain MCP secrets)
+opencode.json
+

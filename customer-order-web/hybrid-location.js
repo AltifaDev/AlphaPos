@@ -28,6 +28,13 @@ class HybridLocationVerifier {
         this.status = "checking"; // 'checking' | 'allowed' | 'restricted' | 'warn'
     }
 
+    translate(key, defaultVal) {
+        if (window.app && typeof window.app.translate === 'function') {
+            return window.app.translate(key, defaultVal);
+        }
+        return defaultVal;
+    }
+
     init() {
         // Run initial verification
         this.runVerification();
@@ -37,7 +44,7 @@ class HybridLocationVerifier {
      * Runs the location check based on current network and GPS configurations
      */
     async runVerification() {
-        this.updateBanner("checking", "Verifying location...", "Checking Wi-Fi and GPS coordinates...");
+        this.updateBanner("checking", this.translate("verifyingLocationMsg", "Verifying location..."), this.translate("checkingWifiGps", "Checking Wi-Fi and GPS coordinates..."));
         
         // Delay to simulate network latency
         await new Promise(resolve => setTimeout(resolve, 800));
@@ -46,13 +53,13 @@ class HybridLocationVerifier {
         if (this.simulatedNetwork === "wifi") {
             const ip = this.restaurantWifiIp;
             document.getElementById("simulatedIp").innerText = ip;
-            document.getElementById("simulatedDistance").innerText = "Not required (On Guest Wi-Fi)";
+            document.getElementById("simulatedDistance").innerText = this.translate("wifiNoDistance", "Not required (On Guest Wi-Fi)");
             
             this.isValid = true;
             this.updateBanner(
                 "allowed", 
-                "Ordering Active", 
-                "🟢 Verified via Restaurant Guest Wi-Fi. (IP: " + ip + ")"
+                this.translate("orderingActive", "Ordering Active"), 
+                this.translate("verifiedWifi", "🟢 Verified via Restaurant Guest Wi-Fi. (IP: {ip})").replace("{ip}", ip)
             );
             this.toggleOrderingButton(true);
             return;
@@ -64,11 +71,11 @@ class HybridLocationVerifier {
 
         if (this.simulatedGpsType === "denied") {
             this.isValid = false;
-            document.getElementById("simulatedDistance").innerText = "Unavailable";
+            document.getElementById("simulatedDistance").innerText = this.translate("gpsUnavailable", "Unavailable");
             this.updateBanner(
                 "restricted", 
-                "Ordering Blocked", 
-                "🔴 GPS Access Denied. Please connect to Guest Wi-Fi or enable Location services."
+                this.translate("orderingBlocked", "Ordering Blocked"), 
+                this.translate("gpsDeniedMsg", "🔴 GPS Access Denied. Please connect to Guest Wi-Fi or enable Location services.")
             );
             this.toggleOrderingButton(false);
             return;
@@ -97,23 +104,23 @@ class HybridLocationVerifier {
             this.restaurantCoords.lng
         );
 
-        document.getElementById("simulatedDistance").innerText = this.distance.toFixed(1) + " meters";
+        document.getElementById("simulatedDistance").innerText = this.distance.toFixed(1) + " " + this.translate("meters", "meters");
 
         // Validate Distance limit (50 meters Geofence)
         if (this.distance <= 50) {
             this.isValid = true;
             this.updateBanner(
                 "allowed", 
-                "Ordering Active", 
-                "🟢 Location verified via GPS (" + this.distance.toFixed(1) + "m within venue)"
+                this.translate("orderingActive", "Ordering Active"), 
+                this.translate("gpsInsideMsg", "🟢 Location verified via GPS ({dist}m within venue)").replace("{dist}", this.distance.toFixed(1))
             );
             this.toggleOrderingButton(true);
         } else {
             this.isValid = false;
             this.updateBanner(
                 "restricted", 
-                "Ordering Blocked", 
-                "🔴 You are " + (this.distance / 1000).toFixed(2) + "km outside the restaurant. Please join Guest Wi-Fi."
+                this.translate("orderingBlocked", "Ordering Blocked"), 
+                this.translate("gpsOutsideMsg", "🔴 You are {dist}km outside the restaurant. Please join Guest Wi-Fi.").replace("{dist}", (this.distance / 1000).toFixed(2))
             );
             this.toggleOrderingButton(false);
         }

@@ -46,7 +46,7 @@ enum ThreadSafetyTests {
         var accessErrors = 0
         let lock = NSLock()
         
-        for i in 0..<iterations {
+        for _ in 0..<iterations {
             group.enter()
             queue.async {
                 let uuid = UUID()

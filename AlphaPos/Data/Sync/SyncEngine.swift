@@ -13,7 +13,6 @@ struct ServiceRequest: Identifiable, Codable, Hashable {
     var createdAt: String
 }
 
-@MainActor
 final class SyncEngine: ObservableObject {
     static let shared = SyncEngine()
     
@@ -37,17 +36,17 @@ final class SyncEngine: ObservableObject {
     @Published var lastSyncedAt: Date? = nil
     @Published var activeRequests: [ServiceRequest] = []
     private var cachedModelContext: ModelContext?
-    nonisolated(unsafe) private static let alertTimesLock = OSAllocatedUnfairLock()
-    nonisolated(unsafe) private static var _lastAlertTimes: [UUID: Date] = [:]
-    nonisolated static func getAlertTime(_ key: UUID) -> Date? {
+    private static let alertTimesLock = OSAllocatedUnfairLock()
+    private static var _lastAlertTimes: [UUID: Date] = [:]
+    static func getAlertTime(_ key: UUID) -> Date? {
         alertTimesLock.lock(); defer { alertTimesLock.unlock() }
         return _lastAlertTimes[key]
     }
-    nonisolated static func setAlertTime(_ key: UUID, _ value: Date) {
+    static func setAlertTime(_ key: UUID, _ value: Date) {
         alertTimesLock.lock(); defer { alertTimesLock.unlock() }
         _lastAlertTimes[key] = value
     }
-    nonisolated static func removeAlertTime(_ key: UUID) {
+    static func removeAlertTime(_ key: UUID) {
         alertTimesLock.lock(); defer { alertTimesLock.unlock() }
         _lastAlertTimes.removeValue(forKey: key)
     }
@@ -64,20 +63,18 @@ final class SyncEngine: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self = self else { return }
-            Task { @MainActor in
-                #if DEBUG
-                print("SyncEngine: App returned to foreground. Reconnecting WebSocket...")
-                #endif
-                
-                // Cancel existing WebSocket task
-                self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
-                self.webSocketTask = nil
-                
-                if let context = self.cachedModelContext {
-                    self.startRealtimeSync(modelContext: context)
-                    Task {
-                        await self.syncAll(modelContext: context)
-                    }
+            #if DEBUG
+            print("SyncEngine: App returned to foreground. Reconnecting WebSocket...")
+            #endif
+            
+            // Cancel existing WebSocket task
+            self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
+            self.webSocketTask = nil
+            
+            if let context = self.cachedModelContext {
+                self.startRealtimeSync(modelContext: context)
+                Task {
+                    await self.syncAll(modelContext: context)
                 }
             }
         }
@@ -120,17 +117,23 @@ final class SyncEngine: ObservableObject {
     // Asynchronous task to sync all unsynced data
     func syncAll(modelContext: ModelContext) async {
         // Initialize Realtime WebSocket task
-        self.startRealtimeSync(modelContext: modelContext)
+        await MainActor.run {
+            self.startRealtimeSync(modelContext: modelContext)
+        }
         
         guard await NetworkManager.shared.isConnected() else {
             #if DEBUG
             print("SyncEngine: Device is offline. Sync task aborted.")
             #endif
-            self.syncStatus = .offline
+            await MainActor.run {
+                self.syncStatus = .offline
+            }
             return
         }
         
-        self.syncStatus = .syncing
+        await MainActor.run {
+            self.syncStatus = .syncing
+        }
         
         #if DEBUG
         print("SyncEngine: Initiating data synchronization...")
@@ -173,8 +176,10 @@ final class SyncEngine: ObservableObject {
         // Check for delayed orders and dispatch alerts
         await checkForDelayedOrders(modelContext: modelContext)
         
-        self.syncStatus = .idle
-        self.lastSyncedAt = Date()
+        await MainActor.run {
+            self.syncStatus = .idle
+            self.lastSyncedAt = Date()
+        }
         
         #if DEBUG
         print("SyncEngine: Sync completed.")
@@ -556,63 +561,52 @@ final class SyncEngine: ObservableObject {
     }
     
     private func syncPromotions(_ modelContext: ModelContext) async {
-        NSLog("SyncEngine: syncPromotions started")
         let descriptor = FetchDescriptor<Promotion>(
             predicate: #Predicate<Promotion> { $0.isDeleted == true || $0.isSynced == false }
         )
         
-        guard let promotions = try? modelContext.fetch(descriptor) else {
-            NSLog("SyncEngine: syncPromotions failed to fetch descriptor")
-            return
-        }
-        
-        NSLog("SyncEngine: syncPromotions found \(promotions.count) promotion(s) to sync")
+        guard let promotions = try? modelContext.fetch(descriptor), !promotions.isEmpty else { return }
         
         for promotion in promotions {
-            NSLog("SyncEngine: promotion to sync: \(promotion.title) (id: \(promotion.id.uuidString)), isDeleted: \(promotion.isDeleted), isSynced: \(promotion.isSynced)")
             if promotion.isDeleted {
                 do {
-                    NSLog("SyncEngine: Attempting to delete promotion on server: \(promotion.id.uuidString)")
-                    let success = try await NetworkManager.shared.deletePromotionOnServer(id: promotion.id)
-                    NSLog("SyncEngine: deletePromotionOnServer returned \(success)")
-                    if success {
-                        modelContext.delete(promotion)
-                        try modelContext.save()
-                        NSLog("SyncEngine: Successfully deleted promotion locally: \(promotion.id.uuidString)")
-                    }
+                    _ = try await NetworkManager.shared.deletePromotionOnServer(id: promotion.id)
+                    modelContext.delete(promotion)
+                    try modelContext.save()
                 } catch {
-                    NSLog("SyncEngine [Promotion Delete Error]: \(error.localizedDescription)")
+                    print("SyncEngine [Promotion Delete Error]: \(error.localizedDescription)")
                 }
                 continue
             }
             
             do {
-                NSLog("SyncEngine: Attempting to upload promotion to server: \(promotion.title) (id: \(promotion.id.uuidString))")
                 let success = try await NetworkManager.shared.uploadPromotion(promotion: promotion)
                 if success {
                     promotion.isSynced = true
                     promotion.updatedAt = Date()
                     try modelContext.save()
-                    NSLog("SyncEngine: Successfully synced promotion to server: \(promotion.title) (id: \(promotion.id.uuidString))")
                 }
             } catch {
-                NSLog("SyncEngine [Promotion Sync Error]: \(error.localizedDescription)")
+                print("SyncEngine [Promotion Sync Error]: \(error.localizedDescription)")
             }
         }
     }
     
+
     private func pullPromotionsFromSupabase(_ modelContext: ModelContext) async {
         do {
             let remotePromos = try await NetworkManager.shared.fetchPromotionsFromSupabase()
-            guard !remotePromos.isEmpty else { return }
             
-            // Fetch existing local promotions
+            // Fetch ALL local promotions (including soft-deleted ones) so we can match by ID
             let localPromos = (try? modelContext.fetch(FetchDescriptor<Promotion>())) ?? []
             
             var localPromosById: [String: Promotion] = [:]
             for promo in localPromos {
                 localPromosById[promo.id.uuidString.lowercased()] = promo
             }
+            
+            // If Supabase returned nothing, nothing to do (deletions are handled by syncPromotions push)
+            guard !remotePromos.isEmpty else { return }
             
             var didChange = false
             let df = ISO8601DateFormatter()
@@ -654,19 +648,28 @@ final class SyncEngine: ObservableObject {
                     if isDeleted {
                         modelContext.delete(existing)
                         didChange = true
-                    } else if existing.isSynced || updatedAt > existing.updatedAt {
-                        var changed = false
-                        if existing.title != title { existing.title = title; changed = true }
-                        if existing.promoDescription != desc { existing.promoDescription = desc; changed = true }
-                        if existing.imageData != imageData { existing.imageData = imageData; changed = true }
-                        if existing.isActive != isActive { existing.isActive = isActive; changed = true }
-                        if changed {
-                            existing.isSynced = true
-                            existing.updatedAt = updatedAt
-                            didChange = true
+                    } else {
+                        // If locally marked as deleted (pending push), DON'T overwrite with remote data
+                        if existing.isDeleted {
+                            // Skip — local deletion takes precedence; syncPromotions will push this
+                            continue
+                        }
+                        // Only update if local record is already synced OR remote is newer
+                        if existing.isSynced || updatedAt > existing.updatedAt {
+                            var changed = false
+                            if existing.title != title { existing.title = title; changed = true }
+                            if existing.promoDescription != desc { existing.promoDescription = desc; changed = true }
+                            if existing.imageData != imageData { existing.imageData = imageData; changed = true }
+                            if existing.isActive != isActive { existing.isActive = isActive; changed = true }
+                            if changed {
+                                existing.isSynced = true
+                                existing.updatedAt = updatedAt
+                                didChange = true
+                            }
                         }
                     }
                 } else if !isDeleted {
+                    // No local copy found — insert from remote (only if it is not deleted)
                     let newPromo = Promotion(
                         id: id,
                         title: title,
@@ -685,7 +688,7 @@ final class SyncEngine: ObservableObject {
             if didChange {
                 try? modelContext.save()
                 #if DEBUG
-                print("SyncEngine [PullPromotions]: Updated SwiftData from Supabase (\(remotePromos.count) items)")
+                print("SyncEngine [PullPromotions]: Updated SwiftData from Supabase (\(remotePromos.count) remote items)")
                 #endif
             }
         } catch {
@@ -979,16 +982,47 @@ final class SyncEngine: ObservableObject {
                     predicate: #Predicate<RestaurantTable> { $0.tableNumber == tableNumber }
                 )
                 
+                let sessionToken = remoteOrder["sessionToken"] as? String ?? remoteOrder["session_token"] as? String
                 var targetTableSession: TableSession? = nil
-                if let tables = try? modelContext.fetch(tableDescriptor), let table = tables.first {
-                    // Use active table session or create a new one
-                    if let activeSession = table.sessions.filter({ $0.isActive }).first {
-                        targetTableSession = activeSession
-                    } else {
-                        let newSession = TableSession(startedAt: Date(), isActive: true, table: table)
-                        modelContext.insert(newSession)
-                        targetTableSession = newSession
-                        table.status = "occupied"
+                
+                if let token = sessionToken {
+                    let sessionDesc = FetchDescriptor<TableSession>(
+                        predicate: #Predicate<TableSession> { $0.sessionToken == token }
+                    )
+                    if let sessions = try? modelContext.fetch(sessionDesc), let matchedSession = sessions.first {
+                        targetTableSession = matchedSession
+                    }
+                }
+                
+                if targetTableSession == nil {
+                    if let tables = try? modelContext.fetch(tableDescriptor), let table = tables.first {
+                        if let activeSession = table.sessions.first(where: { $0.isActive }) {
+                            if Calendar.current.isDateInToday(activeSession.startedAt) {
+                                targetTableSession = activeSession
+                            } else {
+                                // Close stale session
+                                activeSession.isActive = false
+                                activeSession.endedAt = Date()
+                                activeSession.isSynced = false
+                                activeSession.updatedAt = Date()
+                                
+                                let newSession = TableSession(startedAt: Date(), isActive: true, table: table)
+                                if let token = sessionToken {
+                                    newSession.sessionToken = token
+                                }
+                                modelContext.insert(newSession)
+                                targetTableSession = newSession
+                                table.status = "occupied"
+                            }
+                        } else {
+                            let newSession = TableSession(startedAt: Date(), isActive: true, table: table)
+                            if let token = sessionToken {
+                                newSession.sessionToken = token
+                            }
+                            modelContext.insert(newSession)
+                            targetTableSession = newSession
+                            table.status = "occupied"
+                        }
                     }
                 }
                 
@@ -1217,8 +1251,23 @@ final class SyncEngine: ObservableObject {
                     )
                     let localActiveSessions = (try? modelContext.fetch(sessionDesc)) ?? []
                     
-                    if let activeSession = localActiveSessions.first {
-                        if !hasRemoteSession && activeSession.isSynced {
+                    for activeSession in localActiveSessions {
+                        if !Calendar.current.isDateInToday(activeSession.startedAt) {
+                            activeSession.isActive = false
+                            activeSession.endedAt = Date()
+                            activeSession.isSynced = false
+                            activeSession.updatedAt = Date()
+                            table.status = "vacant"
+                            table.updatedAt = Date()
+                            
+                            let tNum = table.tableNumber
+                            Task {
+                                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: tNum)
+                            }
+                            #if DEBUG
+                            print("SyncEngine [Session Pull]: Expired stale local active session (from previous day) for Table \(table.tableNumber).")
+                            #endif
+                        } else if !hasRemoteSession && activeSession.isSynced {
                             activeSession.isActive = false
                             activeSession.endedAt = Date()
                             table.status = "vacant"
@@ -1227,7 +1276,8 @@ final class SyncEngine: ObservableObject {
                             print("SyncEngine [Session Pull]: Closed local active session for Table \(table.tableNumber). Status set to vacant.")
                             #endif
                         }
-                    } else {
+                    }
+                    if localActiveSessions.isEmpty {
                         // If no local active session exists but table status is occupied/reserved, and there's no remote active session
                         if !hasRemoteSession && (table.status == "occupied" || table.status == "reserved") && table.isSynced {
                             table.status = "vacant"
@@ -1245,6 +1295,22 @@ final class SyncEngine: ObservableObject {
                 guard let tableNumber = session["tableNumber"] as? String,
                       let sessionToken = session["sessionToken"] as? String else { continue }
                 
+                // Check if session started today
+                let startedAtStr = session["created_at"] as? String ?? ""
+                let df = ISO8601DateFormatter()
+                let startedAt = df.date(from: startedAtStr) ?? Date()
+                
+                if !Calendar.current.isDateInToday(startedAt) {
+                    // Stale active session from remote! Close it on remote asynchronously and ignore it.
+                    Task {
+                        _ = try? await NetworkManager.shared.closeTableSession(tableNumber: tableNumber)
+                    }
+                    #if DEBUG
+                    print("SyncEngine [Session Pull]: Ignored stale remote session for Table \(tableNumber) (started at \(startedAtStr)) and closed it.")
+                    #endif
+                    continue
+                }
+                
                 // Fetch table locally
                 let tableDescriptor = FetchDescriptor<RestaurantTable>(
                     predicate: #Predicate<RestaurantTable> { $0.tableNumber == tableNumber }
@@ -1260,18 +1326,23 @@ final class SyncEngine: ObservableObject {
                         if activeSession.sessionToken != sessionToken {
                             activeSession.sessionToken = sessionToken
                         }
+                        let remoteGuestCount = (session["guest_count"] as? Int) ?? (session["guestCount"] as? Int) ?? 2
+                        if activeSession.guestCount != remoteGuestCount {
+                            activeSession.guestCount = remoteGuestCount
+                        }
                         if table.status != "occupied" {
                             table.status = "occupied"
                             table.updatedAt = Date()
                         }
                     } else {
                         // No active session locally. Create one and mark occupied!
-                        let newSession = TableSession(sessionToken: sessionToken, startedAt: Date(), isActive: true, table: table)
+                        let remoteGuestCount = (session["guest_count"] as? Int) ?? (session["guestCount"] as? Int) ?? 2
+                        let newSession = TableSession(sessionToken: sessionToken, startedAt: Date(), isActive: true, table: table, guestCount: remoteGuestCount)
                         modelContext.insert(newSession)
                         table.status = "occupied"
                         table.updatedAt = Date()
                         #if DEBUG
-                        print("SyncEngine [Session Pull]: Active session detected for Table \(tableNumber). Status set to occupied.")
+                        print("SyncEngine [Session Pull]: Active session detected for Table \(tableNumber) with \(remoteGuestCount) guests. Status set to occupied.")
                         #endif
                     }
                 }
@@ -1298,7 +1369,9 @@ final class SyncEngine: ObservableObject {
                 }
             }
             
-            self.activeRequests = newRequests
+            await MainActor.run {
+                self.activeRequests = newRequests
+            }
         } catch {
             print("SyncEngine [Service Requests Sync Error]: \(error.localizedDescription)")
         }
@@ -1346,7 +1419,7 @@ final class SyncEngine: ObservableObject {
         task.resume()
         
         // Listen to incoming messages
-        listenToWebSocket()
+        listenToWebSocket(modelContext: modelContext)
         
         // Join realtime topic
         joinRealtimeTopic()
@@ -1358,56 +1431,50 @@ final class SyncEngine: ObservableObject {
         reconnectAttempt = 0
     }
     
-    private func listenToWebSocket() {
+    private func listenToWebSocket(modelContext: ModelContext) {
         webSocketTask?.receive { [weak self] result in
             guard let self = self else { return }
-            Task { @MainActor in
-                guard let modelContext = self.cachedModelContext else { return }
-                switch result {
-                case .success(let message):
-                    switch message {
-                    case .string(let text):
+            switch result {
+            case .success(let message):
+                switch message {
+                case .string(let text):
+                    self.handleWebSocketMessage(text, modelContext: modelContext)
+                case .data(let data):
+                    if let text = String(data: data, encoding: .utf8) {
                         self.handleWebSocketMessage(text, modelContext: modelContext)
-                    case .data(let data):
-                        if let text = String(data: data, encoding: .utf8) {
-                            self.handleWebSocketMessage(text, modelContext: modelContext)
-                        }
-                    @unknown default:
-                        break
                     }
-                    // Keep listening
-                    self.listenToWebSocket()
-                case .failure(let error):
-                    print("SyncEngine WebSocket error: \(error.localizedDescription)")
-                    self.webSocketTask = nil
-                    self.heartbeatTimer?.invalidate()
-                    self.heartbeatTimer = nil
-                    
-                    // Exponential backoff: 2s → 4s → 8s → 16s → 30s max
-                    let delay = min(self.maxReconnectDelay, pow(2.0, Double(self.reconnectAttempt)) * 1.0)
-                    // Add jitter (±25%) to prevent thundering herd
-                    let jitter = delay * Double.random(in: -0.25...0.25)
-                    let finalDelay = max(1.0, delay + jitter)
-                    self.reconnectAttempt += 1
-                    
-                    #if DEBUG
-                    print("SyncEngine: Reconnecting in \(String(format: "%.1f", finalDelay))s (attempt \(self.reconnectAttempt))")
-                    #endif
-                    
-                    DispatchQueue.main.asyncAfter(deadline: .now() + finalDelay) {
-                        Task { @MainActor in
-                            if let context = self.cachedModelContext {
-                                self.startRealtimeSync(modelContext: context)
-                            }
-                        }
-                    }
+                @unknown default:
+                    break
+                }
+                // Keep listening
+                self.listenToWebSocket(modelContext: modelContext)
+            case .failure(let error):
+                print("SyncEngine WebSocket error: \(error.localizedDescription)")
+                self.webSocketTask = nil
+                self.heartbeatTimer?.invalidate()
+                self.heartbeatTimer = nil
+                
+                // Exponential backoff: 2s → 4s → 8s → 16s → 30s max
+                let delay = min(maxReconnectDelay, pow(2.0, Double(reconnectAttempt)) * 1.0)
+                // Add jitter (±25%) to prevent thundering herd
+                let jitter = delay * Double.random(in: -0.25...0.25)
+                let finalDelay = max(1.0, delay + jitter)
+                reconnectAttempt += 1
+                
+                #if DEBUG
+                print("SyncEngine: Reconnecting in \(String(format: "%.1f", finalDelay))s (attempt \(reconnectAttempt))")
+                #endif
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + finalDelay) {
+                    self.startRealtimeSync(modelContext: modelContext)
                 }
             }
         }
     }
     
     private func joinRealtimeTopic() {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let rawMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = rawMerchantId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? config.defaultMerchantId.lowercased() : rawMerchantId.lowercased()
         
         let joinPayload: [String: Any] = [
             "topic": "realtime:public",
@@ -1444,26 +1511,22 @@ final class SyncEngine: ObservableObject {
         heartbeatTimer?.invalidate()
         heartbeatTimer = nil
         
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            Task { @MainActor in
-                guard let task = self.webSocketTask else {
-                    self.heartbeatTimer?.invalidate()
-                    self.heartbeatTimer = nil
-                    return
-                }
-                let heartbeat: [String: Any] = [
-                    "topic": "phoenix",
-                    "event": "heartbeat",
-                    "payload": [:],
-                    "ref": "heartbeat"
-                ]
-                if let data = try? JSONSerialization.data(withJSONObject: heartbeat, options: []),
-                   let jsonString = String(data: data, encoding: .utf8) {
-                    task.send(.string(jsonString)) { error in
-                        if let error = error {
-                            print("SyncEngine heartbeat failed: \(error)")
-                        }
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: true) { [weak self] timer in
+            guard let self = self, let task = self.webSocketTask else {
+                timer.invalidate()
+                return
+            }
+            let heartbeat: [String: Any] = [
+                "topic": "phoenix",
+                "event": "heartbeat",
+                "payload": [:],
+                "ref": "heartbeat"
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: heartbeat, options: []),
+               let jsonString = String(data: data, encoding: .utf8) {
+                task.send(.string(jsonString)) { error in
+                    if let error = error {
+                        print("SyncEngine heartbeat failed: \(error)")
                     }
                 }
             }
@@ -1516,7 +1579,7 @@ final class SyncEngine: ObservableObject {
         realtimeDebounceWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
-            Task { @MainActor in
+            Task {
                 #if DEBUG
                 print("SyncEngine [Realtime]: Database change detected. Performing debounced pull...")
                 #endif
@@ -1597,7 +1660,7 @@ final class SyncEngine: ObservableObject {
                 content: content,
                 trigger: trigger
             )
-            UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+            try? await UNUserNotificationCenter.current().add(request)
         }
     }
     

@@ -41,6 +41,7 @@ struct Order: Codable, Identifiable, Hashable {
     var status: String // "preparing", "ready", "served", "completed", "cancelled"
     let createdAt: String
     var items: [OrderItem]
+    var sessionToken: String?
 }
 
 struct Employee: Codable, Identifiable, Hashable {

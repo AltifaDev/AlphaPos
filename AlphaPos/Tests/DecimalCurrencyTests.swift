@@ -55,7 +55,7 @@ enum DecimalCurrencyTests {
         let decimalVal = Decimal(string: "9999999.99")!
         
         // Double arithmetic
-        let doubleResult = doubleVal * 1.07  // Adding 7% tax
+        _ = doubleVal * 1.07  // Adding 7% tax
         // This may have floating point errors
         
         // Decimal arithmetic

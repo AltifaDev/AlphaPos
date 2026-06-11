@@ -65,7 +65,7 @@ struct MainDashboardView: View {
         var gradient: LinearGradient {
             switch self {
             case .tables:     return APGradient.accent
-            case .pos:        return LinearGradient(colors: [Color(hex: "6C63FF"), Color(hex: "818CF8")], startPoint: .leading, endPoint: .trailing)
+            case .pos:        return LinearGradient(colors: [Color.appAccent, Color(hex: "60A5FA")], startPoint: .leading, endPoint: .trailing)
             case .kitchen:    return LinearGradient(colors: [Color(hex: "F59E0B"), Color(hex: "FB923C")], startPoint: .leading, endPoint: .trailing)
             case .timecard:   return APGradient.positive
             case .inventory:  return LinearGradient(colors: [Color(hex: "0EA5E9"), Color(hex: "6366F1")], startPoint: .leading, endPoint: .trailing)
@@ -79,8 +79,8 @@ struct MainDashboardView: View {
 
         var iconColor: Color {
             switch self {
-            case .tables:     return Color(hex: "6C63FF")
-            case .pos:        return Color(hex: "818CF8")
+            case .tables:     return Color.appAccent
+            case .pos:        return Color(hex: "60A5FA")
             case .kitchen:    return Color(hex: "F59E0B")
             case .timecard:   return Color(hex: "34D399")
             case .inventory:  return Color(hex: "0EA5E9")
@@ -188,7 +188,7 @@ struct MainDashboardView: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(APGradient.accent)
                     .frame(width: 40, height: 40)
-                    .shadow(color: Color(hex: "6C63FF").opacity(0.6), radius: 10, x: 0, y: 4)
+                    .shadow(color: Color.appAccent.opacity(0.6), radius: 10, x: 0, y: 4)
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 20, weight: .black))
                     .foregroundColor(.white)
@@ -263,7 +263,7 @@ struct MainDashboardView: View {
         case .idle:
             return .appTeal
         case .syncing:
-            return Color(hex: "6C63FF")
+            return Color.appAccent
         case .error:
             return .red
         case .offline:

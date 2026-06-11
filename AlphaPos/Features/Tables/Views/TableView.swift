@@ -46,7 +46,7 @@ struct TableView: View {
                 VStack(spacing: 0) {
                     // Responsive Header
                     Group {
-                        if headerWidth == 0 || headerWidth < 960 {
+                        if headerWidth == 0 || headerWidth < 780 {
                             compactHeader
                         } else {
                             wideHeader
@@ -151,9 +151,40 @@ struct TableView: View {
                                 if !isEditingLayout {
                                     let leader = table.joinedParent ?? table
                                     if let session = leader.sessions.first(where: { $0.isActive }) {
-                                        activeSession = session
-                                        selectedTab = .pos
-                                        APHaptic.trigger()
+                                        if Calendar.current.isDateInToday(session.startedAt) {
+                                            activeSession = session
+                                            selectedTab = .pos
+                                            APHaptic.trigger()
+                                        } else {
+                                            // Close stale session
+                                            session.isActive = false
+                                            session.endedAt = Date()
+                                            session.isSynced = false
+                                            session.updatedAt = Date()
+                                            
+                                            let tNum = leader.tableNumber
+                                            Task {
+                                                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: tNum)
+                                            }
+                                            
+                                            // Auto-start vacant table session
+                                            let newSession = TableSession(sessionToken: UUID().uuidString, startedAt: Date(), isActive: true, table: leader, guestCount: leader.capacity)
+                                            modelContext.insert(newSession)
+                                            leader.sessions.append(newSession)
+                                            leader.status = "occupied"
+                                            for child in leader.joinedChildren {
+                                                child.status = "occupied"
+                                            }
+                                            leader.updatedAt = Date()
+                                            for child in leader.joinedChildren {
+                                                child.updatedAt = Date()
+                                            }
+                                            try? modelContext.save()
+                                            
+                                            activeSession = newSession
+                                            selectedTab = .pos
+                                            APHaptic.trigger()
+                                        }
                                     } else {
                                         // Auto-start vacant table session
                                         let newSession = TableSession(sessionToken: UUID().uuidString, startedAt: Date(), isActive: true, table: leader, guestCount: leader.capacity)
@@ -399,6 +430,8 @@ struct TableView: View {
                 .font(.caption2)
                 .fontWeight(.semibold)
                 .foregroundColor(.textSecondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
     }
     
@@ -542,26 +575,114 @@ struct TableView: View {
     
     // MARK: - Header Layout Components
     
+    // MARK: - Premium Redesigned Header Elements
+
     @ViewBuilder
-    private var headerTitleAndStatus: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Table Management")
-                .font(.title3)
-                .fontWeight(.bold)
-                .foregroundColor(.textPrimary)
-            
-            // Compact Status Summary
-            HStack(spacing: 8) {
-                statusDot(color: .appTeal, label: "Vacant", count: countTables(status: "vacant"))
-                statusDot(color: .appRose, label: "Occupied", count: countTables(status: "occupied"))
-                statusDot(color: .appAmber, label: "Reserved", count: countTables(status: "reserved"))
-                statusDot(color: .appAccent, label: "Cleaning", count: countTables(status: "cleaning"))
-            }
+    private var modernStatusWidget: some View {
+        HStack(spacing: 12) {
+            modernStatusDot(color: .appTeal, label: "Vacant", count: countTables(status: "vacant"))
+            modernStatusDot(color: .appRose, label: "Occupied", count: countTables(status: "occupied"))
+            modernStatusDot(color: .appAmber, label: "Reserved", count: countTables(status: "reserved"))
+            modernStatusDot(color: .appAccent, label: "Cleaning", count: countTables(status: "cleaning"))
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.appSurfaceHigh.opacity(0.6))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.appBorderSubtle, lineWidth: 1)
+        )
     }
     
+    private func modernStatusDot(color: Color, label: String, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text("\(count)")
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(color)
+                .clipShape(Capsule())
+                .scaleEffect(count > 0 ? 1.08 : 1.0)
+                .animation(.spring(response: 0.25, dampingFraction: 0.6), value: count)
+            
+            Text(label)
+                .font(.caption2)
+                .fontWeight(.bold)
+                .foregroundColor(.textSecondary)
+        }
+    }
+
     @ViewBuilder
-    private var findTableButton: some View {
+    private var customFloorPicker: some View {
+        HStack(spacing: 0) {
+            ForEach([1, 2, 3], id: \.self) { floor in
+                let isSelected = selectedFloor == floor
+                let title = floor == 1 ? "1st Floor" : (floor == 2 ? "2nd Floor" : "3rd Floor")
+                Text(title)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(isSelected ? .textPrimary : .textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 30)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(isSelected ? Color.appBackground : Color.clear)
+                            .shadow(color: isSelected ? Color.black.opacity(0.12) : .clear, radius: 2, y: 1)
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            selectedFloor = floor
+                            APHaptic.trigger()
+                        }
+                    }
+            }
+        }
+        .padding(3)
+        .background(Color.appSurfaceHigh)
+        .cornerRadius(10)
+        .frame(width: 270)
+    }
+
+    @ViewBuilder
+    private var quickActionsBar: some View {
+        HStack(spacing: 4) {
+            findTableCompactButton
+            
+            Divider()
+                .frame(width: 1, height: 16)
+                .background(Color.appBorderSubtle)
+                .padding(.horizontal, 2)
+            
+            printQRCodesCompactButton
+            
+            Divider()
+                .frame(width: 1, height: 16)
+                .background(Color.appBorderSubtle)
+                .padding(.horizontal, 2)
+            
+            lockPanZoomCompactButton
+            
+            Divider()
+                .frame(width: 1, height: 16)
+                .background(Color.appBorderSubtle)
+                .padding(.horizontal, 2)
+            
+            editLayoutSwitchCompactButton
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(Color.appSurfaceHigh)
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.appBorderSubtle, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private var findTableCompactButton: some View {
         let activeTables = tables.filter { !$0.isDeleted && ($0.floor ?? 1) == selectedFloor }
         if !activeTables.isEmpty {
             Menu {
@@ -581,137 +702,96 @@ struct TableView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(isMovementLocked ? .textSecondary.opacity(0.6) : .appAccent)
-                    Text("Find Table")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(isMovementLocked ? .textSecondary.opacity(0.6) : .textPrimary)
-                    Image(systemName: "chevron.down")
-                        .font(.caption)
-                        .foregroundColor(isMovementLocked ? .textSecondary.opacity(0.4) : .textSecondary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.appSurfaceHigh)
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(isMovementLocked ? Color.appBorderSubtle.opacity(0.5) : Color.appBorderSubtle, lineWidth: 1)
-                )
-                .opacity(isMovementLocked ? 0.5 : 1.0)
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(isMovementLocked ? .textSecondary.opacity(0.4) : .appAccent)
+                    .frame(width: 32, height: 32)
+                    .background(Color.clear)
+                    .contentShape(Rectangle())
             }
             .disabled(isMovementLocked)
         }
     }
-    
-    @ViewBuilder
-    private var floorPicker: some View {
-        Picker("Floor", selection: $selectedFloor) {
-            Text("1st Floor").tag(1)
-            Text("2nd Floor").tag(2)
-            Text("3rd Floor").tag(3)
-        }
-        .pickerStyle(.segmented)
-        .frame(width: 280)
-    }
-    
-    @ViewBuilder
-    private var lockPanZoomButton: some View {
-        Button(action: {
-            isMovementLocked.toggle()
-            APHaptic.trigger()
-        }) {
-            HStack(spacing: 6) {
-                Image(systemName: isMovementLocked ? "lock.fill" : "lock.open.fill")
-                    .foregroundColor(isMovementLocked ? .appRose : .textSecondary)
-                Text(isMovementLocked ? "Locked" : "Lock Pan/Zoom")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.textSecondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(isMovementLocked ? Color.appRose.opacity(0.1) : Color.appSurfaceHigh)
-            .cornerRadius(8)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(isMovementLocked ? Color.appRose.opacity(0.2) : Color.appBorderSubtle, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-    
-    @ViewBuilder
-    private var editLayoutSwitch: some View {
-        HStack(spacing: 6) {
-            Toggle("Edit Layout", isOn: editLayoutBinding)
-                .toggleStyle(SwitchToggleStyle(tint: .appAccent))
-                .labelsHidden()
-            Text("Edit Layout")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundColor(.textSecondary)
-        }
-    }
 
     @ViewBuilder
-    private var printQRCodesButton: some View {
+    private var printQRCodesCompactButton: some View {
         Button(action: {
             showingBatchQRSheet = true
             APHaptic.trigger()
         }) {
-            HStack(spacing: 6) {
-                Image(systemName: "qrcode")
-                    .foregroundColor(.appAccent)
-                Text("Print QR Codes")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.textSecondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.appSurfaceHigh)
-            .cornerRadius(8)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.appBorderSubtle, lineWidth: 1)
-            )
+            Image(systemName: "qrcode")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundColor(.textPrimary)
+                .frame(width: 32, height: 32)
+                .background(Color.clear)
         }
         .buttonStyle(.plain)
     }
-    
+
     @ViewBuilder
-    private var compactHeader: some View {
-        VStack(spacing: 12) {
-            HStack {
-                headerTitleAndStatus
-                Spacer()
-                printQRCodesButton
-                findTableButton
-            }
-            HStack {
-                floorPicker
-                Spacer()
-                HStack(spacing: 16) {
-                    lockPanZoomButton
-                    editLayoutSwitch
+    private var lockPanZoomCompactButton: some View {
+        Button(action: {
+            isMovementLocked.toggle()
+            APHaptic.trigger()
+        }) {
+            Image(systemName: isMovementLocked ? "lock.fill" : "lock.open.fill")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundColor(isMovementLocked ? .appRose : .textSecondary)
+                .frame(width: 32, height: 32)
+                .background(isMovementLocked ? Color.appRose.opacity(0.12) : Color.clear)
+                .cornerRadius(6)
+                .scaleEffect(isMovementLocked ? 1.05 : 1.0)
+                .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isMovementLocked)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var editLayoutSwitchCompactButton: some View {
+        Button(action: {
+            let currentEdit = isEditingLayout
+            if !currentEdit {
+                checkManagerPermission(for: .toggleEditLayout(true))
+            } else {
+                isEditingLayout = false
+                Task {
+                    await SyncEngine.shared.syncAll(modelContext: modelContext)
                 }
             }
+            APHaptic.trigger()
+        }) {
+            Image(systemName: isEditingLayout ? "pencil.and.outline" : "pencil")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundColor(isEditingLayout ? .appAccent : .textSecondary)
+                .frame(width: 32, height: 32)
+                .background(isEditingLayout ? Color.appAccent.opacity(0.12) : Color.clear)
+                .cornerRadius(6)
+                .scaleEffect(isEditingLayout ? 1.05 : 1.0)
+                .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isEditingLayout)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var compactHeader: some View {
+        VStack(spacing: 8) {
+            HStack {
+                modernStatusWidget
+                Spacer()
+                quickActionsBar
+            }
+            customFloorPicker
         }
     }
-    
+
     @ViewBuilder
     private var wideHeader: some View {
         HStack(spacing: 16) {
-            headerTitleAndStatus
+            modernStatusWidget
             Spacer()
-            printQRCodesButton
-            findTableButton
-            floorPicker
-            lockPanZoomButton
-            editLayoutSwitch
+            customFloorPicker
+            Spacer()
+            quickActionsBar
         }
     }
     
@@ -835,7 +915,12 @@ struct TableDetailView: View {
     
     var activeSession: TableSession? {
         let leader = table.joinedParent ?? table
-        return leader.sessions.first(where: { $0.isActive })
+        if let session = leader.sessions.first(where: { $0.isActive }) {
+            if Calendar.current.isDateInToday(session.startedAt) {
+                return session
+            }
+        }
+        return nil
     }
     
     private func updateGroupStatus(_ newStatus: String) {
@@ -883,7 +968,7 @@ struct TableDetailView: View {
                         // LEFT PANEL: Visual Table Preview
                         VStack(spacing: 16) {
                             let leader = table.joinedParent ?? table
-                            let activeSession = leader.sessions.first(where: { $0.isActive })
+                            let activeSession = leader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
                             let itemCount = activeSession?.orders.reduce(0) { total, order in
                                 total + order.items.reduce(0) { subtotal, item in subtotal + item.quantity }
                             } ?? 0
@@ -1591,7 +1676,7 @@ struct InteractiveTableCard: View {
     var body: some View {
         let statusCol = statusColor(table.status)
         let leader = table.joinedParent ?? table
-        let activeSession = leader.sessions.first(where: { $0.isActive })
+        let activeSession = leader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
         let itemCount = activeSession?.orders.reduce(0) { total, order in
             total + order.items.reduce(0) { subtotal, item in subtotal + item.quantity }
         } ?? 0

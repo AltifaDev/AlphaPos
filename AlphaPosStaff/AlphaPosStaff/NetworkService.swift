@@ -51,6 +51,13 @@ final class NetworkService {
     var kitchenWorkflowRequired = true
     
     @ObservationIgnored
+    private var notifiedRequestIds = Set<String>()
+    @ObservationIgnored
+    private var notifiedOrderIds = Set<String>()
+    @ObservationIgnored
+    private var notifiedTableStatuses: [String: String] = [:]
+    
+    @ObservationIgnored
     private var _isCurrentlySyncing = false
     private let syncLock = NSLock()
     private var isCurrentlySyncing: Bool {
@@ -59,6 +66,11 @@ final class NetworkService {
     }
     
     private var isFirstSync = true
+    
+    private var activeMerchantId: String {
+        let raw = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.defaultMerchantId
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? AppConfig.defaultMerchantId.lowercased() : raw.lowercased()
+    }
     
     private init() {
         setupLifecycleObservers()
@@ -122,7 +134,7 @@ final class NetworkService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         // Dynamic merchant scoping
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.defaultMerchantId
+        let merchantId = self.activeMerchantId
         request.setValue(merchantId, forHTTPHeaderField: "x-merchant-id")
         
         request.timeoutInterval = 5.0
@@ -192,62 +204,89 @@ final class NetworkService {
                 
                 // Diff-checking for notifications
                 if !self.isFirstSync {
-                    // 1. Service Requests Diff
-                    let oldPendingIds = Set(oldRequests.filter { $0.status == "pending" }.map { $0.id })
-                    let newPendingRequests = requestsRes.filter { $0.status == "pending" }
-                    for req in newPendingRequests {
-                        if !oldPendingIds.contains(req.id) {
-                            NotificationManager.shared.triggerNotification(
-                                title: "🔔 Table \(req.tableNumber): \(req.requestType)",
-                                body: "Customer requested assistance at \(self.formatISOStringTime(req.createdAt))"
-                            )
+                    let notificationsEnabled = UserDefaults.standard.object(forKey: "enable_notifications") as? Bool ?? true
+                    if notificationsEnabled {
+                        // 1. Service Requests Diff
+                        let oldPendingIds = Set(oldRequests.filter { $0.status == "pending" }.map { $0.id })
+                        let newPendingRequests = requestsRes.filter { $0.status == "pending" }
+                        for req in newPendingRequests {
+                            if !oldPendingIds.contains(req.id) && !self.notifiedRequestIds.contains(req.id) {
+                                self.notifiedRequestIds.insert(req.id)
+                                let title = "🔔 Table \(req.tableNumber): \(req.requestType)"
+                                let body = "Customer requested assistance at \(self.formatISOStringTime(req.createdAt))"
+                                NotificationManager.shared.triggerNotification(title: title, body: body)
+                                InAppNotificationManager.shared.show(title: title, body: body, type: .request)
+                            }
                         }
-                    }
-                    
-                    // 2. Table Status Diff
-                    for table in tablesRes {
-                        if let oldTable = oldTables.first(where: { $0.tableNumber == table.tableNumber }) {
-                            if oldTable.status != table.status {
-                                if table.status == "occupied" {
-                                    NotificationManager.shared.triggerNotification(
-                                        title: "🚪 Table \(table.tableNumber) Occupied",
-                                        body: "Session started for \(table.guestCount) guests"
-                                    )
-                                } else if table.status == "vacant" && oldTable.status == "occupied" {
-                                    NotificationManager.shared.triggerNotification(
-                                        title: "💳 Table \(table.tableNumber) Vacant",
-                                        body: "Session ended / table cleared"
-                                    )
+                        
+                        // 2. Table Status Diff
+                        for table in tablesRes {
+                            if let oldTable = oldTables.first(where: { $0.tableNumber == table.tableNumber }) {
+                                if oldTable.status != table.status {
+                                    let notifiedStatus = self.notifiedTableStatuses[table.tableNumber]
+                                    if notifiedStatus != table.status {
+                                        self.notifiedTableStatuses[table.tableNumber] = table.status
+                                        if table.status == "occupied" {
+                                            let title = "🚪 Table \(table.tableNumber) Occupied"
+                                            let body = "Session started for \(table.guestCount) guests"
+                                            NotificationManager.shared.triggerNotification(title: title, body: body)
+                                            InAppNotificationManager.shared.show(title: title, body: body, type: .table)
+                                        } else if table.status == "vacant" && oldTable.status == "occupied" {
+                                            let title = "💳 Table \(table.tableNumber) Vacant"
+                                            let body = "Session ended / table cleared"
+                                            NotificationManager.shared.triggerNotification(title: title, body: body)
+                                            InAppNotificationManager.shared.show(title: title, body: body, type: .table)
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                    
-                    // 3. Order Status Diff
-                    for order in ordersRes {
-                        if let oldOrder = oldOrders.first(where: { $0.id == order.id }) {
-                            if oldOrder.status != order.status {
-                                if order.status.lowercased() == "ready" {
-                                    let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
-                                    NotificationManager.shared.triggerNotification(
-                                        title: "🍳 Order \(order.orderNumber) Ready!",
-                                        body: "Table \(order.tableNumber): \(itemsSummary)"
-                                    )
+                        
+                        // 3. Order Status Diff
+                        for order in ordersRes {
+                            let statusLower = order.status.lowercased()
+                            if let oldOrder = oldOrders.first(where: { $0.id == order.id }) {
+                                if oldOrder.status != order.status {
+                                    if statusLower == "ready" {
+                                        let notificationKey = "\(order.id)-ready"
+                                        if !self.notifiedOrderIds.contains(notificationKey) {
+                                            self.notifiedOrderIds.insert(notificationKey)
+                                            let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
+                                            let title = "🍳 Order \(order.orderNumber) Ready!"
+                                            let body = "Table \(order.tableNumber): \(itemsSummary)"
+                                            NotificationManager.shared.triggerNotification(title: title, body: body)
+                                            InAppNotificationManager.shared.show(title: title, body: body, type: .order)
+                                        }
+                                    }
                                 }
-                            }
-                        } else {
-                            if order.status.lowercased() == "preparing" || order.status.lowercased() == "ready" {
-                                let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
-                                NotificationManager.shared.triggerNotification(
-                                    title: "📝 New Order \(order.orderNumber)",
-                                    body: "Table \(order.tableNumber): \(itemsSummary) (Total: ฿\(Int(order.total)))"
-                                )
+                            } else {
+                                if statusLower == "preparing" || statusLower == "ready" {
+                                    let notificationKey = "\(order.id)-\(statusLower)"
+                                    if !self.notifiedOrderIds.contains(notificationKey) {
+                                        self.notifiedOrderIds.insert(notificationKey)
+                                        let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
+                                        let title = statusLower == "ready" ? "🍳 Order \(order.orderNumber) Ready!" : "📝 New Order \(order.orderNumber)"
+                                        let body = "Table \(order.tableNumber): \(itemsSummary) (Total: ฿\(Int(order.total)))"
+                                        NotificationManager.shared.triggerNotification(title: title, body: body)
+                                        InAppNotificationManager.shared.show(title: title, body: body, type: .order)
+                                    }
+                                }
                             }
                         }
                     }
                 } else {
                     self.isFirstSync = false
                 }
+                
+                // Clean up tracking sets to prevent memory leaking
+                self.notifiedRequestIds = self.notifiedRequestIds.intersection(Set(requestsRes.map { $0.id }))
+                var validOrderKeys = Set<String>()
+                for order in ordersRes {
+                    validOrderKeys.insert("\(order.id)-preparing")
+                    validOrderKeys.insert("\(order.id)-ready")
+                    validOrderKeys.insert("\(order.id)-served")
+                }
+                self.notifiedOrderIds = self.notifiedOrderIds.intersection(validOrderKeys)
                 
                 // Initialize WebSocket Realtime task
                 self.startRealtimeSync()
@@ -345,7 +384,7 @@ final class NetworkService {
         
         return dynamicTables.map { num, cap, floor, posX, posY, dbStatus in
             if let session = activeSessionsMap[num] {
-                let guestCount = session["guest_count"] as? Int ?? 1
+                let guestCount = session["guest_count"] as? Int ?? 2
                 let token = session["session_token"] as? String
                 let total = tableTotals[num] ?? 0.0
                 return RestaurantTable(
@@ -408,8 +447,8 @@ final class NetworkService {
     func fetchRequests() async throws -> [ServiceRequest] {
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "service_requests", queryItems: [
             URLQueryItem(name: "select", value: "*"),
-            URLQueryItem(name: "status", value: "eq.pending"),
-            URLQueryItem(name: "order", value: "created_at.desc")
+            URLQueryItem(name: "order", value: "created_at.desc"),
+            URLQueryItem(name: "limit", value: "20")
         ])
         let jsonArray = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
         return jsonArray.map { dict in
@@ -516,6 +555,21 @@ final class NetworkService {
     }
     
     func fetchTableOrders(tableNumber: String, sessionToken: String) async throws -> [Order] {
+        // Primary strategy: filter orders by session_token directly (most accurate, no race condition)
+        let directData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
+            URLQueryItem(name: "select", value: "*,order_items(*)"),
+            URLQueryItem(name: "table_number", value: "eq.\(tableNumber)"),
+            URLQueryItem(name: "session_token", value: "eq.\(sessionToken)"),
+            URLQueryItem(name: "status", value: "neq.cancelled")
+        ])
+        let directArray = (try? JSONSerialization.jsonObject(with: directData) as? [[String: Any]]) ?? []
+        
+        // If we found orders via session_token, use them directly
+        if !directArray.isEmpty {
+            return parseOrders(directArray)
+        }
+        
+        // Fallback: use session start timestamp for orders created before session_token column was added
         let sessionData = try await sendSupabaseRequest(method: "GET", endpoint: "table_sessions", queryItems: [
             URLQueryItem(name: "select", value: "created_at"),
             URLQueryItem(name: "table_number", value: "eq.\(tableNumber)"),
@@ -527,19 +581,23 @@ final class NetworkService {
             return []
         }
         
-        // Normalize timestamp string to prevent "+" timezone characters being decoded as spaces in URL query parameters
+        // Normalize timestamp — prevent "+" timezone chars from becoming spaces in URL query
         var normalizedStart = sessionStart
         if let plusIndex = sessionStart.firstIndex(of: "+") {
             normalizedStart = String(sessionStart[..<plusIndex]) + "Z"
         }
         
-        let ordersData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
+        let fallbackData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
             URLQueryItem(name: "select", value: "*,order_items(*)"),
             URLQueryItem(name: "table_number", value: "eq.\(tableNumber)"),
-            URLQueryItem(name: "created_at", value: "gte.\(normalizedStart)")
+            URLQueryItem(name: "created_at", value: "gte.\(normalizedStart)"),
+            URLQueryItem(name: "status", value: "neq.cancelled")
         ])
-        let jsonArray = (try? JSONSerialization.jsonObject(with: ordersData) as? [[String: Any]]) ?? []
-        
+        let fallbackArray = (try? JSONSerialization.jsonObject(with: fallbackData) as? [[String: Any]]) ?? []
+        return parseOrders(fallbackArray)
+    }
+    
+    private func parseOrders(_ jsonArray: [[String: Any]]) -> [Order] {
         return jsonArray.map { dict in
             let items = (dict["order_items"] as? [[String: Any]] ?? []).map { itemDict in
                 OrderItem(
@@ -558,7 +616,8 @@ final class NetworkService {
                 total: dict["total"] as? Double ?? 0.0,
                 status: dict["status"] as? String ?? "preparing",
                 createdAt: dict["created_at"] as? String ?? "",
-                items: items
+                items: items,
+                sessionToken: dict["session_token"] as? String
             )
         }
     }
@@ -566,7 +625,9 @@ final class NetworkService {
     func fetchAllActiveOrders() async throws -> [Order] {
         let ordersData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
             URLQueryItem(name: "select", value: "*,order_items(*)"),
-            URLQueryItem(name: "status", value: "in.(preparing,ready)")
+            URLQueryItem(name: "status", value: "in.(preparing,ready,served,completed)"),
+            URLQueryItem(name: "order", value: "created_at.desc"),
+            URLQueryItem(name: "limit", value: "30")
         ])
         let jsonArray = (try? JSONSerialization.jsonObject(with: ordersData) as? [[String: Any]]) ?? []
         return jsonArray.map { dict in
@@ -587,18 +648,49 @@ final class NetworkService {
                 total: dict["total"] as? Double ?? 0.0,
                 status: dict["status"] as? String ?? "preparing",
                 createdAt: dict["created_at"] as? String ?? "",
-                items: items
+                items: items,
+                sessionToken: dict["session_token"] as? String
             )
         }
     }
     
+    func fetchOrderById(_ orderId: String) async throws -> Order? {
+        let ordersData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
+            URLQueryItem(name: "select", value: "*,order_items(*)"),
+            URLQueryItem(name: "id", value: "eq.\(orderId)")
+        ])
+        let jsonArray = (try? JSONSerialization.jsonObject(with: ordersData) as? [[String: Any]]) ?? []
+        guard let dict = jsonArray.first else { return nil }
+        
+        let items = (dict["order_items"] as? [[String: Any]] ?? []).map { itemDict in
+            OrderItem(
+                id: itemDict["id"] as? String ?? "",
+                name: itemDict["item_name"] as? String ?? "",
+                quantity: itemDict["quantity"] as? Int ?? 1,
+                price: itemDict["price"] as? Double ?? 0.0,
+                status: itemDict["status"] as? String ?? "cooking",
+                item_id: itemDict["item_id"] as? String
+            )
+        }
+        return Order(
+            id: dict["id"] as? String ?? "",
+            orderNumber: dict["order_number"] as? String ?? "",
+            tableNumber: dict["table_number"] as? String ?? "",
+            total: dict["total"] as? Double ?? 0.0,
+            status: dict["status"] as? String ?? "preparing",
+            createdAt: dict["created_at"] as? String ?? "",
+            items: items,
+            sessionToken: dict["session_token"] as? String
+        )
+    }
+    
     // POST triggers
     func openSession(tableNumber: String, guestCount: Int) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.defaultMerchantId
+        let merchantId = self.activeMerchantId
         let payload: [String: Any] = [
             "id": UUID().uuidString,
             "table_number": tableNumber,
-            "session_token": "session-" + Math.randomString(length: 12),
+            "session_token": UUID().uuidString,
             "is_active": 1,
             "guest_count": guestCount,
             "created_at": ISO8601DateFormatter().string(from: Date()),
@@ -638,6 +730,23 @@ final class NetworkService {
         return true
     }
     
+    func serveOrder(orderId: String) async throws -> Bool {
+        _ = try await sendSupabaseRequest(
+            method: "PATCH",
+            endpoint: "orders",
+            queryItems: [URLQueryItem(name: "id", value: "eq.\(orderId)")],
+            payload: ["status": "served"]
+        )
+        _ = try await sendSupabaseRequest(
+            method: "PATCH",
+            endpoint: "order_items",
+            queryItems: [URLQueryItem(name: "order_id", value: "eq.\(orderId)")],
+            payload: ["status": "served"]
+        )
+        await refreshAll()
+        return true
+    }
+    
     func deleteOrderItem(itemId: String) async throws -> Bool {
         _ = try await sendSupabaseRequest(
             method: "DELETE",
@@ -648,17 +757,21 @@ final class NetworkService {
         return true
     }
     
-    func uploadOrder(orderId: String, orderNumber: String, tableNumber: String, total: Double, items: [[String: Any]]) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.defaultMerchantId
-        let orderPayload: [String: Any] = [
+    func uploadOrder(orderId: String, orderNumber: String, tableNumber: String, total: Double, items: [[String: Any]], sessionToken: String? = nil, guestCount: Int = 2) async throws -> Bool {
+        let merchantId = self.activeMerchantId
+        var orderPayload: [String: Any] = [
             "id": orderId,
             "order_number": orderNumber,
             "table_number": tableNumber,
             "total": total,
             "status": "preparing",
+            "guest_count": guestCount,
             "created_at": ISO8601DateFormatter().string(from: Date()),
             "merchant_id": merchantId
         ]
+        if let token = sessionToken, !token.isEmpty {
+            orderPayload["session_token"] = token
+        }
         _ = try await sendSupabaseRequest(method: "POST", endpoint: "orders", payload: orderPayload)
         
         let orderItems = items.map { item -> [String: Any] in
@@ -681,7 +794,7 @@ final class NetworkService {
     }
     
     func uploadPayment(orderId: String, amount: Double, method: String) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.defaultMerchantId
+        let merchantId = self.activeMerchantId
         let payload: [String: Any] = [
             "id": UUID().uuidString,
             "order_id": orderId,
@@ -709,7 +822,7 @@ final class NetworkService {
 
     
     func uploadTimecard(timecard: Timecard) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.defaultMerchantId
+        let merchantId = self.activeMerchantId
         let formatter = ISO8601DateFormatter()
         let clockInStr = formatter.string(from: Date(timeIntervalSince1970: timecard.clockIn))
         
@@ -815,7 +928,7 @@ final class NetworkService {
     }
     
     private func joinRealtimeTopic() {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.defaultMerchantId
+        let merchantId = self.activeMerchantId
         
         let joinPayload: [String: Any] = [
             "topic": "realtime:public",
@@ -874,6 +987,168 @@ final class NetworkService {
         }
     }
     
+    private func processInstantNotification(table: String, type: String, record: [String: Any]) {
+        Task { @MainActor in
+            let notificationsEnabled = UserDefaults.standard.object(forKey: "enable_notifications") as? Bool ?? true
+            
+            // 1. Service Requests Mutation & Alert
+            if table == "service_requests" {
+                guard let id = record["id"] as? String,
+                      let tableNumber = record["table_number"] as? String,
+                      let requestType = record["request_type"] as? String,
+                      let status = record["status"] as? String else { return }
+                
+                let req = ServiceRequest(
+                    id: id,
+                    tableNumber: tableNumber,
+                    requestType: requestType,
+                    status: status,
+                    createdAt: record["created_at"] as? String ?? ISO8601DateFormatter().string(from: Date())
+                )
+                
+                if type == "DELETE" {
+                    if let idx = self.serviceRequests.firstIndex(where: { $0.id == id }) {
+                        self.serviceRequests.remove(at: idx)
+                    }
+                } else {
+                    if let idx = self.serviceRequests.firstIndex(where: { $0.id == id }) {
+                        self.serviceRequests[idx] = req
+                    } else if status == "pending" {
+                        self.serviceRequests.insert(req, at: 0)
+                    }
+                    
+                    if status == "pending" && notificationsEnabled {
+                        guard !notifiedRequestIds.contains(id) else { return }
+                        notifiedRequestIds.insert(id)
+                        
+                        let title = "🔔 Table \(tableNumber): \(requestType)"
+                        let body = "Customer requested assistance"
+                        NotificationManager.shared.triggerNotification(title: title, body: body)
+                        InAppNotificationManager.shared.show(title: title, body: body, type: .request)
+                    }
+                }
+                
+            // 2. Orders Mutation & Alert
+            } else if table == "orders" {
+                guard let id = record["id"] as? String else { return }
+                
+                if type == "DELETE" {
+                    if let idx = self.orders.firstIndex(where: { $0.id == id }) {
+                        self.orders.remove(at: idx)
+                    }
+                } else {
+                    guard let status = record["status"] as? String else { return }
+                    let tableNumber = record["table_number"] as? String ?? "N/A"
+                    let rawOrderNum = record["order_number"]
+                    let orderNumber: String
+                    if let numStr = rawOrderNum as? String {
+                        orderNumber = numStr
+                    } else if let numInt = rawOrderNum as? Int {
+                        orderNumber = String(numInt)
+                    } else {
+                        orderNumber = "N/A"
+                    }
+                    
+                    let statusLower = status.lowercased()
+                    let notificationKey = "\(id)-\(statusLower)"
+                    
+                    // Trigger instant alert if notifications are enabled
+                    if notificationsEnabled {
+                        if type == "INSERT" {
+                            if statusLower == "preparing" || statusLower == "ready" {
+                                if !notifiedOrderIds.contains(notificationKey) {
+                                    notifiedOrderIds.insert(notificationKey)
+                                    let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "📝 New Order \(orderNumber)"
+                                    let body = "Table \(tableNumber)"
+                                    NotificationManager.shared.triggerNotification(title: title, body: body)
+                                    InAppNotificationManager.shared.show(title: title, body: body, type: .order)
+                                }
+                            }
+                        } else if type == "UPDATE" {
+                            if statusLower == "ready" || statusLower == "served" {
+                                if !notifiedOrderIds.contains(notificationKey) {
+                                    notifiedOrderIds.insert(notificationKey)
+                                    let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "🍽️ Order \(orderNumber) Served"
+                                    let body = statusLower == "ready" ? "Table \(tableNumber) is ready to be served" : "Table \(tableNumber) has been served"
+                                    NotificationManager.shared.triggerNotification(title: title, body: body)
+                                    InAppNotificationManager.shared.show(title: title, body: body, type: .order)
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Fetch the single order + items to mutate self.orders locally
+                    Task {
+                        do {
+                            if let fetchedOrder = try await NetworkService.shared.fetchOrderById(id) {
+                                await MainActor.run {
+                                    if let idx = self.orders.firstIndex(where: { $0.id == fetchedOrder.id }) {
+                                        self.orders[idx] = fetchedOrder
+                                    } else {
+                                        self.orders.insert(fetchedOrder, at: 0)
+                                    }
+                                }
+                            }
+                        } catch {
+                            print("NetworkService [Realtime fetchOrderById failed]: \(error)")
+                        }
+                    }
+                }
+                
+            // 3. Restaurant Tables Mutation & Alert
+            } else if table == "restaurant_tables" {
+                guard let tableNumber = record["table_number"] as? String,
+                      let status = record["status"] as? String else { return }
+                
+                if let idx = self.tables.firstIndex(where: { $0.tableNumber == tableNumber }) {
+                    self.tables[idx].status = status
+                    if status == "vacant" {
+                        self.tables[idx].sessionToken = nil
+                        self.tables[idx].currentTotal = 0.0
+                        self.tables[idx].guestCount = 0
+                    }
+                }
+                
+                if notificationsEnabled {
+                    let notifiedStatus = notifiedTableStatuses[tableNumber]
+                    if notifiedStatus != status {
+                        notifiedTableStatuses[tableNumber] = status
+                        if status == "occupied" {
+                            let guestCount = record["guest_count"] as? Int ?? 0
+                            let title = "🚪 Table \(tableNumber) Occupied"
+                            let body = "Session started for \(guestCount) guests"
+                            NotificationManager.shared.triggerNotification(title: title, body: body)
+                            InAppNotificationManager.shared.show(title: title, body: body, type: .table)
+                        } else if status == "vacant" {
+                            let title = "💳 Table \(tableNumber) Vacant"
+                            let body = "Session ended / table cleared"
+                            NotificationManager.shared.triggerNotification(title: title, body: body)
+                            InAppNotificationManager.shared.show(title: title, body: body, type: .table)
+                        }
+                    }
+                }
+                
+            // 4. Table Sessions Mutation
+            } else if table == "table_sessions" {
+                guard let tableNumber = record["table_number"] as? String,
+                      let isActive = record["is_active"] as? Int else { return }
+                
+                if let idx = self.tables.firstIndex(where: { $0.tableNumber == tableNumber }) {
+                    if isActive == 1 {
+                        self.tables[idx].sessionToken = record["session_token"] as? String
+                        self.tables[idx].guestCount = record["guest_count"] as? Int ?? 0
+                        self.tables[idx].status = "occupied"
+                    } else {
+                        self.tables[idx].sessionToken = nil
+                        self.tables[idx].guestCount = 0
+                        self.tables[idx].status = "vacant"
+                        self.tables[idx].currentTotal = 0.0
+                    }
+                }
+            }
+        }
+    }
+    
     private func handleWebSocketMessage(_ text: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -906,28 +1181,16 @@ final class NetworkService {
         
         guard isPostgresChange else { return }
         
-        // Guard against circular sync: if we are currently pushing data, skip pull
-        guard !isCurrentlySyncing else {
-            #if DEBUG
-            print("NetworkService [Realtime]: Skipping pull — currently syncing (avoiding circular sync).")
-            #endif
-            return
+        // Extract postgres_changes payload:
+        if let payload = json["payload"] as? [String: Any],
+           let dataPayload = payload["data"] as? [String: Any],
+           let table = dataPayload["table"] as? String,
+           let type = dataPayload["type"] as? String {
+            let record = dataPayload["record"] as? [String: Any] ?? dataPayload["old_record"] as? [String: Any] ?? [:]
+            
+            // Process instant notification immediately
+            processInstantNotification(table: table, type: type, record: record)
         }
-        
-        // Debounce: Cancel any pending refresh and schedule a new one after 1.5 seconds.
-        // This batches multiple rapid Realtime events into a single refreshAll() call.
-        realtimeDebounceWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            Task {
-                #if DEBUG
-                print("NetworkService [Realtime]: Database change detected. Performing debounced refreshAll...")
-                #endif
-                await self.refreshAll()
-            }
-        }
-        realtimeDebounceWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: workItem)
     }
     
     func clearCache() {
@@ -938,7 +1201,7 @@ final class NetworkService {
     }
     
     func wipeRemoteTransactionsAndSessions() async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.defaultMerchantId
+        let merchantId = self.activeMerchantId
         guard !merchantId.isEmpty else {
             throw NetworkError.serverError("No active merchant configured")
         }

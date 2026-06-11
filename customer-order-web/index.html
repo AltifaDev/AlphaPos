@@ -26,8 +26,8 @@
                     <span class="logo-pulse-circle delay-2"></span>
                     <span class="logo-icon">🍽️</span>
                 </div>
-                <h2>Welcome to Table <span id="welcomeTableNum">--</span></h2>
-                <p class="subtitle">AlphaPos Dining Experience</p>
+                <h2><span data-translate-key="welcomeTable">Welcome to Table</span> <span id="welcomeTableNum">--</span></h2>
+                <p class="subtitle" data-translate-key="diningExperience">AlphaPos Dining Experience</p>
             </div>
             
             <div class="verification-status-box anim-fade-in-up anim-delay-2">
@@ -37,13 +37,13 @@
                     <div class="radar-ring-2"></div>
                 </div>
                 <div class="verification-text">
-                    <div id="verifyTitle" class="verify-title font-outfit">Verifying Location...</div>
-                    <div id="verifyDesc" class="verify-desc">Checking GPS and Guest Wi-Fi proximity</div>
+                    <div id="verifyTitle" class="verify-title font-outfit" data-translate-key="verifyingLocation">Verifying Location...</div>
+                    <div id="verifyDesc" class="verify-desc" data-translate-key="checkingProximity">Checking GPS and Guest Wi-Fi proximity</div>
                 </div>
             </div>
             
             <button id="btnOnboardingNext1" class="onboarding-next-btn disabled anim-fade-in-up anim-delay-3" disabled onclick="app.nextOnboardingStep()">
-                <span>Proceed to Check-in</span>
+                <span data-translate-key="proceedCheckin">Proceed to Check-in</span>
             </button>
         </div>
 
@@ -51,15 +51,15 @@
         <div id="onboardingStep2" class="onboarding-card">
             <div class="onboarding-header anim-fade-in-down">
                 <span class="onboarding-emoji">👥</span>
-                <h2>Select Number of Guests</h2>
-                <p>How many people are dining at your table?</p>
+                <h2 data-translate-key="selectGuests">Select Number of Guests</h2>
+                <p data-translate-key="howManyPeople">How many people are dining at your table?</p>
             </div>
             
             <!-- Interactive Visual Table Layout -->
             <div class="interactive-table-container anim-fade-in-scale anim-delay-1">
                 <div class="interactive-table">
                     <div class="table-center">
-                        <span class="table-center-text" id="interactiveTableText">Table<br><span id="tableLabelNum">--</span></span>
+                        <span class="table-center-text" id="interactiveTableText"><span data-translate-key="tableCenterText">Table</span><br><span id="tableLabelNum">--</span></span>
                     </div>
                     <div class="seats-container" id="interactiveSeatsContainer">
                         <!-- Seats will be rendered dynamically -->
@@ -80,9 +80,9 @@
             </div>
             
             <div class="onboarding-action-row anim-fade-in-up anim-delay-3">
-                <button class="onboarding-back-btn" onclick="app.prevOnboardingStep()">Back</button>
+                <button class="onboarding-back-btn" onclick="app.prevOnboardingStep()" data-translate-key="back">Back</button>
                 <button id="startOrderBtn" class="start-order-btn" onclick="app.confirmGuestCount()">
-                    <span>Start Ordering</span>
+                    <span data-translate-key="startOrdering">Start Ordering</span>
                 </button>
             </div>
         </div>
@@ -96,8 +96,8 @@
                         <path class="checkmark-check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
                     </svg>
                 </div>
-                <h2>Check-in Complete!</h2>
-                <p id="loadingStatusText">Setting up your dining experience...</p>
+                <h2 data-translate-key="checkinComplete">Check-in Complete!</h2>
+                <p id="loadingStatusText" data-translate-key="settingUp">Setting up your dining experience...</p>
             </div>
             <div class="setup-progress-bar anim-fade-in-up anim-delay-1">
                 <div class="setup-progress-fill" id="setupProgressFill"></div>
@@ -113,6 +113,12 @@
                 <h1 class="brand-title">AlphaPos</h1>
             </div>
             <div class="header-actions">
+                <div class="lang-switcher" id="langSwitcher">
+                    <button class="lang-btn active" data-lang="th" onclick="app.switchLanguage('th')">TH</button>
+                    <button class="lang-btn" data-lang="en" onclick="app.switchLanguage('en')">EN</button>
+                    <button class="lang-btn" data-lang="zh" onclick="app.switchLanguage('zh')">中文</button>
+                    <div class="lang-slider" id="langSlider"></div>
+                </div>
                 <button id="themeToggleBtn" class="theme-toggle-btn" aria-label="Toggle Theme" onclick="app.toggleTheme()">
                     <span class="theme-toggle-icon">🌙</span>
                 </button>
@@ -141,8 +147,8 @@
                 <div class="promo-slide active">
                     <div class="promo-placeholder-bg"></div>
                     <div class="promo-overlay">
-                        <h3 class="promo-title">ยินดีต้อนรับสู่ AlphaPos</h3>
-                        <p class="promo-desc">สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ</p>
+                        <h3 class="promo-title" data-translate-key="welcomeTitle">ยินดีต้อนรับสู่ AlphaPos</h3>
+                        <p class="promo-desc" data-translate-key="welcomeDesc">สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ</p>
                     </div>
                 </div>
             </div>
@@ -155,16 +161,16 @@
         <nav class="app-nav-tabs anim-fade-in-down" role="tablist" aria-label="App sections">
             <button id="navTabMenu" class="nav-tab active" role="tab" aria-selected="true" aria-controls="menuView" onclick="app.switchView('menu')">
                 <span class="nav-tab-icon">📖</span>
-                <span class="nav-tab-text">Menu</span>
+                <span class="nav-tab-text" data-translate-key="menuTab">Menu</span>
             </button>
             <button id="navTabStatus" class="nav-tab" role="tab" aria-selected="false" aria-controls="statusView" onclick="app.switchView('status')">
                 <span class="nav-tab-icon">⏳</span>
-                <span class="nav-tab-text">Status</span>
+                <span class="nav-tab-text" data-translate-key="statusTab">Status</span>
                 <span id="statusTabBadge" class="status-tab-badge hide">0</span>
             </button>
             <button id="navTabService" class="nav-tab" role="tab" aria-selected="false" aria-controls="serviceView" onclick="app.switchView('service')">
                 <span class="nav-tab-icon">🛎️</span>
-                <span class="nav-tab-text">Call Staff</span>
+                <span class="nav-tab-text" data-translate-key="callStaffTab">Call Staff</span>
             </button>
         </nav>
 
@@ -180,7 +186,7 @@
 
                 <!-- Menu Grid -->
                 <section class="menu-section">
-                    <h2 class="section-title" id="currentCategoryTitle">Menu</h2>
+                    <h2 class="section-title" id="currentCategoryTitle" data-translate-key="menuTab">Menu</h2>
                     <div class="menu-grid" id="menuGrid">
                         <!-- Menu items will be rendered dynamically -->
                     </div>
@@ -192,25 +198,25 @@
         <div id="statusView" class="view-panel hide" role="tabpanel" aria-label="Order status">
             <div class="status-view-container anim-fade-in-up">
                 <div class="status-header anim-fade-in-down">
-                    <h2>Session Summary</h2>
+                    <h2 data-translate-key="sessionSummary">Session Summary</h2>
                     <div class="session-total-badge">
-                        <span class="label">Grand Total</span>
+                        <span class="label" data-translate-key="grandTotal">Grand Total</span>
                         <span id="sessionGrandTotal" class="price">฿0.00</span>
                     </div>
                 </div>
                 
                 <div class="status-body">
                     <div class="status-section anim-fade-in-up anim-delay-1">
-                        <h3>Active Orders Tracking</h3>
+                        <h3 data-translate-key="activeOrdersTracking">Active Orders Tracking</h3>
                         <div id="activeOrdersList" class="status-list">
-                            <div class="empty-state">No active orders cooking.</div>
+                            <div class="empty-state" data-translate-key="noActiveOrders">No active orders cooking.</div>
                         </div>
                     </div>
                     
                     <div class="status-section anim-fade-in-up anim-delay-2">
-                        <h3>Session Order History</h3>
+                        <h3 data-translate-key="sessionOrderHistory">Session Order History</h3>
                         <div id="pastOrdersList" class="status-list">
-                            <div class="empty-state">No orders placed in this session yet.</div>
+                            <div class="empty-state" data-translate-key="noOrdersPlaced">No orders placed in this session yet.</div>
                         </div>
                     </div>
                 </div>
@@ -221,40 +227,40 @@
         <div id="serviceView" class="view-panel hide" role="tabpanel" aria-label="Call staff">
             <div class="service-view-container anim-fade-in-up">
                 <div class="service-header anim-fade-in-down">
-                    <h2>Call Staff</h2>
-                    <p>Tap a request below to notify our service team. We'll be right over.</p>
+                    <h2 data-translate-key="callStaffTitle">Call Staff</h2>
+                    <p data-translate-key="callStaffDesc">Tap a request below to notify our service team. We'll be right over.</p>
                 </div>
                 
                 <div class="service-grid">
                     <button class="service-capsule anim-fade-in-up anim-delay-1" onclick="app.sendServiceRequest('Bill (Cash)')">
                         <span class="service-icon">💵</span>
-                        <span class="service-label">Pay Cash</span>
+                        <span class="service-label" data-translate-key="payCash">Pay Cash</span>
                     </button>
                     <button class="service-capsule anim-fade-in-up anim-delay-2" onclick="app.sendServiceRequest('Bill (Card)')">
                         <span class="service-icon">💳</span>
-                        <span class="service-label">Pay Card</span>
+                        <span class="service-label" data-translate-key="payCard">Pay Card</span>
                     </button>
                     <button class="service-capsule anim-fade-in-up anim-delay-3" onclick="app.sendServiceRequest('Bill (QR)')">
                         <span class="service-icon">📱</span>
-                        <span class="service-label">Pay QR</span>
+                        <span class="service-label" data-translate-key="payQR">Pay QR</span>
                     </button>
                     <button class="service-capsule anim-fade-in-up anim-delay-4" onclick="app.sendServiceRequest('Ice/Water')">
                         <span class="service-icon">🥛</span>
-                        <span class="service-label">Get Water</span>
+                        <span class="service-label" data-translate-key="getWater">Get Water</span>
                     </button>
                     <button class="service-capsule anim-fade-in-up anim-delay-5" onclick="app.sendServiceRequest('Extra Utensils')">
                         <span class="service-icon">🍴</span>
-                        <span class="service-label">Utensils</span>
+                        <span class="service-label" data-translate-key="utensils">Utensils</span>
                     </button>
                     <button class="service-capsule anim-fade-in-up anim-delay-6" onclick="app.sendServiceRequest('General Help')">
                         <span class="service-icon">🙋‍♂️</span>
-                        <span class="service-label">Call Staff</span>
+                        <span class="service-label" data-translate-key="callStaffBtn">Call Staff</span>
                     </button>
                 </div>
                 
                 <div id="activeRequestNotification" class="active-request-box hide">
                     <div class="pulse-ring"></div>
-                    <div class="request-status-text">Active Request: <span id="activeRequestType">--</span></div>
+                    <div class="request-status-text"><span data-translate-key="activeRequest">Active Request:</span> <span id="activeRequestType">--</span></div>
                 </div>
             </div>
         </div>
@@ -266,11 +272,11 @@
                     <span id="cartCount">0</span>
                 </div>
                 <div class="cart-summary">
-                    <span class="cart-summary-label">View Order</span>
+                    <span class="cart-summary-label" data-translate-key="viewOrder">View Order</span>
                     <span class="cart-total-price" id="cartTotal">฿0.00</span>
                 </div>
                 <button class="cart-view-btn">
-                    <span>Cart</span>
+                    <span data-translate-key="cart">Cart</span>
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
                 </button>
             </div>
@@ -282,7 +288,7 @@
                 <div class="drawer-header anim-fade-in-down">
                     <div class="drawer-notch"></div>
                     <div class="drawer-title-row">
-                        <h3>Your Order Tray</h3>
+                        <h3 data-translate-key="yourOrderTray">Your Order Tray</h3>
                         <button class="close-drawer-btn" onclick="app.toggleCartDrawer(false)">✕</button>
                     </div>
                 </div>
@@ -294,20 +300,20 @@
                 <div class="drawer-footer">
                     <div class="price-breakdown">
                         <div class="breakdown-row">
-                            <span>Subtotal</span>
+                            <span data-translate-key="subtotal">Subtotal</span>
                             <span id="breakdownSubtotal">฿0.00</span>
                         </div>
                         <div class="breakdown-row">
-                            <span>Service Charge (10%)</span>
+                            <span data-translate-key="serviceCharge">Service Charge (10%)</span>
                             <span id="breakdownService">฿0.00</span>
                         </div>
                         <div class="breakdown-row">
-                            <span>Vat (7%)</span>
+                            <span data-translate-key="vat">Vat (7%)</span>
                             <span id="breakdownTax">฿0.00</span>
                         </div>
                         <hr class="breakdown-divider">
                         <div class="breakdown-row total-row">
-                            <span>Grand Total</span>
+                            <span data-translate-key="grandTotal">Grand Total</span>
                             <span class="grand-total-price" id="breakdownTotal">฿0.00</span>
                         </div>
                     </div>
@@ -315,10 +321,10 @@
                     <!-- Action buttons based on status -->
                     <div class="action-buttons-group">
                         <button id="submitOrderBtn" class="primary-action-btn disabled" disabled onclick="app.submitOrder()">
-                            <span class="btn-text">Send to Kitchen</span>
+                            <span class="btn-text" data-translate-key="sendToKitchen">Send to Kitchen</span>
                             <div class="btn-spinner hide"></div>
                         </button>
-                        <p class="location-warning-text" id="btnWarningText">Please connect to restaurant Wi-Fi or share your location to order.</p>
+                        <p class="location-warning-text" id="btnWarningText" data-translate-key="locationWarning">Please connect to restaurant Wi-Fi or share your location to order.</p>
                     </div>
                 </div>
             </div>
@@ -327,46 +333,46 @@
         <!-- Developer Simulator Panel (Floating toggle at the bottom for demo purposes) -->
         <div class="dev-panel" id="devPanel">
             <div class="dev-panel-header" onclick="app.toggleDevPanel()">
-                <div class="dev-title">🛠️ Hybrid Security Simulator</div>
+                <div class="dev-title" data-translate-key="devTitle">🛠️ Hybrid Security Simulator</div>
                 <div class="dev-toggle-icon" id="devToggleIcon">▲</div>
             </div>
             <div class="dev-panel-body" id="devPanelBody">
                 <div class="dev-section">
-                    <label class="dev-label">Connection Network Type</label>
+                    <label class="dev-label" data-translate-key="devNetworkType">Connection Network Type</label>
                     <div class="dev-radio-group">
                         <label class="dev-radio">
                             <input type="radio" name="networkType" value="wifi" checked onchange="locationVerifier.simulateNetworkChange('wifi')">
-                            <span>Guest Wi-Fi (Same IP)</span>
+                            <span data-translate-key="devWifi">Guest Wi-Fi (Same IP)</span>
                         </label>
                         <label class="dev-radio">
                             <input type="radio" name="networkType" value="cellular" onchange="locationVerifier.simulateNetworkChange('cellular')">
-                            <span>Cellular 5G/4G (External IP)</span>
+                            <span data-translate-key="devCellular">Cellular 5G/4G (External IP)</span>
                         </label>
                     </div>
                 </div>
 
                 <div class="dev-section">
-                    <label class="dev-label">GPS Coordinate Simulation</label>
+                    <label class="dev-label" data-translate-key="devGpsSim">GPS Coordinate Simulation</label>
                     <div class="dev-radio-group">
                         <label class="dev-radio">
                             <input type="radio" name="gpsLocation" value="inside" checked onchange="locationVerifier.simulateGpsChange('inside')">
-                            <span>Inside Restaurant (~15m)</span>
+                            <span data-translate-key="devInside">Inside Restaurant (~15m)</span>
                         </label>
                         <label class="dev-radio">
                             <input type="radio" name="gpsLocation" value="outside" onchange="locationVerifier.simulateGpsChange('outside')">
-                            <span>Outside Restaurant (~4.5km)</span>
+                            <span data-translate-key="devOutside">Outside Restaurant (~4.5km)</span>
                         </label>
                         <label class="dev-radio">
                             <input type="radio" name="gpsLocation" value="denied" onchange="locationVerifier.simulateGpsChange('denied')">
-                            <span>GPS Denied / Off</span>
+                            <span data-translate-key="devGpsDenied">GPS Denied / Off</span>
                         </label>
                     </div>
                 </div>
 
                 <div class="dev-info-box">
-                    <div><strong>Restaurant Coordinate:</strong> <span class="monospaced">13.7563, 100.5018</span></div>
-                    <div><strong>Simulated Device IP:</strong> <span id="simulatedIp" class="monospaced">192.168.1.100</span></div>
-                    <div><strong>Calculated Distance:</strong> <span id="simulatedDistance" class="monospaced">0m</span></div>
+                    <div><strong data-translate-key="devRestCoord">Restaurant Coordinate:</strong> <span class="monospaced">13.7563, 100.5018</span></div>
+                    <div><strong data-translate-key="devSimIp">Simulated Device IP:</strong> <span id="simulatedIp" class="monospaced">192.168.1.100</span></div>
+                    <div><strong data-translate-key="devCalcDist">Calculated Distance:</strong> <span id="simulatedDistance" class="monospaced">0m</span></div>
                 </div>
             </div>
         </div>
@@ -384,13 +390,13 @@
                 <div id="modalModifiersSection" class="modifiers-section hide"></div>
                 
                 <div class="special-instructions-section">
-                    <label class="modal-input-label" for="specialInstructionsInput">Special Instructions (Optional)</label>
-                    <textarea id="specialInstructionsInput" placeholder="e.g. No spicy, extra vegetables, less sweet..."></textarea>
+                    <label class="modal-input-label" for="specialInstructionsInput" data-translate-key="specialInstructions">Special Instructions (Optional)</label>
+                    <textarea id="specialInstructionsInput" data-translate-key="specialInstructionsPlaceholder" placeholder="e.g. No spicy, extra vegetables, less sweet..."></textarea>
                 </div>
                 
                 <div class="modal-footer">
                     <div class="modal-price" id="modalProductPrice">฿0.00</div>
-                    <button class="modal-add-btn" id="modalAddBtn" onclick="app.addProductFromModal()">Add to Cart</button>
+                    <button class="modal-add-btn" id="modalAddBtn" onclick="app.addProductFromModal()" data-translate-key="addToCart">Add to Cart</button>
                 </div>
             </div>
         </div>

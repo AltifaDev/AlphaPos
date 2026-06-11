@@ -139,7 +139,7 @@ struct StoreManagementView: View {
                                 .background(APGradient.accent)
                                 .cornerRadius(APRadius.md)
                         }
-                        .onChange(of: logoItem) { newItem in
+                        .onChange(of: logoItem) { _, newItem in
                             if let newItem {
                                 loadSelectedLogo(from: newItem)
                             }
@@ -177,7 +177,7 @@ struct StoreManagementView: View {
                         .background(Color.appSurfaceHigh)
                         .foregroundColor(.textPrimary)
                         .cornerRadius(APRadius.md)
-                        .onChange(of: storeName) { _ in triggerSync() }
+                        .onChange(of: storeName) { triggerSync() }
                 }
                 
                 HStack(spacing: 16) {
@@ -192,7 +192,7 @@ struct StoreManagementView: View {
                             .background(Color.appSurfaceHigh)
                             .foregroundColor(.textPrimary)
                             .cornerRadius(APRadius.md)
-                            .onChange(of: storePhone) { _ in triggerSync() }
+                            .onChange(of: storePhone) { triggerSync() }
                     }
                     
                     VStack(alignment: .leading, spacing: 6) {
@@ -206,7 +206,7 @@ struct StoreManagementView: View {
                             .background(Color.appSurfaceHigh)
                             .foregroundColor(.textPrimary)
                             .cornerRadius(APRadius.md)
-                            .onChange(of: storeWebsite) { _ in triggerSync() }
+                            .onChange(of: storeWebsite) { triggerSync() }
                     }
                 }
                 
@@ -221,7 +221,7 @@ struct StoreManagementView: View {
                         .background(Color.appSurfaceHigh)
                         .foregroundColor(.textPrimary)
                         .cornerRadius(APRadius.md)
-                        .onChange(of: storeAddress) { _ in triggerSync() }
+                        .onChange(of: storeAddress) { triggerSync() }
                 }
             }
             .apCard()
@@ -251,7 +251,7 @@ struct StoreManagementView: View {
                             .foregroundColor(.textPrimary)
                             .cornerRadius(APRadius.md)
                             .keyboardType(.numberPad)
-                            .onChange(of: storeTaxId) { _ in triggerSync() }
+                            .onChange(of: storeTaxId) { triggerSync() }
                     }
                     
                     VStack(alignment: .leading, spacing: 6) {
@@ -265,7 +265,7 @@ struct StoreManagementView: View {
                             .background(Color.appSurfaceHigh)
                             .foregroundColor(.textPrimary)
                             .cornerRadius(APRadius.md)
-                            .onChange(of: storeBranchCode) { _ in triggerSync() }
+                            .onChange(of: storeBranchCode) { triggerSync() }
                     }
                 }
                 
@@ -279,7 +279,7 @@ struct StoreManagementView: View {
                         Text("Tax-Exclusive (VAT Add)").tag("exclusive")
                     }
                     .pickerStyle(.segmented)
-                    .onChange(of: storeTaxType) { _ in triggerSync() }
+                    .onChange(of: storeTaxType) { triggerSync() }
                 }
                 
                 HStack(spacing: 16) {
@@ -298,7 +298,7 @@ struct StoreManagementView: View {
                         .background(Color.appSurfaceHigh)
                         .foregroundColor(.textPrimary)
                         .cornerRadius(APRadius.md)
-                        .onChange(of: storeTaxRate) { _ in triggerSync() }
+                        .onChange(of: storeTaxRate) { triggerSync() }
                     }
                     
                     VStack(alignment: .leading, spacing: 6) {
@@ -316,7 +316,7 @@ struct StoreManagementView: View {
                         .background(Color.appSurfaceHigh)
                         .foregroundColor(.textPrimary)
                         .cornerRadius(APRadius.md)
-                        .onChange(of: storeServiceChargeRate) { _ in triggerSync() }
+                        .onChange(of: storeServiceChargeRate) { triggerSync() }
                     }
                 }
                 
@@ -334,7 +334,7 @@ struct StoreManagementView: View {
                         .background(Color.appSurfaceHigh)
                         .foregroundColor(.textPrimary)
                         .cornerRadius(APRadius.md)
-                        .onChange(of: storeReceiptHeader) { _ in triggerSync() }
+                        .onChange(of: storeReceiptHeader) { triggerSync() }
                 }
                 
                 VStack(alignment: .leading, spacing: 6) {
@@ -348,7 +348,7 @@ struct StoreManagementView: View {
                         .background(Color.appSurfaceHigh)
                         .foregroundColor(.textPrimary)
                         .cornerRadius(APRadius.md)
-                        .onChange(of: storeReceiptFooter) { _ in triggerSync() }
+                        .onChange(of: storeReceiptFooter) { triggerSync() }
                 }
             }
             .apCard()

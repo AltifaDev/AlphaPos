@@ -20,6 +20,9 @@ struct AlphaPosStaffApp: App {
                         .transition(.opacity)
                 }
             }
+            .overlay(alignment: .top) {
+                InAppNotificationContainer()
+            }
             .animation(.easeInOut(duration: 0.35), value: loggedInEmployee != nil)
             .apColorScheme()
         }

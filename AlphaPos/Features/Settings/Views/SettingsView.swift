@@ -108,7 +108,7 @@ struct SettingsView: View {
                                         Circle()
                                             .fill(APGradient.accent)
                                             .frame(width: 54, height: 54)
-                                            .shadow(color: Color(hex: "6C63FF").opacity(0.3), radius: 6)
+                                            .shadow(color: Color.appAccent.opacity(0.3), radius: 6)
                                         Text(initials)
                                             .font(.title3)
                                             .fontWeight(.black)
@@ -251,7 +251,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 .tint(.appAccent)
-                                .onChange(of: enableTableSystem) { _ in APHaptic.trigger() }
+                                .onChange(of: enableTableSystem) { APHaptic.trigger() }
                                 
                                 Divider()
                                     .background(Color.appDivider)
@@ -266,7 +266,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 .tint(.appAccent)
-                                .onChange(of: enableWebOrdering) { _ in APHaptic.trigger() }
+                                .onChange(of: enableWebOrdering) { APHaptic.trigger() }
                             }
                             .apCard()
                         }
@@ -291,7 +291,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 .tint(.appAccent)
-                                .onChange(of: kdsShowKitchen) { _ in APHaptic.trigger() }
+                                .onChange(of: kdsShowKitchen) { APHaptic.trigger() }
                                 
                                 Divider()
                                     .background(Color.appDivider)
@@ -306,7 +306,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 .tint(.appAccent)
-                                .onChange(of: kdsShowBar) { _ in APHaptic.trigger() }
+                                .onChange(of: kdsShowBar) { APHaptic.trigger() }
                                 
                                 Divider()
                                     .background(Color.appDivider)
@@ -321,7 +321,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 .tint(.appAccent)
-                                .onChange(of: kitchenWorkflowRequired) { _ in
+                                .onChange(of: kitchenWorkflowRequired) {
                                     APHaptic.trigger()
                                     Task {
                                         await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -500,7 +500,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 .tint(.appAccent)
-                                .onChange(of: requireFaceScan) { _ in APHaptic.trigger() }
+                                .onChange(of: requireFaceScan) { APHaptic.trigger() }
                                 
                                 Divider()
                                     .background(Color.appDivider)
@@ -515,7 +515,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 .tint(.appAccent)
-                                .onChange(of: offlineSyncMode) { _ in APHaptic.trigger() }
+                                .onChange(of: offlineSyncMode) { APHaptic.trigger() }
                             }
                             .apCard()
                         }

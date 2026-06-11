@@ -644,7 +644,7 @@ struct KitchenDisplayView: View {
     
     private func recallLastServedOrder() {
         let descriptor = FetchDescriptor<Order>()
-        guard var orders = try? modelContext.fetch(descriptor) else { return }
+        guard let orders = try? modelContext.fetch(descriptor) else { return }
         
         // Filter in memory for orders that are served or ready
         let filtered = orders.filter { $0.status == "served" || $0.status == "ready" }

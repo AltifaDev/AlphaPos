@@ -45,7 +45,7 @@ struct POSView: View {
     // MARK: - Grouped Ordered Items
     
     struct GroupedOrderedItem: Identifiable {
-        let id: UUID
+        let id: String
         let menuItem: MenuItem
         let quantity: Int
         let status: String
@@ -76,8 +76,16 @@ struct POSView: View {
             }
         }
         
-        return groups.map { GroupedOrderedItem(id: UUID(), menuItem: $0.value.item, quantity: $0.value.qty, status: $0.value.status, totalPrice: $0.value.price, selectedModifiers: $0.value.mods, notes: $0.value.notes) }
-            .sorted(by: { $0.menuItem.name < $1.menuItem.name })
+        return groups.map { GroupedOrderedItem(id: $0.key, menuItem: $0.value.item, quantity: $0.value.qty, status: $0.value.status, totalPrice: $0.value.price, selectedModifiers: $0.value.mods, notes: $0.value.notes) }
+            .sorted(by: {
+                if $0.menuItem.name != $1.menuItem.name {
+                    return $0.menuItem.name < $1.menuItem.name
+                }
+                if $0.status != $1.status {
+                    return $0.status < $1.status
+                }
+                return $0.id < $1.id
+            })
     }
 
     private var isAllServed: Bool {

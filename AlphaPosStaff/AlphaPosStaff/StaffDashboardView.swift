@@ -15,6 +15,7 @@ struct StaffDashboardView: View {
     @State private var isClearingCache = false
     @State private var showStatusMessage = false
     @State private var statusMessage = ""
+    @AppStorage("enable_notifications") private var enableNotifications = true
     
     var totalHours: Double {
         timecards.filter { $0.clockOut != nil && $0.clockOut! > 0 }.map { card in
@@ -128,6 +129,36 @@ struct StaffDashboardView: View {
                                         return String(format: "pay_rate_monthly_format".localized(for: appLanguage), Int(employee.payRate))
                                     }
                                 }())
+                            }
+                            .padding()
+                            .apCard()
+                            
+                            // Settings
+                            VStack(alignment: .leading, spacing: APSpacing.sm) {
+                                Text("settings_section".localized(for: appLanguage))
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.appAccent)
+                                    .tracking(1.0)
+                                
+                                Divider().background(Color.appDivider)
+                                
+                                Toggle(isOn: $enableNotifications) {
+                                    HStack(spacing: APSpacing.sm) {
+                                        Image(systemName: "bell.fill")
+                                            .foregroundColor(.appAccent)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("enable_notifications".localized(for: appLanguage))
+                                                .font(.subheadline)
+                                                .foregroundColor(.textPrimary)
+                                            Text("enable_notifications_desc".localized(for: appLanguage))
+                                                .font(.caption2)
+                                                .foregroundColor(.textSecondary)
+                                                .multilineTextAlignment(.leading)
+                                        }
+                                    }
+                                }
+                                .tint(.appAccent)
                             }
                             .padding()
                             .apCard()

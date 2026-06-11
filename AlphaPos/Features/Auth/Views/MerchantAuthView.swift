@@ -65,7 +65,7 @@ struct MerchantAuthView: View {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .fill(APGradient.accent)
                                 .frame(width: 44, height: 44)
-                                .shadow(color: Color(hex: "6C63FF").opacity(0.3), radius: 8, x: 0, y: 3)
+                                .shadow(color: Color.appAccent.opacity(0.3), radius: 8, x: 0, y: 3)
                             Image(systemName: "bolt.fill")
                                 .font(.system(size: 22, weight: .black))
                                 .foregroundColor(.white)
@@ -159,7 +159,7 @@ struct MerchantAuthView: View {
                 
                 HStack {
                     Image(systemName: "envelope.fill")
-                        .foregroundColor(focusedField == .email ? Color(hex: "6C63FF") : Color(hex: "9CA3AF"))
+                        .foregroundColor(focusedField == .email ? Color.appAccent : Color(hex: "9CA3AF"))
                         .font(.system(size: 14))
                     TextField("owner@myrestaurant.com", text: $email)
                         .font(.system(size: 14))
@@ -174,7 +174,7 @@ struct MerchantAuthView: View {
                 .cornerRadius(10)
                 .overlay(
                     RoundedRectangle(cornerRadius: 10)
-                        .stroke(focusedField == .email ? Color(hex: "6C63FF").opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .email ? 2 : 1)
+                        .stroke(focusedField == .email ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .email ? 2 : 1)
                 )
                 .animation(.easeInOut(duration: 0.15), value: focusedField)
             }
@@ -187,7 +187,7 @@ struct MerchantAuthView: View {
                 
                 HStack {
                     Image(systemName: "lock.fill")
-                        .foregroundColor(focusedField == .password ? Color(hex: "6C63FF") : Color(hex: "9CA3AF"))
+                        .foregroundColor(focusedField == .password ? Color.appAccent : Color(hex: "9CA3AF"))
                         .font(.system(size: 14))
                     
                     if showPassword {
@@ -217,7 +217,7 @@ struct MerchantAuthView: View {
                 .cornerRadius(10)
                 .overlay(
                     RoundedRectangle(cornerRadius: 10)
-                        .stroke(focusedField == .password ? Color(hex: "6C63FF").opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .password ? 2 : 1)
+                        .stroke(focusedField == .password ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .password ? 2 : 1)
                 )
                 .animation(.easeInOut(duration: 0.15), value: focusedField)
             }
@@ -230,7 +230,7 @@ struct MerchantAuthView: View {
                 }) {
                     Text("Forgot Password?")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Color(hex: "6C63FF"))
+                        .foregroundColor(Color.appAccent)
                 }
                 .buttonStyle(.plain)
             }
@@ -239,7 +239,7 @@ struct MerchantAuthView: View {
             // Remember checkbox (Dummy UI)
             HStack {
                 Image(systemName: "checkmark.square.fill")
-                    .foregroundColor(Color(hex: "6C63FF"))
+                    .foregroundColor(Color.appAccent)
                 Text("Remember my store on this device")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Color(hex: "4B5563"))
@@ -259,10 +259,10 @@ struct MerchantAuthView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
-                .background(email.isEmpty || password.isEmpty ? Color(hex: "9CA3AF") : Color(hex: "6C63FF"))
+                .background(email.isEmpty || password.isEmpty ? Color(hex: "9CA3AF") : Color.appAccent)
                 .foregroundColor(.white)
                 .cornerRadius(10)
-                .shadow(color: Color(hex: "6C63FF").opacity(email.isEmpty || password.isEmpty ? 0.0 : 0.25), radius: 10, x: 0, y: 5)
+                .shadow(color: Color.appAccent.opacity(email.isEmpty || password.isEmpty ? 0.0 : 0.25), radius: 10, x: 0, y: 5)
             }
             .disabled(email.isEmpty || password.isEmpty || isLoading)
             .padding(.top, 6)
@@ -279,7 +279,7 @@ struct MerchantAuthView: View {
                 }) {
                     Text("Register Store")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(Color(hex: "6C63FF"))
+                        .foregroundColor(Color.appAccent)
                 }
                 Spacer()
             }
@@ -298,17 +298,17 @@ struct MerchantAuthView: View {
                         .foregroundColor(Color(hex: "111827"))
                     Text(signupStep == 1 ? "Step 1: Admin Account Setup" : "Step 2: Restaurant Details")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(Color(hex: "6C63FF"))
+                        .foregroundColor(Color.appAccent)
                 }
                 Spacer()
                 
                 // Dots representing steps
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(signupStep >= 1 ? Color(hex: "6C63FF") : Color(hex: "D1D5DB"))
+                        .fill(signupStep >= 1 ? Color.appAccent : Color(hex: "D1D5DB"))
                         .frame(width: 8, height: 8)
                     Circle()
-                        .fill(signupStep >= 2 ? Color(hex: "6C63FF") : Color(hex: "D1D5DB"))
+                        .fill(signupStep >= 2 ? Color.appAccent : Color(hex: "D1D5DB"))
                         .frame(width: 8, height: 8)
                 }
             }
@@ -345,7 +345,7 @@ struct MerchantAuthView: View {
                         .cornerRadius(10)
                         .overlay(
                             RoundedRectangle(cornerRadius: 10)
-                                .stroke(focusedField == .firstName ? Color(hex: "6C63FF").opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .firstName ? 2 : 1)
+                                .stroke(focusedField == .firstName ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .firstName ? 2 : 1)
                         )
                 }
                 
@@ -362,7 +362,7 @@ struct MerchantAuthView: View {
                         .cornerRadius(10)
                         .overlay(
                             RoundedRectangle(cornerRadius: 10)
-                                .stroke(focusedField == .lastName ? Color(hex: "6C63FF").opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .lastName ? 2 : 1)
+                                .stroke(focusedField == .lastName ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .lastName ? 2 : 1)
                         )
                 }
             }
@@ -384,7 +384,7 @@ struct MerchantAuthView: View {
                     .cornerRadius(10)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .email ? Color(hex: "6C63FF").opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .email ? 2 : 1)
+                            .stroke(focusedField == .email ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .email ? 2 : 1)
                     )
             }
             
@@ -402,7 +402,7 @@ struct MerchantAuthView: View {
                     .cornerRadius(10)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .password ? Color(hex: "6C63FF").opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .password ? 2 : 1)
+                            .stroke(focusedField == .password ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .password ? 2 : 1)
                     )
             }
             
@@ -420,7 +420,7 @@ struct MerchantAuthView: View {
                     .cornerRadius(10)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .confirmPassword ? Color(hex: "6C63FF").opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .confirmPassword ? 2 : 1)
+                            .stroke(focusedField == .confirmPassword ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .confirmPassword ? 2 : 1)
                     )
             }
             
@@ -430,7 +430,7 @@ struct MerchantAuthView: View {
                     .font(.system(size: 14, weight: .bold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(firstName.isEmpty || lastName.isEmpty || email.isEmpty || password.isEmpty ? Color(hex: "9CA3AF") : Color(hex: "6C63FF"))
+                    .background(firstName.isEmpty || lastName.isEmpty || email.isEmpty || password.isEmpty ? Color(hex: "9CA3AF") : Color.appAccent)
                     .foregroundColor(.white)
                     .cornerRadius(10)
             }
@@ -449,7 +449,7 @@ struct MerchantAuthView: View {
                         .foregroundColor(Color(hex: "6B7280"))
                     Text("Sign In")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(Color(hex: "6C63FF"))
+                        .foregroundColor(Color.appAccent)
                     Spacer()
                 }
             }
@@ -474,7 +474,7 @@ struct MerchantAuthView: View {
                     .cornerRadius(10)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .shopName ? Color(hex: "6C63FF").opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .shopName ? 2 : 1)
+                            .stroke(focusedField == .shopName ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .shopName ? 2 : 1)
                     )
             }
             
@@ -540,7 +540,7 @@ struct MerchantAuthView: View {
                     .cornerRadius(10)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .taxId ? Color(hex: "6C63FF").opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .taxId ? 2 : 1)
+                            .stroke(focusedField == .taxId ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .taxId ? 2 : 1)
                     )
             }
             
@@ -559,7 +559,7 @@ struct MerchantAuthView: View {
                     .cornerRadius(10)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .shopPhone ? Color(hex: "6C63FF").opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .shopPhone ? 2 : 1)
+                            .stroke(focusedField == .shopPhone ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .shopPhone ? 2 : 1)
                     )
             }
             
@@ -587,7 +587,7 @@ struct MerchantAuthView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(shopName.isEmpty || taxId.isEmpty || shopPhone.isEmpty ? Color(hex: "9CA3AF") : Color(hex: "6C63FF"))
+                    .background(shopName.isEmpty || taxId.isEmpty || shopPhone.isEmpty ? Color(hex: "9CA3AF") : Color.appAccent)
                     .foregroundColor(.white)
                     .cornerRadius(10)
                 }
@@ -626,7 +626,7 @@ struct MerchantAuthView: View {
                 await MainActor.run {
                     isLoading = false
                     let mId = UUID(uuidString: session.user.merchantId ?? "") ?? UUID()
-                    activeMerchantId = mId.uuidString
+                    activeMerchantId = mId.uuidString.lowercased()
                     loggedInEmail = cleanEmail
                     loggedInName = session.user.fullName ?? "Store Owner"
                     seedNewMerchantData(merchantId: mId)
@@ -676,7 +676,7 @@ struct MerchantAuthView: View {
                     isLoading = false
                     let newMerchantUUID = UUID()
                     seedNewMerchantData(merchantId: newMerchantUUID)
-                    activeMerchantId = newMerchantUUID.uuidString
+                    activeMerchantId = newMerchantUUID.uuidString.lowercased()
                     loggedInEmail = email
                     loggedInName = "\(firstName) \(lastName)"
                     withAnimation { isLoggedIn = true }
@@ -902,7 +902,7 @@ extension MerchantAuthView {
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
-                            .background(resetEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color(hex: "9CA3AF") : Color(hex: "6C63FF"))
+                            .background(resetEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color(hex: "9CA3AF") : Color.appAccent)
                             .cornerRadius(12)
                     }
                 }

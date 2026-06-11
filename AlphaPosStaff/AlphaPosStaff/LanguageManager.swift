@@ -1365,6 +1365,58 @@ final class LanguageManager {
             "km": "បង្អែម",
             "vi": "Món tráng miệng",
             "my": "အချိုပွဲများ"
+        ],
+        "enable_notifications": [
+            "en": "Enable Notifications",
+            "th": "เปิดใช้งานการแจ้งเตือน"
+        ],
+        "enable_notifications_desc": [
+            "en": "Receive alerts for new orders, ready dishes, and service requests.",
+            "th": "รับการแจ้งเตือนสำหรับออร์เดอร์ใหม่ อาหารพร้อมเสิร์ฟ และคำเรียกพนักงาน"
+        ],
+        "settings_section": [
+            "en": "SETTINGS",
+            "th": "การตั้งค่าแอป"
+        ],
+        "active_alerts_section": [
+            "en": "Active Alerts",
+            "th": "รายการที่ต้องจัดการ"
+        ],
+        "resolved_history_section": [
+            "en": "History / Resolved",
+            "th": "ประวัติที่ดำเนินการแล้ว"
+        ],
+        "priority_high": [
+            "en": "High",
+            "th": "สำคัญมาก"
+        ],
+        "priority_medium": [
+            "en": "Medium",
+            "th": "ปานกลาง"
+        ],
+        "priority_low": [
+            "en": "Low",
+            "th": "ทั่วไป"
+        ],
+        "serve_action": [
+            "en": "Serve",
+            "th": "เสิร์ฟ"
+        ],
+        "order_ready": [
+            "en": "Order Ready",
+            "th": "อาหารพร้อมเสิร์ฟ"
+        ],
+        "order_preparing": [
+            "en": "Preparing",
+            "th": "กำลังเตรียมอาหาร"
+        ],
+        "order_served": [
+            "en": "Served",
+            "th": "เสิร์ฟแล้ว"
+        ],
+        "order_completed": [
+            "en": "Completed",
+            "th": "เสร็จสิ้น"
         ]
     ]
     

@@ -222,6 +222,487 @@ class AlphaPosApp {
         this.supabase = null;
         this.merchantId = cfg.merchantId || '163350b0-056d-4d5e-b5d4-24e7aac5ab6d';
         this._submitInProgress = false;
+        
+        this.lastFetchedOrders = [];
+        this.currentLanguage = 'th';
+
+        // Multi-Language Translation Dictionary
+        this.translations = {
+            th: {
+                // Onboarding Step 1
+                welcomeTable: "ยินดีต้อนรับสู่โต๊ะ",
+                diningExperience: "ประสบการณ์การทานอาหารกับ AlphaPos",
+                verifyingLocation: "กำลังตรวจสอบตำแหน่ง...",
+                checkingProximity: "กำลังตรวจสอบ GPS และระยะห่าง Guest Wi-Fi",
+                proceedCheckin: "ดำเนินการเช็คอิน",
+                
+                // Onboarding Step 2
+                selectGuests: "ระบุจำนวนลูกค้า",
+                howManyPeople: "จำนวนผู้ร่วมโต๊ะมีทั้งหมดกี่ท่าน?",
+                tableCenterText: "โต๊ะ",
+                back: "ย้อนกลับ",
+                startOrdering: "เริ่มสั่งอาหาร",
+                
+                // Onboarding Step 3
+                checkinComplete: "เช็คอินเสร็จสิ้น!",
+                settingUp: "กำลังตั้งค่าสำหรับโต๊ะของคุณ...",
+                
+                // Header & Badges
+                tableBadgeText: "โต๊ะ {num}",
+                
+                // Navigation Tabs
+                menuTab: "เมนูอาหาร",
+                statusTab: "สถานะออเดอร์",
+                callStaffTab: "เรียกพนักงาน",
+                
+                // Promotion Banner (Fallback)
+                welcomeTitle: "ยินดีต้อนรับสู่ AlphaPos",
+                welcomeDesc: "สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ",
+                
+                // Session Status View
+                sessionSummary: "สรุปรายการอาหารสำหรับเซสชันนี้",
+                grandTotal: "ยอดรวมสุทธิ",
+                activeOrdersTracking: "รายการอาหารที่กำลังปรุง",
+                noActiveOrders: "ไม่มีอาหารที่กำลังปรุงอยู่ขณะนี้",
+                sessionOrderHistory: "ประวัติการสั่งอาหาร",
+                noOrdersPlaced: "ยังไม่มีประวัติสั่งอาหารในเซสชันนี้",
+                emptyTray: "ยังไม่มีอาหารในถาดสั่งซื้อ",
+                
+                // Call Staff & Services
+                callStaffTitle: "เรียกพนักงาน",
+                callStaffDesc: "กดปุ่มด้านล่างเพื่อแจ้งความต้องการแก่ทีมพนักงานบริการ เรากำลังไปดูแลท่าน",
+                payCash: "ชำระเงินด้วยเงินสด",
+                payCard: "ชำระด้วยบัตรเครดิต",
+                payQR: "ชำระเงินด้วย QR Code",
+                getWater: "ขอน้ำเปล่า/น้ำแข็ง",
+                utensils: "ขอช้อน/ส้อม/จาน",
+                callStaffBtn: "เรียกบริการทั่วไป",
+                activeRequest: "คำขอที่กำลังดำเนินการ:",
+                staffCalled: "เรียกพนักงานสำหรับ",
+                serviceCallFailed: "ระบบเรียกพนักงานขัดข้อง กรุณาเรียกพนักงานโดยตรง",
+                
+                // Cart Drawer
+                viewOrder: "ดูรายการสั่งซื้อ",
+                cart: "รถเข็น",
+                yourOrderTray: "รายการสั่งอาหารของคุณ",
+                subtotal: "ยอดรวม",
+                serviceCharge: "ค่าบริการ (10%)",
+                vat: "ภาษีมูลค่าเพิ่ม (7%)",
+                sendToKitchen: "ส่งคำสั่งซื้อไปยังห้องครัว",
+                locationWarning: "กรุณาเชื่อมต่อ Wi-Fi ของร้าน หรือเปิดการแชร์ตำแหน่ง เพื่อสั่งอาหาร",
+                noteLabel: "หมายเหตุ",
+                
+                // Hybrid Security Simulator
+                devTitle: "🛠️ โปรแกรมจำลองความปลอดภัย Hybrid",
+                devNetworkType: "ประเภทเครือข่ายเชื่อมต่อ",
+                devWifi: "Guest Wi-Fi (IP ตรงกัน)",
+                devCellular: "เครือข่ายมือถือ 5G/4G (IP ภายนอก)",
+                devGpsSim: "จำลองพิกัด GPS",
+                devInside: "ในร้านอาหาร (~15 เมตร)",
+                devOutside: "นอกร้านอาหาร (~4.5 กิโลเมตร)",
+                devGpsDenied: "ปิดการแชร์พิกัด GPS",
+                devRestCoord: "พิกัดร้านอาหาร:",
+                devSimIp: "IP อุปกรณ์จำลอง:",
+                devCalcDist: "ระยะทางที่คำนวณ:",
+                
+                // Location HUD dynamic verification strings
+                verifyingLocationMsg: "กำลังตรวจสอบตำแหน่ง...",
+                checkingWifiGps: "กำลังตรวจสอบสัญญาณ Wi-Fi และ GPS...",
+                orderingActive: "ระบบสั่งอาหารเปิดอยู่",
+                verifiedWifi: "🟢 ยืนยันตำแหน่งผ่าน Wi-Fi ร้านแล้ว (IP: {ip})",
+                gpsUnavailable: "ไม่สามารถเข้าถึงได้",
+                orderingBlocked: "ระบบสั่งอาหารปิดอยู่",
+                gpsDeniedMsg: "🔴 ปฏิเสธการเข้าถึง GPS กรุณาเชื่อมต่อ Wi-Fi ร้าน หรืออนุญาตสิทธิ์เข้าถึงพิกัด",
+                meters: "เมตร",
+                gpsInsideMsg: "🟢 ยืนยันตำแหน่งผ่าน GPS สำเร็จ (ระยะห่าง {dist}ม. ภายในร้าน)",
+                gpsOutsideMsg: "🔴 คุณอยู่นอกร้านอาหารประมาณ {dist}กม. กรุณาเชื่อมต่อ Wi-Fi ร้านเพื่อสั่งอาหาร",
+                wifiNoDistance: "ไม่ต้องใช้ GPS (เชื่อมต่อ Wi-Fi ร้าน)",
+                
+                // Product details modal
+                specialInstructions: "ข้อความถึงห้องครัว (ไม่บังคับ)",
+                specialInstructionsPlaceholder: "เช่น เผ็ดน้อย, ไม่ใส่ผัก, หวานน้อย...",
+                addToCart: "เพิ่มลงรถเข็น",
+                addToOrder: "เพิ่มรายการสั่งซื้อ",
+                addMore: "เพิ่มอีก ({qty} ในถาด)",
+                selectExactly: "เลือก {min} รายการ",
+                selectRange: "เลือก {min} ถึง {max} รายการ",
+                selectUpTo: "เลือกได้สูงสุด {max} รายการ",
+                selectAtLeast: "เลือกอย่างน้อย {min} รายการ",
+                optional: "ไม่บังคับ",
+                validationMax: "คุณสามารถเลือกได้สูงสุด {max} ตัวเลือก",
+                validationMin: "กรุณาเลือกอย่างน้อย {min} ตัวเลือกสำหรับ \"{group}\"",
+                
+                // Categories
+                category_mains: "🍛 อาหารจานหลัก",
+                category_appetizers: "🍲 ของทานเล่น",
+                category_drinks: "🥤 เครื่องดื่ม",
+                category_desserts: "🥭 ของหวาน",
+                
+                // Item names & descriptions
+                item_app1_name: "ปอเปี๊ยะทอดสีทอง",
+                item_app1_desc: "ปอเปี๊ยะทอดกรอบไส้ผักสดและวุ้นเส้น เสิร์ฟพร้อมน้ำจิ้มบ๊วยสูตรหวานอมเปรี้ยว",
+                item_app2_name: "ทอดมันปลาสมุนไพร (ทอดมันปลา)",
+                item_app2_desc: "ทอดมันปลาเนื้อเหนียวนุ่มคลุกเคล้าพริกแกงเผ็ด ถั่วฝักยาว และใบมะกรูด เสิร์ฟพร้อมน้ำจิ้มแตงกวาใส่ถั่วลิสง",
+                item_app3_name: "ต้มยำกุ้งน้ำข้น",
+                item_app3_desc: "ต้มยำกุ้งน้ำข้นรสจัดจ้านกลมกล่อม หอมกลิ่นข่า ตะไคร้ ใบมะกรูด มะนาวสด และกุ้งแม่น้ำเนื้อแน่นตัวโต",
+                item_main1_name: "ผัดไทยกุ้งแม่น้ำยักษ์",
+                item_main1_desc: "เส้นจันท์ผัดซอสมะขามเปียกหวานกลมกล่อม ถั่วฝักยาว ถั่วลิสงคั่ว ใบกุยช่าย เสิร์ฟพร้อมกุ้งแม่น้ำเผาตัวโต 2 ตัว",
+                item_main2_name: "แกงเขียวหวานไก่สูตรชาววัง",
+                item_main2_desc: "แกงเขียวหวานตำรับไทยแท้ ใส่เนื้ออกไก่นุ่ม มะเขือเปราะ มะเขือพวง และใบโหระพา ในน้ำกะทิเข้มข้น",
+                item_main3_name: "ข้าวซอยเนื้อตุ๋นสูตรเชียงใหม่",
+                item_main3_desc: "ข้าวซอยเส้นนุ่มในน้ำแกงกะทิรสเข้มข้น โปะเนื้อน่องลายตุ๋นจนเปื่อ่นนุ่ม โรยหมี่กรอบ เสิร์ฟคู่ผักกาดดอง หอมแดง มะนาว",
+                item_drink1_name: "ชาไทยสูตรโบราณ",
+                item_drink1_desc: "ชาดำพรีเมียมต้มกับเครื่องเทศ หวานมันกลมกล่อม ราดนมข้นจืดเสิร์ฟพร้อมน้ำแข็งบด",
+                item_drink2_name: "น้ำมะพร้าวอ่อนสดทั้งลูก",
+                item_drink2_desc: "มะพร้าวน้ำหอมแช่เย็นเจาะสดๆ ได้น้ำมะพร้าวธรรมชาติหวานชื่นใจและเนื้อนุ่ม",
+                item_drink3_name: "น้ำตะไคร้มะนาวโซดาซ่า",
+                item_drink3_desc: "เครื่องดื่มโซดาซ่าผสมสารสกัดตะไคร้หอมและน้ำมะนาวคั้นสด สดชื่นกระปรี้กระเปร่า",
+                item_dessert1_name: "ข้าวเหนียวมะม่วงน้ำดอกไม้",
+                item_dessert1_desc: "ข้าวเหนียวมูนหวานมันเสิร์ฟพร้อมมะม่วงน้ำดอกไม้สุกสีทอง ราดน้ำกะทิเค็มมันอุ่นๆ และถั่วทองกรอบ",
+                item_dessert2_name: "ไอศกรีมกะทิสดมะพร้าวอ่อนทำมือ",
+                item_dessert2_desc: "ไอศกรีมกะทิโฮมเมด เสิร์ฟในกะลามีพร้าวพร้อมถั่วลิสงคั่ว ลูกชิด และข้าวโพดหวาน",
+                
+                // Modifiers
+                "modifier_group_Add-ons (ตัวเลือกเสริม)": "ตัวเลือกเสริม",
+                "modifier_Fried Egg (ไข่ดาว)": "ไข่ดาว",
+                "modifier_Omelette (ไข่เจียว)": "ไข่เจียว",
+                "modifier_Steamed Jasmine Rice (ข้าวสวย)": "ข้าวสวย",
+                "modifier_Sticky Rice (ข้าวเหนียว)": "ข้าวเหนียว",
+                
+                // Status notifications
+                orderSentSuccess: "ส่งคำสั่งซื้อ {num} สำเร็จแล้ว!",
+                orderSentFailed: "ส่งคำสั่งซื้อล้มเหลว กรุณาลองใหม่อีกครั้ง",
+                orderingBlockedPremises: "ระบบสั่งอาหารปิดอยู่ คุณจำเป็นต้องอยู่ในบริเวณร้านอาหารเพื่อสั่งอาหาร",
+                unableFindDish: "ไม่พบข้อมูลรายการอาหารนี้ในระบบ",
+                failedConnectServer: "ล้มเหลวในการเชื่อมต่อกับเซิร์ฟเวอร์ กรุณาลองใหม่อีกครั้ง",
+                readyStatus: "พร้อมเสิร์ฟ",
+                cookingStatus: "กำลังปรุง",
+                servedStatus: "เสิร์ฟแล้ว",
+                cancelledStatus: "ยกเลิกแล้ว",
+                orderLabel: "ออเดอร์",
+                orderAgainBtn: "สั่งอีกครั้ง",
+                noActiveItems: "ไม่มีรายการอาหารที่กำลังปรุง",
+                noServedItems: "ไม่มีรายการอาหารก่อนหน้านี้",
+                addedToCartMsg: "เพิ่ม {name} ลงถาดอาหารแล้ว!",
+                sendingOrder: "กำลังส่งรายการสั่งซื้อ..."
+            },
+            en: {
+                // Onboarding Step 1
+                welcomeTable: "Welcome to Table",
+                diningExperience: "AlphaPos Dining Experience",
+                verifyingLocation: "Verifying Location...",
+                checkingProximity: "Checking GPS and Guest Wi-Fi proximity",
+                proceedCheckin: "Proceed to Check-in",
+                
+                // Onboarding Step 2
+                selectGuests: "Select Number of Guests",
+                howManyPeople: "How many people are dining at your table?",
+                tableCenterText: "Table",
+                back: "Back",
+                startOrdering: "Start Ordering",
+                
+                // Onboarding Step 3
+                checkinComplete: "Check-in Complete!",
+                settingUp: "Setting up your dining experience...",
+                
+                // Header & Badges
+                tableBadgeText: "Table {num}",
+                
+                // Navigation Tabs
+                menuTab: "Menu",
+                statusTab: "Status",
+                callStaffTab: "Call Staff",
+                
+                // Promotion Banner (Fallback)
+                welcomeTitle: "Welcome to AlphaPos",
+                welcomeDesc: "Savor our special recommendation menu, delicately cooked for you.",
+                
+                // Session Status View
+                sessionSummary: "Session Summary",
+                grandTotal: "Grand Total",
+                activeOrdersTracking: "Active Orders Tracking",
+                noActiveOrders: "No active orders cooking.",
+                sessionOrderHistory: "Session Order History",
+                noOrdersPlaced: "No orders placed in this session yet.",
+                emptyTray: "No items added to tray yet.",
+                
+                // Call Staff & Services
+                callStaffTitle: "Call Staff",
+                callStaffDesc: "Tap a request below to notify our service team. We'll be right over.",
+                payCash: "Pay Cash",
+                payCard: "Pay Card",
+                payQR: "Pay QR",
+                getWater: "Get Water",
+                utensils: "Utensils",
+                callStaffBtn: "Call Staff",
+                activeRequest: "Active Request:",
+                staffCalled: "Staff called for",
+                serviceCallFailed: "Service call failed. Please notify a waiter directly.",
+                
+                // Cart Drawer
+                viewOrder: "View Order",
+                cart: "Cart",
+                yourOrderTray: "Your Order Tray",
+                subtotal: "Subtotal",
+                serviceCharge: "Service Charge (10%)",
+                vat: "Vat (7%)",
+                sendToKitchen: "Send to Kitchen",
+                locationWarning: "Please connect to restaurant Wi-Fi or share your location to order.",
+                noteLabel: "Note",
+                
+                // Hybrid Security Simulator
+                devTitle: "🛠️ Hybrid Security Simulator",
+                devNetworkType: "Connection Network Type",
+                devWifi: "Guest Wi-Fi (Same IP)",
+                devCellular: "Cellular 5G/4G (External IP)",
+                devGpsSim: "GPS Coordinate Simulation",
+                devInside: "Inside Restaurant (~15m)",
+                devOutside: "Outside Restaurant (~4.5km)",
+                devGpsDenied: "GPS Denied / Off",
+                devRestCoord: "Restaurant Coordinate:",
+                devSimIp: "Simulated Device IP:",
+                devCalcDist: "Calculated Distance:",
+                
+                // Location HUD dynamic verification strings
+                verifyingLocationMsg: "Verifying Location...",
+                checkingWifiGps: "Checking Wi-Fi and GPS signal...",
+                orderingActive: "Ordering Active",
+                verifiedWifi: "🟢 Verified via Restaurant Guest Wi-Fi. (IP: {ip})",
+                gpsUnavailable: "Unavailable",
+                orderingBlocked: "Ordering Blocked",
+                gpsDeniedMsg: "🔴 GPS Access Denied. Please connect to Guest Wi-Fi or enable Location services.",
+                meters: "meters",
+                gpsInsideMsg: "🟢 Location verified via GPS ({dist}m within venue)",
+                gpsOutsideMsg: "🔴 You are {dist}km outside the restaurant. Please join Guest Wi-Fi.",
+                wifiNoDistance: "Not required (On Guest Wi-Fi)",
+                
+                // Product details modal
+                specialInstructions: "Special Instructions (Optional)",
+                specialInstructionsPlaceholder: "e.g. No spicy, extra vegetables, less sweet...",
+                addToCart: "Add to Cart",
+                addToOrder: "Add to Order",
+                addMore: "Add More ({qty} in tray)",
+                selectExactly: "Select exactly {min}",
+                selectRange: "Select {min} to {max}",
+                selectUpTo: "Select up to {max}",
+                selectAtLeast: "Select at least {min}",
+                optional: "Optional",
+                validationMax: "You can select up to {max} choices.",
+                validationMin: "Please select at least {min} option(s) for \"{group}\".",
+                
+                // Categories
+                category_mains: "🍛 Main Dishes",
+                category_appetizers: "🍲 Appetizers",
+                category_drinks: "🥤 Beverages",
+                category_desserts: "🥭 Desserts",
+                
+                // Item names & descriptions
+                item_app1_name: "Crispy Golden Spring Rolls",
+                item_app1_desc: "Crispy fried rolls filled with fresh vegetables, glass noodles, and served with a sweet & sour plum dipping sauce.",
+                item_app2_name: "Spicy Herbal Fish Cakes (Tod Mun Pla)",
+                item_app2_desc: "Traditional red-curry seasoned fish cakes blended with green beans, kaffir lime leaves, and sweet cucumber peanut sauce.",
+                item_app3_name: "Tom Yum Goong (Spicy Shrimp Soup)",
+                item_app3_desc: "A hot, sour, and aromatic soup infused with lemongrass, galangal, fresh chili, lime juice, and plump river prawns.",
+                item_main1_name: "Signature River Prawn Pad Thai",
+                item_main1_desc: "Wok-fried rice noodles in sweet tamarind sauce, fresh bean sprouts, crushed peanuts, chives, and two grilled giant river prawns.",
+                item_main2_name: "Royal Emerald Green Curry (Chicken)",
+                item_main2_desc: "Authentic Thai green curry with tender chicken breast, eggplants, sweet basil, and pea eggplants in rich coconut milk.",
+                item_main3_name: "Slow-Braised Northern Khao Soi Beef",
+                item_main3_desc: "Tender beef shank braised in a rich curry noodle broth, served with fresh egg noodles, pickled mustard greens, and crispy noodles.",
+                item_drink1_name: "Traditional Thai Iced Tea",
+                item_drink1_desc: "Premium black tea brewed with spices, sweetened, and topped with rich evaporated milk served over crushed ice.",
+                item_drink2_name: "Fresh Whole Coconut Juice",
+                item_drink2_desc: "Chilled young coconut cut fresh, providing refreshing natural coconut water and tender meat.",
+                item_drink3_name: "Sparkling Lemon Lemongrass Soda",
+                item_drink3_desc: "Refreshing carbonated soda infused with lemongrass extract and fresh squeezed yellow lemon juice.",
+                item_dessert1_name: "Mango Sticky Rice with Warm Coconut Cream",
+                item_dessert1_desc: "Sweet, fragrant glutinous rice served with ripe golden honey mangoes, topped with warm salted coconut cream and toasted mung beans.",
+                item_dessert2_name: "Artisanal Young Coconut Ice Cream",
+                item_dessert2_desc: "House-made coconut ice cream served with roasted peanuts, sweet corn, and palm seeds inside a half coconut shell.",
+                
+                // Modifiers
+                "modifier_group_Add-ons (ตัวเลือกเสริม)": "Add-ons",
+                "modifier_Fried Egg (ไข่ดาว)": "Fried Egg",
+                "modifier_Omelette (ไข่เจียว)": "Omelette",
+                "modifier_Steamed Jasmine Rice (ข้าวสวย)": "Steamed Jasmine Rice",
+                "modifier_Sticky Rice (ข้าวเหนียว)": "Sticky Rice",
+                
+                // Status notifications
+                orderSentSuccess: "Order {num} Sent to Kitchen!",
+                orderSentFailed: "Failed to submit order. Please try again.",
+                orderingBlockedPremises: "Ordering blocked. You must be inside the restaurant premises.",
+                unableFindDish: "Unable to find this dish in menu.",
+                failedConnectServer: "Failed to connect to server. Please try again.",
+                readyStatus: "Ready",
+                cookingStatus: "Cooking",
+                servedStatus: "Served",
+                cancelledStatus: "Cancelled",
+                orderLabel: "Order",
+                orderAgainBtn: "Order Again",
+                noActiveItems: "No active items in preparation.",
+                noServedItems: "No previous dishes served.",
+                addedToCartMsg: "Added {name} to cart!",
+                sendingOrder: "Sending Order..."
+            },
+            zh: {
+                // Onboarding Step 1
+                welcomeTable: "欢迎来到桌号",
+                diningExperience: "AlphaPos 用餐体验",
+                verifyingLocation: "正在验证位置...",
+                checkingProximity: "正在检查 GPS 与 Guest Wi-Fi 信号...",
+                proceedCheckin: "继续办理登记",
+                
+                // Onboarding Step 2
+                selectGuests: "选择就餐人数",
+                howManyPeople: "您的桌子有几位客人就餐？",
+                tableCenterText: "桌号",
+                back: "返回",
+                startOrdering: "开始点餐",
+                
+                // Onboarding Step 3
+                checkinComplete: "登记完成！",
+                settingUp: "正在准备您的就餐环境...",
+                
+                // Header & Badges
+                tableBadgeText: "桌号 {num}",
+                
+                // Navigation Tabs
+                menuTab: "菜单",
+                statusTab: "订单状态",
+                callStaffTab: "呼叫服务",
+                
+                // Promotion Banner (Fallback)
+                welcomeTitle: "欢迎使用 AlphaPos",
+                welcomeDesc: "品尝我们的招牌推荐菜品，为您精心烹制。",
+                
+                // Session Status View
+                sessionSummary: "本次用餐汇总",
+                grandTotal: "总计",
+                activeOrdersTracking: "进行中订单追踪",
+                noActiveOrders: "目前没有正在制作的菜品。",
+                sessionOrderHistory: "本次点餐历史",
+                noOrdersPlaced: "本次就餐尚未下单。",
+                emptyTray: "您的待下单菜品为空",
+                
+                // Call Staff & Services
+                callStaffTitle: "呼叫服务员",
+                callStaffDesc: "点击下方请求通知我们的服务团队，我们将立即为您服务。",
+                payCash: "现金支付",
+                payCard: "刷卡支付",
+                payQR: "扫码支付",
+                getWater: "需要冰水/冰块",
+                utensils: "需要餐具/勺子/叉子",
+                callStaffBtn: "普通呼叫",
+                activeRequest: "进行中的请求：",
+                staffCalled: "已呼叫服务：",
+                serviceCallFailed: "呼叫服务失败，请直接联系服务员。",
+                
+                // Cart Drawer
+                viewOrder: "查看订单",
+                cart: "购物车",
+                yourOrderTray: "您的待下单菜品",
+                subtotal: "小计",
+                serviceCharge: "服务费 (10%)",
+                vat: "增值税 (7%)",
+                sendToKitchen: "提交订单至厨房",
+                locationWarning: "请连接餐厅 Wi-Fi 或共享您的位置以进行点餐。",
+                noteLabel: "备注",
+                
+                // Hybrid Security Simulator
+                devTitle: "🛠️ 混合安全模拟器",
+                devNetworkType: "连接网络类型",
+                devWifi: "客户 Wi-Fi (相同 IP)",
+                devCellular: "蜂窝网络 5G/4G (外部 IP)",
+                devGpsSim: "GPS 坐标模拟",
+                devInside: "餐厅内 (~15米)",
+                devOutside: "餐厅外 (~4.5公里)",
+                devGpsDenied: "GPS 拒绝 / 关闭",
+                devRestCoord: "餐厅坐标：",
+                devSimIp: "模拟设备 IP：",
+                devCalcDist: "计算出的距离：",
+                
+                // Location HUD dynamic verification strings
+                verifyingLocationMsg: "正在验证位置...",
+                checkingWifiGps: "正在检查 Wi-Fi 和 GPS 信号...",
+                orderingActive: "点餐系统已启用",
+                verifiedWifi: "🟢 已通过餐厅客户 Wi-Fi 验证。 (IP: {ip})",
+                gpsUnavailable: "不可用",
+                orderingBlocked: "点餐已禁用",
+                gpsDeniedMsg: "🔴 GPS 权限被拒绝。请连接客户 Wi-Fi 或开启定位服务。",
+                meters: "米",
+                gpsInsideMsg: "🟢 已通过 GPS 验证 (在餐厅内 {dist}米)",
+                gpsOutsideMsg: "🔴 您距离餐厅约 {dist}公里。请连接客户 Wi-Fi 以进行点餐。",
+                wifiNoDistance: "无需 GPS (已连 Wi-Fi)",
+                
+                // Product details modal
+                specialInstructions: "特殊要求 (选填)",
+                specialInstructionsPlaceholder: "例如：少辣、去葱、少糖...",
+                addToCart: "加入购物车",
+                addToOrder: "添加商品",
+                addMore: "再加一份 (待下单 {qty} 份)",
+                selectExactly: "精确选择 {min} 项",
+                selectRange: "选择 {min} 到 {max} 项",
+                selectUpTo: "最多选择 {max} 项",
+                selectAtLeast: "最少选择 {min} 项",
+                optional: "可选",
+                validationMax: "您最多只能选择 {max} 个选项。",
+                validationMin: "请在 \"{group}\" 中至少选择 {min} 个选项。",
+                
+                // Categories
+                category_mains: "🍛 主菜",
+                category_appetizers: "🍲 开胃菜",
+                category_drinks: "🥤 饮料",
+                category_desserts: "🥭 甜点",
+                
+                // Item names & descriptions
+                item_app1_name: "黄金脆皮春卷",
+                item_app1_desc: "炸至金黄香脆的春卷，包裹新鲜蔬菜与粉丝，搭配酸甜梅子酱。",
+                item_app2_name: "辣味草本鱼饼 (Tod Mun Pla)",
+                item_app2_desc: "传统红咖喱风味鱼饼，拌入四季豆、柠檬叶，配以香甜黄瓜花生酱。",
+                item_app3_name: "冬阴功汤 (大虾酸辣汤)",
+                item_app3_desc: "热辣酸爽、香气浓郁的浓汤，融入香茅、南姜、鲜辣椒、青柠汁和肥美河大虾。",
+                item_main1_name: "招牌大虾泰式炒河粉 (Pad Thai)",
+                item_main1_desc: "泰式炒河粉配甜酸角汁、鲜豆芽、碎花生、韭菜和两只烤大河虾。",
+                item_main2_name: "皇室翡翠绿咖喱鸡",
+                item_main2_desc: "正宗泰式绿咖喱配嫩鸡胸肉、茄子、九层塔和豆角，融入浓郁椰奶。",
+                item_main3_name: "慢炖泰北牛肉金面 (Khao Soi)",
+                item_main3_desc: "嫩牛腱肉在浓郁的咖喱面汤中慢炖，配以新鲜蛋面、酸菜和脆皮油炸面条。",
+                item_drink1_name: "传统泰式冰奶茶",
+                item_drink1_desc: "优质红茶加香料冲泡，加糖，最后淋上浓郁淡奶，搭配碎冰食用。",
+                item_drink2_name: "新鲜原只椰子汁",
+                item_drink2_desc: "冰镇新鲜切割的嫩椰子，提供清凉的天然椰子水和鲜嫩的椰肉。",
+                item_drink3_name: "柠檬香茅苏打水",
+                item_drink3_desc: "清新的碳酸苏打，融入香茅提取物和新鲜压榨的黄柠檬汁。",
+                item_dessert1_name: "芒果糯米饭配温椰浆",
+                item_dessert1_desc: "香甜糯米饭配成熟的金黄芒果，淋上温热的咸香椰浆，撒上烤绿豆。",
+                item_dessert2_name: "手工鲜椰冰淇淋",
+                item_dessert2_desc: "自制椰子冰淇淋，配以烤花生、甜玉米和亚达子，盛在半个椰壳中。",
+                
+                // Modifiers
+                "modifier_group_Add-ons (ตัวเลือกเสริม)": "加购",
+                "modifier_Fried Egg (ไข่ดาว)": "煎蛋",
+                "modifier_Omelette (ไข่เจียว)": "煎蛋卷",
+                "modifier_Steamed Jasmine Rice (ข้าวสวย)": "泰国香米饭",
+                "modifier_Sticky Rice (ข้าวเหนียว)": "糯米饭",
+                
+                // Status notifications
+                orderSentSuccess: "下单成功！ 订单编号：{num}",
+                orderSentFailed: "下单失败，请重试。",
+                orderingBlockedPremises: "点餐已禁用，您必须在餐厅内才能点餐。",
+                unableFindDish: "未在菜单中找到此菜品。",
+                failedConnectServer: "无法连接到服务器。请重试。",
+                readyStatus: "已准备好",
+                cookingStatus: "烹饪中",
+                servedStatus: "已上菜",
+                cancelledStatus: "已取消",
+                orderLabel: "订单",
+                orderAgainBtn: "再来一份",
+                noActiveItems: "没有正在制作的菜品。",
+                noServedItems: "此前没有已上菜的菜品。",
+                addedToCartMsg: "已将 {name} 加入购物车！",
+                sendingOrder: "正在发送订单..."
+            }
+        };
     }
 
     // Retry wrapper with exponential backoff
@@ -328,6 +809,10 @@ class AlphaPosApp {
         // Add dev-panel minimized state class initially
         document.getElementById("devPanel").classList.add("minimized");
         
+        // Initialize language switcher
+        const savedLang = localStorage.getItem("lang") || "th";
+        this.switchLanguage(savedLang);
+
         // Developer auto-onboard check for headless testing
         this.autoOnboardIfRequested();
     }
@@ -765,10 +1250,10 @@ class AlphaPosApp {
             
         } catch (error) {
             console.error("Failed to open table session:", error);
-            this._showToast("Failed to connect to server. Please try again.", 5000);
+            this._showToast(this.translate("failedConnectServer"), 5000);
         } finally {
             btn.disabled = false;
-            btn.querySelector("span").innerText = "Start Ordering";
+            btn.querySelector("span").innerText = this.translate("startOrdering");
         }
     }
 
@@ -909,6 +1394,86 @@ class AlphaPosApp {
         }
     }
 
+    /**
+     * Switch UI language and dynamically update all texts
+     */
+    switchLanguage(lang) {
+        this.currentLanguage = lang;
+        localStorage.setItem("lang", lang);
+        
+        const btns = document.querySelectorAll(".lang-btn");
+        const slider = document.getElementById("langSlider");
+
+        btns.forEach(btn => {
+            btn.classList.toggle("active", btn.dataset.lang === lang);
+            if (btn.dataset.lang === lang) {
+                // Ensure calculations execute after layout stabilizes
+                requestAnimationFrame(() => {
+                    slider.style.transform = `translateX(${btn.offsetLeft - 3}px)`;
+                    slider.style.width = `${btn.offsetWidth}px`;
+                });
+            }
+        });
+
+        // Trigger translations
+        this.translateUI();
+    }
+
+    translate(key, defaultVal = "") {
+        const lang = this.currentLanguage || 'th';
+        const translations = this.translations[lang];
+        if (translations && translations[key] !== undefined) {
+            return translations[key];
+        }
+        const enTranslations = this.translations['en'];
+        if (enTranslations && enTranslations[key] !== undefined) {
+            return enTranslations[key];
+        }
+        return defaultVal || key;
+    }
+
+    translateUI() {
+        // Translate all static texts marked with data-translate-key
+        const elements = document.querySelectorAll("[data-translate-key]");
+        elements.forEach(el => {
+            const key = el.getAttribute("data-translate-key");
+            const translation = this.translate(key);
+            if (translation) {
+                if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
+                    el.placeholder = translation;
+                } else {
+                    el.innerText = translation;
+                }
+            }
+        });
+
+        // Translate table badge dynamically
+        const badgeEl = document.getElementById("tableBadge");
+        if (badgeEl) {
+            const tableTextEl = badgeEl.querySelector(".table-text");
+            if (tableTextEl) {
+                tableTextEl.innerText = this.translate("tableBadgeText").replace("{num}", this.tableNumber);
+            }
+        }
+
+        // Re-render categories & menu items
+        this.renderCategories();
+        this.renderMenuItems();
+
+        // Re-render cart UI
+        this.updateCartUI();
+
+        // Trigger location verifier refresh in matching language
+        if (window.locationVerifier) {
+            window.locationVerifier.runVerification();
+        }
+
+        // Re-render order history if loaded
+        if (this.lastFetchedOrders && this.lastFetchedOrders.length > 0) {
+            this.renderOrderHistory(this.lastFetchedOrders);
+        }
+    }
+
 
     /**
      * Parses the table number and session token from the URL params
@@ -940,7 +1505,8 @@ class AlphaPosApp {
         }
 
         // Update Header Badge
-        document.getElementById("tableBadge").querySelector(".table-text").innerText = "Table " + this.tableNumber;
+        const badgeText = this.translate("tableBadgeText").replace("{num}", this.tableNumber);
+        document.getElementById("tableBadge").querySelector(".table-text").innerText = badgeText;
     }
 
     /**
@@ -953,7 +1519,7 @@ class AlphaPosApp {
         this.categories.forEach(category => {
             const tab = document.createElement("button");
             tab.className = `category-tab ${this.currentCategory === category.id ? 'active' : ''}`;
-            tab.innerText = category.name;
+            tab.innerText = this.translate('category_' + category.id, category.name);
             tab.onclick = () => this.switchCategory(category.id);
             container.appendChild(tab);
         });
@@ -968,7 +1534,7 @@ class AlphaPosApp {
 
         // Update Section Title
         const activeCategory = this.categories.find(c => c.id === this.currentCategory);
-        document.getElementById("currentCategoryTitle").innerText = activeCategory ? activeCategory.name : "Menu";
+        document.getElementById("currentCategoryTitle").innerText = activeCategory ? this.translate('category_' + activeCategory.id, activeCategory.name) : this.translate('menuTab', "Menu");
 
         // Filter and render items
         const itemsToRender = this.menuItems.filter(item => item.category === this.currentCategory);
@@ -1000,8 +1566,8 @@ class AlphaPosApp {
                 </div>
                 <div class="menu-item-info">
                     <div class="menu-item-header">
-                        <div class="menu-item-title">${escapeHtml(item.name)}</div>
-                        <div class="menu-item-desc">${escapeHtml(item.desc)}</div>
+                        <div class="menu-item-title">${escapeHtml(this.translate('item_' + item.id + '_name', item.name))}</div>
+                        <div class="menu-item-desc">${escapeHtml(this.translate('item_' + item.id + '_desc', item.desc))}</div>
                     </div>
                     <div class="menu-item-price">฿${item.price.toFixed(2)}</div>
                 </div>
@@ -1203,7 +1769,7 @@ class AlphaPosApp {
         const cartKeys = Object.keys(this.cart);
 
         if (cartKeys.length === 0) {
-            container.innerHTML = `<div class="empty-state">No items added to tray yet.</div>`;
+            container.innerHTML = `<div class="empty-state">${this.translate('emptyTray')}</div>`;
             return;
         }
 
@@ -1231,7 +1797,8 @@ class AlphaPosApp {
             let modifierNames = [];
             selectedModifiers.forEach(m => {
                 modifierPriceSum += parseFloat(m.price || 0);
-                modifierNames.push(`${m.name} (+฿${parseFloat(m.price || 0).toFixed(2)})`);
+                const translatedModName = this.translate('modifier_' + m.name, m.name);
+                modifierNames.push(`${translatedModName} (+฿${parseFloat(m.price || 0).toFixed(2)})`);
             });
 
             const singlePrice = item.price + modifierPriceSum;
@@ -1245,7 +1812,7 @@ class AlphaPosApp {
 
             const notesHtml = notes.trim()
                 ? `<div class="cart-item-notes" style="font-size: 0.8rem; color: #d97706; margin-top: 2px; font-style: italic;">
-                     Note: "${escapeHtml(notes)}"
+                     ${this.translate('noteLabel')}: "${escapeHtml(notes)}"
                    </div>`
                 : "";
 
@@ -1253,7 +1820,7 @@ class AlphaPosApp {
             row.className = "cart-item-row";
             row.innerHTML = `
                 <div class="cart-item-details">
-                    <div class="cart-item-name">${escapeHtml(item.name)}</div>
+                    <div class="cart-item-name">${escapeHtml(this.translate('item_' + item.id + '_name', item.name))}</div>
                     ${modifierHtml}
                     ${notesHtml}
                     <div class="cart-item-price-sum">฿${singlePrice.toFixed(2)} × ${qty} = ฿${rowTotal.toFixed(2)}</div>
@@ -1415,6 +1982,7 @@ class AlphaPosApp {
         }
         
         if (success) {
+            this.lastFetchedOrders = formattedOrders;
             this.renderOrderHistory(formattedOrders);
         }
     }
@@ -1471,22 +2039,25 @@ class AlphaPosApp {
         }
         
         if (activeItems.length === 0) {
-            activeContainer.innerHTML = `<div class="empty-state">No active items in preparation.</div>`;
+            activeContainer.innerHTML = `<div class="empty-state">${this.translate('noActiveItems')}</div>`;
         } else {
             activeItems.forEach(item => {
                 const statusEmoji = item.status === "ready" ? "🛎️" : "🍳";
-                const statusLabel = item.status === "ready" ? "Ready" : "Cooking";
+                const statusLabel = item.status === "ready" ? this.translate('readyStatus') : this.translate('cookingStatus');
                 const statusClass = item.status === "ready" ? "ready" : "cooking";
                 
+                const matchedMenuItem = this.menuItems.find(m => m.name === item.name);
+                const displayName = matchedMenuItem ? this.translate('item_' + matchedMenuItem.id + '_name', item.name) : item.name;
+
                 const el = document.createElement("div");
                 el.className = "status-item-card";
                 el.innerHTML = `
                     <div class="item-info">
                         <div class="item-header">
-                            <span class="item-name">${escapeHtml(item.name)}</span>
+                            <span class="item-name">${escapeHtml(displayName)}</span>
                             <span class="item-qty">× ${item.quantity}</span>
                         </div>
-                        <div class="item-meta">Order: ${escapeHtml(item.orderNumber || '')}</div>
+                        <div class="item-meta">${this.translate('orderLabel')}: ${escapeHtml(item.orderNumber || '')}</div>
                       </div>
                       <span class="status-badge ${statusClass}">${statusEmoji} ${statusLabel}</span>
                   `;
@@ -1495,26 +2066,29 @@ class AlphaPosApp {
         }
         
         if (pastItems.length === 0) {
-            pastContainer.innerHTML = `<div class="empty-state">No previous dishes served.</div>`;
+            pastContainer.innerHTML = `<div class="empty-state">${this.translate('noServedItems')}</div>`;
         } else {
             pastItems.forEach(item => {
                 const statusEmoji = item.status === "cancelled" ? "❌" : "🍽️";
-                const statusLabel = item.status === "cancelled" ? "Cancelled" : "Served";
+                const statusLabel = item.status === "cancelled" ? this.translate('cancelledStatus') : this.translate('servedStatus');
                 const statusClass = item.status === "cancelled" ? "cancelled" : "served";
                 
+                const matchedMenuItem = this.menuItems.find(m => m.name === item.name);
+                const displayName = matchedMenuItem ? this.translate('item_' + matchedMenuItem.id + '_name', item.name) : item.name;
+
                 const el = document.createElement("div");
                 el.className = "status-item-card served-item";
                 el.innerHTML = `
                     <div class="item-info">
                         <div class="item-header">
-                            <span class="item-name">${escapeHtml(item.name)}</span>
+                            <span class="item-name">${escapeHtml(displayName)}</span>
                             <span class="item-qty">× ${item.quantity}</span>
                         </div>
-                        <div class="item-meta">Order: ${escapeHtml(item.orderNumber || '')}</div>
+                        <div class="item-meta">${this.translate('orderLabel')}: ${escapeHtml(item.orderNumber || '')}</div>
                     </div>
                     <div class="served-action-group">
                         <span class="status-badge ${statusClass}">${statusEmoji} ${statusLabel}</span>
-                        ${item.status !== "cancelled" ? `<button class="reorder-action-btn" onclick="app.reorderItem('${escapeHtml(item.name)}')">Order Again</button>` : ''}
+                        ${item.status !== "cancelled" ? `<button class="reorder-action-btn" onclick="app.reorderItem('${escapeHtml(item.name)}')">${this.translate('orderAgainBtn')}</button>` : ''}
                     </div>
                 `;
                 pastContainer.appendChild(el);
@@ -1533,8 +2107,9 @@ class AlphaPosApp {
             this.switchView("menu");
             this.toggleCartDrawer(true);
             
+            const translatedName = this.translate('item_' + item.id + '_name', item.name);
             const toast = document.getElementById("toast");
-            toast.innerText = `Added ${item.name} to cart!`;
+            toast.innerText = this.translate('addedToCartMsg').replace('{name}', translatedName);
             toast.className = "toast show";
             setTimeout(() => {
                 toast.className = "toast";
@@ -1733,10 +2308,16 @@ class AlphaPosApp {
     }
 
     async sendServiceRequest(type) {
-        const btnNotification = document.getElementById("activeRequestNotification");
-        const btnRequestType = document.getElementById("activeRequestType");
-        
-        btnRequestType.innerText = type;
+        const serviceKeyMap = {
+            'Bill (Cash)': 'payCash',
+            'Bill (Card)': 'payCard',
+            'Bill (QR)': 'payQR',
+            'Ice/Water': 'getWater',
+            'Extra Utensils': 'utensils',
+            'General Help': 'callStaffBtn'
+        };
+        const displayType = this.translate(serviceKeyMap[type] || type);
+        btnRequestType.innerText = displayType;
         btnNotification.classList.remove("hide");
         
         let success = false;
@@ -1786,8 +2367,17 @@ class AlphaPosApp {
         }
         
         if (success) {
+            const serviceKeyMap = {
+                'Bill (Cash)': 'payCash',
+                'Bill (Card)': 'payCard',
+                'Bill (QR)': 'payQR',
+                'Ice/Water': 'getWater',
+                'Extra Utensils': 'utensils',
+                'General Help': 'callStaffBtn'
+            };
+            const displayType = this.translate(serviceKeyMap[type] || type);
             const toast = document.getElementById("toast");
-            toast.innerText = `Staff called for: ${type}`;
+            toast.innerText = `${this.translate('staffCalled')}: ${displayType}`;
             toast.className = "toast show";
             setTimeout(() => {
                 toast.className = "toast";
@@ -1797,7 +2387,7 @@ class AlphaPosApp {
                 btnNotification.classList.add("hide");
             }, 10000);
         } else {
-            this._showToast("Service call failed. Please notify a waiter directly.", 5000);
+            this._showToast(this.translate('serviceCallFailed'), 5000);
             btnNotification.classList.add("hide");
         }
     }
@@ -1812,7 +2402,7 @@ class AlphaPosApp {
 
         // Double check validation before submitting
         if (!window.locationVerifier.isValid) {
-            this._showToast("Ordering blocked. You must be inside the restaurant premises.");
+            this._showToast(this.translate("orderingBlockedPremises"));
             this._submitInProgress = false;
             return;
         }
@@ -1824,7 +2414,7 @@ class AlphaPosApp {
         // UI Loading State
         btn.classList.add("disabled");
         btn.setAttribute("disabled", "true");
-        btnText.innerText = "Sending Order...";
+        btnText.innerText = this.translate("sendingOrder");
         spinner.classList.remove("hide");
 
         // Use crypto.randomUUID() when available, fallback to crypto.getRandomValues
@@ -1966,11 +2556,11 @@ class AlphaPosApp {
                 success = true;
             } catch (localErr) {
                 console.error("Local order submission failed:", localErr);
-                this._showToast("Failed to submit order. Please try again.", 5000);
+                this._showToast(this.translate("orderSentFailed"), 5000);
                 
                 btn.classList.remove("disabled");
                 btn.removeAttribute("disabled");
-                btnText.innerText = "Send to Kitchen";
+                btnText.innerText = this.translate("sendToKitchen");
                 spinner.classList.add("hide");
                 return;
             }
@@ -1980,12 +2570,12 @@ class AlphaPosApp {
             console.log("Order saved successfully:", orderNum);
 
             // UI Success state
-            btnText.innerText = "Send to Kitchen";
+            btnText.innerText = this.translate("sendToKitchen");
             spinner.classList.add("hide");
             
             // Show Toast
             const toast = document.getElementById("toast");
-            toast.innerText = `Order ${orderNum} Sent to Kitchen!`;
+            toast.innerText = this.translate('orderSentSuccess').replace('{num}', orderNum);
             toast.className = "toast show";
             setTimeout(() => {
                 toast.className = "toast";
@@ -2132,8 +2722,8 @@ class AlphaPosApp {
         const imageEl = document.getElementById("modalProductImage");
         const addBtn = document.getElementById("modalAddBtn");
 
-        titleEl.innerText = item.name;
-        descEl.innerText = item.desc || "";
+        titleEl.innerText = this.translate('item_' + item.id + '_name', item.name);
+        descEl.innerText = this.translate('item_' + item.id + '_desc', item.desc || "");
         priceEl.innerText = `฿${item.price.toFixed(2)}`;
 
         // Clear previous style / set background
@@ -2147,10 +2737,12 @@ class AlphaPosApp {
         // Setup active state for add button
         const inCartQty = this.getItemTotalQuantity(itemId);
         if (inCartQty > 0) {
-            addBtn.innerText = `Add More (${inCartQty} in tray)`;
+            addBtn.innerText = this.translate('addMore').replace('{qty}', inCartQty);
         } else {
-            addBtn.innerText = "Add to Order";
+            addBtn.innerText = this.translate('addToOrder');
         }
+        
+        document.getElementById("specialInstructionsInput").placeholder = this.translate("specialInstructionsPlaceholder");
 
         // Render modifier options
         const modalModifiersSection = document.getElementById("modalModifiersSection");
@@ -2180,7 +2772,7 @@ class AlphaPosApp {
                     
                     const groupTitle = document.createElement("div");
                     groupTitle.className = "modifier-group-title";
-                    groupTitle.innerText = group.name;
+                    groupTitle.innerText = this.translate('modifier_group_' + group.name, group.name);
 
                     const groupSubtitle = document.createElement("div");
                     groupSubtitle.className = "modifier-group-subtitle";
@@ -2189,16 +2781,16 @@ class AlphaPosApp {
                     const max = parseInt(group.max_selection || 0);
                     if (min > 0 && max > 0) {
                         if (min === max) {
-                            groupSubtitle.innerText = `Select exactly ${min}`;
+                            groupSubtitle.innerText = this.translate('selectExactly').replace('{min}', min);
                         } else {
-                            groupSubtitle.innerText = `Select ${min} to ${max}`;
+                            groupSubtitle.innerText = this.translate('selectRange').replace('{min}', min).replace('{max}', max);
                         }
                     } else if (max > 0) {
-                        groupSubtitle.innerText = `Select up to ${max}`;
+                        groupSubtitle.innerText = this.translate('selectUpTo').replace('{max}', max);
                     } else if (min > 0) {
-                        groupSubtitle.innerText = `Select at least ${min}`;
+                        groupSubtitle.innerText = this.translate('selectAtLeast').replace('{min}', min);
                     } else {
-                        groupSubtitle.innerText = "Optional";
+                        groupSubtitle.innerText = this.translate('optional');
                     }
 
                     groupHeader.appendChild(groupTitle);
@@ -2223,7 +2815,7 @@ class AlphaPosApp {
                         optionItem.innerHTML = `
                             <div class="modifier-option-label">
                                 <span class="${inputClass}"></span>
-                                <span>${escapeHtml(mod.name)}</span>
+                                <span>${escapeHtml(this.translate('modifier_' + mod.name, mod.name))}</span>
                             </div>
                             <div class="modifier-option-price">+฿${parseFloat(mod.extra_price || 0).toFixed(2)}</div>
                         `;
@@ -2268,7 +2860,7 @@ class AlphaPosApp {
             const isCurrentlySelected = optionItem.classList.contains("selected");
 
             if (!isCurrentlySelected && max > 0 && selectedCount >= max) {
-                alert(`You can select up to ${max} choices.`);
+                alert(this.translate("validationMax").replace("{max}", max));
                 return;
             }
             optionItem.classList.toggle("selected");
@@ -2317,7 +2909,7 @@ class AlphaPosApp {
             const groupName = container.querySelector(".modifier-group-title").innerText;
 
             if (selectedInGroup < min) {
-                alert(`Please select at least ${min} option(s) for "${groupName}".`);
+                alert(this.translate("validationMin").replace("{min}", min).replace("{group}", groupName));
                 validationFailed = true;
             }
         });

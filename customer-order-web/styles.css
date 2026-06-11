@@ -206,7 +206,7 @@ body.dark-theme .app-container {
 }
 
 /* ==========================================
-   3. Header Section ( Frosted Apple Nav Bar )
+   3. Header Section + Language Switcher
    ========================================== */
 .app-header {
     display: flex;
@@ -246,11 +246,57 @@ body.dark-theme .app-container {
     transition: color 0.4s ease;
 }
 
-/* Header Action Controls (Theme Toggle & Table ID) */
+/* Header Action Controls (Theme Toggle, Language, Table ID) */
 .header-actions {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
+}
+
+/* Language Switcher */
+.lang-switcher {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    background: var(--bg-surface-elevated);
+    border-radius: 20px;
+    padding: 3px;
+    border: 1px solid var(--border-color);
+}
+
+.lang-btn {
+    position: relative;
+    z-index: 2;
+    background: none;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 18px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: color 0.25s ease;
+    min-width: 30px;
+    text-align: center;
+    letter-spacing: 0.02em;
+}
+
+.lang-btn.active {
+    color: #ffffff;
+}
+
+.lang-slider {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    height: calc(100% - 6px);
+    width: 30px;
+    background: var(--gradient-primary);
+    border-radius: 18px;
+    z-index: 1;
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 2px 6px var(--primary-glow);
 }
 
 /* Apple-style Theme Toggle Button */
