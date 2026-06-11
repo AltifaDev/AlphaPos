@@ -113,11 +113,26 @@
                 <h1 class="brand-title">AlphaPos</h1>
             </div>
             <div class="header-actions">
-                <div class="lang-switcher" id="langSwitcher">
-                    <button class="lang-btn active" data-lang="th" onclick="app.switchLanguage('th')">TH</button>
-                    <button class="lang-btn" data-lang="en" onclick="app.switchLanguage('en')">EN</button>
-                    <button class="lang-btn" data-lang="zh" onclick="app.switchLanguage('zh')">中文</button>
-                    <div class="lang-slider" id="langSlider"></div>
+                <div class="lang-dropdown" id="langDropdown">
+                    <button class="lang-dropdown-toggle" onclick="app.toggleLangDropdown(event)">
+                        <span id="langCurrentFlag">🇹🇭</span>
+                        <span id="langCurrentLabel">TH</span>
+                        <svg class="lang-chevron" width="10" height="6" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <div class="lang-dropdown-menu" id="langDropdownMenu">
+                        <button class="lang-dropdown-item active" data-lang="th" onclick="app.switchLanguage('th')">
+                            <span class="lang-flag">🇹🇭</span>
+                            <span class="lang-name">TH</span>
+                        </button>
+                        <button class="lang-dropdown-item" data-lang="en" onclick="app.switchLanguage('en')">
+                            <span class="lang-flag">🇺🇸</span>
+                            <span class="lang-name">EN</span>
+                        </button>
+                        <button class="lang-dropdown-item" data-lang="zh" onclick="app.switchLanguage('zh')">
+                            <span class="lang-flag">🇨🇳</span>
+                            <span class="lang-name">中文</span>
+                        </button>
+                    </div>
                 </div>
                 <button id="themeToggleBtn" class="theme-toggle-btn" aria-label="Toggle Theme" onclick="app.toggleTheme()">
                     <span class="theme-toggle-icon">🌙</span>
@@ -143,7 +158,6 @@
         <!-- Promotions Banner Carousel -->
         <div id="promotionsBannerContainer" class="promo-banner-container anim-fade-in-scale">
             <div id="promotionsSlider" class="promo-slider">
-                <!-- Fallback / Initial slide -->
                 <div class="promo-slide active">
                     <div class="promo-placeholder-bg"></div>
                     <div class="promo-overlay">
@@ -177,6 +191,17 @@
         <!-- View Panel: Menu -->
         <div id="menuView" class="view-panel active" role="tabpanel" aria-label="Menu">
             <main id="main-content" class="menu-container anim-fade-in-up">
+                <!-- Search Bar -->
+                <div class="search-bar-container">
+                    <div class="search-bar">
+                        <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <input type="text" class="search-input" id="searchInput" data-translate-key="searchPlaceholder" placeholder="Search menu..." oninput="app.handleSearch(this.value)">
+                        <button class="search-clear-btn" id="searchClearBtn" onclick="app.clearSearch()">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Categories Slider -->
                 <div class="category-tabs-container">
                     <div class="category-tabs" id="categoryTabs">
@@ -189,6 +214,10 @@
                     <h2 class="section-title" id="currentCategoryTitle" data-translate-key="menuTab">Menu</h2>
                     <div class="menu-grid" id="menuGrid">
                         <!-- Menu items will be rendered dynamically -->
+                    </div>
+                    <div class="search-empty-state" id="searchEmptyState">
+                        <span class="search-empty-icon">🔍</span>
+                        <p class="search-empty-text" data-translate-key="noSearchResults">No items found</p>
                     </div>
                 </section>
             </main>
@@ -408,6 +437,6 @@
     <!-- Script imports -->
     <script src="config.js"></script>
     <script src="hybrid-location.js"></script>
-    <script src="app.js"></script>
+    <script type="module" src="app.js"></script>
 </body>
 </html>

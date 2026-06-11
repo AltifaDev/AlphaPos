@@ -1,4 +1,6 @@
 import os
+from seed import DEFAULT_EMPLOYEES, DEFAULT_MENU, get_default_tables
+
 import sys
 import json
 import sqlite3
@@ -69,10 +71,10 @@ def sync_menu_from_supabase(conn):
         
         cursor = conn.cursor()
         # Wipe existing menu items and replace with Supabase data
-        cursor.execute("DELETE FROM menu_items")
+        cursor.execute("-- UPSERT used instead")
         for item in data:
             cursor.execute(
-                "INSERT INTO menu_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO menu_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     item.get("id", str(uuid.uuid4())),
                     item.get("name", ""),
@@ -91,11 +93,10 @@ def sync_menu_from_supabase(conn):
         print(f"[Sync] ⚠️  Supabase offline or error — using local SQLite cache. ({e})")
 
 
-def sync_promotions_from_supabase(conn):
+def fetch_promotions_from_supabase():
     """
-    Fetch promotions from Supabase (cloud master) and update local SQLite cache.
-    - If Supabase is online: replace all local promotions with the latest from Supabase.
-    - If Supabase is offline: silently skip (local SQLite data is used as fallback).
+    Fetch promotions directly from Supabase (cloud master).
+    Returns list of promotion dicts, or empty list on failure.
     """
     try:
         url = f"{SUPABASE_URL}/rest/v1/promotions?select=*&is_deleted=eq.0"
@@ -108,30 +109,88 @@ def sync_promotions_from_supabase(conn):
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
         
-        if data is None:
-            data = []
-            
-        cursor = conn.cursor()
-        # Wipe existing promotions and replace with Supabase data
-        cursor.execute("DELETE FROM promotions")
-        for item in data:
-            cursor.execute(
-                "INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, is_active, is_deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    item.get("id"),
-                    item.get("title", ""),
-                    item.get("promo_description", ""),
-                    item.get("image_data", ""),
-                    int(item.get("is_active", 1)),
-                    int(item.get("is_deleted", 0)),
-                    item.get("updated_at", "")
-                )
-            )
-        conn.commit()
-        print(f"[Sync] ✅ Synced {len(data)} promotions from Supabase to SQLite.")
+        return data if data else []
     except Exception as e:
-        print(f"[Sync] ⚠️  Failed to sync promotions from Supabase: {str(e)}")
+        print(f"[Sync] ⚠️  Failed to fetch promotions from Supabase: {str(e)}")
+        return []
 
+
+def supabase_request(method, endpoint, payload=None, query_params=None):
+    """
+    Make a request to Supabase REST API.
+    Returns (success, response_data) tuple.
+    """
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
+        if query_params:
+            url += "?" + urllib.parse.urlencode(query_params)
+        
+        data_bytes = json.dumps(payload).encode("utf-8") if payload else None
+        req = urllib.request.Request(url, data=data_bytes, method=method)
+        req.add_header("apikey", SUPABASE_ANON_KEY)
+        req.add_header("Authorization", f"Bearer {SUPABASE_ANON_KEY}")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Prefer", "return=minimal")
+        req.add_header("x-merchant-id", MERCHANT_ID)
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
+            return True, response.read().decode()
+    except Exception as e:
+        print(f"[Supabase] {method} {endpoint} failed: {str(e)}")
+        return False, str(e)
+
+
+def sync_table_sessions_from_supabase(conn):
+    """
+    Fetch table_sessions from Supabase (cloud master) and cache locally in SQLite.
+    Called on server startup to sync guest count data.
+    """
+    try:
+        print("[Sync] Fetching table_sessions from Supabase...")
+        
+        url = f"{SUPABASE_URL}/rest/v1/table_sessions?is_deleted=eq.false&limit=1000"
+        
+        req = urllib.request.Request(url)
+        req.add_header("apikey", SUPABASE_ANON_KEY)
+        req.add_header("Authorization", f"Bearer {SUPABASE_ANON_KEY}")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("x-merchant-id", MERCHANT_ID)
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
+            sessions_data = json.loads(response.read().decode())
+        
+        if not sessions_data:
+            print("[Sync] No table_sessions returned from Supabase")
+            return
+        
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM table_sessions WHERE merchant_id = ?", (MERCHANT_ID,))
+        
+        for session in sessions_data:
+            cursor.execute('''
+                INSERT OR REPLACE INTO table_sessions 
+                (id, table_number, session_token, is_active, created_at, ended_at, guest_count, merchant_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                session.get("id"),
+                session.get("table_number", session.get("table_id", "")),
+                session.get("session_token"),
+                1 if session.get("is_active", True) else 0,
+                session.get("started_at") or session.get("created_at"),
+                session.get("ended_at"),
+                session.get("guest_count", 1),
+                session.get("merchant_id")
+            ))
+        
+        conn.commit()
+        print(f"[Sync] ✅ Cached {len(sessions_data)} table sessions from Supabase")
+        
+    except urllib.error.HTTPError as e:
+        print(f"[Sync] ⚠️ HTTP {e.code}: {e.reason} - Supabase table_sessions offline")
+        
+    except Exception as e:
+        print(f"[Sync] ⚠️ Failed to sync table_sessions: {str(e)}")
 
 
 def get_db_connection():
@@ -180,26 +239,26 @@ def sync_modifiers_from_supabase(conn):
         cursor = conn.cursor()
         
         # 1. Update modifier_groups
-        cursor.execute("DELETE FROM modifier_groups")
+        cursor.execute("-- UPSERT used instead")
         for g in groups:
             cursor.execute(
-                "INSERT INTO modifier_groups (id, name, min_selection, max_selection, merchant_id) VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO modifier_groups (id, name, min_selection, max_selection, merchant_id) VALUES (?, ?, ?, ?, ?)",
                 (g.get("id"), g.get("name", ""), g.get("min_selection", 0), g.get("max_selection", 1), g.get("merchant_id"))
             )
             
         # 2. Update modifiers
-        cursor.execute("DELETE FROM modifiers")
+        cursor.execute("-- UPSERT used instead")
         for m in mods:
             cursor.execute(
-                "INSERT INTO modifiers (id, modifier_group_id, name, extra_price, is_available, merchant_id) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO modifiers (id, modifier_group_id, name, extra_price, is_available, merchant_id) VALUES (?, ?, ?, ?, ?, ?)",
                 (m.get("id"), m.get("modifier_group_id"), m.get("name", ""), float(m.get("extra_price", 0.0)), 1 if m.get("is_available", True) else 0, m.get("merchant_id"))
             )
             
         # 3. Update menu_item_modifier_groups
-        cursor.execute("DELETE FROM menu_item_modifier_groups")
+        cursor.execute("-- UPSERT used instead")
         for j in junctions:
             cursor.execute(
-                "INSERT INTO menu_item_modifier_groups (menu_item_id, modifier_group_id, merchant_id) VALUES (?, ?, ?)",
+                "INSERT OR REPLACE INTO menu_item_modifier_groups (menu_item_id, modifier_group_id, merchant_id) VALUES (?, ?, ?)",
                 (j.get("menu_item_id"), j.get("modifier_group_id"), j.get("merchant_id"))
             )
             
@@ -434,6 +493,31 @@ def init_db():
         )
     ''')
     
+    # 14. Restaurant Tables table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS restaurant_tables (
+            id TEXT PRIMARY KEY,
+            merchant_id TEXT NOT NULL,
+            table_number TEXT NOT NULL,
+            capacity INTEGER NOT NULL DEFAULT 2,
+            status TEXT NOT NULL DEFAULT 'vacant',
+            qr_code_identifier TEXT,
+            position_x REAL NOT NULL DEFAULT 0.0,
+            position_y REAL NOT NULL DEFAULT 0.0,
+            floor INTEGER NOT NULL DEFAULT 1,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            is_round BOOLEAN NOT NULL DEFAULT FALSE,
+            zone TEXT NOT NULL DEFAULT 'Indoor'
+        )
+    ''')
+
+    cursor.execute("SELECT COUNT(*) FROM restaurant_tables")
+    if cursor.fetchone()[0] == 0:
+        default_tables = get_default_tables(MERCHANT_ID)
+        cursor.executemany("INSERT INTO restaurant_tables VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", default_tables)
+        conn.commit()
+        print("Database initialized and restaurant_tables seeded successfully.")
+    
     # Migration: Add missing columns to existing tables (idempotent)
     for table, col, col_type in [
         ("orders", "merchant_id", "TEXT"),
@@ -443,8 +527,9 @@ def init_db():
         ("table_sessions", "merchant_id", "TEXT"),
         ("service_requests", "merchant_id", "TEXT"),
         ("timecards", "merchant_id", "TEXT"),
+        ("restaurant_tables", "zone", "TEXT"),
     ]:
-        allowed_tables = {"orders", "order_items", "payments", "table_sessions", "service_requests", "timecards", "employees", "menu_items", "promotions"}
+        allowed_tables = {"orders", "order_items", "payments", "table_sessions", "service_requests", "timecards", "employees", "menu_items", "promotions", "restaurant_tables"}
         allowed_col_types = {"TEXT", "INTEGER", "REAL", "BOOLEAN"}
         if table not in allowed_tables:
             print(f"Database migration: Skipped unknown table '{table}'")
@@ -475,10 +560,7 @@ def init_db():
     # Seed default employees if table is empty
     cursor.execute("SELECT COUNT(*) FROM employees")
     if cursor.fetchone()[0] == 0:
-        default_employees = [
-            ("11111111-1111-1111-1111-111111111111", "Somchai", "Suksabai", "081-234-5678", "1234567890123", "monthly", 25000.0, "somchai", "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4", "Manager"),
-            ("22222222-2222-2222-2222-222222222222", "Somsri", "Jaidee", "089-876-5432", "9876543210987", "hourly", 75.0, "somsri", "3f786850e387550fdab836ed7e6dc881de23001bdec45830613a48e7347793d4", "Barista")
-        ]
+        default_employees = DEFAULT_EMPLOYEES
         # Note: 10 columns matching CREATE TABLE (id, first_name, last_name, phone, national_id, employment_type, pay_rate, username, pin_hash, role)
         cursor.executemany("INSERT INTO employees VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", default_employees)
         conn.commit()
@@ -512,68 +594,15 @@ def init_db():
     # Seed default menu items if table is empty
     cursor.execute("SELECT COUNT(*) FROM menu_items")
     if cursor.fetchone()[0] == 0:
-        default_menu = [
-            # Mains (25)
-            ("isan1", "Classic Som Tum Thai", "Green papaya salad with peanuts, dried shrimp, lime, palm sugar, and fish sauce.", 85.00, "mains", "🥗", "img-main", "https://images.unsplash.com/photo-1626132647523-66f5bf380027?w=400&q=80"),
-            ("isan2", "Som Tum Boo Plarah", "Papaya salad with fermented fish sauce, salted crab, and fresh Thai herbs.", 90.00, "mains", "🥗", "img-main", "https://images.unsplash.com/photo-1625813506062-0aeb1d7a094b?w=400&q=80"),
-            ("isan3", "Som Tum Korat", "Papaya salad combining Som Tum Thai and Boo Plarah styles with rice noodles.", 95.00, "mains", "🥗", "img-main", "https://images.unsplash.com/photo-1617470703128-26a0fc9af10f?w=400&q=80"),
-            ("isan4", "Som Tum Suan Pak", "Herbal papaya salad with seasonal Isan wild vegetables and bitter herbs.", 100.00, "mains", "🥗", "img-main", "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=400&q=80"),
-            ("isan5", "Som Tum Tard Platter", "Platter-sized papaya salad served with boiled eggs, pork cracklings, and noodles.", 220.00, "mains", "🍱", "img-main", "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80"),
-            ("isan6", "Tum Corn with Salted Egg", "Sweet yellow corn salad tossed with rich salted egg yolk and lime juice.", 110.00, "mains", "🌽", "img-main", "https://images.unsplash.com/photo-1551248429-40975aa4de74?w=400&q=80"),
-            ("isan7", "Tum Cucumber (Tum Tang)", "Spicy cucumber salad with fermented fish sauce, chilies, and garlic.", 80.00, "mains", "🥒", "img-main", "https://images.unsplash.com/photo-1603052875302-d376b7c0638a?w=400&q=80"),
-            ("isan8", "Tum Tray Seafood", "Papaya salad platter served with giant river prawns, green mussels, and squid.", 250.00, "mains", "🍛", "img-main", "https://images.unsplash.com/photo-1534422298391-e4f8c172dddb?w=400&q=80"),
-            ("isan9", "Spicy Minced Pork Larb", "Minced pork salad with roasted ground rice, mint, lime, and dried chili.", 120.00, "mains", "🥩", "img-main", "https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=400&q=80"),
-            ("isan10", "Spicy Minced Chicken Larb", "Minced chicken breast salad seasoned with Isan herbs and fresh lime juice.", 120.00, "mains", "🍗", "img-main", "https://images.unsplash.com/photo-1606787366850-de6330128bfc?w=400&q=80"),
-            ("isan11", "Spicy Minced Duck Larb", "Authentic minced duck salad seasoned with roasted ground rice, mint, and galangal.", 140.00, "mains", "🦆", "img-main", "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=400&q=80"),
-            ("isan12", "Larb Woon Sen (Glass Noodle)", "Spicy glass noodle salad with minced pork, red onions, lime, and chilies.", 115.00, "mains", "🍜", "img-main", "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=400&q=80"),
-            ("isan13", "Larb Mushroom (Vegetarian)", "Vegetarian Larb with mixed forest mushrooms, mint, and roasted rice powder.", 105.00, "mains", "🍄", "img-main", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-            ("isan14", "Nam Tok Moo (Pork Salad)", "Grilled sliced pork collar salad with roasted ground rice, chili, and fresh mint.", 130.00, "mains", "🐷", "img-main", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-            ("isan15", "Nam Tok Neua (Beef Salad)", "Grilled sliced beef ribeye salad with authentic Isan herbs and lime dressing.", 160.00, "mains", "🐮", "img-main", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-            ("isan16", "Sup Nor Mai (Bamboo Salad)", "Spicy warm shredded bamboo shoot salad infused with aromatic yanang leaf juice.", 95.00, "mains", "🎋", "img-main", "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=400&q=80"),
-            ("isan17", "Tom Zap Pork Ribs", "Hot, sour, and aromatic soup with tender pork ribs and fresh lemongrass.", 150.00, "mains", "🍲", "img-main", "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80"),
-            ("isan18", "Tom Zap Beef Shank", "Spicy herbal soup with slow-braised beef shank, toasted rice, and fresh lime.", 180.00, "mains", "🍲", "img-main", "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80"),
-            ("isan19", "Kaeng Om Pork (Isan Curry)", "Isan herbal soup with pork, dill, cabbage, pumpkin, and yanang juice.", 140.00, "mains", "🍲", "img-main", "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80"),
-            ("isan20", "Kaeng Om Chicken", "Spicy herbal soup with chicken, dill, local vegetables, and roasted rice.", 135.00, "mains", "🍲", "img-main", "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80"),
-            ("isan21", "Kaeng Pak Wahn with Ant Eggs", "Clear seasonal soup with wild star gooseberry leaves and premium ant eggs.", 150.00, "mains", "🥣", "img-main", "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80"),
-            ("isan22", "Koi Neua (Beef Tartare)", "Isan-style raw minced beef salad with fresh chili, herbs, and bitter bile.", 175.00, "mains", "🥩", "img-main", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-            ("isan23", "Sizzling Moo Nam Tok", "Sizzling hot plate of grilled pork neck tossed with lime, herbs, and roasted rice.", 165.00, "mains", "🍳", "img-main", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-            ("isan24", "Yum Moo Yor (Pork Sausage)", "Spicy Vietnamese pork sausage salad with onions, tomatoes, and lime juice.", 110.00, "mains", "🍥", "img-main", "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80"),
-            ("isan25", "Yum Glass Noodle Seafood", "Spicy salad with glass noodles, fresh river prawns, squid, and celery.", 160.00, "mains", "🥗", "img-main", "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=400&q=80"),
-            # Appetizers (15)
-            ("isan26", "Classic Gai Yang (Half)", "Charcoal-grilled marinated chicken served with sweet chili and spicy Jaew sauces.", 180.00, "appetizers", "🍗", "img-app", "https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?w=400&q=80"),
-            ("isan27", "Classic Gai Yang (Whole)", "Full-sized charcoal-grilled marinated chicken with authentic Isan spices.", 340.00, "appetizers", "🐔", "img-app", "https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?w=400&q=80"),
-            ("isan28", "Moo Ping with Sticky Rice", "Three skewers of grilled sweet pork served with warm steamed sticky rice.", 95.00, "appetizers", "🍢", "img-app", "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80"),
-            ("isan29", "Kor Moo Yang (Pork Neck)", "Sliced charcoal-grilled pork neck served with spicy tamarind Jaew dipping sauce.", 150.00, "appetizers", "🥩", "img-app", "https://images.unsplash.com/photo-1603048588665-791ca8aea617?w=400&q=80"),
-            ("isan30", "Suea Rong Hai (Crying Tiger)", "Charcoal-grilled marinated beef brisket served with dynamic chili Jaew sauce.", 220.00, "appetizers", "🥩", "img-app", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-            ("isan31", "Isan Sausage Skewers", "Grilled fermented pork and rice sausage served with ginger and cabbage leaves.", 110.00, "appetizers", "🍥", "img-app", "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80"),
-            ("isan32", "Sai Krok E-San Moo (Balls)", "Grilled round fermented pork and garlic sausage balls served with fresh chilies.", 110.00, "appetizers", "🍡", "img-app", "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80"),
-            ("isan33", "Fried Larb Balls (Larb Tod)", "Deep-fried spicy minced pork balls with roasted ground rice and lime leaves.", 115.00, "appetizers", "🧆", "img-app", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-            ("isan34", "Crispy Isan Chicken Wings", "Deep-fried marinated chicken wings tossed in garlic and light soy sauce.", 120.00, "appetizers", "🍗", "img-app", "https://images.unsplash.com/photo-1569058242253-92a9c755a0ec?w=400&q=80"),
-            ("isan35", "Deep Fried Pork Ribs", "Crispy deep-fried marinated pork ribs topped with crispy golden garlic.", 140.00, "appetizers", "🥩", "img-app", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-            ("isan36", "Crispy Pork Crackling", "Crunchy deep-fried pork rinds, the perfect accompaniment for papaya salad.", 40.00, "appetizers", "🥓", "img-app", "https://images.unsplash.com/photo-1608039829572-78524f79c4c7?w=400&q=80"),
-            ("isan37", "Fried Sun-Dried Pork (Moo Dad Deaw)", "Deep-fried sweet and salty marinated sun-dried pork strips.", 130.00, "appetizers", "🥩", "img-app", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-            ("isan38", "Fried Sun-Dried Beef (Neua Dad Deaw)", "Deep-fried marinated sun-dried beef strips served with chili sauce.", 160.00, "appetizers", "🥩", "img-app", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-            ("isan39", "Grilled River Prawn (Single)", "Charcoal grilled giant river prawn served with spicy garlic seafood sauce.", 145.00, "appetizers", "🦐", "img-app", "https://images.unsplash.com/photo-1559314809-0d155014e29e?w=400&q=80"),
-            ("isan40", "Steamed Sticky Rice (Khao Niew)", "Warm steamed Thai glutinous rice served in a traditional bamboo basket.", 20.00, "appetizers", "🍚", "img-app", "https://images.unsplash.com/photo-1536304997881-a372c179924b?w=400&q=80"),
-            # Drinks (10)
-            ("isan41", "Cold Chrysanthemum Tea", "Sweet and cooling herbal chrysanthemum infusion served over ice.", 45.00, "drinks", "🥤", "img-drink", "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80"),
-            ("isan42", "Cold Roselle Juice", "Sweet and tart herbal roselle flower tea served with ice cubes.", 45.00, "drinks", "🥤", "img-drink", "https://images.unsplash.com/photo-1497534446932-c925b458314e?w=400&q=80"),
-            ("isan43", "Lemongrass Pandan Iced Tea", "Fragrant iced tea brewed with fresh lemongrass stalk and sweet pandan leaves.", 50.00, "drinks", "🥤", "img-drink", "https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?w=400&q=80"),
-            ("isan44", "Traditional Thai Iced Milk Tea", "Sweet brewed orange Thai tea topped with evaporated milk over shaved ice.", 65.00, "drinks", "🥤", "img-drink", "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80"),
-            ("isan45", "Thai Black Tea (Cha Dum Yen)", "Sweetened dark brewed Thai tea served chilled over crushed ice.", 55.00, "drinks", "🥤", "img-drink", "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80"),
-            ("isan46", "Fresh Whole Young Coconut", "Freshly opened sweet young coconut juice with tender coconut flesh.", 80.00, "drinks", "🥥", "img-drink", "https://images.unsplash.com/photo-1526318896980-cf78c088247c?w=400&q=80"),
-            ("isan47", "Singha Lager Beer (Small)", "Premium clean Thai lager beer bottle, served chilled.", 95.00, "drinks", "🍺", "img-drink", "https://images.unsplash.com/photo-1608270586620-248524c67de9?w=400&q=80"),
-            ("isan48", "Chang Lager Beer (Small)", "Famous crisp and strong Thai lager beer, served ice-cold.", 90.00, "drinks", "🍺", "img-drink", "https://images.unsplash.com/photo-1608270586620-248524c67de9?w=400&q=80"),
-            ("isan49", "Sparkling Lime Pandan Soda", "Refreshing carbonated soda infused with fresh lime juice and pandan syrup.", 55.00, "drinks", "🍹", "img-drink", "https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?w=400&q=80"),
-            ("isan50", "Mineral Drinking Water", "Chilled bottled mineral drinking water served with a glass of ice.", 20.00, "drinks", "🥛", "img-drink", "https://images.unsplash.com/photo-1548865140-64a23cf87aee?w=400&q=80"),
-        ]
+        default_menu = DEFAULT_MENU
         cursor.executemany("INSERT INTO menu_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)", default_menu)
         conn.commit()
         print("Database initialized and Isan menu (50 items) seeded successfully.")
     
     # Always sync latest menu from Supabase on startup (single source of truth)
     sync_menu_from_supabase(conn)
-    sync_promotions_from_supabase(conn)
+    sync_table_sessions_from_supabase(conn)
+    # Promotions are now fetched directly from Supabase on each request (no local cache)
     sync_modifiers_from_supabase(conn)
     
     conn.close()
@@ -1832,23 +1861,22 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 
     def handle_get_promotions(self):
         try:
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT * FROM promotions WHERE is_deleted = 0 ORDER BY updated_at DESC")
-            rows = cursor.fetchall()
+            remote_data = fetch_promotions_from_supabase()
             
             promotions = []
-            for row in rows:
+            for item in remote_data:
+                is_active = item.get("is_active", 1)
+                if isinstance(is_active, bool):
+                    is_active = 1 if is_active else 0
+                
                 promotions.append({
-                    "id": row["id"],
-                    "title": row["title"],
-                    "promoDescription": row["promo_description"],
-                    "imageData": row["image_data"],
-                    "isActive": bool(row["is_active"]),
-                    "isDeleted": bool(row["is_deleted"]),
-                    "updatedAt": row["updated_at"]
+                    "id": item.get("id", ""),
+                    "title": item.get("title", ""),
+                    "promoDescription": item.get("promo_description", ""),
+                    "imageData": item.get("image_data", ""),
+                    "isActive": bool(is_active),
+                    "isDeleted": False,
+                    "updatedAt": item.get("updated_at", "")
                 })
             
             response_data = json.dumps(promotions).encode("utf-8")
@@ -1856,9 +1884,8 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(response_data)
-            conn.close()
         except Exception as e:
-            self.send_error(500, f"Database error: {str(e)}")
+            self.send_error(500, f"Error fetching promotions: {str(e)}")
 
     def handle_post_promotion(self):
         content_length = int(self.headers['Content-Length'])
@@ -1869,24 +1896,30 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             title = promo_data.get("title")
             promo_desc = promo_data.get("promoDescription") or promo_data.get("promo_description")
             image_data = promo_data.get("imageData") or promo_data.get("image_data")
-            is_active = int(promo_data.get("isActive") if promo_data.get("isActive") is not None else 1)
-            is_deleted = int(promo_data.get("isDeleted") if promo_data.get("isDeleted") is not None else 0)
+            is_active = promo_data.get("isActive") if promo_data.get("isActive") is not None else True
+            is_deleted = promo_data.get("isDeleted") if promo_data.get("isDeleted") is not None else False
             updated_at = promo_data.get("updatedAt") or promo_data.get("updated_at") or get_utc_now_iso()
             
             if not promo_id or not title:
                 self.send_error(400, "id and title are required")
                 return
-                
-            conn = get_db_connection()
-            cursor = conn.cursor()
             
-            cursor.execute('''
-                INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, is_active, is_deleted, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (promo_id, title, promo_desc, image_data, is_active, is_deleted, updated_at))
+            payload = {
+                "id": promo_id,
+                "title": title,
+                "promo_description": promo_desc or "",
+                "image_data": image_data or "",
+                "is_active": 1 if is_active else 0,
+                "is_deleted": 1 if is_deleted else 0,
+                "updated_at": updated_at,
+                "merchant_id": MERCHANT_ID
+            }
             
-            conn.commit()
-            conn.close()
+            success, _ = supabase_request("POST", "promotions", payload, {"on_conflict": "id"})
+            
+            if not success:
+                # Try PATCH if upsert fails
+                success, _ = supabase_request("PATCH", "promotions", payload, {"id": f"eq.{promo_id}"})
             
             print(f"Server API [Promotion]: Saved/Updated promotion: {title} (ID: {promo_id})")
             
@@ -1906,14 +1939,15 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             if not promo_id:
                 self.send_error(400, "id is required")
                 return
-                
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM promotions WHERE id = ?", (promo_id,))
-            conn.commit()
-            conn.close()
             
-            print(f"Server API [Promotion]: Deleted promotion ID: {promo_id}")
+            # Soft-delete on Supabase (matching Staff app behavior)
+            payload = {
+                "is_deleted": 1,
+                "updated_at": get_utc_now_iso()
+            }
+            success, _ = supabase_request("PATCH", "promotions", payload, {"id": f"eq.{promo_id}"})
+            
+            print(f"Server API [Promotion]: Soft-deleted promotion ID: {promo_id}")
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
