@@ -19,7 +19,7 @@
     <div id="onboardingWizard" class="onboarding-overlay" role="dialog" aria-modal="true" aria-label="Table check-in wizard">
         <!-- Step 1: Welcome & Verification -->
         <div id="onboardingStep1" class="onboarding-card active">
-            <div class="onboarding-header">
+            <div class="onboarding-header anim-fade-in-scale">
                 <div class="logo-animation-container">
                     <span class="logo-pulse-circle"></span>
                     <span class="logo-pulse-circle delay-1"></span>
@@ -30,7 +30,7 @@
                 <p class="subtitle">AlphaPos Dining Experience</p>
             </div>
             
-            <div class="verification-status-box">
+            <div class="verification-status-box anim-fade-in-up anim-delay-2">
                 <div class="radar-container">
                     <div class="radar-dot"></div>
                     <div class="radar-ring"></div>
@@ -42,21 +42,21 @@
                 </div>
             </div>
             
-            <button id="btnOnboardingNext1" class="onboarding-next-btn disabled" disabled onclick="app.nextOnboardingStep()">
+            <button id="btnOnboardingNext1" class="onboarding-next-btn disabled anim-fade-in-up anim-delay-3" disabled onclick="app.nextOnboardingStep()">
                 <span>Proceed to Check-in</span>
             </button>
         </div>
 
         <!-- Step 2: Guest Pax Selection -->
         <div id="onboardingStep2" class="onboarding-card">
-            <div class="onboarding-header">
+            <div class="onboarding-header anim-fade-in-down">
                 <span class="onboarding-emoji">👥</span>
                 <h2>Select Number of Guests</h2>
                 <p>How many people are dining at your table?</p>
             </div>
             
             <!-- Interactive Visual Table Layout -->
-            <div class="interactive-table-container">
+            <div class="interactive-table-container anim-fade-in-scale anim-delay-1">
                 <div class="interactive-table">
                     <div class="table-center">
                         <span class="table-center-text" id="interactiveTableText">Table<br><span id="tableLabelNum">--</span></span>
@@ -68,18 +68,18 @@
             </div>
             
             <!-- Quick Selection Pills -->
-            <div class="guest-grid">
-                <button class="guest-pill active" onclick="app.setGuestCount(1)">1</button>
-                <button class="guest-pill" onclick="app.setGuestCount(2)">2</button>
-                <button class="guest-pill" onclick="app.setGuestCount(3)">3</button>
-                <button class="guest-pill" onclick="app.setGuestCount(4)">4</button>
-                <button class="guest-pill" onclick="app.setGuestCount(5)">5</button>
-                <button class="guest-pill" onclick="app.setGuestCount(6)">6</button>
-                <button class="guest-pill" onclick="app.setGuestCount(7)">7</button>
-                <button class="guest-pill" onclick="app.setGuestCount('8+')">8+</button>
+            <div class="guest-grid anim-fade-in-up anim-delay-2">
+                <button class="guest-pill active anim-pop-in anim-delay-1" onclick="app.setGuestCount(1)">1</button>
+                <button class="guest-pill anim-pop-in anim-delay-2" onclick="app.setGuestCount(2)">2</button>
+                <button class="guest-pill anim-pop-in anim-delay-3" onclick="app.setGuestCount(3)">3</button>
+                <button class="guest-pill anim-pop-in anim-delay-4" onclick="app.setGuestCount(4)">4</button>
+                <button class="guest-pill anim-pop-in anim-delay-5" onclick="app.setGuestCount(5)">5</button>
+                <button class="guest-pill anim-pop-in anim-delay-6" onclick="app.setGuestCount(6)">6</button>
+                <button class="guest-pill anim-pop-in anim-delay-7" onclick="app.setGuestCount(7)">7</button>
+                <button class="guest-pill anim-pop-in anim-delay-8" onclick="app.setGuestCount('8+')">8+</button>
             </div>
             
-            <div class="onboarding-action-row">
+            <div class="onboarding-action-row anim-fade-in-up anim-delay-3">
                 <button class="onboarding-back-btn" onclick="app.prevOnboardingStep()">Back</button>
                 <button id="startOrderBtn" class="start-order-btn" onclick="app.confirmGuestCount()">
                     <span>Start Ordering</span>
@@ -89,7 +89,7 @@
 
         <!-- Step 3: Setup & Loading Screen -->
         <div id="onboardingStep3" class="onboarding-card">
-            <div class="onboarding-header">
+            <div class="onboarding-header anim-fade-in-scale">
                 <div class="success-checkmark-container">
                     <svg class="checkmark-svg" viewBox="0 0 52 52">
                         <circle class="checkmark-circle" cx="26" cy="26" r="25" fill="none"/>
@@ -99,7 +99,7 @@
                 <h2>Check-in Complete!</h2>
                 <p id="loadingStatusText">Setting up your dining experience...</p>
             </div>
-            <div class="setup-progress-bar">
+            <div class="setup-progress-bar anim-fade-in-up anim-delay-1">
                 <div class="setup-progress-fill" id="setupProgressFill"></div>
             </div>
         </div>
@@ -107,7 +107,7 @@
 
     <div class="app-container">
         <!-- Header HUD -->
-        <header class="app-header">
+        <header class="app-header anim-fade-in-down">
             <div class="brand-section">
                 <span class="logo-dot"></span>
                 <h1 class="brand-title">AlphaPos</h1>
@@ -135,7 +135,7 @@
         </div>
 
         <!-- Promotions Banner Carousel -->
-        <div id="promotionsBannerContainer" class="promo-banner-container">
+        <div id="promotionsBannerContainer" class="promo-banner-container anim-fade-in-scale">
             <div id="promotionsSlider" class="promo-slider">
                 <!-- Fallback / Initial slide -->
                 <div class="promo-slide active">
@@ -152,7 +152,7 @@
         </div>
 
         <!-- Main Navigation Tabs -->
-        <nav class="app-nav-tabs" role="tablist" aria-label="App sections">
+        <nav class="app-nav-tabs anim-fade-in-down" role="tablist" aria-label="App sections">
             <button id="navTabMenu" class="nav-tab active" role="tab" aria-selected="true" aria-controls="menuView" onclick="app.switchView('menu')">
                 <span class="nav-tab-icon">📖</span>
                 <span class="nav-tab-text">Menu</span>
@@ -170,7 +170,7 @@
 
         <!-- View Panel: Menu -->
         <div id="menuView" class="view-panel active" role="tabpanel" aria-label="Menu">
-            <main id="main-content" class="menu-container">
+            <main id="main-content" class="menu-container anim-fade-in-up">
                 <!-- Categories Slider -->
                 <div class="category-tabs-container">
                     <div class="category-tabs" id="categoryTabs">
@@ -190,8 +190,8 @@
 
         <!-- View Panel: Order History & Status -->
         <div id="statusView" class="view-panel hide" role="tabpanel" aria-label="Order status">
-            <div class="status-view-container">
-                <div class="status-header">
+            <div class="status-view-container anim-fade-in-up">
+                <div class="status-header anim-fade-in-down">
                     <h2>Session Summary</h2>
                     <div class="session-total-badge">
                         <span class="label">Grand Total</span>
@@ -200,14 +200,14 @@
                 </div>
                 
                 <div class="status-body">
-                    <div class="status-section">
+                    <div class="status-section anim-fade-in-up anim-delay-1">
                         <h3>Active Orders Tracking</h3>
                         <div id="activeOrdersList" class="status-list">
                             <div class="empty-state">No active orders cooking.</div>
                         </div>
                     </div>
                     
-                    <div class="status-section">
+                    <div class="status-section anim-fade-in-up anim-delay-2">
                         <h3>Session Order History</h3>
                         <div id="pastOrdersList" class="status-list">
                             <div class="empty-state">No orders placed in this session yet.</div>
@@ -219,34 +219,34 @@
 
         <!-- View Panel: Call Staff & Smart Service -->
         <div id="serviceView" class="view-panel hide" role="tabpanel" aria-label="Call staff">
-            <div class="service-view-container">
-                <div class="service-header">
+            <div class="service-view-container anim-fade-in-up">
+                <div class="service-header anim-fade-in-down">
                     <h2>Call Staff</h2>
                     <p>Tap a request below to notify our service team. We'll be right over.</p>
                 </div>
                 
                 <div class="service-grid">
-                    <button class="service-capsule" onclick="app.sendServiceRequest('Bill (Cash)')">
+                    <button class="service-capsule anim-fade-in-up anim-delay-1" onclick="app.sendServiceRequest('Bill (Cash)')">
                         <span class="service-icon">💵</span>
                         <span class="service-label">Pay Cash</span>
                     </button>
-                    <button class="service-capsule" onclick="app.sendServiceRequest('Bill (Card)')">
+                    <button class="service-capsule anim-fade-in-up anim-delay-2" onclick="app.sendServiceRequest('Bill (Card)')">
                         <span class="service-icon">💳</span>
                         <span class="service-label">Pay Card</span>
                     </button>
-                    <button class="service-capsule" onclick="app.sendServiceRequest('Bill (QR)')">
+                    <button class="service-capsule anim-fade-in-up anim-delay-3" onclick="app.sendServiceRequest('Bill (QR)')">
                         <span class="service-icon">📱</span>
                         <span class="service-label">Pay QR</span>
                     </button>
-                    <button class="service-capsule" onclick="app.sendServiceRequest('Ice/Water')">
+                    <button class="service-capsule anim-fade-in-up anim-delay-4" onclick="app.sendServiceRequest('Ice/Water')">
                         <span class="service-icon">🥛</span>
                         <span class="service-label">Get Water</span>
                     </button>
-                    <button class="service-capsule" onclick="app.sendServiceRequest('Extra Utensils')">
+                    <button class="service-capsule anim-fade-in-up anim-delay-5" onclick="app.sendServiceRequest('Extra Utensils')">
                         <span class="service-icon">🍴</span>
                         <span class="service-label">Utensils</span>
                     </button>
-                    <button class="service-capsule" onclick="app.sendServiceRequest('General Help')">
+                    <button class="service-capsule anim-fade-in-up anim-delay-6" onclick="app.sendServiceRequest('General Help')">
                         <span class="service-icon">🙋‍♂️</span>
                         <span class="service-label">Call Staff</span>
                     </button>
@@ -260,7 +260,7 @@
         </div>
 
         <!-- Floating Cart Bar -->
-        <div class="cart-bar-container" id="cartBar">
+        <div class="cart-bar-container anim-fade-in-up" id="cartBar">
             <div class="cart-bar-content" onclick="app.toggleCartDrawer(true)">
                 <div class="cart-badge">
                     <span id="cartCount">0</span>
@@ -279,7 +279,7 @@
         <!-- Shopping Cart Drawer (Slide-up modal) -->
         <div class="cart-drawer-overlay" id="cartDrawerOverlay" onclick="app.toggleCartDrawer(false)" role="dialog" aria-modal="true" aria-label="Cart">
             <div class="cart-drawer" onclick="event.stopPropagation()">
-                <div class="drawer-header">
+                <div class="drawer-header anim-fade-in-down">
                     <div class="drawer-notch"></div>
                     <div class="drawer-title-row">
                         <h3>Your Order Tray</h3>

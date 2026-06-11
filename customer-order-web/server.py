@@ -245,6 +245,8 @@ def init_db():
             status TEXT NOT NULL, -- 'preparing', 'ready', 'served', 'completed', 'cancelled'
             created_at TEXT NOT NULL,
             updated_at TEXT,
+            session_token TEXT,
+            guest_count INTEGER DEFAULT 2,
             merchant_id TEXT,
             is_synced INTEGER DEFAULT 0
         )
@@ -294,7 +296,7 @@ def init_db():
             is_active INTEGER NOT NULL,
             created_at TEXT NOT NULL,
             ended_at TEXT,
-            guest_count INTEGER DEFAULT 1,
+            guest_count INTEGER DEFAULT 2,
             merchant_id TEXT
         )
     ''')
@@ -483,6 +485,14 @@ def init_db():
         print("Database employees seeded successfully.")
 
 
+    # Alter table if existing schema is missing columns session_token or guest_count in orders
+    cursor.execute("PRAGMA table_info(orders)")
+    orders_columns = [col[1] for col in cursor.fetchall()]
+    if 'session_token' not in orders_columns:
+        cursor.execute("ALTER TABLE orders ADD COLUMN session_token TEXT")
+    if 'guest_count' not in orders_columns:
+        cursor.execute("ALTER TABLE orders ADD COLUMN guest_count INTEGER DEFAULT 2")
+    
     # Alter table if existing schema is missing columns status or item_id in order_items
     cursor.execute("PRAGMA table_info(order_items)")
     columns = [col[1] for col in cursor.fetchall()]
@@ -495,7 +505,7 @@ def init_db():
     cursor.execute("PRAGMA table_info(table_sessions)")
     session_columns = [col[1] for col in cursor.fetchall()]
     if 'guest_count' not in session_columns:
-        cursor.execute("ALTER TABLE table_sessions ADD COLUMN guest_count INTEGER DEFAULT 1")
+        cursor.execute("ALTER TABLE table_sessions ADD COLUMN guest_count INTEGER DEFAULT 2")
         
     conn.commit()
 
@@ -913,6 +923,8 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             items = order_data.get("items", [])
             order_id = order_data.get("id") or str(uuid.uuid4())
             status = order_data.get("status") or "preparing"
+            session_token = order_data.get("sessionToken") or order_data.get("session_token")
+            guest_count = int(order_data.get("guestCount") or order_data.get("guest_count") or 2)
             
             # Generate clean invoice number (e.g. ORD-6401)
             order_number = order_data.get("orderNumber") or order_data.get("order_number") or f"ORD-{str(uuid.uuid4().int)[:4]}"
@@ -934,6 +946,9 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     INSERT INTO table_sessions (id, table_number, session_token, is_active, created_at, guest_count, merchant_id)
                     VALUES (?, ?, ?, 1, ?, ?, ?)
                 ''', (session_id, table_number, session_token, sess_created_at, 2, MERCHANT_ID))
+                cursor.execute('''
+                    UPDATE restaurant_tables SET status = 'occupied' WHERE table_number = ? AND merchant_id = ?
+                ''', (table_number, MERCHANT_ID))
                 conn.commit()
                 print(f"Server API [Order Auto-Session]: Opened active session for Table {table_number} (Token: {session_token[:8]}...)")
             
@@ -946,9 +961,9 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 updated_at_str = get_utc_now_iso()
                 cursor.execute('''
                     UPDATE orders 
-                    SET status = ?, total = ?, updated_at = ?, is_synced = 1
+                    SET status = ?, total = ?, updated_at = ?, session_token = COALESCE(?, session_token), guest_count = ?, is_synced = 1
                     WHERE id = ?
-                ''', (status, total, updated_at_str, order_id))
+                ''', (status, total, updated_at_str, session_token, guest_count, order_id))
                 
                 # Upsert Order Items
                 for item in items:
@@ -1000,9 +1015,9 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 # Insert New Order
                 updated_at_str = get_utc_now_iso()
                 cursor.execute('''
-                    INSERT INTO orders (id, order_number, table_number, total, status, created_at, updated_at, merchant_id, is_synced)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (order_id, order_number, table_number, total, status, created_at_str, updated_at_str, MERCHANT_ID, 1))
+                    INSERT INTO orders (id, order_number, table_number, total, status, created_at, updated_at, session_token, guest_count, merchant_id, is_synced)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (order_id, order_number, table_number, total, status, created_at_str, updated_at_str, session_token, guest_count, MERCHANT_ID, 1))
                 
                 # Insert Order Items
                 for item in items:
@@ -1057,7 +1072,9 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 "status": status,
                 "created_at": created_at_str,
                 "updated_at": get_utc_now_iso(),
-                "merchant_id": MERCHANT_ID
+                "merchant_id": MERCHANT_ID,
+                "session_token": session_token,
+                "guest_count": guest_count
             }
             supabase_post("orders", supabase_order)
             for item in items:
@@ -1200,7 +1217,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         try:
             data = json.loads(post_data.decode("utf-8"))
             table_number = str(data.get("table_number") or data.get("tableNumber") or "")
-            guest_count = int(data.get("guest_count") or data.get("guestCount") or 1)
+            guest_count = int(data.get("guest_count") or data.get("guestCount") or 2)
             if not table_number:
                 self.send_error(400, "table_number is required")
                 return
@@ -1221,6 +1238,9 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     INSERT INTO table_sessions (id, table_number, session_token, is_active, created_at, guest_count, merchant_id)
                     VALUES (?, ?, ?, 1, ?, ?, ?)
                 ''', (session_id, table_number, session_token, created_at, guest_count, MERCHANT_ID))
+                cursor.execute('''
+                    UPDATE restaurant_tables SET status = 'occupied' WHERE table_number = ? AND merchant_id = ?
+                ''', (table_number, MERCHANT_ID))
                 conn.commit()
                 
             conn.close()
@@ -1256,6 +1276,9 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 SET is_active = 0, ended_at = ?
                 WHERE table_number = ? AND is_active = 1
             ''', (ended_at, table_number))
+            cursor.execute('''
+                UPDATE restaurant_tables SET status = 'vacant' WHERE table_number = ? AND merchant_id = ?
+            ''', (table_number, MERCHANT_ID))
             conn.commit()
             conn.close()
             

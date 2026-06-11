@@ -208,7 +208,7 @@ class AlphaPosApp {
         this.modifiersConfig = { groups: [], modifiers: [], links: [] };
         this.tableNumber = "1"; // Default fallback
         this.sessionToken = null;
-        this.selectedGuestCount = 1; // Default
+        this.selectedGuestCount = 2; // Default
         this.currentOnboardingStep = 1;
         this.currentView = "menu";
         
@@ -1855,6 +1855,8 @@ class AlphaPosApp {
                         table_number: this.tableNumber,
                         total: total,
                         status: 'preparing',
+                        session_token: this.sessionToken,
+                        guest_count: this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount),
                         created_at: new Date().toISOString(),
                         merchant_id: this.merchantId
                     }]);
@@ -1865,7 +1867,7 @@ class AlphaPosApp {
                 const { error: itemsError } = await this.supabase
                     .from('order_items')
                     .insert(orderItems.map(item => {
-                        const { modifiers, ...dbItem } = item;
+                        const { modifiers, notes, ...dbItem } = item;
                         return dbItem;
                     }));
                     
@@ -1903,6 +1905,8 @@ class AlphaPosApp {
                         tableNumber: this.tableNumber,
                         total: total,
                         status: 'preparing',
+                        sessionToken: this.sessionToken,
+                        guestCount: this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount),
                         createdAt: new Date().toISOString(),
                         items: orderItems
                     })
