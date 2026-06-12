@@ -85,8 +85,8 @@ final class EmployeeTimecardViewModel {
         modelContext.insert(managerRole)
         modelContext.insert(baristaRole)
         
-        let user1 = User(username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: managerRole)
-        let user2 = User(username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: baristaRole)
+        let user1 = User(username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.hashPIN("password"), pinCodeHash: SecurityHelper.hashPIN("1234"), role: managerRole)
+        let user2 = User(username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.hashPIN("password"), pinCodeHash: SecurityHelper.hashPIN("5678"), role: baristaRole)
         modelContext.insert(user1)
         modelContext.insert(user2)
         

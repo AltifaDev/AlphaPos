@@ -793,8 +793,8 @@ struct LoginView: View {
                 // Fallback to local mocks if server offline
                 await MainActor.run {
                     self.employees = [
-                        Employee(id: "11111111-1111-1111-1111-111111111111", firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, username: "somchai", role: "Manager", pinCode: "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4"),
-                        Employee(id: "22222222-2222-2222-2222-222222222222", firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, username: "somsri", role: "Barista", pinCode: "fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9")
+                        Employee(id: "11111111-1111-1111-1111-111111111111", firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, username: "somchai", role: "Manager", pinCode: "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4", faceEmbedding: nil, faceRegisteredAt: nil),
+                        Employee(id: "22222222-2222-2222-2222-222222222222", firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, username: "somsri", role: "Barista", pinCode: "fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9", faceEmbedding: nil, faceRegisteredAt: nil)
                     ]
                     self.isLoading = false
                 }

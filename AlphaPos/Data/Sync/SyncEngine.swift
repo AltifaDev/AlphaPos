@@ -189,6 +189,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         await syncTables(modelContext)
         await syncTableSessions(modelContext)
         await syncEmployees(modelContext)
+        await syncEmployeeShifts(modelContext)
         await syncOrders(modelContext)
         await syncPayments(modelContext)
         await syncTimecards(modelContext)
@@ -334,6 +335,18 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 continue
             }
             
+            // Duplicate detection: before pushing a new clock-in, check if there's
+            // already an active timecard for this employee on the server
+            if timecard.clockOut == nil {
+                let remoteActive = try? await NetworkManager.shared.fetchActiveTimecard(employeeId: employeeId)
+                if let remoteActive = remoteActive, remoteActive != timecard.id.uuidString.lowercased() {
+                    print("SyncEngine [Timecard Sync]: Remote active timecard found for employee \(employeeId). Merging data into local record.")
+                    // Another device created an active timecard — mark ours as a duplicate
+                    timecard.status = "pending_audit"
+                    timecard.notes = (timecard.notes ?? "") + " [Possible duplicate: remote active timecard exists]"
+                }
+            }
+            
             let empName = "\(timecard.employee?.firstName ?? "") \(timecard.employee?.lastName ?? "")"
             do {
                 let success = try await NetworkManager.shared.uploadTimecard(
@@ -344,7 +357,13 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     status: timecard.status,
                     breakDuration: timecard.breakDurationMinutes,
                     overtimeMinutes: timecard.overtimeMinutes,
-                    notes: timecard.notes
+                    notes: timecard.notes,
+                    clockInConfidence: timecard.clockInFaceConfidence,
+                    clockOutConfidence: timecard.clockOutFaceConfidence,
+                    clockInSelfieUrl: timecard.clockInSelfieUrl,
+                    clockOutSelfieUrl: timecard.clockOutSelfieUrl,
+                    shiftId: timecard.shift?.id,
+                    verifiedByUserId: timecard.verifiedByUserId
                 )
                 
                 if success {
@@ -819,6 +838,38 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 }
             } catch {
                 print("SyncEngine [Employee Sync Error]: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private func syncEmployeeShifts(_ modelContext: ModelContext) async {
+        let descriptor = FetchDescriptor<EmployeeShift>(
+            predicate: #Predicate<EmployeeShift> { $0.isSynced == false }
+        )
+        
+        guard let shifts = try? modelContext.fetch(descriptor), !shifts.isEmpty else { return }
+        
+        for shift in shifts {
+            if shift.isDeleted {
+                modelContext.delete(shift)
+                try? modelContext.save()
+                continue
+            }
+            
+            guard shift.employee != nil else {
+                print("SyncEngine [EmployeeShift Sync Error]: Missing employee relation for shift \(shift.id)")
+                continue
+            }
+            
+            do {
+                let success = try await NetworkManager.shared.uploadEmployeeShift(shift: shift)
+                if success {
+                    shift.isSynced = true
+                    shift.updatedAt = Date()
+                    try modelContext.save()
+                }
+            } catch {
+                print("SyncEngine [EmployeeShift Sync Error]: \(error.localizedDescription)")
             }
         }
     }

@@ -79,6 +79,8 @@ struct Employee: Codable, Identifiable, Hashable {
     let username: String
     let role: String
     let pinCode: String?
+    let faceEmbedding: String? // base64-encoded face template
+    let faceRegisteredAt: String? // ISO8601 timestamp
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -91,6 +93,8 @@ struct Employee: Codable, Identifiable, Hashable {
         case username
         case role
         case pinCode = "pin_code"
+        case faceEmbedding = "face_embedding"
+        case faceRegisteredAt = "face_registered_at"
     }
 }
 

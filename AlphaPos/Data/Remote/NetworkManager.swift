@@ -314,7 +314,7 @@ final class NetworkManager {
         return true
     }
     
-    func uploadTimecard(id: UUID, employeeId: UUID, employeeName: String, clockIn: Date, clockOut: Date?, status: String, breakDuration: Int = 0, overtimeMinutes: Int = 0, notes: String? = nil, clockInConfidence: Double? = nil, clockOutConfidence: Double? = nil) async throws -> Bool {
+    func uploadTimecard(id: UUID, employeeId: UUID, employeeName: String, clockIn: Date, clockOut: Date?, status: String, breakDuration: Int = 0, overtimeMinutes: Int = 0, notes: String? = nil, clockInConfidence: Double? = nil, clockOutConfidence: Double? = nil, clockInSelfieUrl: String? = nil, clockOutSelfieUrl: String? = nil, shiftId: UUID? = nil, verifiedByUserId: UUID? = nil) async throws -> Bool {
         let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let formatter = ISO8601DateFormatter()
         var payload: [String: Any] = [
@@ -327,22 +327,36 @@ final class NetworkManager {
             "status": status,
             "merchant_id": merchantId
         ]
-        if let notes = notes {
-            payload["notes"] = notes
-        }
-        if let clockInConfidence = clockInConfidence {
-            payload["clock_in_confidence"] = clockInConfidence
-        }
-        if let clockOutConfidence = clockOutConfidence {
-            payload["clock_out_confidence"] = clockOutConfidence
-        }
+        if let notes = notes { payload["notes"] = notes }
+        if let clockInConfidence = clockInConfidence { payload["clock_in_confidence"] = clockInConfidence }
+        if let clockOutConfidence = clockOutConfidence { payload["clock_out_confidence"] = clockOutConfidence }
+        if let clockInSelfieUrl = clockInSelfieUrl { payload["clock_in_selfie_url"] = clockInSelfieUrl }
+        if let clockOutSelfieUrl = clockOutSelfieUrl { payload["clock_out_selfie_url"] = clockOutSelfieUrl }
+        if let shiftId = shiftId { payload["shift_id"] = shiftId.uuidString }
+        if let verifiedByUserId = verifiedByUserId { payload["verified_by_user_id"] = verifiedByUserId.uuidString }
         if let clockOut = clockOut {
             payload["clock_out"] = formatter.string(from: clockOut)
         } else {
             payload["clock_out"] = NSNull()
         }
-        _ = try await sendSupabaseRequest(method: "POST", endpoint: "timecards", payload: payload)
+        payload["updated_at"] = formatter.string(from: Date())
+        _ = try await sendSupabaseRequest(method: "POST", endpoint: "timecards", queryItems: [URLQueryItem(name: "on_conflict", value: "id")], payload: payload)
         return true
+    }
+    
+    /// Fetches the ID of an active (clocked-in, not clocked-out) timecard for an employee.
+    /// Returns nil if no active timecard exists on the server.
+    func fetchActiveTimecard(employeeId: UUID) async throws -> String? {
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "timecards", queryItems: [
+            URLQueryItem(name: "select", value: "id"),
+            URLQueryItem(name: "employee_id", value: "eq.\(employeeId.uuidString.lowercased())"),
+            URLQueryItem(name: "clock_out", value: "is.null"),
+            URLQueryItem(name: "limit", value: "1")
+        ])
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+              let first = json.first,
+              let id = first["id"] as? String else { return nil }
+        return id
     }
     
     func uploadInventoryTransaction(id: UUID, itemName: String, quantity: Double, type: String) async throws -> Bool {
@@ -460,7 +474,9 @@ final class NetworkManager {
         let pinCode = employee.user?.pinCodeHash ?? "0000"
         let role = employee.user?.role?.name ?? "Staff"
         
-        let payload: [String: Any] = [
+        let formatter = ISO8601DateFormatter()
+        
+        var payload: [String: Any] = [
             "id": employee.id.uuidString.lowercased(),
             "merchant_id": merchantId,
             "first_name": employee.firstName,
@@ -471,12 +487,51 @@ final class NetworkManager {
             "pay_rate": employee.payRate,
             "username": username,
             "pin_code": pinCode,
-            "role": role
+            "role": role,
+            "updated_at": formatter.string(from: employee.updatedAt)
         ]
+        
+        if let bankAccountNumber = employee.bankAccountNumber { payload["bank_account_number"] = bankAccountNumber }
+        if let bankName = employee.bankName { payload["bank_name"] = bankName }
+        if let email = employee.email { payload["email"] = email }
+        if let address = employee.address { payload["address"] = address }
+        if let emergencyContactName = employee.emergencyContactName { payload["emergency_contact_name"] = emergencyContactName }
+        if let emergencyContactPhone = employee.emergencyContactPhone { payload["emergency_contact_phone"] = emergencyContactPhone }
+        if let dateOfBirth = employee.dateOfBirth { payload["date_of_birth"] = formatter.string(from: dateOfBirth) }
+        if let faceRegisteredAt = employee.faceRegisteredAt { payload["face_registered_at"] = formatter.string(from: faceRegisteredAt) }
+        if let resignedAt = employee.resignedAt { payload["resigned_at"] = formatter.string(from: resignedAt) }
+        payload["joined_at"] = formatter.string(from: employee.joinedAt)
+        
+        if let faceData = employee.faceEmbeddingData {
+            payload["face_embedding"] = faceData.base64EncodedString()
+        }
         
         _ = try await sendSupabaseRequest(
             method: "POST",
             endpoint: "employees",
+            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+            payload: payload
+        )
+        return true
+    }
+    
+    func uploadEmployeeShift(shift: EmployeeShift) async throws -> Bool {
+        guard let employeeId = shift.employee?.id else { return false }
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let formatter = ISO8601DateFormatter()
+        let payload: [String: Any] = [
+            "id": shift.id.uuidString.lowercased(),
+            "employee_id": employeeId.uuidString.lowercased(),
+            "merchant_id": merchantId,
+            "scheduled_start": formatter.string(from: shift.scheduledStart),
+            "scheduled_end": formatter.string(from: shift.scheduledEnd),
+            "role": shift.role ?? "",
+            "notes": shift.notes ?? "",
+            "updated_at": formatter.string(from: shift.updatedAt)
+        ]
+        _ = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "employee_shifts",
             queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
             payload: payload
         )

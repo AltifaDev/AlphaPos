@@ -522,7 +522,9 @@ final class NetworkService {
                 payRate: dict["pay_rate"] as? Double ?? 0.0,
                 username: dict["username"] as? String ?? "",
                 role: dict["role"] as? String ?? "Staff",
-                pinCode: dict["pin_code"] as? String
+                pinCode: dict["pin_code"] as? String,
+                faceEmbedding: dict["face_embedding"] as? String,
+                faceRegisteredAt: dict["face_registered_at"] as? String
             )
         }
     }
@@ -539,13 +541,22 @@ final class NetworkService {
     }
 
     func verifyPin(employeeId: String, pinDigits: String, expectedPinHash: String? = nil) async throws -> Bool {
-        let inputData = Data(pinDigits.utf8)
-        let hashed = CryptoKit.SHA256.hash(data: inputData)
-        let pinHash = hashed.compactMap { String(format: "%02x", $0) }.joined()
+        // Try new format (iter:salt:hash) first, fall back to legacy SHA256
+        func matchesStoredHash(_ stored: String) -> Bool {
+            if stored.hasPrefix("iter:") {
+                return verifyIteratedPin(pinDigits, against: stored)
+            } else {
+                // Legacy SHA256-only hash
+                let inputData = Data(pinDigits.utf8)
+                let hashed = CryptoKit.SHA256.hash(data: inputData)
+                let pinHash = hashed.compactMap { String(format: "%02x", $0) }.joined()
+                return constantTimeCompare(pinHash, stored) || constantTimeCompare(pinDigits, stored)
+            }
+        }
         
         // 1. Local / pre-loaded verification (Offline fallback)
         if let expected = expectedPinHash {
-            return constantTimeCompare(pinHash, expected) || constantTimeCompare(pinDigits, expected)
+            return matchesStoredHash(expected)
         }
         
         // 2. Database verification (Direct column query fallback)
@@ -557,7 +568,7 @@ final class NetworkService {
             if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
                let firstResult = json.first,
                let dbPinCode = firstResult["pin_code"] as? String {
-                return constantTimeCompare(pinHash, dbPinCode) || constantTimeCompare(pinDigits, dbPinCode)
+                return matchesStoredHash(dbPinCode)
             }
         } catch {
             print("verifyPin error: \(error.localizedDescription)")
@@ -565,6 +576,23 @@ final class NetworkService {
         }
         
         return false
+    }
+    
+    /// Verify an iterated hash (format: "iter:<n>:<salt_b64>:<hash_hex>")
+    private func verifyIteratedPin(_ pin: String, against storedHash: String) -> Bool {
+        let parts = storedHash.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
+        guard parts.count == 4,
+              let iterations = Int(parts[1]) else { return false }
+        let salt = String(parts[2])
+        let expectedHash = String(parts[3])
+        
+        var hash = salt + pin
+        for _ in 0..<iterations {
+            let inputData = Data(hash.utf8)
+            let digested = CryptoKit.SHA256.hash(data: inputData)
+            hash = digested.compactMap { String(format: "%02x", $0) }.joined()
+        }
+        return constantTimeCompare(hash, expectedHash)
     }
     
     func fetchTimecards(for employeeId: String) async throws -> [Timecard] {
@@ -957,7 +985,10 @@ final class NetworkService {
                         ["event": "*", "schema": "public", "table": "table_sessions", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "service_requests", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "restaurant_tables", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "merchants", "filter": "id=eq.\(merchantId)"]
+                        ["event": "*", "schema": "public", "table": "merchants", "filter": "id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "employees", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "employee_shifts", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "timecards", "filter": "merchant_id=eq.\(merchantId)"]
                     ]
                 ]
             ],

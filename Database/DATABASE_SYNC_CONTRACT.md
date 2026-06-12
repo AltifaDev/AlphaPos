@@ -34,8 +34,8 @@
 | order_item_modifiers | OrderItemModifier | ❌ No sync | (existed) | ✅ |
 | payments | Payment | ✅ syncPayments | 001 + 002 | ✅ |
 | service_requests | (web-only) | ✅ syncServiceRequests | 001 | ✅ |
-| employees | Employee | ✅ syncEmployees | 001 + 002 | ✅ |
-| employee_shifts | EmployeeShift | ❌ No sync | (existed) | ✅ |
+| employees | Employee | ✅ syncEmployees | 001 + 002 + 008 | ✅ |
+| employee_shifts | EmployeeShift | ✅ syncEmployeeShifts | (existed) + 008 | ✅ |
 | timecards | Timecard | ✅ syncTimecards | 001 + 002 | ✅ |
 | promotions | Promotion | ✅ syncPromotions | (prev session) | ✅ |
 | inventory_items | InventoryItem | ❌ No sync | (existed) + 002 | ✅ |
@@ -156,6 +156,7 @@ WHERE schemaname = 'public' AND rowsecurity = false;
 | `001_initial_schema.sql` | 2026-06-09 | Schema เริ่มต้นของระบบ | ✅ Applied |
 | `002_extended_columns.sql` | 2026-06-09 | คอลัมน์ที่ขาดหายใน 7 ตาราง | ✅ Applied |
 | `003_missing_tables.sql` | 2026-06-09 | purchase_orders, purchase_order_items, delivery_prices | ✅ Applied |
+| `008_employee_face_embedding.sql` | 2026-06-12 | face_embedding, employee_shifts sync cols, RLS | ✅ Applied |
 
 ---
 
