@@ -754,7 +754,282 @@ final class SampleDataSeeder {
         
         seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
         
+        // 7. Seed Recipes
+        let prawnItem = items.first(where: { $0.id == "isan39" }) // Grilled River Prawn
+        let chickenItem = items.first(where: { $0.id == "isan26" }) // Classic Gai Yang (Half)
+        let chickenItemWhole = items.first(where: { $0.id == "isan27" }) // Classic Gai Yang (Whole)
+        let teaItem = items.first(where: { $0.id == "isan44" }) // Traditional Thai Iced Milk Tea
+        let somTumItem = items.first(where: { $0.id == "isan1" }) // Classic Som Tum Thai
+        let larbItem = items.first(where: { $0.id == "isan9" }) // Spicy Minced Pork Larb
+        
+        if let prawnItem = prawnItem {
+            let recipe = Recipe(menuItem: prawnItem, inventoryItem: prawns, quantityRequired: 1.0)
+            modelContext.insert(recipe)
+        }
+        if let chickenItem = chickenItem {
+            let recipe = Recipe(menuItem: chickenItem, inventoryItem: chicken, quantityRequired: 300.0)
+            modelContext.insert(recipe)
+        }
+        if let chickenItemWhole = chickenItemWhole {
+            let recipe = Recipe(menuItem: chickenItemWhole, inventoryItem: chicken, quantityRequired: 600.0)
+            modelContext.insert(recipe)
+        }
+        if let teaItem = teaItem {
+            let recipe1 = Recipe(menuItem: teaItem, inventoryItem: teaLeaves, quantityRequired: 15.0)
+            let recipe2 = Recipe(menuItem: teaItem, inventoryItem: coconutMilk, quantityRequired: 50.0)
+            modelContext.insert(recipe1)
+            modelContext.insert(recipe2)
+        }
+        if let somTumItem = somTumItem {
+            let recipe = Recipe(menuItem: somTumItem, inventoryItem: mango, quantityRequired: 1.0)
+            modelContext.insert(recipe)
+        }
+        if let larbItem = larbItem {
+            let recipe = Recipe(menuItem: larbItem, inventoryItem: chicken, quantityRequired: 150.0)
+            modelContext.insert(recipe)
+        }
+        
         try? modelContext.save()
+        
+        // 8. Seed Mock Transactions (Orders, Payments, Timecards, Waste)
+        seedMockTransactions(modelContext: modelContext)
+        
+        try? modelContext.save()
+    }
+    
+    static func seedMockTransactions(modelContext: ModelContext) {
+        let calendar = Calendar.current
+        let today = Date()
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today) ?? today
+        
+        // Fetch Employees
+        let employees = (try? modelContext.fetch(FetchDescriptor<Employee>())) ?? []
+        let empSomchai = employees.first(where: { $0.firstName == "Somchai" })
+        let empSomsri = employees.first(where: { $0.firstName == "Somsri" })
+        
+        // Fetch Menu Items
+        let menuItems = (try? modelContext.fetch(FetchDescriptor<MenuItem>())) ?? []
+        let somTum = menuItems.first(where: { $0.id == "isan1" })
+        let larb = menuItems.first(where: { $0.id == "isan9" })
+        let gaiYangHalf = menuItems.first(where: { $0.id == "isan26" })
+        let gaiYangWhole = menuItems.first(where: { $0.id == "isan27" })
+        let prawn = menuItems.first(where: { $0.id == "isan39" })
+        let milkTea = menuItems.first(where: { $0.id == "isan44" })
+        let beerSingha = menuItems.first(where: { $0.id == "isan47" })
+        let water = menuItems.first(where: { $0.id == "isan50" })
+        
+        // Define transaction profiles
+        // We will generate 16 orders total: 8 yesterday, 8 today.
+        // Varying times: 10:00 to 21:00
+        let orderSpecs: [(daysAgo: Int, hour: Int, type: String, items: [(item: MenuItem?, qty: Int)], payMethod: String, cashier: String, deliveryBrand: String?, gp: Double, ad: Double)] = [
+            // Yesterday (June 11 equivalent)
+            (1, 11, "dine_in",  [(somTum, 2), (gaiYangHalf, 1), (milkTea, 2)], "qr_promptpay", "Somsri", nil, 0, 0),
+            (1, 12, "take_out", [(larb, 1), (water, 1)], "cash", "Somchai", nil, 0, 0),
+            (1, 13, "delivery", [(prawn, 2), (milkTea, 1)], "credit_card", "Somchai", "GrabFood", 30.0, 5.0),
+            (1, 15, "dine_in",  [(somTum, 1), (water, 1)], "cash", "Somsri", nil, 0, 0),
+            (1, 17, "delivery", [(gaiYangWhole, 1), (larb, 2)], "qr_promptpay", "Somchai", "LINE MAN", 30.0, 0.0),
+            (1, 18, "dine_in",  [(prawn, 4), (beerSingha, 3)], "credit_card", "Somsri", nil, 0, 0),
+            (1, 19, "delivery", [(somTum, 2), (gaiYangHalf, 2)], "true_money", "Somchai", "ShopeeFood", 30.0, 3.0),
+            (1, 20, "dine_in",  [(larb, 1), (beerSingha, 2)], "cash", "Somsri", nil, 0, 0),
+            
+            // Today (June 12 equivalent)
+            (0, 10, "take_out", [(milkTea, 3)], "cash", "Somsri", nil, 0, 0),
+            (0, 12, "dine_in",  [(somTum, 1), (larb, 1), (gaiYangHalf, 1), (water, 2)], "qr_promptpay", "Somchai", nil, 0, 0),
+            (0, 13, "delivery", [(prawn, 2), (water, 1)], "credit_card", "Somchai", "GrabFood", 30.0, 5.0),
+            (0, 14, "dine_in",  [(gaiYangHalf, 1), (milkTea, 1)], "true_money", "Somsri", nil, 0, 0),
+            (0, 16, "delivery", [(somTum, 3), (larb, 1)], "qr_promptpay", "Somchai", "LINE MAN", 30.0, 0.0),
+            (0, 18, "dine_in",  [(gaiYangWhole, 1), (prawn, 2), (beerSingha, 4)], "credit_card", "Somsri", nil, 0, 0),
+            (0, 19, "delivery", [(larb, 2), (milkTea, 2)], "true_money", "Somchai", "Foodpanda", 30.0, 4.0),
+            (0, 21, "dine_in",  [(somTum, 1), (beerSingha, 1)], "cash", "Somsri", nil, 0, 0)
+        ]
+        
+        var orderCounter = 1
+        for spec in orderSpecs {
+            let baseDate = spec.daysAgo == 1 ? yesterday : today
+            guard let orderDate = calendar.date(bySettingHour: spec.hour, minute: Int.random(in: 0...59), second: 0, of: baseDate) else { continue }
+            
+            let dateStr = DateFormatter.orderDateFormat().string(from: orderDate)
+            let orderNumber = "ORD-\(dateStr)-\(String(format: "%03d", orderCounter))"
+            orderCounter += 1
+            
+            // Create Order
+            let order = Order(
+                orderNumber: orderNumber,
+                orderType: spec.type,
+                status: "completed",
+                createdAt: orderDate,
+                cashierName: spec.cashier,
+                deliveryBrand: spec.deliveryBrand,
+                deliveryGP: spec.gp,
+                deliveryAdFee: spec.ad,
+                deliveryAdFeeIsPct: spec.ad > 0 ? true : false,
+                updatedAt: orderDate
+            )
+            modelContext.insert(order)
+            
+            // Add OrderItems
+            var subtotal = 0.0
+            for itemSpec in spec.items {
+                guard let menuItem = itemSpec.item else { continue }
+                let qty = itemSpec.qty
+                let unitPrice = menuItem.price
+                let itemSubtotal = Double(qty) * unitPrice
+                subtotal += itemSubtotal
+                
+                let orderItem = OrderItem(
+                    order: order,
+                    menuItem: menuItem,
+                    quantity: qty,
+                    unitPrice: unitPrice,
+                    status: "served",
+                    updatedAt: orderDate
+                )
+                modelContext.insert(orderItem)
+                order.items.append(orderItem)
+            }
+            
+            let tax = subtotal * 0.07
+            let serviceCharge = spec.type == "dine_in" ? subtotal * 0.10 : 0.0
+            let total = subtotal + tax + serviceCharge
+            
+            order.subtotal = subtotal
+            order.tax = tax
+            order.serviceCharge = serviceCharge
+            order.total = total
+            
+            // Add Payment
+            let payment = Payment(
+                order: order,
+                paymentMethod: spec.payMethod,
+                amount: total,
+                status: "completed",
+                paidAt: orderDate,
+                updatedAt: orderDate
+            )
+            modelContext.insert(payment)
+            order.payments.append(payment)
+        }
+        
+        // Seed Timecards
+        // Somchai Timecards
+        if let somchai = empSomchai {
+            // Yesterday Timecard
+            if let clockInYesterday = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: yesterday),
+               let clockOutYesterday = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: yesterday) {
+                let tc = Timecard(
+                    employee: somchai,
+                    clockIn: clockInYesterday,
+                    clockOut: clockOutYesterday,
+                    breakDurationMinutes: 60,
+                    overtimeMinutes: 0,
+                    status: "approved",
+                    updatedAt: clockOutYesterday
+                )
+                modelContext.insert(tc)
+                somchai.timecards.append(tc)
+            }
+            
+            // Today Timecard
+            if let clockInToday = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: today),
+               let clockOutToday = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: today) {
+                let tc = Timecard(
+                    employee: somchai,
+                    clockIn: clockInToday,
+                    clockOut: clockOutToday,
+                    breakDurationMinutes: 60,
+                    overtimeMinutes: 0,
+                    status: "approved",
+                    updatedAt: clockOutToday
+                )
+                modelContext.insert(tc)
+                somchai.timecards.append(tc)
+            }
+        }
+        
+        // Somsri Timecards
+        if let somsri = empSomsri {
+            // Yesterday Timecard
+            if let clockInYesterday = calendar.date(bySettingHour: 10, minute: 0, second: 0, of: yesterday),
+               let clockOutYesterday = calendar.date(bySettingHour: 19, minute: 30, second: 0, of: yesterday) {
+                let tc = Timecard(
+                    employee: somsri,
+                    clockIn: clockInYesterday,
+                    clockOut: clockOutYesterday,
+                    breakDurationMinutes: 60,
+                    overtimeMinutes: 30,
+                    status: "approved",
+                    updatedAt: clockOutYesterday
+                )
+                modelContext.insert(tc)
+                somsri.timecards.append(tc)
+            }
+            
+            // Today Timecard
+            if let clockInToday = calendar.date(bySettingHour: 10, minute: 0, second: 0, of: today),
+               let clockOutToday = calendar.date(bySettingHour: 19, minute: 0, second: 0, of: today) {
+                let tc = Timecard(
+                    employee: somsri,
+                    clockIn: clockInToday,
+                    clockOut: clockOutToday,
+                    breakDurationMinutes: 60,
+                    overtimeMinutes: 0,
+                    status: "approved",
+                    updatedAt: clockOutToday
+                )
+                modelContext.insert(tc)
+                somsri.timecards.append(tc)
+            }
+        }
+        
+        // Seed Waste (InventoryTransaction)
+        let inventoryItems = (try? modelContext.fetch(FetchDescriptor<InventoryItem>())) ?? []
+        if let mangoItem = inventoryItems.first(where: { $0.sku == "ING-MANGO" }) {
+            // Yesterday waste
+            let txn1 = InventoryTransaction(
+                item: mangoItem,
+                transactionType: "waste",
+                quantity: -3.0,
+                costPrice: mangoItem.costPrice,
+                notes: "Spoiled mangoes",
+                isSynced: false,
+                isDeleted: false,
+                updatedAt: yesterday
+            )
+            modelContext.insert(txn1)
+            mangoItem.transactions.append(txn1)
+            mangoItem.currentQuantity -= 3.0
+            
+            // Today waste
+            let txn2 = InventoryTransaction(
+                item: mangoItem,
+                transactionType: "waste",
+                quantity: -2.0,
+                costPrice: mangoItem.costPrice,
+                notes: "Bruised during prep",
+                isSynced: false,
+                isDeleted: false,
+                updatedAt: today
+            )
+            modelContext.insert(txn2)
+            mangoItem.transactions.append(txn2)
+            mangoItem.currentQuantity -= 2.0
+        }
+        
+        if let coconutItem = inventoryItems.first(where: { $0.sku == "ING-COCONUT" }) {
+            let txn = InventoryTransaction(
+                item: coconutItem,
+                transactionType: "waste",
+                quantity: -500.0,
+                costPrice: coconutItem.costPrice,
+                notes: "Spilled carton",
+                isSynced: false,
+                isDeleted: false,
+                updatedAt: today
+            )
+            modelContext.insert(txn)
+            coconutItem.transactions.append(txn)
+            coconutItem.currentQuantity -= 500.0
+        }
     }
 }
 

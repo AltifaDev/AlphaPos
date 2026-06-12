@@ -13,7 +13,7 @@ struct ServiceRequest: Identifiable, Codable, Hashable {
     var createdAt: String
 }
 
-final class SyncEngine: ObservableObject {
+final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = SyncEngine()
     
     enum SyncStatus {
@@ -51,7 +51,11 @@ final class SyncEngine: ObservableObject {
         _lastAlertTimes.removeValue(forKey: key)
     }
     
-    private init() {
+    private var notifiedRequestIds = Set<String>()
+    
+    private override init() {
+        super.init()
+        UNUserNotificationCenter.current().delegate = self
         requestNotificationPermission()
         setupLifecycleObservers()
     }
@@ -112,6 +116,47 @@ final class SyncEngine: ObservableObject {
             }
             #endif
         }
+    }
+    
+    func triggerServiceRequestNotification(tableNumber: String, requestType: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "🛎️ Staff Call: Table \(tableNumber)"
+        
+        let serviceKeyMap = [
+            "Bill (Cash)": "Pay Cash",
+            "Bill (Card)": "Pay Card",
+            "Bill (QR)": "Pay QR",
+            "Ice/Water": "Get Water",
+            "Extra Utensils": "Utensils",
+            "General Help": "Call Staff"
+        ]
+        let displayType = serviceKeyMap[requestType] ?? requestType
+        content.body = "Table \(tableNumber) requested: \(displayType)"
+        content.sound = UNNotificationSound.default
+        
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: trigger
+        )
+        
+        UNUserNotificationCenter.current().add(request) { error in
+            #if DEBUG
+            if let error = error {
+                print("SyncEngine: Failed to trigger service request notification: \(error)")
+            }
+            #endif
+        }
+    }
+    
+    // MARK: - UNUserNotificationCenterDelegate
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound, .badge])
     }
     
     // Asynchronous task to sync all unsynced data
@@ -855,6 +900,7 @@ final class SyncEngine: ObservableObject {
                 let positionX = remoteTable["position_x"] as? Double ?? 0.0
                 let positionY = remoteTable["position_y"] as? Double ?? 0.0
                 let floor = remoteTable["floor"] as? Int ?? 1
+                let zone = remoteTable["zone"] as? String ?? "Indoor"
                 let isDeleted = remoteTable["is_deleted"] as? Bool ?? false
                 
                 let df = ISO8601DateFormatter()
@@ -921,6 +967,7 @@ final class SyncEngine: ObservableObject {
                         table.positionX = positionX
                         table.positionY = positionY
                         table.floor = floor
+                        table.zone = zone
                         table.isSynced = true
                         table.updatedAt = updatedAt
                     }
@@ -934,6 +981,7 @@ final class SyncEngine: ObservableObject {
                         positionX: positionX,
                         positionY: positionY,
                         floor: floor,
+                        zone: zone,
                         isSynced: true,
                         isDeleted: false,
                         updatedAt: updatedAt
@@ -1366,6 +1414,14 @@ final class SyncEngine: ObservableObject {
                    let createdAt = req["createdAt"] as? String {
                     let request = ServiceRequest(id: id, tableNumber: tableNum, requestType: type, status: status, createdAt: createdAt)
                     newRequests.append(request)
+                    
+                    if status == "pending" {
+                        let alreadyNotified = self.notifiedRequestIds.contains(id)
+                        if !alreadyNotified {
+                            self.notifiedRequestIds.insert(id)
+                            self.triggerServiceRequestNotification(tableNumber: tableNum, requestType: type)
+                        }
+                    }
                 }
             }
             
@@ -1595,7 +1651,182 @@ final class SyncEngine: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: workItem)
     }
     
-    // Check for cooking items delayed by more than 10 minutes (600s)
+    
+    // MARK: - Table Sessions Sync (Guest Count)
+    
+    /// Sync table sessions: upload local unsync'd sessions, then pull latest from Supabase
+    private func syncTableSessionsNew(_ modelContext: ModelContext) async {
+        
+        // Phase 1: Upload unsync'd local table sessions
+        await uploadUnsyncedTableSessions(modelContext: modelContext)
+        
+        // Phase 2: Pull latest table sessions from Supabase
+        await pullTableSessionsFromSupabase(modelContext: modelContext)
+    }
+    
+    /// Upload all unsync'd table sessions to Supabase
+    private func uploadUnsyncedTableSessions(modelContext: ModelContext) async {
+        do {
+            let descriptor = FetchDescriptor<TableSession>(
+                predicate: #Predicate<TableSession> { session in
+                    !session.isSynced && !session.isDeleted
+                }
+            )
+            
+            let unsyncedSessions = try modelContext.fetch(descriptor)
+            guard !unsyncedSessions.isEmpty else {
+                #if DEBUG
+                print("[SyncEngine] No unsync'd table sessions to upload")
+                #endif
+                return
+            }
+            
+            #if DEBUG
+            print("[SyncEngine] Uploading \(unsyncedSessions.count) unsync'd table sessions...")
+            #endif
+            
+            for session in unsyncedSessions {
+                let uploadSuccess = await uploadTableSession(session, modelContext: modelContext)
+                
+                if uploadSuccess {
+                    session.isSynced = true
+                    session.updatedAt = Date()
+                    #if DEBUG
+                    print("[SyncEngine] ✅ Uploaded table session \(session.id.uuidString) - guests: \(session.guestCount)")
+                    #endif
+                } else {
+                    #if DEBUG
+                    print("[SyncEngine] ⚠️ Failed to upload table session \(session.id.uuidString)")
+                    #endif
+                }
+            }
+            
+            try modelContext.save()
+            
+        } catch {
+            #if DEBUG
+            print("[SyncEngine] Error uploading table sessions: \(error.localizedDescription)")
+            #endif
+        }
+    }
+    
+    /// Upload a single table session to Supabase
+    private func uploadTableSession(_ session: TableSession, modelContext: ModelContext) async -> Bool {
+        do {
+            let _: [String: Any] = [
+                "id": session.id.uuidString,
+                "merchant_id": UserDefaults.standard.string(forKey: "activeMerchantId") ?? "",
+                "table_id": session.table?.id.uuidString ?? "",
+                "guest_count": session.guestCount,
+                "session_token": session.sessionToken,
+                "started_at": iso8601Format(session.startedAt),
+                "ended_at": session.endedAt.map { iso8601Format($0) } as Any? ?? NSNull(),
+                "is_active": session.isActive,
+                "updated_at": iso8601Format(Date()),
+                "is_synced": true,
+                "is_deleted": false
+            ]
+            
+            let success = try await NetworkManager.shared.uploadTableSession(
+                session: session
+            )
+            
+            return success
+            
+        } catch {
+            #if DEBUG
+            print("[SyncEngine] Failed to upload table session: \(error.localizedDescription)")
+            #endif
+            return false
+        }
+    }
+    
+    /// Pull latest table sessions from Supabase and update local SwiftData
+    private func pullTableSessionsFromSupabase(modelContext: ModelContext) async {
+        do {
+            #if DEBUG
+            print("[SyncEngine] Pulling table sessions from Supabase...")
+            #endif
+            
+            let remoteSessions = try await NetworkManager.shared.fetchActiveSessions()
+            
+            #if DEBUG
+            print("[SyncEngine] Received \(remoteSessions.count) table sessions from Supabase")
+            #endif
+            
+            // Update local SwiftData with remote sessions
+            for remoteSession in remoteSessions {
+                await updateLocalTableSession(remoteSession, modelContext: modelContext)
+            }
+            
+        } catch {
+            #if DEBUG
+            print("[SyncEngine] Failed to pull table sessions from Supabase: \(error.localizedDescription)")
+            #endif
+        }
+    }
+    
+    /// Update local TableSession with data from Supabase, creating if not exists
+    private func updateLocalTableSession(_ remote: [String: Any], modelContext: ModelContext) async {
+        do {
+            guard let idStr = remote["id"] as? String,
+                  let sessionId = UUID(uuidString: idStr),
+                  let guestCount = remote["guest_count"] as? Int,
+                  let sessionToken = remote["session_token"] as? String
+            else {
+                return
+            }
+            
+            let descriptor = FetchDescriptor<TableSession>(
+                predicate: #Predicate<TableSession> { $0.id == sessionId }
+            )
+            let existing = try modelContext.fetch(descriptor).first
+            
+            if let existing = existing {
+                // Update existing
+                existing.guestCount = guestCount
+                existing.isSynced = true
+                existing.updatedAt = Date()
+                
+                #if DEBUG
+                print("[SyncEngine] Updated table session \(sessionId.uuidString) - guests: \(guestCount)")
+                #endif
+                
+            } else {
+                // Create new local session
+                let newSession = TableSession(
+                    id: sessionId,
+                    sessionToken: sessionToken,
+                    guestCount: guestCount,
+                    isSynced: true,
+                    isDeleted: false,
+                    updatedAt: Date()
+                )
+                
+                modelContext.insert(newSession)
+                #if DEBUG
+                print("[SyncEngine] Created new table session \(sessionId.uuidString)")
+                #endif
+            }
+            
+            try modelContext.save()
+            
+        } catch {
+            #if DEBUG
+            print("[SyncEngine] Error updating local table session: \(error.localizedDescription)")
+            #endif
+        }
+    }
+    
+    // MARK: - Helpers
+    
+    /// Format Date to ISO8601 string for Supabase
+    private func iso8601Format(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+    
     private func checkForDelayedOrders(modelContext: ModelContext) async {
         let descriptor = FetchDescriptor<Order>()
         guard var orders = try? modelContext.fetch(descriptor) else { return }

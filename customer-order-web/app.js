@@ -193,6 +193,40 @@ class AlphaPosApp {
         setTimeout(() => { toast.className = "toast"; }, duration);
     }
 
+    _showStatusModal(title, desc, isSuccess = false) {
+        const modal = document.getElementById("statusModal");
+        const spinner = document.getElementById("statusModalSpinner");
+        const successIcon = document.getElementById("statusModalSuccessIcon");
+        const titleEl = document.getElementById("statusModalTitle");
+        const descEl = document.getElementById("statusModalDesc");
+
+        if (!modal || !spinner || !successIcon || !titleEl || !descEl) return;
+
+        titleEl.innerText = title;
+        descEl.innerText = desc;
+
+        if (isSuccess) {
+            spinner.classList.add("hide");
+            successIcon.classList.remove("hide");
+        } else {
+            spinner.classList.remove("hide");
+            successIcon.classList.add("hide");
+        }
+
+        modal.classList.remove("hide");
+        modal.offsetHeight; // trigger layout reflow
+        modal.classList.add("show");
+    }
+
+    _hideStatusModal() {
+        const modal = document.getElementById("statusModal");
+        if (!modal) return;
+        modal.classList.remove("show");
+        setTimeout(() => {
+            modal.classList.add("hide");
+        }, 350);
+    }
+
     /**
      * GUEST COUNT PERSISTENCE (SessionStorage)
      */
@@ -1936,8 +1970,9 @@ class AlphaPosApp {
             'General Help': 'callStaffBtn'
         };
         const displayType = this.translate(serviceKeyMap[type] || type);
-        btnRequestType.innerText = displayType;
-        btnNotification.classList.remove("hide");
+        
+        // Show loading status modal
+        this._showStatusModal(this.translate("callingStaff"), this.translate("callingStaffDesc"), false);
         
         let success = false;
         
@@ -1986,28 +2021,32 @@ class AlphaPosApp {
         }
         
         if (success) {
-            const serviceKeyMap = {
-                'Bill (Cash)': 'payCash',
-                'Bill (Card)': 'payCard',
-                'Bill (QR)': 'payQR',
-                'Ice/Water': 'getWater',
-                'Extra Utensils': 'utensils',
-                'General Help': 'callStaffBtn'
-            };
-            const displayType = this.translate(serviceKeyMap[type] || type);
-            const toast = document.getElementById("toast");
-            toast.innerText = `${this.translate('staffCalled')}: ${displayType}`;
-            toast.className = "toast show";
+            const btnNotification = document.getElementById("activeRequestNotification");
+            const btnRequestType = document.getElementById("activeRequestType");
+
+            if (btnRequestType && btnNotification) {
+                btnRequestType.innerText = displayType;
+                btnNotification.classList.remove("hide");
+                
+                if (this._serviceRequestTimeout) clearTimeout(this._serviceRequestTimeout);
+                this._serviceRequestTimeout = setTimeout(() => {
+                    btnNotification.classList.add("hide");
+                }, 10000);
+            }
+
+            // Show success status modal
+            this._showStatusModal(
+                this.translate("staffCalledSuccess"),
+                `${this.translate("staffCalled")}: ${displayType}. ${this.translate("staffCalledSuccessDesc")}`,
+                true
+            );
+
             setTimeout(() => {
-                toast.className = "toast";
-            }, 3000);
-            
-            setTimeout(() => {
-                btnNotification.classList.add("hide");
-            }, 10000);
+                this._hideStatusModal();
+            }, 2000);
         } else {
+            this._hideStatusModal();
             this._showToast(this.translate('serviceCallFailed'), 5000);
-            btnNotification.classList.add("hide");
         }
     }
 
@@ -2015,11 +2054,9 @@ class AlphaPosApp {
      * Submits order to kitchen (Validates location first)
      */
     async submitOrder() {
-        // Prevent double-submit
         if (this._submitInProgress) return;
         this._submitInProgress = true;
 
-        // Double check validation before submitting
         if (!window.locationVerifier.isValid) {
             this._showToast(this.translate("orderingBlockedPremises"));
             this._submitInProgress = false;
@@ -2030,13 +2067,14 @@ class AlphaPosApp {
         const btnText = btn.querySelector(".btn-text");
         const spinner = btn.querySelector(".btn-spinner");
 
-        // UI Loading State
         btn.classList.add("disabled");
         btn.setAttribute("disabled", "true");
         btnText.innerText = this.translate("sendingOrder");
         spinner.classList.remove("hide");
 
-        // Use crypto.randomUUID() when available, fallback to crypto.getRandomValues
+        // Show sending order status modal
+        this._showStatusModal(this.translate("sendingOrder"), this.translate("sendingOrderDesc"), false);
+
         const generateUUID = () => {
             if (typeof crypto !== 'undefined' && crypto.randomUUID) {
                 return crypto.randomUUID();
@@ -2051,7 +2089,6 @@ class AlphaPosApp {
         const orderId = generateUUID();
         const orderNum = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
 
-        // Map cart items into payload format
         const orderItems = [];
         Object.keys(this.cart).forEach(cartKey => {
             const cartItem = this.cart[cartKey];
@@ -2106,7 +2143,6 @@ class AlphaPosApp {
 
         if (this.supabase) {
             try {
-                // 1. Insert order record
                 const { error: orderError } = await this.supabase
                     .from('orders')
                     .insert([{
@@ -2123,7 +2159,6 @@ class AlphaPosApp {
                     
                 if (orderError) throw orderError;
                 
-                // 2. Insert order items
                 const { error: itemsError } = await this.supabase
                     .from('order_items')
                     .insert(orderItems.map(item => {
@@ -2133,7 +2168,6 @@ class AlphaPosApp {
                     
                 if (itemsError) throw itemsError;
 
-                // 3. Insert order item modifiers
                 const allModifiersToInsert = [];
                 orderItems.forEach(item => {
                     if (item.modifiers && item.modifiers.length > 0) {
@@ -2175,12 +2209,16 @@ class AlphaPosApp {
                 success = true;
             } catch (localErr) {
                 console.error("Local order submission failed:", localErr);
+                
+                // Hide status modal and notify on error
+                this._hideStatusModal();
                 this._showToast(this.translate("orderSentFailed"), 5000);
                 
                 btn.classList.remove("disabled");
                 btn.removeAttribute("disabled");
                 btnText.innerText = this.translate("sendToKitchen");
                 spinner.classList.add("hide");
+                this._submitInProgress = false;
                 return;
             }
         }
@@ -2188,19 +2226,20 @@ class AlphaPosApp {
         if (success) {
             console.log("Order saved successfully:", orderNum);
 
-            // UI Success state
             btnText.innerText = this.translate("sendToKitchen");
             spinner.classList.add("hide");
             
-            // Show Toast
-            const toast = document.getElementById("toast");
-            toast.innerText = this.translate('orderSentSuccess').replace('{num}', orderNum);
-            toast.className = "toast show";
-            setTimeout(() => {
-                toast.className = "toast";
-            }, 3000);
+            // Show success status modal
+            this._showStatusModal(
+                this.translate('orderSentSuccess').replace('{num}', orderNum),
+                this.translate('orderSuccessDesc'),
+                true
+            );
 
-            // Reset App State
+            setTimeout(() => {
+                this._hideStatusModal();
+            }, 2000);
+
             this.cart = {};
             this.renderMenuItems();
             this.updateCartUI();

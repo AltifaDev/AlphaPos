@@ -378,6 +378,7 @@ final class NetworkManager {
             "position_y": table.positionY,
             "floor": table.floor ?? 1,
             "is_deleted": table.isDeleted,
+            "zone": table.zone ?? "Indoor",
             "updated_at": formatter.string(from: table.updatedAt)
         ]
         

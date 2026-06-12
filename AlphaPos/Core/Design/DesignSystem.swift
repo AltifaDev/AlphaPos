@@ -129,7 +129,7 @@ extension Color {
     // ── Accent ───────────────────────────────────────────────────────────────
     /// Primary Royal Blue accent
     static var appAccent: Color {
-        resolveColor(lightHex: "1D4ED8", darkHex: "2D71F8")
+        resolveColor(lightHex: "2D71F8", darkHex: "2D71F8")
     }
     /// Secondary Elf Green accent (used for positive/receive indicators)
     static var appTeal: Color {
@@ -137,11 +137,11 @@ extension Color {
     }
     /// Destructive Coral Red (waste, clock-out, danger)
     static var appRose: Color {
-        resolveColor(lightHex: "FC4A4A", darkHex: "FC4A4A")
+        resolveColor(lightHex: "FC444A", darkHex: "FC444A")
     }
     /// Warning amber
     static var appAmber: Color {
-        resolveColor(lightHex: "D97706", darkHex: "F59E0B")
+        resolveColor(lightHex: "FC444A", darkHex: "FC444A")
     }
 
     // ── Text ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ enum APGradient {
     /// Primary Royal Blue → Sky Blue CTA gradient
     static var accent: LinearGradient {
         LinearGradient(
-            colors: [Color.appAccent, Color(hex: "60A5FA")],
+            colors: [Color.appAccent, Color.appAccent],
             startPoint: .leading, endPoint: .trailing
         )
     }
@@ -223,7 +223,7 @@ enum APGradient {
     /// Green → teal (positive action, clock-in, receive stock)
     static var positive: LinearGradient {
         LinearGradient(
-            colors: [Color(hex: "10B981"), Color.appTeal],
+            colors: [Color.appTeal, Color.appTeal],
             startPoint: .leading, endPoint: .trailing
         )
     }
@@ -231,7 +231,7 @@ enum APGradient {
     /// Rose → orange (destructive, clock-out, waste)
     static var destructive: LinearGradient {
         LinearGradient(
-            colors: [Color.appRose, Color(hex: "FB923C")],
+            colors: [Color.appRose, Color.appRose],
             startPoint: .leading, endPoint: .trailing
         )
     }
@@ -239,7 +239,7 @@ enum APGradient {
     /// Amber → yellow (warning, low stock)
     static var warning: LinearGradient {
         LinearGradient(
-            colors: [Color.appAmber, Color(hex: "FCD34D")],
+            colors: [Color.appRose, Color.appRose],
             startPoint: .leading, endPoint: .trailing
         )
     }

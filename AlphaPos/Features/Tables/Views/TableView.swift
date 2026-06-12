@@ -17,6 +17,7 @@ struct TableView: View {
     @State private var dragTranslation: CGSize = .zero
     @State private var activeDraggingTableId: UUID? = nil
     @State private var selectedFloor: Int = 1
+    @State private var selectedZone: String = "All"
     @State private var zoomScale: CGFloat = 1.0
     @State private var panOffset: CGSize = .zero
     @State private var activePanOffset: CGSize = .zero
@@ -26,6 +27,21 @@ struct TableView: View {
     @State private var bounceTableId: UUID? = nil
     @State private var headerWidth: CGFloat = 0
     @ObservedObject private var syncEngine = SyncEngine.shared
+    
+    @Query(sort: \RestaurantWall.updatedAt) private var walls: [RestaurantWall]
+    @State private var isDrawingWalls = false
+    @State private var selectedDrawTool: DrawTool = .wall
+    @State private var activeStartPoint: CGPoint? = nil
+    @State private var activeEndPoint: CGPoint? = nil
+    @State private var curveControlPoint: CGPoint? = nil
+    @State private var curvePoints: [CGPoint] = []
+    
+    enum DrawTool: String, CaseIterable, Identifiable {
+        case wall = "Wall"
+        case curve = "Curve"
+        case eraser = "Eraser"
+        var id: String { self.rawValue }
+    }
     
     @AppStorage("logged_in_email") private var loggedInEmail = "owner@alphapos.com"
     @State private var isLayoutManagerAuthorized = false
@@ -79,6 +95,10 @@ struct TableView: View {
                         
                         if !syncEngine.activeRequests.isEmpty {
                             activeRequestsOverlay
+                        }
+                        
+                        if isEditingLayout {
+                            wallDrawingToolbar
                         }
                     }
                 }
@@ -137,11 +157,28 @@ struct TableView: View {
                     .frame(width: 1500, height: 1200)
                     .allowsHitTesting(false)
                     
+                    // Render partition walls (CAD wall style)
+                    let floorWalls = walls.filter { $0.floor == selectedFloor }
+                    ForEach(floorWalls) { wall in
+                        Path { path in
+                            path.move(to: CGPoint(x: wall.startX, y: wall.startY))
+                            if wall.type == .curved, let cx = wall.controlX, let cy = wall.controlY {
+                                path.addQuadCurve(to: CGPoint(x: wall.endX, y: wall.endY), control: CGPoint(x: cx, y: cy))
+                            } else {
+                                path.addLine(to: CGPoint(x: wall.endX, y: wall.endY))
+                            }
+                        }
+                        .stroke(
+                            Color.appDivider.opacity(isEditingLayout ? 0.95 : 0.6),
+                            style: StrokeStyle(lineWidth: wall.strokeWidth, lineCap: .round, lineJoin: .round)
+                        )
+                    }
+                    
                     // Render filtered tables
                     ForEach(floorTables) { table in
                         InteractiveTableCardWrapper(
                             table: table,
-                            isEditingLayout: isEditingLayout,
+                            isEditingLayout: isEditingLayout && !isDrawingWalls,
                             activeDraggingTableId: activeDraggingTableId,
                             selectedTableId: selectedTable?.id,
                             dragTranslation: dragTranslation,
@@ -216,6 +253,40 @@ struct TableView: View {
                             onDragChanged: { val in handleDragChanged(value: val, for: table) },
                             onDragEnded: { val in handleDragEnded(value: val, for: table) }
                         )
+                        .opacity(selectedZone == "All" || table.zone == selectedZone ? 1.0 : 0.25)
+                        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: selectedZone)
+                    }
+                    
+                    // Live drawing preview path
+                    if isEditingLayout && isDrawingWalls, let start = activeStartPoint {
+                        Path { path in
+                            path.move(to: start)
+                            if selectedDrawTool == .curve, let control = curveControlPoint, let end = activeEndPoint {
+                                path.addQuadCurve(to: end, control: control)
+                            } else if let current = activeEndPoint {
+                                path.addLine(to: current)
+                            }
+                        }
+                        .stroke(
+                            Color.appAccent.opacity(0.8),
+                            style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round, dash: [6, 4])
+                        )
+                    }
+                    
+                    // Drawing Gesture Overlay
+                    if isEditingLayout && isDrawingWalls {
+                        Color.clear
+                            .frame(width: 1500, height: 1200)
+                            .contentShape(Rectangle())
+                            .gesture(
+                                DragGesture(minimumDistance: 0)
+                                    .onChanged { value in
+                                        handleDrawGestureChanged(location: value.location)
+                                    }
+                                    .onEnded { value in
+                                        handleDrawGestureEnded(location: value.location)
+                                    }
+                            )
                     }
                 }
                 .frame(width: 1500, height: 1200)
@@ -435,6 +506,12 @@ struct TableView: View {
         }
     }
     
+    private var zones: [String] {
+        let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
+        let uniqueZones = Set(floorTables.compactMap { $0.zone }).filter { !$0.isEmpty }
+        return ["All"] + Array(uniqueZones).sorted()
+    }
+    
     private func countTables(status: String) -> Int {
         tables.filter { ($0.floor ?? 1) == selectedFloor && $0.status.lowercased() == status.lowercased() && !$0.isDeleted }.count
     }
@@ -634,6 +711,7 @@ struct TableView: View {
                     .onTapGesture {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                             selectedFloor = floor
+                            selectedZone = "All"
                             APHaptic.trigger()
                         }
                     }
@@ -643,6 +721,40 @@ struct TableView: View {
         .background(Color.appSurfaceHigh)
         .cornerRadius(10)
         .frame(width: 270)
+    }
+
+    @ViewBuilder
+    private var customZonePicker: some View {
+        let activeZones = zones
+        if activeZones.count > 1 {
+            HStack(spacing: 0) {
+                ForEach(activeZones, id: \.self) { zone in
+                    let isSelected = selectedZone == zone
+                    Text(zone)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(isSelected ? .textPrimary : .textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 30)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(isSelected ? Color.appBackground : Color.clear)
+                                .shadow(color: isSelected ? Color.black.opacity(0.12) : .clear, radius: 2, y: 1)
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                selectedZone = zone
+                                APHaptic.trigger()
+                            }
+                        }
+                }
+            }
+            .padding(3)
+            .background(Color.appSurfaceHigh)
+            .cornerRadius(10)
+            .frame(width: CGFloat(min(activeZones.count * 80, 270)))
+            .transition(.opacity.combined(with: .scale))
+        }
     }
 
     @ViewBuilder
@@ -780,7 +892,10 @@ struct TableView: View {
                 Spacer()
                 quickActionsBar
             }
-            customFloorPicker
+            HStack(spacing: 12) {
+                customFloorPicker
+                customZonePicker
+            }
         }
     }
 
@@ -789,7 +904,10 @@ struct TableView: View {
         HStack(spacing: 16) {
             modernStatusWidget
             Spacer()
-            customFloorPicker
+            HStack(spacing: 12) {
+                customFloorPicker
+                customZonePicker
+            }
             Spacer()
             quickActionsBar
         }
@@ -871,6 +989,223 @@ struct TableView: View {
             }
         }
     }
+    
+    // MARK: - Wall Drawing Tool Methods & Toolbar
+    
+    @ViewBuilder
+    private var wallDrawingToolbar: some View {
+        HStack(spacing: 16) {
+            Button(action: {
+                isDrawingWalls.toggle()
+                if isDrawingWalls {
+                    isMovementLocked = true
+                } else {
+                    isMovementLocked = false
+                    activeStartPoint = nil
+                    activeEndPoint = nil
+                    curveControlPoint = nil
+                    curvePoints = []
+                }
+                APHaptic.trigger()
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: isDrawingWalls ? "paintpalette.fill" : "paintpalette")
+                    Text(isDrawingWalls ? "Exit Wall Draw" : "Draw Walls")
+                        .font(.caption).fontWeight(.bold)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(isDrawingWalls ? Color.appAccent : Color.appSurfaceHigh)
+                .foregroundColor(isDrawingWalls ? .white : .textPrimary)
+                .cornerRadius(8)
+                .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            if isDrawingWalls {
+                ForEach(DrawTool.allCases) { tool in
+                    let isSelected = selectedDrawTool == tool
+                    Button(action: {
+                        selectedDrawTool = tool
+                        activeStartPoint = nil
+                        activeEndPoint = nil
+                        curveControlPoint = nil
+                        curvePoints = []
+                        APHaptic.trigger()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: iconForTool(tool))
+                            Text(tool.rawValue)
+                                .font(.caption).fontWeight(.bold)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(isSelected ? Color.appAccent : Color.appSurfaceHigh)
+                        .foregroundColor(isSelected ? .white : .textPrimary)
+                        .cornerRadius(8)
+                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+                
+                // Undo button (deletes last wall segment)
+                Button(action: {
+                    let floorWalls = walls.filter { $0.floor == selectedFloor }
+                    if let lastWall = floorWalls.last {
+                        modelContext.delete(lastWall)
+                        try? modelContext.save()
+                        APHaptic.trigger()
+                    }
+                }) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 14, weight: .bold))
+                        .frame(width: 34, height: 34)
+                        .background(Color.appSurfaceHigh)
+                        .foregroundColor(.textPrimary)
+                        .cornerRadius(8)
+                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+        }
+        .padding(8)
+        .background(Color.appSurface.opacity(0.9))
+        .cornerRadius(12)
+        .shadow(color: Color.black.opacity(0.15), radius: 10, x: 0, y: 5)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.appBorderSubtle, lineWidth: 1)
+        )
+        .padding(.trailing, 220) // Shift slightly left of the floatingControlsPanel so they don't overlap!
+        .padding(.bottom, 20)
+    }
+    
+    private func iconForTool(_ tool: DrawTool) -> String {
+        switch tool {
+        case .wall: return "pencil"
+        case .curve: return "curve.connector"
+        case .eraser: return "eraser.fill"
+        }
+    }
+    
+    private func handleDrawGestureChanged(location: CGPoint) {
+        let gridSize: CGFloat = 20
+        let snappedX = round(location.x / gridSize) * gridSize
+        let snappedY = round(location.y / gridSize) * gridSize
+        let snappedPoint = CGPoint(x: snappedX, y: snappedY)
+        
+        if activeStartPoint == nil {
+            activeStartPoint = snappedPoint
+            APHaptic.trigger()
+        }
+        
+        if selectedDrawTool == .wall {
+            activeEndPoint = snappedPoint
+        } else if selectedDrawTool == .curve {
+            if curvePoints.count == 0 {
+                activeEndPoint = snappedPoint
+            } else if curvePoints.count == 2 {
+                curveControlPoint = snappedPoint
+            }
+        }
+    }
+    
+    private func handleDrawGestureEnded(location: CGPoint) {
+        let gridSize: CGFloat = 20
+        let snappedX = round(location.x / gridSize) * gridSize
+        let snappedY = round(location.y / gridSize) * gridSize
+        let snappedPoint = CGPoint(x: snappedX, y: snappedY)
+        
+        guard let start = activeStartPoint else { return }
+        
+        if selectedDrawTool == .wall {
+            if start != snappedPoint {
+                let newWall = RestaurantWall(
+                    floor: selectedFloor,
+                    type: .straight,
+                    startX: start.x,
+                    startY: start.y,
+                    endX: snappedPoint.x,
+                    endY: snappedPoint.y
+                )
+                modelContext.insert(newWall)
+                try? modelContext.save()
+                APHaptic.trigger()
+            }
+            activeStartPoint = nil
+            activeEndPoint = nil
+            
+        } else if selectedDrawTool == .curve {
+            if curvePoints.count == 0 {
+                if start != snappedPoint {
+                    curvePoints = [start, snappedPoint]
+                    activeEndPoint = snappedPoint
+                    curveControlPoint = CGPoint(x: (start.x + snappedPoint.x) / 2, y: (start.y + snappedPoint.y) / 2)
+                } else {
+                    activeStartPoint = nil
+                    activeEndPoint = nil
+                }
+            } else if curvePoints.count == 2 {
+                let newWall = RestaurantWall(
+                    floor: selectedFloor,
+                    type: .curved,
+                    startX: curvePoints[0].x,
+                    startY: curvePoints[0].y,
+                    endX: curvePoints[1].x,
+                    endY: curvePoints[1].y,
+                    controlX: snappedPoint.x,
+                    controlY: snappedPoint.y
+                )
+                modelContext.insert(newWall)
+                try? modelContext.save()
+                APHaptic.trigger()
+                
+                activeStartPoint = nil
+                activeEndPoint = nil
+                curveControlPoint = nil
+                curvePoints = []
+            }
+        } else if selectedDrawTool == .eraser {
+            let tapPoint = location
+            let threshold: CGFloat = 20.0
+            let floorWalls = walls.filter { $0.floor == selectedFloor }
+            
+            if let wallToDelete = floorWalls.first(where: { wall in
+                if wall.type == .curved, let cx = wall.controlX, let cy = wall.controlY {
+                    let distToStart = distance(tapPoint, CGPoint(x: wall.startX, y: wall.startY))
+                    let distToEnd = distance(tapPoint, CGPoint(x: wall.endX, y: wall.endY))
+                    let distToControl = distance(tapPoint, CGPoint(x: cx, y: cy))
+                    return min(distToStart, distToEnd, distToControl) < threshold * 1.5
+                } else {
+                    return distanceToLineSegment(
+                        p: tapPoint,
+                        a: CGPoint(x: wall.startX, y: wall.startY),
+                        b: CGPoint(x: wall.endX, y: wall.endY)
+                    ) < threshold
+                }
+            }) {
+                modelContext.delete(wallToDelete)
+                try? modelContext.save()
+                APHaptic.trigger()
+            }
+            
+            activeStartPoint = nil
+            activeEndPoint = nil
+        }
+    }
+    
+    private func distance(_ p1: CGPoint, _ p2: CGPoint) -> CGFloat {
+        sqrt(pow(p1.x - p2.x, 2) + pow(p1.y - p2.y, 2))
+    }
+    
+    private func distanceToLineSegment(p: CGPoint, a: CGPoint, b: CGPoint) -> CGFloat {
+        let l2 = pow(a.x - b.x, 2) + pow(a.y - b.y, 2)
+        if l2 == 0 { return distance(p, a) }
+        var t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2
+        t = max(0, min(1, t))
+        let projection = CGPoint(x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y))
+        return distance(p, projection)
+    }
 }
 
 // MARK: - Table Detail / Action View
@@ -911,6 +1246,16 @@ struct TableDetailView: View {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
         dismiss()
+    }
+    
+    private func updateTableZone(_ newZone: String) {
+        table.zone = newZone
+        table.isSynced = false
+        table.updatedAt = Date()
+        try? modelContext.save()
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
     }
     
     var activeSession: TableSession? {
@@ -1048,6 +1393,28 @@ struct TableDetailView: View {
                                     Button(action: { editingCapacity = true }) {
                                         Image(systemName: "pencil.circle.fill")
                                             .font(.system(size: 16))
+                                            .foregroundColor(.appAccent)
+                                    }
+                                }
+                            }
+                            
+                            HStack(spacing: 12) {
+                                Label("Zone:", systemImage: "rectangle.3.group")
+                                    .font(.subheadline)
+                                    .foregroundColor(.textSecondary)
+                                
+                                Menu {
+                                    Button("Indoor") { updateTableZone("Indoor") }
+                                    Button("Outdoor") { updateTableZone("Outdoor") }
+                                    Button("Rooftop") { updateTableZone("Rooftop") }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Text(table.zone ?? "Indoor")
+                                            .font(.subheadline)
+                                            .fontWeight(.semibold)
+                                            .foregroundColor(.appAccent)
+                                        Image(systemName: "chevron.down")
+                                            .font(.caption2)
                                             .foregroundColor(.appAccent)
                                     }
                                 }
@@ -1434,6 +1801,7 @@ struct TableDetailView: View {
 struct DynamicTableLayoutView: View {
     let tableNumber: String
     let capacity: Int
+    var isRound: Bool = false
     let status: String
     let isEditingLayout: Bool
     let isDragging: Bool
@@ -1442,12 +1810,17 @@ struct DynamicTableLayoutView: View {
     var joinedParentNumber: String? = nil
     var isGroupLeader: Bool = false
     var itemCount: Int = 0
-    
+    var table: RestaurantTable? = nil
+
     // Seat dimensions
-    private let chairWidth: CGFloat = 18
-    private let chairHeight: CGFloat = 9
-    private let chairCornerRadius: CGFloat = 3.5
-    
+    private let chairWidth: CGFloat = 24
+    private let chairHeight: CGFloat = 13
+    private let chairCornerRadius: CGFloat = 4.0
+    private let chairGap: CGFloat = 6
+    private let roundTableMinDiam: CGFloat = 82
+    private let roundTableChairRadiusFactor: CGFloat = 18
+
+
     private var formattedTableNumber: String {
         let trimmed = tableNumber.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
@@ -1459,133 +1832,190 @@ struct DynamicTableLayoutView: View {
         return trimmed
     }
     
+    @ViewBuilder
     var body: some View {
-        // Dynamic seat counts calculation around the 4 sides
+        if isRound {
+            roundLayout
+        } else {
+            rectangularLayout
+        }
+    }
+
+    // ── Round Table Layout ──
+    private var roundLayout: some View {
+        let tableDiam = max(roundTableMinDiam, CGFloat(capacity) * roundTableChairRadiusFactor + 30)
+        let chairRadius = tableDiam / 2 + chairHeight / 2 + chairGap
+        let effectiveCount = max(capacity, 1)
+
+        return ZStack {
+            tableContent
+                .frame(width: tableDiam, height: tableDiam)
+                .background(
+                    Circle()
+                        .fill(Color.appSurface)
+                        .overlay(Circle().stroke(
+                            isSelected ? Color.appAccent : (isDragging ? statusColor.opacity(0.8) : Color.appBorderSubtle),
+                            lineWidth: isSelected ? 2.5 : (isDragging ? 2.0 : 1.2)
+                        ))
+                )
+                .overlay(itemBadge)
+                .shadow(
+                    color: isSelected ? Color.appAccent.opacity(0.4) : (isDragging ? statusColor.opacity(0.4) : Color.black.opacity(0.12)),
+                    radius: isSelected ? 14 : (isDragging ? 12 : 5),
+                    x: 0,
+                    y: isSelected ? 4 : (isDragging ? 8 : 2)
+                )
+                .scaleEffect(isSelected ? 1.05 : 1.0)
+                .animation(.spring(response: 0.35, dampingFraction: 0.78), value: isSelected)
+
+            ForEach(0..<effectiveCount, id: \.self) { idx in
+                let angle = 2 * .pi * CGFloat(idx) / CGFloat(effectiveCount) - .pi / 2
+                chairView(width: chairWidth, height: chairHeight, side: .top)
+                    .rotationEffect(.radians(Double(angle + .pi / 2)))
+                    .offset(
+                        x: chairRadius * cos(angle),
+                        y: chairRadius * sin(angle)
+                    )
+            }
+        }
+    }
+
+    // ── Rectangular Table Layout ──
+    private var rectangularLayout: some View {
         let leftCount = capacity >= 3 ? 1 : 0
         let rightCount = capacity >= 4 ? 1 : 0
         let remaining = capacity - leftCount - rightCount
         let topCount = (remaining + 1) / 2
         let bottomCount = remaining / 2
         
-        // Table size stretches dynamically depending on the top/bottom seats count
         let tableWidth = max(76, CGFloat(max(topCount, bottomCount)) * 40 + 20)
         let tableHeight: CGFloat = 70
         
-        ZStack {
-            // 1. Table surface card in the center
-            VStack(spacing: 4) {
-                // Table Label
-                Text(formattedTableNumber)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(.textPrimary)
-                    .lineLimit(1)
-                
-                // Status badge
-                Text(status.uppercased())
-                    .font(.system(size: 8, weight: .heavy))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .foregroundColor(statusColor)
-                    .background(statusColor.opacity(0.12))
-                    .cornerRadius(4)
-                
-                if isEditingLayout {
-                    Image(systemName: "hand.raised.fill")
-                        .font(.system(size: 8))
-                        .foregroundColor(.appAccent)
-                }
-                
-                if let parent = joinedParentNumber {
-                    HStack(spacing: 2) {
-                        Image(systemName: "link")
-                            .font(.system(size: 6))
-                        Text("Joined to \(parent)")
-                            .font(.system(size: 6, weight: .bold))
-                    }
-                    .foregroundColor(.textSecondary)
-                    .padding(.top, 1)
-                } else if isGroupLeader {
-                    HStack(spacing: 2) {
-                        Image(systemName: "link")
-                            .font(.system(size: 6))
-                        Text("Leader")
-                            .font(.system(size: 6, weight: .bold))
-                    }
-                    .foregroundColor(.appTeal)
-                    .padding(.top, 1)
-                }
-            }
-            .frame(width: tableWidth, height: tableHeight)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.appSurface)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(
-                                isSelected ? Color.appAccent : (isDragging ? statusColor.opacity(0.8) : Color.appBorderSubtle),
-                                lineWidth: isSelected ? 2.5 : (isDragging ? 2.0 : 1.2)
-                            )
-                    )
-            )
-            .overlay(
-                Group {
-                    if itemCount > 0 {
-                        VStack {
-                            HStack {
-                                Spacer()
-                                Text("\(itemCount)")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 3)
-                                    .background(Color.appAccent)
-                                    .clipShape(Capsule())
-                                    .shadow(color: .black.opacity(0.3), radius: 2)
-                                    .offset(x: 4, y: -4)
-                            }
-                            Spacer()
-                        }
-                    }
-                }
-            )
-            .shadow(
-                color: isSelected ? Color.appAccent.opacity(0.4) : (isDragging ? statusColor.opacity(0.4) : Color.black.opacity(0.12)),
-                radius: isSelected ? 14 : (isDragging ? 12 : 5),
-                x: 0,
-                y: isSelected ? 4 : (isDragging ? 8 : 2)
-            )
-            .scaleEffect(isSelected ? 1.05 : 1.0)
-            .animation(.spring(response: 0.35, dampingFraction: 0.78), value: isSelected)
+        return ZStack {
+            tableContent
+                .frame(width: tableWidth, height: tableHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.appSurface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(
+                                    isSelected ? Color.appAccent : (isDragging ? statusColor.opacity(0.8) : Color.appBorderSubtle),
+                                    lineWidth: isSelected ? 2.5 : (isDragging ? 2.0 : 1.2)
+                                )
+                        )
+                )
+                .overlay(itemBadge)
+                .shadow(
+                    color: isSelected ? Color.appAccent.opacity(0.4) : (isDragging ? statusColor.opacity(0.4) : Color.black.opacity(0.12)),
+                    radius: isSelected ? 14 : (isDragging ? 12 : 5),
+                    x: 0,
+                    y: isSelected ? 4 : (isDragging ? 8 : 2)
+                )
+                .scaleEffect(isSelected ? 1.05 : 1.0)
+                .animation(.spring(response: 0.35, dampingFraction: 0.78), value: isSelected)
             
-            // 2. Dynamic Chairs layout
-            // Left chair
             if leftCount > 0 {
                 chairView(width: chairHeight, height: chairWidth, side: .left)
-                    .offset(x: -(tableWidth / 2 + chairHeight / 2 + 3), y: 0)
+                    .offset(x: -(tableWidth / 2 + chairHeight / 2 + chairGap), y: 0)
             }
-            
-            // Right chair
+
             if rightCount > 0 {
                 chairView(width: chairHeight, height: chairWidth, side: .right)
-                    .offset(x: tableWidth / 2 + chairHeight / 2 + 3, y: 0)
+                    .offset(x: tableWidth / 2 + chairHeight / 2 + chairGap, y: 0)
             }
-            
-            // Top chairs
+
             if topCount > 0 {
                 ForEach(0..<topCount, id: \.self) { idx in
                     let offset = xOffsetForIndex(idx, count: topCount, totalWidth: tableWidth)
                     chairView(width: chairWidth, height: chairHeight, side: .top)
-                        .offset(x: offset, y: -(tableHeight / 2 + chairHeight / 2 + 3))
+                        .offset(x: offset, y: -(tableHeight / 2 + chairHeight / 2 + chairGap))
                 }
             }
-            
-            // Bottom chairs
+
             if bottomCount > 0 {
                 ForEach(0..<bottomCount, id: \.self) { idx in
                     let offset = xOffsetForIndex(idx, count: bottomCount, totalWidth: tableWidth)
                     chairView(width: chairWidth, height: chairHeight, side: .bottom)
-                        .offset(x: offset, y: tableHeight / 2 + chairHeight / 2 + 3)
+                        .offset(x: offset, y: tableHeight / 2 + chairHeight / 2 + chairGap)
                 }
+            }
+        }
+    }
+
+    // Shared table content (label, status, elapsed, link info)
+    private var tableContent: some View {
+        VStack(spacing: 4) {
+            Text(formattedTableNumber)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(.textPrimary)
+                .lineLimit(1)
+            
+            Text(status.uppercased())
+                .font(.system(size: 8, weight: .heavy))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .foregroundColor(statusColor)
+                .background(statusColor.opacity(0.12))
+                .cornerRadius(4)
+
+            if status.lowercased() == "occupied", let table = table {
+                let elapsedMin = table.elapsedMinutes
+                Text("\(elapsedMin) min")
+                    .padding(.vertical, 1)
+                    .padding(.horizontal, 3)
+                    .background(Color.appSurfaceHigh.opacity(0.6))
+                    .cornerRadius(2)
+                    .font(.system(size: 7, weight: .semibold, design: .monospaced))
+                    .foregroundColor(.textSecondary)
+            }
+
+            if isEditingLayout {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 8))
+                    .foregroundColor(.appAccent)
+            }
+            
+            if let parent = joinedParentNumber {
+                HStack(spacing: 2) {
+                    Image(systemName: "link")
+                        .font(.system(size: 6))
+                    Text("Joined to \(parent)")
+                        .font(.system(size: 6, weight: .bold))
+                }
+                .foregroundColor(.textSecondary)
+                .padding(.top, 1)
+            } else if isGroupLeader {
+                HStack(spacing: 2) {
+                    Image(systemName: "link")
+                        .font(.system(size: 6))
+                    Text("Leader")
+                        .font(.system(size: 6, weight: .bold))
+                }
+                .foregroundColor(.appTeal)
+                .padding(.top, 1)
+            }
+        }
+    }
+
+    // Item count badge (top-right)
+    @ViewBuilder
+    private var itemBadge: some View {
+        if itemCount > 0 {
+            VStack {
+                HStack {
+                    Spacer()
+                    Text("\(itemCount)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.appAccent)
+                        .clipShape(Capsule())
+                        .shadow(color: .black.opacity(0.3), radius: 2)
+                        .offset(x: 4, y: -4)
+                }
+                Spacer()
             }
         }
     }
@@ -1605,19 +2035,8 @@ struct DynamicTableLayoutView: View {
     
     @ViewBuilder
     private func chairView(width: CGFloat, height: CGFloat, side: ChairSide) -> some View {
-        ZStack {
-            // Chair cushion body
-            RoundedRectangle(cornerRadius: chairCornerRadius, style: .continuous)
-                .fill(statusColor.opacity(0.25))
-                .overlay(
-                    RoundedRectangle(cornerRadius: chairCornerRadius, style: .continuous)
-                        .stroke(statusColor.opacity(0.8), lineWidth: 1)
-                )
-            
-            // Micro backrest line for modern architectural look
-            backrestLine(side: side)
-        }
-        .frame(width: width, height: height)
+        ChairShapeView(side: ChairShapeView.Side(side), color: statusColor)
+            .frame(width: width, height: height)
     }
     
     @ViewBuilder
@@ -1684,6 +2103,7 @@ struct InteractiveTableCard: View {
         DynamicTableLayoutView(
             tableNumber: table.tableNumber,
             capacity: table.capacity,
+            isRound: table.isRound,
             status: table.status,
             isEditingLayout: isEditingLayout,
             isDragging: isDragging,
@@ -1691,7 +2111,8 @@ struct InteractiveTableCard: View {
             statusColor: statusCol,
             joinedParentNumber: table.joinedParent?.tableNumber,
             isGroupLeader: !table.joinedChildren.isEmpty,
-            itemCount: itemCount
+            itemCount: itemCount,
+            table: table
         )
         // Pad the table by 16px to ensure chairs don't clip and remain fully visible and interactable
         .padding(16)

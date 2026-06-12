@@ -5,12 +5,36 @@ struct RestaurantTable: Codable, Identifiable, Hashable {
     let tableNumber: String
     let capacity: Int
     let floor: Int
+    let zone: String?
     var status: String // "vacant", "occupied", "reserved", "cleaning"
     var guestCount: Int
     var sessionToken: String?
+    var isRound: Bool
     var currentTotal: Double
     var positionX: Double
     var positionY: Double
+    var sessionStartedAt: String? // ISO8601 timestamp when table was occupied
+    
+    // MARK: - Computed Properties
+    
+    /// Elapsed minutes since table was occupied (live-calculated)
+    var elapsedMinutes: Int {
+        guard status.lowercased() == "occupied",
+              let startedAtStr = sessionStartedAt else { return 0 }
+        
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        
+        // Try with fractional seconds first, then without
+        if let date = formatter.date(from: startedAtStr) {
+            return Int(Date().timeIntervalSince(date) / 60)
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        if let date = formatter.date(from: startedAtStr) {
+            return Int(Date().timeIntervalSince(date) / 60)
+        }
+        return 0
+    }
 }
 
 struct MenuItem: Codable, Identifiable, Hashable {

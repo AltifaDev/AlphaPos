@@ -160,7 +160,13 @@ export const translations = {
                 noActiveItems: "ไม่มีรายการอาหารที่กำลังปรุง",
                 noServedItems: "ไม่มีรายการอาหารก่อนหน้านี้",
                 addedToCartMsg: "เพิ่ม {name} ลงถาดอาหารแล้ว!",
-                sendingOrder: "กำลังส่งรายการสั่งซื้อ..."
+                sendingOrder: "กำลังส่งรายการสั่งซื้อ...",
+                callingStaff: "กำลังเรียกพนักงาน...",
+                callingStaffDesc: "กรุณารอสักครู่ ระบบกำลังส่งคำขอไปยังทีมบริการ",
+                staffCalledSuccess: "ส่งคำขอสำเร็จ!",
+                staffCalledSuccessDesc: "พนักงานบริการรับทราบแล้วและกำลังไปดูแลท่านที่โต๊ะ",
+                sendingOrderDesc: "กำลังส่งรายการสั่งอาหารและบันทึกข้อมูลเข้าห้องครัว",
+                orderSuccessDesc: "ส่งคำสั่งซื้อไปยังห้องครัวเรียบร้อยแล้ว กำลังเตรียมปรุงอาหาร"
             },
             en: {
                 // Onboarding Step 1
@@ -323,7 +329,13 @@ export const translations = {
                 noActiveItems: "No active items in preparation.",
                 noServedItems: "No previous dishes served.",
                 addedToCartMsg: "Added {name} to cart!",
-                sendingOrder: "Sending Order..."
+                sendingOrder: "Sending Order...",
+                callingStaff: "Calling Staff...",
+                callingStaffDesc: "Please wait a moment, sending your request to the service team.",
+                staffCalledSuccess: "Request Sent!",
+                staffCalledSuccessDesc: "The staff has been notified and will be right over to assist you.",
+                sendingOrderDesc: "Writing order details and sending them to the kitchen team.",
+                orderSuccessDesc: "Your order has been sent to the kitchen successfully."
             },
             zh: {
                 // Onboarding Step 1
@@ -486,6 +498,12 @@ export const translations = {
                 noActiveItems: "没有正在制作的菜品。",
                 noServedItems: "此前没有已上菜的菜品。",
                 addedToCartMsg: "已将 {name} 加入购物车！",
-                sendingOrder: "正在发送订单..."
+                sendingOrder: "正在发送订单...",
+                callingStaff: "正在呼叫服务员...",
+                callingStaffDesc: "请稍等，正在发送您的呼叫请求。",
+                staffCalledSuccess: "呼叫成功！",
+                staffCalledSuccessDesc: "服务员已收到通知，将立即前往您的桌台。",
+                sendingOrderDesc: "正在将您的订单发送至厨房。",
+                orderSuccessDesc: "您的订单已成功发送至厨房。"
             }
         }

@@ -431,6 +431,18 @@
         </div>
     </div>
 
+    <!-- Reusable Status Modal (Glassmorphic Alert) -->
+    <div id="statusModal" class="status-modal-overlay hide" role="dialog" aria-modal="true" aria-label="Status alert">
+        <div class="status-modal-card">
+            <div class="status-modal-icon-container">
+                <div class="status-modal-spinner" id="statusModalSpinner"></div>
+                <div class="status-modal-success-icon hide" id="statusModalSuccessIcon">✓</div>
+            </div>
+            <h3 id="statusModalTitle">--</h3>
+            <p id="statusModalDesc">--</p>
+        </div>
+    </div>
+
     <!-- Notification Toast -->
     <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true">Order Sent Successfully!</div>
 

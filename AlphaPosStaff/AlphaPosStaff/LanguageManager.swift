@@ -486,6 +486,38 @@ final class LanguageManager {
             "vi": "Sao chép ID cửa hàng",
             "my": "ဆိုင် ID ကို ကူးယူပါ"
         ],
+        "All": [
+            "en": "All Zones",
+            "th": "ทุกโซน",
+            "lo": "ທຸກໂຊນ",
+            "km": "គ្រប់តំបន់",
+            "vi": "Tất cả khu vực",
+            "my": "ဇုန်အားလုံး"
+        ],
+        "Indoor": [
+            "en": "Indoor",
+            "th": "ในร้าน",
+            "lo": "ໃນຮ້าน",
+            "km": "ក្នុងហាង",
+            "vi": "Trong nhà",
+            "my": "အိမ်တွင်း"
+        ],
+        "Outdoor": [
+            "en": "Outdoor",
+            "th": "นอกร้าน",
+            "lo": "ນອກຮ້ាន",
+            "km": "ក្រៅហាង",
+            "vi": "Ngoài trời",
+            "my": "အပြင်ဘက်"
+        ],
+        "Rooftop": [
+            "en": "Rooftop",
+            "th": "ดาดฟ้า",
+            "lo": "ດາດຟ້າ",
+            "km": "ជាន់លើបង្អស់",
+            "vi": "Tầng thượng",
+            "my": "ခေါင်မိုးပေါ်"
+        ],
         "copied": [
             "en": "Copied!",
             "th": "คัดลอกแล้ว!",

@@ -9,6 +9,7 @@ struct AlphaPosApp: App {
             Role.self,
             User.self,
             RestaurantTable.self,
+            RestaurantWall.self,
             TableSession.self,
             Supplier.self,
             InventoryItem.self,
@@ -61,6 +62,10 @@ struct AlphaPosApp: App {
     }()
 
     @AppStorage("is_logged_in") private var isLoggedIn = false
+
+    init() {
+        _ = SyncEngine.shared
+    }
 
     var body: some Scene {
         WindowGroup {

@@ -65,7 +65,7 @@ struct MainTabView: View {
         Task {
             await networkService.refreshAll()
         }
-        countTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { _ in
+        countTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { _ in
             Task {
                 await networkService.refreshAll()
             }
