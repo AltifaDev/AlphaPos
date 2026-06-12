@@ -49,6 +49,7 @@ final class NetworkService {
     var isFetching = false
     var connectionError = false
     var kitchenWorkflowRequired = true
+    private var lastSyncTime: Date = Date(timeIntervalSince1970: 0)
     
     @ObservationIgnored
     private var notifiedRequestIds = Set<String>()
@@ -94,6 +95,7 @@ final class NetworkService {
             // Reconnect WebSocket and sync REST data
             self.startRealtimeSync()
             Task {
+                // Single sync on foreground resume
                 await self.refreshAll()
             }
         }
@@ -160,12 +162,24 @@ final class NetworkService {
     }
     
     func refreshAll() async {
+        // Prevent rapid consecutive syncs (debounce 5 seconds)
+        let now = Date()
+        if now.timeIntervalSince(lastSyncTime) < 3.0 {
+            #if DEBUG
+            print("[NetworkService] Sync debounced - last sync was \(Int(now.timeIntervalSince(lastSyncTime)))s ago")
+            #endif
+            return
+        }
+        lastSyncTime = now
+        
         isCurrentlySyncing = true
         isFetching = true
+        
         defer {
             isFetching = false
             isCurrentlySyncing = false
         }
+        
         do {
             // Fetch menu once on startup/demand
             if menuItems.isEmpty {
@@ -182,7 +196,14 @@ final class NetworkService {
             async let fetchedOrders = fetchAllActiveOrders()
             async let fetchedWorkflow = fetchMerchantSettings()
             
-            let (tablesRes, requestsRes, ordersRes) = try await (fetchedTables, fetchedRequests, fetchedOrders)
+            // ⚡ Priority-based fetch: Get orders FIRST (most critical for notifications)
+            let ordersRes = try await fetchedOrders
+            
+            // Then get other data in parallel
+            async let fetchedTablesLazy = fetchTables()
+            async let fetchedRequestsLazy = fetchRequests()
+            
+            let (tablesRes, requestsRes) = try await (fetchedTablesLazy, fetchedRequestsLazy)
             let workflowRes = (try? await fetchedWorkflow) ?? true
             
             await MainActor.run {
@@ -215,7 +236,7 @@ final class NetworkService {
                                 let title = "🔔 Table \(req.tableNumber): \(req.requestType)"
                                 let body = "Customer requested assistance at \(self.formatISOStringTime(req.createdAt))"
                                 NotificationManager.shared.triggerNotification(title: title, body: body)
-                                InAppNotificationManager.shared.show(title: title, body: body, type: .request)
+                                EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .request)
                             }
                         }
                         
@@ -230,12 +251,12 @@ final class NetworkService {
                                             let title = "🚪 Table \(table.tableNumber) Occupied"
                                             let body = "Session started for \(table.guestCount) guests"
                                             NotificationManager.shared.triggerNotification(title: title, body: body)
-                                            InAppNotificationManager.shared.show(title: title, body: body, type: .table)
+                                            EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .tableStatus)
                                         } else if table.status == "vacant" && oldTable.status == "occupied" {
                                             let title = "💳 Table \(table.tableNumber) Vacant"
                                             let body = "Session ended / table cleared"
                                             NotificationManager.shared.triggerNotification(title: title, body: body)
-                                            InAppNotificationManager.shared.show(title: title, body: body, type: .table)
+                                            EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .tableStatus)
                                         }
                                     }
                                 }
@@ -255,7 +276,8 @@ final class NetworkService {
                                             let title = "🍳 Order \(order.orderNumber) Ready!"
                                             let body = "Table \(order.tableNumber): \(itemsSummary)"
                                             NotificationManager.shared.triggerNotification(title: title, body: body)
-                                            InAppNotificationManager.shared.show(title: title, body: body, type: .order)
+                                            // Show alert dialog + sound + haptic for new orders
+                                            EnhancedNotificationManager.shared.showAlert(title: title, body: body, type: .order)
                                         }
                                     }
                                 }
@@ -268,7 +290,7 @@ final class NetworkService {
                                         let title = statusLower == "ready" ? "🍳 Order \(order.orderNumber) Ready!" : "📝 New Order \(order.orderNumber)"
                                         let body = "Table \(order.tableNumber): \(itemsSummary) (Total: ฿\(Int(order.total)))"
                                         NotificationManager.shared.triggerNotification(title: title, body: body)
-                                        InAppNotificationManager.shared.show(title: title, body: body, type: .order)
+                                        EnhancedNotificationManager.shared.showAlert(title: title, body: body, type: .order)
                                     }
                                 }
                             }
@@ -309,22 +331,24 @@ final class NetworkService {
     }
     
     func fetchTables() async throws -> [RestaurantTable] {
-        var dynamicTables: [(String, Int, Int, Double, Double, String)] = []
-        
+        var dynamicTables: [(String, Int, Int, Double, Double, String, Bool, String)] = []
+
         do {
             let tablesData = try await sendSupabaseRequest(method: "GET", endpoint: "restaurant_tables", queryItems: [
-                URLQueryItem(name: "select", value: "table_number,capacity,floor,position_x,position_y,status"),
+                URLQueryItem(name: "select", value: "table_number,capacity,floor,position_x,position_y,status,is_round,zone"),
                 URLQueryItem(name: "is_deleted", value: "eq.false")
             ])
             let tablesJson = (try? JSONSerialization.jsonObject(with: tablesData) as? [[String: Any]]) ?? []
-            dynamicTables = tablesJson.compactMap { dict -> (String, Int, Int, Double, Double, String)? in
+            dynamicTables = tablesJson.compactMap { dict -> (String, Int, Int, Double, Double, String, Bool, String)? in
                 guard let num = dict["table_number"] as? String,
                       let cap = dict["capacity"] as? Int,
                       let floor = dict["floor"] as? Int else { return nil }
                 let posX = dict["position_x"] as? Double ?? 0.0
                 let posY = dict["position_y"] as? Double ?? 0.0
                 let status = dict["status"] as? String ?? "vacant"
-                return (num, cap, floor, posX, posY, status)
+                let isRound = dict["is_round"] as? Bool ?? false
+                let zone = dict["zone"] as? String ?? "Indoor"
+                return (num, cap, floor, posX, posY, status, isRound, zone)
             }
         } catch {
             #if DEBUG
@@ -334,16 +358,25 @@ final class NetworkService {
         
         if dynamicTables.isEmpty {
             dynamicTables = [
-                ("1", 2, 1, 40.0, 40.0, "vacant"),
-                ("2", 4, 1, 200.0, 40.0, "vacant"),
-                ("3", 4, 1, 380.0, 40.0, "vacant"),
-                ("4", 6, 1, 40.0, 200.0, "vacant"),
-                ("5", 8, 1, 320.0, 200.0, "vacant"),
-                ("VIP 1", 10, 1, 140.0, 360.0, "vacant"),
-                ("201", 4, 2, 60.0, 60.0, "vacant"),
-                ("202", 4, 2, 240.0, 60.0, "vacant"),
-                ("203", 6, 2, 420.0, 60.0, "vacant"),
-                ("301 (ROOF)", 8, 3, 120.0, 120.0, "vacant")
+                // Floor 1: Synchronized with AlphaPos
+                ("1", 2, 1, 20.0, 20.0, "vacant", false, "Indoor"),
+                ("2", 2, 1, 150.0, 20.0, "vacant", false, "Indoor"),
+                ("3", 4, 1, 280.0, 20.0, "vacant", false, "Outdoor"),
+                ("4", 4, 1, 410.0, 20.0, "vacant", false, "Indoor"),
+                ("5", 4, 1, 20.0, 150.0, "vacant", false, "Outdoor"),
+                ("6", 6, 1, 150.0, 150.0, "vacant", false, "Indoor"),
+                ("7", 6, 1, 280.0, 150.0, "vacant", false, "Indoor"),
+                ("8", 8, 1, 410.0, 150.0, "vacant", false, "Indoor"),
+                ("VIP 1", 10, 1, 20.0, 280.0, "vacant", false, "Outdoor"),
+                ("VIP 2", 10, 1, 150.0, 280.0, "vacant", false, "Outdoor"),
+                ("BAR 1", 1, 1, 280.0, 280.0, "vacant", false, "Outdoor"),
+                ("BAR 2", 1, 1, 310.0, 280.0, "vacant", false, "Outdoor"),
+                ("BAR 3", 1, 1, 340.0, 280.0, "vacant", false, "Outdoor"),
+                // Floor 2 & 3: Placeholder
+                ("201", 4, 2, 60.0, 60.0, "vacant", false, "Indoor"),
+                ("202", 4, 2, 240.0, 60.0, "vacant", false, "Indoor"),
+                ("203", 6, 2, 420.0, 60.0, "vacant", false, "Indoor"),
+                ("301 (ROOF)", 8, 3, 120.0, 120.0, "vacant", false, "Rooftop")
             ]
         }
         
@@ -382,33 +415,40 @@ final class NetworkService {
             }
         }
         
-        return dynamicTables.map { num, cap, floor, posX, posY, dbStatus in
+        return dynamicTables.map { num, cap, floor, posX, posY, dbStatus, isRound, zoneVal in
             if let session = activeSessionsMap[num] {
                 let guestCount = session["guest_count"] as? Int ?? 2
                 let token = session["session_token"] as? String
                 let total = tableTotals[num] ?? 0.0
+                let startedAt = session["started_at"] as? String
                 return RestaurantTable(
                     tableNumber: num,
                     capacity: cap,
                     floor: floor,
+                    zone: zoneVal,
                     status: "occupied",
                     guestCount: guestCount,
                     sessionToken: token,
+                    isRound: isRound,
                     currentTotal: total,
                     positionX: posX,
-                    positionY: posY
+                    positionY: posY,
+                    sessionStartedAt: startedAt
                 )
             } else {
                 return RestaurantTable(
                     tableNumber: num,
                     capacity: cap,
                     floor: floor,
+                    zone: zoneVal,
                     status: dbStatus,
                     guestCount: 0,
                     sessionToken: nil,
+                    isRound: isRound,
                     currentTotal: 0.0,
                     positionX: posX,
-                    positionY: posY
+                    positionY: posY,
+                    sessionStartedAt: nil
                 )
             }
         }
@@ -1024,7 +1064,7 @@ final class NetworkService {
                         let title = "🔔 Table \(tableNumber): \(requestType)"
                         let body = "Customer requested assistance"
                         NotificationManager.shared.triggerNotification(title: title, body: body)
-                        InAppNotificationManager.shared.show(title: title, body: body, type: .request)
+                        EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .request)
                     }
                 }
                 
@@ -1061,7 +1101,7 @@ final class NetworkService {
                                     let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "📝 New Order \(orderNumber)"
                                     let body = "Table \(tableNumber)"
                                     NotificationManager.shared.triggerNotification(title: title, body: body)
-                                    InAppNotificationManager.shared.show(title: title, body: body, type: .order)
+                                    EnhancedNotificationManager.shared.showAlert(title: title, body: body, type: .order)
                                 }
                             }
                         } else if type == "UPDATE" {
@@ -1071,7 +1111,11 @@ final class NetworkService {
                                     let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "🍽️ Order \(orderNumber) Served"
                                     let body = statusLower == "ready" ? "Table \(tableNumber) is ready to be served" : "Table \(tableNumber) has been served"
                                     NotificationManager.shared.triggerNotification(title: title, body: body)
-                                    InAppNotificationManager.shared.show(title: title, body: body, type: .order)
+                                    if statusLower == "ready" {
+                                        EnhancedNotificationManager.shared.showAlert(title: title, body: body, type: .order)
+                                    } else {
+                                        EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .order)
+                                    }
                                 }
                             }
                         }
@@ -1118,12 +1162,12 @@ final class NetworkService {
                             let title = "🚪 Table \(tableNumber) Occupied"
                             let body = "Session started for \(guestCount) guests"
                             NotificationManager.shared.triggerNotification(title: title, body: body)
-                            InAppNotificationManager.shared.show(title: title, body: body, type: .table)
+                            EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .tableStatus)
                         } else if status == "vacant" {
                             let title = "💳 Table \(tableNumber) Vacant"
                             let body = "Session ended / table cleared"
                             NotificationManager.shared.triggerNotification(title: title, body: body)
-                            InAppNotificationManager.shared.show(title: title, body: body, type: .table)
+                            EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .tableStatus)
                         }
                     }
                 }

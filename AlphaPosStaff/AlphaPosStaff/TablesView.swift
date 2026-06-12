@@ -1,11 +1,14 @@
 import SwiftUI
 
 struct TablesView: View {
-    private var networkService = NetworkService.shared
+    @State private var networkService = NetworkService.shared
     
     private var tables: [RestaurantTable] {
         networkService.tables
     }
+
+    // Stable snapshot for canvas — only updated when floor-filtered tables actually change
+    @State private var canvasTables: [RestaurantTable] = []
     
     @AppStorage("app_theme") private var appTheme = AppTheme.light.rawValue
     @AppStorage("app_language") private var appLanguage = "en"
@@ -21,7 +24,9 @@ struct TablesView: View {
     @State private var isRefreshing = false
     
     @State private var selectedFloor = 1
+    @State private var selectedZone = "All"
     @State private var viewMode: ViewMode = .canvas
+    @State private var isAnimatedIn = false
     
     // Zoom & Pan gesture states for canvas mode (iPad-like interaction)
     @State private var zoomScale: CGFloat = 0.45
@@ -39,8 +44,19 @@ struct TablesView: View {
         Array(Set(tables.map { $0.floor })).sorted()
     }
     
+    private var zones: [String] {
+        let floorTables = tables.filter { $0.floor == selectedFloor }
+        let uniqueZones = Set(floorTables.compactMap { $0.zone }).filter { !$0.isEmpty }
+        return ["All"] + Array(uniqueZones).sorted()
+    }
+    
     private var filteredTables: [RestaurantTable] {
-        tables.filter { $0.floor == selectedFloor }
+        let floorTables = tables.filter { $0.floor == selectedFloor }
+        if selectedZone == "All" {
+            return floorTables
+        } else {
+            return floorTables.filter { $0.zone == selectedZone }
+        }
     }
 
     var body: some View {
@@ -53,8 +69,8 @@ struct TablesView: View {
                         // ── Landscape iPhone: single compact toolbar row ──
                         HStack(spacing: APSpacing.sm) {
                             // Stat badges (small)
-                            let vacant   = tables.filter { $0.status == "vacant"   }.count
-                            let occupied = tables.filter { $0.status == "occupied" }.count
+                            let vacant   = filteredTables.filter { $0.status == "vacant"   }.count
+                            let occupied = filteredTables.filter { $0.status == "occupied" }.count
                             compactStatBadge(label: "vacant".localized(for: appLanguage),
                                              count: vacant,   color: .appTeal)
                             compactStatBadge(label: "occupied".localized(for: appLanguage),
@@ -71,6 +87,19 @@ struct TablesView: View {
                                 }
                                 .pickerStyle(.segmented)
                                 .frame(maxWidth: 200)
+                            }
+                            
+                            // Zone picker (inline style, smaller)
+                            if zones.count > 1 {
+                                Divider().frame(height: 20)
+                                
+                                Picker("Zone", selection: $selectedZone) {
+                                    ForEach(zones, id: \.self) { zone in
+                                        Text(zone.localized(for: appLanguage)).tag(zone)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(maxWidth: 180)
                             }
                             
                             Divider().frame(height: 20)
@@ -98,55 +127,111 @@ struct TablesView: View {
                                 }
                             }) {
                                 Image(systemName: appTheme == AppTheme.dark.rawValue ? "sun.max.fill" : "moon.fill")
-                                    .foregroundColor(.appAccent)
+                                    .foregroundColor(.white)
                                     .frame(width: 30, height: 30)
-                                    .background(Color.appSurface)
+                                    .background(Color.white.opacity(0.18))
                                     .clipShape(Circle())
                              }
                             
                             Button(action: { Task { await loadTables() } }) {
                                 Image(systemName: "arrow.clockwise")
-                                    .foregroundColor(.appAccent)
+                                    .foregroundColor(.white)
                                     .frame(width: 30, height: 30)
-                                    .background(Color.appSurface)
+                                    .background(Color.white.opacity(0.18))
                                     .clipShape(Circle())
                             }
                         }
                         .padding(.horizontal, APSpacing.md)
                         .padding(.vertical, APSpacing.xs)
-                        .background(Color.appBackground)
+                        .background(APGradient.accent.ignoresSafeArea(edges: .top))
+                        .offset(y: isAnimatedIn ? 0 : -50)
+                        .opacity(isAnimatedIn ? 1 : 0)
                         
                     } else {
-                        // ── Portrait: original stacked layout ──
-                        HStack(spacing: APSpacing.md) {
-                            let vacant   = tables.filter { $0.status == "vacant"   }.count
-                            let occupied = tables.filter { $0.status == "occupied" }.count
-                            statItem(label: "vacant".localized(for: appLanguage),
-                                     count: vacant,   color: .appTeal)
-                            statItem(label: "occupied".localized(for: appLanguage),
-                                     count: occupied, color: .appRose)
-                        }
-                        .padding(APSpacing.md)
-                        
-                        if !floors.isEmpty {
-                            Picker("Floor", selection: $selectedFloor) {
-                                ForEach(floors, id: \.self) { floorNum in
-                                    Text(floorName(floorNum)).tag(floorNum)
+                        // ── Portrait: Custom Blue Gradient Header ──
+                        // ── Row 1: Compact title bar (soft gradient) ──
+                        HStack(spacing: APSpacing.sm) {
+                            Image(systemName: "table.furniture.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.9))
+
+                            Text("manage_tables".localized(for: appLanguage))
+                                .font(.subheadline)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+
+                            Spacer()
+
+                            // Stat badges inline in header
+                            let vacant   = filteredTables.filter { $0.status == "vacant"   }.count
+                            let occupied = filteredTables.filter { $0.status == "occupied" }.count
+                            headerStatBadge(count: vacant,   color: .appTeal,  icon: "circle.fill")
+                            headerStatBadge(count: occupied, color: .appRose,  icon: "circle.fill")
+                            Divider().frame(height: 16).overlay(Color.white.opacity(0.3))
+                            // Theme toggle
+                            Button(action: {
+                                APHaptic.trigger()
+                                withAnimation {
+                                    appTheme = appTheme == AppTheme.dark.rawValue
+                                        ? AppTheme.light.rawValue
+                                        : AppTheme.dark.rawValue
                                 }
+                            }) {
+                                Image(systemName: appTheme == AppTheme.dark.rawValue ? "sun.max.fill" : "moon.fill")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.white)
+                                    .frame(width: 30, height: 30)
+                                    .background(Color.white.opacity(0.15))
+                                    .clipShape(Circle())
                             }
-                            .pickerStyle(.segmented)
-                            .padding(.horizontal, APSpacing.md)
-                            .padding(.bottom, APSpacing.sm)
-                        }
-                        
-                        Picker("View Mode", selection: $viewMode) {
-                            ForEach(ViewMode.allCases, id: \.self) { mode in
-                                Text(mode == .grid ? "Grid View" : "Layout Canvas").tag(mode)
+                            // Refresh
+                            Button(action: { Task { await loadTables() } }) {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.white)
+                                    .frame(width: 30, height: 30)
+                                    .background(Color.white.opacity(0.15))
+                                    .clipShape(Circle())
                             }
                         }
-                        .pickerStyle(.segmented)
                         .padding(.horizontal, APSpacing.md)
-                        .padding(.bottom, APSpacing.md)
+                        .padding(.vertical, 9)
+                        .background(APGradient.accent.ignoresSafeArea(edges: .top))
+                        .offset(y: isAnimatedIn ? 0 : -50)
+                        .opacity(isAnimatedIn ? 1 : 0)
+                        // ── Row 2: Pickers compact in one scrollable row ──
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: APSpacing.sm) {
+                                if !floors.isEmpty {
+                                    Picker("Floor", selection: $selectedFloor) {
+                                        ForEach(floors, id: \.self) { floorNum in
+                                            Text(floorName(floorNum)).tag(floorNum)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .frame(minWidth: CGFloat(floors.count) * 72)
+                                }
+                                if zones.count > 1 {
+                                    Picker("Zone", selection: $selectedZone) {
+                                        ForEach(zones, id: \.self) { zone in
+                                            Text(zone.localized(for: appLanguage)).tag(zone)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .frame(minWidth: CGFloat(zones.count) * 68)
+                                }
+                                Picker("View", selection: $viewMode) {
+                                    ForEach(ViewMode.allCases, id: \.self) { mode in
+                                        Text(mode == .grid ? "Grid" : "Canvas").tag(mode)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(minWidth: 130)
+                            }
+                            .padding(.horizontal, APSpacing.md)
+                        }
+                        .padding(.vertical, APSpacing.xs)
+                        .opacity(isAnimatedIn ? 1 : 0)
                     }
                     
                     if tables.isEmpty {
@@ -160,22 +245,29 @@ struct TablesView: View {
                         if viewMode == .grid {
                             ScrollView {
                                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: APSpacing.md) {
-                                    ForEach(filteredTables) { table in
-                                        if table.status == "occupied" {
-                                            NavigationLink(destination: TableDetailView(table: table)) {
-                                                tableCard(table: table)
+                                    ForEach(Array(filteredTables.enumerated()), id: \.element.id) { index, table in
+                                        let directionOffset: CGFloat = (index % 2 == 0) ? -80 : 80
+                                        Group {
+                                            if table.status == "occupied" {
+                                                NavigationLink(destination: TableDetailView(table: table)) {
+                                                    tableCard(table: table)
+                                                }
+                                                .buttonStyle(.plain)
+                                            } else {
+                                                Button(action: {
+                                                    APHaptic.trigger()
+                                                    guestCount = 2
+                                                    selectedTable = table
+                                                }) {
+                                                    tableCard(table: table)
+                                                }
+                                                .buttonStyle(.plain)
                                             }
-                                            .buttonStyle(.plain)
-                                        } else {
-                                            Button(action: {
-                                                APHaptic.trigger()
-                                                guestCount = 2
-                                                selectedTable = table
-                                            }) {
-                                                tableCard(table: table)
-                                            }
-                                            .buttonStyle(.plain)
                                         }
+                                        .offset(x: isAnimatedIn ? 0 : directionOffset, y: isAnimatedIn ? 0 : 60)
+                                        .opacity(isAnimatedIn ? 1 : 0)
+                                        .animation(.spring(response: 0.5, dampingFraction: 0.8).delay(Double(index) * 0.03), value: filteredTables)
+                                        .animation(.spring(response: 0.65, dampingFraction: 0.75).delay(Double(index) * 0.04), value: isAnimatedIn)
                                     }
                                 }
                                 .padding(.horizontal, APSpacing.md)
@@ -192,8 +284,9 @@ struct TablesView: View {
                                         CanvasBackgroundGrid()
                                             .frame(width: 1500, height: 1200)
                                             .allowsHitTesting(false)
+
                                         
-                                        ForEach(filteredTables) { table in
+                                        ForEach(Array(canvasTables.enumerated()), id: \.element.id) { index, table in
                                             let statusColor = table.status == "occupied" ? Color.appRose : Color.appTeal
                                             
                                             Group {
@@ -214,6 +307,10 @@ struct TablesView: View {
                                                 }
                                             }
                                             .offset(x: CGFloat(table.positionX), y: CGFloat(table.positionY))
+                                            .scaleEffect(isAnimatedIn ? 1.0 : 0.3)
+                                            .opacity(isAnimatedIn ? (selectedZone == "All" || table.zone == selectedZone ? 1.0 : 0.25) : 0)
+                                            .animation(.spring(response: 0.45, dampingFraction: 0.8), value: selectedZone)
+                                            .animation(.spring(response: 0.65, dampingFraction: 0.72).delay(Double(index) * 0.04), value: isAnimatedIn)
                                         }
                                     }
                                     .frame(width: 1500, height: 1200)
@@ -265,9 +362,6 @@ struct TablesView: View {
                                 .onChange(of: selectedFloor) { _, _ in
                                     autoFitCanvas(viewportSize: viewport.size)
                                 }
-                                .onChange(of: tables) { _, _ in
-                                    autoFitCanvas(viewportSize: viewport.size)
-                                }
                             }
                             // Stretch canvas edge-to-edge, ignoring safe area on sides
                             .ignoresSafeArea(edges: isCompactHeight ? [.horizontal, .bottom] : [])
@@ -275,49 +369,53 @@ struct TablesView: View {
                     }
                 }
             }
-            .navigationTitle(isCompactHeight ? "" : "manage_tables".localized(for: appLanguage))
-            .navigationBarTitleDisplayMode(isCompactHeight ? .inline : .automatic)
-            .navigationBarHidden(isCompactHeight)
-            .toolbar {
-                if !isCompactHeight {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button(action: {
-                            APHaptic.trigger()
-                            withAnimation {
-                                if appTheme == AppTheme.dark.rawValue {
-                                    appTheme = AppTheme.light.rawValue
-                                } else {
-                                    appTheme = AppTheme.dark.rawValue
-                                }
-                            }
-                        }) {
-                            Image(systemName: appTheme == AppTheme.dark.rawValue ? "sun.max.fill" : "moon.fill")
-                                .foregroundColor(.appAccent)
-                        }
-                        
-                        Button(action: {
-                            Task {
-                                await loadTables()
-                            }
-                        }) {
-                            Image(systemName: "arrow.clockwise")
-                                .foregroundColor(.appAccent)
-                        }
-                    }
-                }
-            }
+            .navigationBarHidden(true)
         }
         .onAppear {
             Task {
                 await loadTables()
             }
+            canvasTables = tables.filter { $0.floor == selectedFloor }
+            
+            withAnimation(.spring(response: 0.65, dampingFraction: 0.8)) {
+                isAnimatedIn = true
+            }
         }
-        .onChange(of: tables) { _, newTables in
+        .onDisappear {
+            isAnimatedIn = false
+        }
+       .onChange(of: tables) { _, newTables in
             if !newTables.isEmpty {
                 let availableFloors = Array(Set(newTables.map { $0.floor })).sorted()
                 if !availableFloors.contains(selectedFloor) {
                     selectedFloor = availableFloors.first ?? 1
                 }
+            }
+            // Update canvas snapshot only when status actually changes (not on every sync tick)
+            let newFiltered = newTables.filter { $0.floor == selectedFloor }
+            let currentStatuses = canvasTables.map { ($0.tableNumber, $0.status, $0.currentTotal) }
+            let newStatuses     = newFiltered.map   { ($0.tableNumber, $0.status, $0.currentTotal) }
+            let changed = zip(currentStatuses, newStatuses).contains { a, b in
+                a.0 != b.0 || a.1 != b.1 || a.2 != b.2
+            } || currentStatuses.count != newStatuses.count
+            if changed {
+                canvasTables = newFiltered
+            }
+            
+            // Reset zone filter if no longer available on this floor
+            let availableZones = Set(newFiltered.compactMap { $0.zone }).filter { !$0.isEmpty }
+            if selectedZone != "All" && !availableZones.contains(selectedZone) {
+                selectedZone = "All"
+            }
+        }
+        .onChange(of: selectedFloor) { _, newFloor in
+            canvasTables = tables.filter { $0.floor == newFloor }
+            
+            // Reset zone filter if not available on the new floor
+            let newFloorTables = tables.filter { $0.floor == newFloor }
+            let newZones = Set(newFloorTables.compactMap { $0.zone }).filter { !$0.isEmpty }
+            if selectedZone != "All" && !newZones.contains(selectedZone) {
+                selectedZone = "All"
             }
         }
         .sheet(item: $selectedTable) { table in
@@ -387,40 +485,85 @@ struct TablesView: View {
         let isOccupied = table.status == "occupied"
         let statusColor = isOccupied ? Color.appRose : Color.appTeal
         
-        return VStack(spacing: APSpacing.sm) {
-            HStack {
-                Text(String(format: "table_label".localized(for: appLanguage), table.tableNumber))
-                    .font(.headline).fontWeight(.black)
-                    .foregroundColor(.textPrimary)
+        let estWidth: CGFloat = {
+            if table.isRound {
+                let effectiveCount = max(table.capacity, 1)
+                let tableDiam = max(82, CGFloat(effectiveCount) * 18 + 30)
+                let chairGap: CGFloat = 6
+                let chairHeight: CGFloat = 13
+                let chairRadius = tableDiam / 2 + chairHeight / 2 + chairGap
+                return (chairRadius + chairHeight) * 2
+            } else {
+                let leftCount = table.capacity >= 3 ? 1 : 0
+                let rightCount = table.capacity >= 4 ? 1 : 0
+                let remaining = table.capacity - leftCount - rightCount
+                let topCount = (remaining + 1) / 2
+                let bottomCount = remaining / 2
+                let maxRow = max(topCount, bottomCount)
+                let tableWidth = max(76, CGFloat(maxRow) * 40 + 20)
+                let chairGap: CGFloat = 6
+                let chairHeight: CGFloat = 13
+                let totalChairsWidth = (leftCount > 0 ? chairHeight + chairGap : 0) + (rightCount > 0 ? chairHeight + chairGap : 0)
+                return tableWidth + totalChairsWidth + 10
+            }
+        }()
+
+        return GeometryReader { cardGeo in
+            VStack(spacing: APSpacing.sm) {
+                HStack {
+                    Text(String(format: "table_label".localized(for: appLanguage), table.tableNumber))
+                        .font(.headline).fontWeight(.black)
+                        .foregroundColor(.textPrimary)
+                    
+                    Spacer()
+                    
+                    APBadge(
+                        text: isOccupied ? "occupied".localized(for: appLanguage) : "vacant".localized(for: appLanguage),
+                        color: statusColor
+                    )
+                }
                 
                 Spacer()
                 
-                APBadge(
-                    text: isOccupied ? "occupied".localized(for: appLanguage) : "vacant".localized(for: appLanguage),
-                    color: statusColor
-                )
+                let targetWidth = cardGeo.size.width - 32
+                let scale = min(0.9, targetWidth / estWidth)
+                
+                CompactTableLayoutView(table: table, statusColor: statusColor)
+                    .scaleEffect(scale)
+                    .frame(height: 65)
+                
+                Spacer()
             }
-            
-            Spacer()
-            
-            CompactTableLayoutView(table: table, statusColor: statusColor)
-                .scaleEffect(0.9)
-                .frame(height: 65)
-            
-            Spacer()
+            .padding(APSpacing.md)
+            .frame(width: cardGeo.size.width, height: cardGeo.size.height)
+            .background(Color.appSurface)
+            .clipShape(RoundedRectangle(cornerRadius: APRadius.lg))
+            .overlay(
+                RoundedRectangle(cornerRadius: APRadius.lg)
+                    .stroke(isOccupied ? Color.appRose.opacity(0.4) : Color.appDivider, lineWidth: 1.5)
+            )
+            .shadow(color: isOccupied ? Color.appRose.opacity(0.1) : Color.black.opacity(0.05), radius: 8, x: 0, y: 4)
         }
         .frame(height: 140)
-        .padding(APSpacing.md)
-        .background(Color.appSurface)
-        .clipShape(RoundedRectangle(cornerRadius: APRadius.lg))
-        .overlay(
-            RoundedRectangle(cornerRadius: APRadius.lg)
-                .stroke(isOccupied ? Color.appRose.opacity(0.4) : Color.appDivider, lineWidth: 1.5)
-        )
-        .shadow(color: isOccupied ? Color.appRose.opacity(0.1) : Color.black.opacity(0.05), radius: 8, x: 0, y: 4)
     }
     
     /// Compact inline badge used in landscape iPhone header
+    // ── Mini stat badge used inside the compact header title row ──
+    private func headerStatBadge(count: Int, color: Color, icon: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: icon)
+                .font(.system(size: 6))
+                .foregroundColor(color)
+            Text("\(count)")
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(Color.white.opacity(0.14))
+        .cornerRadius(6)
+    }
+
     private func compactStatBadge(label: String, count: Int, color: Color) -> some View {
         HStack(spacing: 4) {
             Circle().fill(color).frame(width: 6, height: 6)
@@ -500,10 +643,14 @@ struct CompactTableLayoutView: View {
     let table: RestaurantTable
     let statusColor: Color
     
-    private let chairWidth: CGFloat = 18
-    private let chairHeight: CGFloat = 9
-    private let chairCornerRadius: CGFloat = 3.5
-    
+    private let chairWidth: CGFloat = 24
+    private let chairHeight: CGFloat = 13
+    private let chairCornerRadius: CGFloat = 4.0
+    private let chairGap: CGFloat = 6
+
+    private let roundTableMinDiam: CGFloat = 82
+    private let roundTableChairRadiusFactor: CGFloat = 18
+
     private var formattedTableNumber: String {
         let trimmed = table.tableNumber.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
@@ -515,9 +662,46 @@ struct CompactTableLayoutView: View {
         return trimmed
     }
     
+    @ViewBuilder
     var body: some View {
-        let isOccupied = table.status == "occupied"
-        
+        if table.isRound {
+            roundLayout
+        } else {
+            rectangularLayout
+        }
+    }
+
+    // ── Round Table Layout ──
+    private var roundLayout: some View {
+        let effectiveCount = max(table.capacity, 1)
+        let tableDiam = max(roundTableMinDiam, CGFloat(table.capacity) * roundTableChairRadiusFactor + 30)
+        let chairRadius = tableDiam / 2 + chairHeight / 2 + chairGap
+
+        return ZStack {
+            tableContent
+                .frame(width: tableDiam, height: tableDiam)
+                .background(
+                    Circle()
+                        .fill(Color.appSurface)
+                        .overlay(Circle().stroke(Color.appBorderSubtle, lineWidth: 1.2))
+                )
+                .shadow(color: Color.black.opacity(0.1), radius: 5, x: 0, y: 2)
+
+            ForEach(0..<effectiveCount, id: \.self) { idx in
+                let angle = 2 * .pi * CGFloat(idx) / CGFloat(effectiveCount) - .pi / 2
+                chairView(width: chairWidth, height: chairHeight, side: .top)
+                    .rotationEffect(.radians(Double(angle + .pi / 2)))
+                    .offset(
+                        x: chairRadius * cos(angle),
+                        y: chairRadius * sin(angle)
+                    )
+            }
+        }
+        .padding(16)
+    }
+
+    // ── Rectangular Table Layout ──
+    private var rectangularLayout: some View {
         let leftCount = table.capacity >= 3 ? 1 : 0
         let rightCount = table.capacity >= 4 ? 1 : 0
         let remaining = table.capacity - leftCount - rightCount
@@ -527,85 +711,70 @@ struct CompactTableLayoutView: View {
         let tableWidth = max(76, CGFloat(max(topCount, bottomCount)) * 40 + 20)
         let tableHeight: CGFloat = 70
         
-        ZStack {
-            // Table surface card
-            VStack(spacing: 3) {
-                Text(formattedTableNumber)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(.textPrimary)
-                    .lineLimit(1)
-                
-                Text(table.status.uppercased())
-                    .font(.system(size: 8, weight: .heavy))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .foregroundColor(statusColor)
-                    .background(statusColor.opacity(0.12))
-                    .cornerRadius(4)
-                
-                if isOccupied {
-                    HStack(spacing: 4) {
-                        HStack(spacing: 1) {
-                            Image(systemName: "person.fill")
-                                .font(.system(size: 8))
-                            Text("\(table.guestCount)")
-                                .font(.system(size: 8, weight: .bold))
-                        }
-                        .foregroundColor(.textSecondary)
-                        
-                        if table.currentTotal > 0 {
-                            Text("฿\(Int(table.currentTotal))")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(.appRose)
-                        }
-                    }
-                }
-            }
-            .frame(width: tableWidth, height: tableHeight)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.appSurface)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(
-                                Color.appBorderSubtle,
-                                lineWidth: 1.2
-                            )
-                    )
-            )
-            .shadow(color: Color.black.opacity(0.1), radius: 5, x: 0, y: 2)
-            
-            // Left chair
+        return ZStack {
+            tableContent
+                .frame(width: tableWidth, height: tableHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.appSurface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.appBorderSubtle, lineWidth: 1.2)
+                        )
+                )
+                .shadow(color: Color.black.opacity(0.1), radius: 5, x: 0, y: 2)
+
             if leftCount > 0 {
                 chairView(width: chairHeight, height: chairWidth, side: .left)
-                    .offset(x: -(tableWidth / 2 + chairHeight / 2 + 3), y: 0)
+                    .offset(x: -(tableWidth / 2 + chairHeight / 2 + chairGap), y: 0)
             }
-            
-            // Right chair
+
             if rightCount > 0 {
                 chairView(width: chairHeight, height: chairWidth, side: .right)
-                    .offset(x: tableWidth / 2 + chairHeight / 2 + 3, y: 0)
+                    .offset(x: tableWidth / 2 + chairHeight / 2 + chairGap, y: 0)
             }
-            
-            // Top chairs
+
             if topCount > 0 {
                 ForEach(0..<topCount, id: \.self) { idx in
                     let offset = xOffsetForIndex(idx, count: topCount, totalWidth: tableWidth)
                     chairView(width: chairWidth, height: chairHeight, side: .top)
-                        .offset(x: offset, y: -(tableHeight / 2 + chairHeight / 2 + 3))
+                        .offset(x: offset, y: -(tableHeight / 2 + chairHeight / 2 + chairGap))
                 }
             }
-            
-            // Bottom chairs
+
             if bottomCount > 0 {
                 ForEach(0..<bottomCount, id: \.self) { idx in
                     let offset = xOffsetForIndex(idx, count: bottomCount, totalWidth: tableWidth)
                     chairView(width: chairWidth, height: chairHeight, side: .bottom)
-                        .offset(x: offset, y: tableHeight / 2 + chairHeight / 2 + 3)
+                        .offset(x: offset, y: tableHeight / 2 + chairHeight / 2 + chairGap)
                 }
             }
         }
         .padding(16)
+    }
+
+    // Shared table content (label, status, elapsed)
+    private var tableContent: some View {
+        let isOccupied = table.status == "occupied"
+
+        return VStack(spacing: 3) {
+            Text(formattedTableNumber)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(.textPrimary)
+                .lineLimit(1)
+            
+            Text(table.status.uppercased())
+                .font(.system(size: 8, weight: .heavy))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .foregroundColor(statusColor)
+                .background(statusColor.opacity(0.12))
+                .cornerRadius(4)
+            
+            if isOccupied {
+                ElapsedTimeBadge(startedAt: table.sessionStartedAt)
+            }
+        }
     }
     
     private func xOffsetForIndex(_ idx: Int, count: Int, totalWidth: CGFloat) -> CGFloat {
@@ -621,17 +790,16 @@ struct CompactTableLayoutView: View {
     
     @ViewBuilder
     private func chairView(width: CGFloat, height: CGFloat, side: ChairSide) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: chairCornerRadius, style: .continuous)
-                .fill(statusColor.opacity(0.25))
-                .overlay(
-                    RoundedRectangle(cornerRadius: chairCornerRadius, style: .continuous)
-                        .stroke(statusColor.opacity(0.8), lineWidth: 1)
-                )
-            
-            backrestLine(side: side)
-        }
-        .frame(width: width, height: height)
+        let shapeSide: ChairShapeView.Side = {
+            switch side {
+            case .top:    return .top
+            case .bottom: return .bottom
+            case .left:   return .left
+            case .right:  return .right
+            }
+        }()
+        ChairShapeView(side: shapeSide, color: statusColor)
+            .frame(width: width, height: height)
     }
     
     @ViewBuilder
