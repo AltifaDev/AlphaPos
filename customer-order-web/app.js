@@ -227,6 +227,41 @@ class AlphaPosApp {
         }, 350);
     }
 
+    saveCartToStorage() {
+        if (this.tableNumber) {
+            localStorage.setItem(`cart_T${this.tableNumber}`, JSON.stringify(this.cart));
+        }
+    }
+
+    loadCartFromStorage() {
+        if (this.tableNumber) {
+            const saved = localStorage.getItem(`cart_T${this.tableNumber}`);
+            if (saved) {
+                try {
+                    this.cart = JSON.parse(saved);
+                } catch (e) {
+                    console.error("Failed to parse saved cart:", e);
+                    this.cart = {};
+                }
+            } else {
+                this.cart = {};
+            }
+        }
+    }
+
+    unsubscribeRealtimeChannels() {
+        if (this.supabase && this.realtimeChannels) {
+            this.realtimeChannels.forEach(ch => {
+                try {
+                    this.supabase.removeChannel(ch);
+                } catch (e) {
+                    console.error("Failed to remove channel:", e);
+                }
+            });
+            this.realtimeChannels = [];
+        }
+    }
+
     /**
      * GUEST COUNT PERSISTENCE (SessionStorage)
      */
@@ -367,6 +402,11 @@ class AlphaPosApp {
      */
     async init() {
         this.parseURLParams();
+        this.loadCartFromStorage();
+        
+        window.addEventListener("beforeunload", () => {
+            this.unsubscribeRealtimeChannels();
+        });
         
         // Initialize Supabase Client with merchant ID custom header
         this.supabase = (window.supabase && this.supabaseKey) ? window.supabase.createClient(this.supabaseUrl, this.supabaseKey, {
@@ -416,8 +456,51 @@ class AlphaPosApp {
             }
         });
 
+        // ── Scroll-hide header: hide promo banner on scroll down, restore on scroll up ──
+        this._initScrollHideHeader();
+
         // Developer auto-onboard check for headless testing
         this.autoOnboardIfRequested();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Scroll-Hide Header
+    // Hide promo banner when user scrolls down > threshold.
+    // Restore when scrolled back near top.
+    // ─────────────────────────────────────────────────────────────
+    _initScrollHideHeader() {
+        const HIDE_THRESHOLD  = 60;   // px scrolled down to trigger hide
+        const SHOW_THRESHOLD  = 20;   // px from top to restore
+        const body            = document.body;
+        let   lastScrollY     = 0;
+        let   ticking         = false;
+
+        const onScroll = (scrollTop) => {
+            if (ticking) return;
+            ticking = true;
+
+            requestAnimationFrame(() => {
+                const goingDown = scrollTop > lastScrollY;
+                const nearTop   = scrollTop <= SHOW_THRESHOLD;
+
+                if (nearTop) {
+                    body.classList.remove("header-scrolled-up");
+                } else if (goingDown && scrollTop > HIDE_THRESHOLD) {
+                    body.classList.add("header-scrolled-up");
+                } else if (!goingDown) {
+                    body.classList.remove("header-scrolled-up");
+                }
+
+                lastScrollY = Math.max(0, scrollTop);
+                ticking     = false;
+            });
+        };
+
+        const menuView = document.getElementById("menuView");
+        if (menuView) {
+            menuView.addEventListener("scroll", () => onScroll(menuView.scrollTop), { passive: true });
+        }
+        window.addEventListener("scroll", () => onScroll(window.scrollY), { passive: true });
     }
 
     async autoOnboardIfRequested() {
@@ -1410,6 +1493,9 @@ class AlphaPosApp {
             cartBar.classList.remove("show");
             this.toggleCartDrawer(false); // Auto close drawer if cart emptied
         }
+
+        // Save cart state to storage
+        this.saveCartToStorage();
     }
 
     /**
@@ -1782,26 +1868,30 @@ class AlphaPosApp {
             }
         }, 1500);
         
+        this.realtimeChannels = [];
+        
         if (this.supabase) {
             try {
-                this.supabase
+                const ch1 = this.supabase
                     .channel('status-changes')
                     .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, payload => {
                         console.log("Realtime order item update received:", payload);
                         this._debouncedFetchHistory();
-                    })
-                    .subscribe();
+                    });
+                ch1.subscribe();
+                this.realtimeChannels.push(ch1);
                     
-                this.supabase
+                const ch2 = this.supabase
                     .channel('orders-changes')
                     .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, payload => {
                         console.log("Realtime order update received:", payload);
                         this._debouncedFetchHistory();
-                    })
-                    .subscribe();
+                    });
+                ch2.subscribe();
+                this.realtimeChannels.push(ch2);
                 
                 // Listen for table_sessions changes (detect session closure from iPad POS)
-                this.supabase
+                const ch3 = this.supabase
                     .channel('session-changes')
                     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'table_sessions' }, payload => {
                         console.log("Realtime session update received:", payload);
@@ -1811,17 +1901,20 @@ class AlphaPosApp {
                             console.warn("Session closed by POS for table:", this.tableNumber);
                             this.sessionToken = null;
                             localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
+                            this.cart = {};
+                            this.saveCartToStorage(); // Clear cart on session close
                             
                             const toast = document.getElementById("toast");
                             toast.innerText = "Your session has been closed by the staff. Thank you!";
                             toast.className = "toast show";
                             setTimeout(() => { toast.className = "toast"; }, 5000);
                         }
-                    })
-                    .subscribe();
+                    });
+                ch3.subscribe();
+                this.realtimeChannels.push(ch3);
                 
                 // Listen for menu_items changes (auto-reload when menu is updated)
-                this.supabase
+                const ch4 = this.supabase
                     .channel('menu-changes')
                     .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' }, payload => {
                         console.log("Realtime menu update received:", payload);
@@ -1835,8 +1928,9 @@ class AlphaPosApp {
                             toast.className = "toast show";
                             setTimeout(() => { toast.className = "toast"; }, 3000);
                         });
-                    })
-                    .subscribe();
+                    });
+                ch4.subscribe();
+                this.realtimeChannels.push(ch4);
             } catch (err) {
                 console.error("Failed to initialize Supabase realtime subscriptions:", err);
             }

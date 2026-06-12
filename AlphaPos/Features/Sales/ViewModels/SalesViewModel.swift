@@ -391,7 +391,7 @@ final class SalesViewModel {
             case (true,  true):  segment = .star
             case (true,  false): segment = .plowHorse
             case (false, true):  segment = .puzzle
-            case (false, false): segment = .marginal
+            case (false, false): segment = .dog
             }
             return MenuMatrixPoint(product: prod, segment: segment)
         }.sorted(by: { $0.product.totalRevenue > $1.product.totalRevenue })
@@ -770,14 +770,14 @@ enum MenuSegment: String {
     case star      = "⭐ Star"
     case plowHorse = "🐎 Plow Horse"
     case puzzle    = "❓ Puzzle"
-    case marginal  = "📉 Marginal"
+    case dog       = "📉 Dog"
 
     var color: Color {
         switch self {
         case .star:      return .appTeal
         case .plowHorse: return .appAccent
         case .puzzle:    return .appAccent // Map to appAccent (Royal Blue)
-        case .marginal:  return .appRose
+        case .dog:       return .appRose
         }
     }
 
@@ -786,7 +786,7 @@ enum MenuSegment: String {
         case .star:      return "ขายดี + กำไรสูง"
         case .plowHorse: return "ขายดี + กำไรต่ำ"
         case .puzzle:    return "ขายน้อย + กำไรสูง"
-        case .marginal:  return "ขายน้อย + กำไรต่ำ"
+        case .dog:       return "ขายน้อย + กำไรต่ำ"
         }
     }
 }

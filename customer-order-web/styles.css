@@ -223,6 +223,44 @@ body.dark-theme .app-container {
     transition: background-color 0.4s ease, border-color 0.4s ease;
 }
 
+/* ── Scroll-hide: header + promo collapse when user scrolls down ── */
+.promo-banner-container {
+    transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity    0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                margin     0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                transform  0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                var(--transition-standard);
+    transform-origin: top center;
+    will-change: max-height, opacity, transform;
+}
+
+/* State: header scrolled up — hide promo banner */
+.header-scrolled-up .promo-banner-container {
+    max-height: 0 !important;
+    opacity: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    transform: scaleY(0.85) translateY(-8px);
+    pointer-events: none;
+    overflow: hidden;
+}
+
+/* State: header scrolled up — compact app-header */
+.header-scrolled-up .app-header {
+    padding-top: 10px;
+    padding-bottom: 10px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+}
+
+/* Smooth transition on app-header padding */
+.app-header {
+    transition: background-color 0.4s ease,
+                border-color  0.4s ease,
+                padding-top   0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                padding-bottom 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                box-shadow    0.35s ease;
+}
+
 .brand-section {
     display: flex;
     align-items: center;

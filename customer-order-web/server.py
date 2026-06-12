@@ -9,6 +9,7 @@ import urllib.request
 import re
 import time
 import hmac
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import uuid
 from datetime import datetime, timedelta
@@ -193,11 +194,25 @@ def sync_table_sessions_from_supabase(conn):
         print(f"[Sync] ⚠️ Failed to sync table_sessions: {str(e)}")
 
 
+thread_local = threading.local()
+
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
+    if not hasattr(thread_local, "connections"):
+        thread_local.connections = []
+    thread_local.connections.append(conn)
     return conn
+
+def close_thread_connections():
+    if hasattr(thread_local, "connections"):
+        for conn in thread_local.connections:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        thread_local.connections.clear()
 
 
 def sync_modifiers_from_supabase(conn):
@@ -555,6 +570,13 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_order ON payments (order_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_promotions_active ON promotions (is_active, is_deleted);")
     
+    # Missing foreign key and merchant indexes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_modifiers_group ON modifiers (modifier_group_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_item_modifiers_item ON menu_item_modifier_groups (menu_item_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_order_item_modifiers_item ON order_item_modifiers (order_item_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_merchant ON orders (merchant_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_service_requests_merchant ON service_requests (merchant_id);")
+    
     conn.commit()
 
     # Seed default employees if table is empty
@@ -612,6 +634,12 @@ def init_db():
 # Custom HTTP Request Handler
 # ==========================================
 class UnifiedRequestHandler(BaseHTTPRequestHandler):
+    
+    def handle(self):
+        try:
+            super().handle()
+        finally:
+            close_thread_connections()
     
     def _get_allowed_origin(self):
         origin = self.headers.get('Origin', '')
@@ -966,6 +994,75 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             
             conn = get_db_connection()
             cursor = conn.cursor()
+            
+            # Recalculate and validate prices on the server side
+            computed_subtotal = 0.0
+            verified_items = []
+            
+            for item in items:
+                menu_item_id = item.get("item_id") or item.get("id")
+                qty = int(item.get("quantity") or item.get("qty", 1))
+                if qty < 1:
+                    qty = 1  # Clamp quantity
+                
+                # Fetch base price
+                base_price = 0.0
+                if menu_item_id:
+                    cursor.execute("SELECT price FROM menu_items WHERE id = ?", (menu_item_id,))
+                    row = cursor.fetchone()
+                    if row:
+                        base_price = float(row[0])
+                    else:
+                        base_price = float(item.get("price", 0.0))
+                
+                # Fetch modifiers prices
+                item_modifiers = item.get("modifiers", [])
+                verified_modifiers = []
+                modifier_price_sum = 0.0
+                
+                for mod in item_modifiers:
+                    mod_id = mod.get("modifier_id") or mod.get("id")
+                    mod_price = 0.0
+                    if mod_id:
+                        cursor.execute("SELECT price FROM modifiers WHERE id = ?", (mod_id,))
+                        mod_row = cursor.fetchone()
+                        if mod_row:
+                            mod_price = float(mod_row[0])
+                        else:
+                            cursor.execute("SELECT price FROM modifiers WHERE name = ? OR id = ?", (mod.get("name", ""), mod_id))
+                            mod_row2 = cursor.fetchone()
+                            if mod_row2:
+                                mod_price = float(mod_row2[0])
+                            else:
+                                mod_price = float(mod.get("price", 0.0))
+                    
+                    modifier_price_sum += mod_price
+                    verified_modifiers.append({
+                        "id": mod.get("id") or str(uuid.uuid4()),
+                        "modifier_id": mod_id,
+                        "price": mod_price
+                    })
+                
+                computed_item_price = base_price + modifier_price_sum
+                computed_subtotal += computed_item_price * qty
+                
+                verified_items.append({
+                    "id": item.get("id") or str(uuid.uuid4()),
+                    "item_id": menu_item_id,
+                    "name": item.get("name") or item.get("item_name") or "Unknown Dish",
+                    "quantity": qty,
+                    "price": computed_item_price,
+                    "status": item.get("status") or "cooking",
+                    "modifiers": verified_modifiers
+                })
+            
+            # Recalculate totals
+            computed_service_charge = computed_subtotal * 0.10
+            computed_tax = (computed_subtotal + computed_service_charge) * 0.07
+            computed_total = computed_subtotal + computed_service_charge + computed_tax
+            
+            total = computed_total
+            items = verified_items
             
             # Check if there is an active session for this table
             cursor.execute("SELECT session_token FROM table_sessions WHERE table_number = ? AND is_active = 1", (table_number,))

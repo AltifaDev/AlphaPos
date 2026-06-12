@@ -49,6 +49,7 @@ final class NetworkService {
     var isFetching = false
     var connectionError = false
     var kitchenWorkflowRequired = true
+    var promptPayNumber = ""
     private var lastSyncTime: Date = Date(timeIntervalSince1970: 0)
     
     @ObservationIgnored
@@ -204,10 +205,11 @@ final class NetworkService {
             async let fetchedRequestsLazy = fetchRequests()
             
             let (tablesRes, requestsRes) = try await (fetchedTablesLazy, fetchedRequestsLazy)
-            let workflowRes = (try? await fetchedWorkflow) ?? true
+            let settingsRes = (try? await fetchedWorkflow) ?? (true, "")
             
             await MainActor.run {
-                self.kitchenWorkflowRequired = workflowRes
+                self.kitchenWorkflowRequired = settingsRes.0
+                self.promptPayNumber = settingsRes.1
                 let oldTables = self.tables
                 let oldRequests = self.serviceRequests
                 let oldOrders = self.orders
@@ -454,15 +456,17 @@ final class NetworkService {
         }
     }
     
-    func fetchMerchantSettings() async throws -> Bool {
+    func fetchMerchantSettings() async throws -> (Bool, String) {
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "merchants", queryItems: [
-            URLQueryItem(name: "select", value: "kitchen_workflow_required")
+            URLQueryItem(name: "select", value: "kitchen_workflow_required,promptpay_number")
         ])
         if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
            let firstMerchant = json.first {
-            return firstMerchant["kitchen_workflow_required"] as? Bool ?? true
+            let workflow = firstMerchant["kitchen_workflow_required"] as? Bool ?? true
+            let promptPay = firstMerchant["promptpay_number"] as? String ?? ""
+            return (workflow, promptPay)
         }
-        return true
+        return (true, "")
     }
     
     func fetchMenu() async throws -> [MenuItem] {

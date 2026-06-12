@@ -839,6 +839,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         let serviceChargeRate = UserDefaults.standard.object(forKey: "store_service_charge_rate") as? Double
         let receiptHeader = UserDefaults.standard.string(forKey: "store_receipt_header")
         let receiptFooter = UserDefaults.standard.string(forKey: "store_receipt_footer")
+        let promptPayNumber = UserDefaults.standard.string(forKey: "promptpay_number")
         
         do {
             _ = try await NetworkManager.shared.uploadMerchant(
@@ -855,7 +856,8 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 taxType: taxType,
                 serviceChargeRate: serviceChargeRate,
                 receiptHeader: receiptHeader,
-                receiptFooter: receiptFooter
+                receiptFooter: receiptFooter,
+                promptPayNumber: promptPayNumber
             )
         } catch {
             print("SyncEngine [Merchant Sync Error]: \(error.localizedDescription)")

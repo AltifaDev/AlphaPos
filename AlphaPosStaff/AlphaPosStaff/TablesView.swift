@@ -148,26 +148,27 @@ struct TablesView: View {
                         .opacity(isAnimatedIn ? 1 : 0)
                         
                     } else {
-                        // ── Portrait: Custom Blue Gradient Header ──
-                        // ── Row 1: Compact title bar (soft gradient) ──
+                        // ── Row 1: Compact title bar (white background) ──
                         HStack(spacing: APSpacing.sm) {
                             Image(systemName: "table.furniture.fill")
                                 .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.9))
+                                .foregroundColor(.appAccent)
 
                             Text("manage_tables".localized(for: appLanguage))
                                 .font(.subheadline)
                                 .fontWeight(.bold)
-                                .foregroundColor(.white)
+                                .foregroundColor(.textPrimary)
 
                             Spacer()
 
                             // Stat badges inline in header
                             let vacant   = filteredTables.filter { $0.status == "vacant"   }.count
                             let occupied = filteredTables.filter { $0.status == "occupied" }.count
-                            headerStatBadge(count: vacant,   color: .appTeal,  icon: "circle.fill")
-                            headerStatBadge(count: occupied, color: .appRose,  icon: "circle.fill")
-                            Divider().frame(height: 16).overlay(Color.white.opacity(0.3))
+                            headerStatBadge(count: vacant,   color: .appTeal, icon: "circle.fill")
+                            headerStatBadge(count: occupied, color: .appRose, icon: "circle.fill")
+
+                            Divider().frame(height: 18)
+
                             // Theme toggle
                             Button(action: {
                                 APHaptic.trigger()
@@ -179,29 +180,31 @@ struct TablesView: View {
                             }) {
                                 Image(systemName: appTheme == AppTheme.dark.rawValue ? "sun.max.fill" : "moon.fill")
                                     .font(.system(size: 13))
-                                    .foregroundColor(.white)
+                                    .foregroundColor(.appAccent)
                                     .frame(width: 30, height: 30)
-                                    .background(Color.white.opacity(0.15))
+                                    .background(Color.appAccent.opacity(0.08))
                                     .clipShape(Circle())
                             }
                             // Refresh
                             Button(action: { Task { await loadTables() } }) {
                                 Image(systemName: "arrow.clockwise")
                                     .font(.system(size: 13))
-                                    .foregroundColor(.white)
+                                    .foregroundColor(.appAccent)
                                     .frame(width: 30, height: 30)
-                                    .background(Color.white.opacity(0.15))
+                                    .background(Color.appAccent.opacity(0.08))
                                     .clipShape(Circle())
                             }
                         }
                         .padding(.horizontal, APSpacing.md)
                         .padding(.vertical, 9)
-                        .background(APGradient.accent.ignoresSafeArea(edges: .top))
+                        .background(Color.appSurface.ignoresSafeArea(edges: .top))
+                        .overlay(alignment: .bottom) { Divider() }
                         .offset(y: isAnimatedIn ? 0 : -50)
                         .opacity(isAnimatedIn ? 1 : 0)
-                        // ── Row 2: Pickers compact in one scrollable row ──
+
+                        // ── Row 2: Pickers — horizontal scroll, fixedSize prevents clipping ──
                         ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: APSpacing.sm) {
+                            HStack(spacing: 8) {
                                 if !floors.isEmpty {
                                     Picker("Floor", selection: $selectedFloor) {
                                         ForEach(floors, id: \.self) { floorNum in
@@ -209,7 +212,7 @@ struct TablesView: View {
                                         }
                                     }
                                     .pickerStyle(.segmented)
-                                    .frame(minWidth: CGFloat(floors.count) * 72)
+                                    .fixedSize()
                                 }
                                 if zones.count > 1 {
                                     Picker("Zone", selection: $selectedZone) {
@@ -218,7 +221,7 @@ struct TablesView: View {
                                         }
                                     }
                                     .pickerStyle(.segmented)
-                                    .frame(minWidth: CGFloat(zones.count) * 68)
+                                    .fixedSize()
                                 }
                                 Picker("View", selection: $viewMode) {
                                     ForEach(ViewMode.allCases, id: \.self) { mode in
@@ -226,11 +229,13 @@ struct TablesView: View {
                                     }
                                 }
                                 .pickerStyle(.segmented)
-                                .frame(minWidth: 130)
+                                .fixedSize()
                             }
                             .padding(.horizontal, APSpacing.md)
+                            .padding(.vertical, 1)
                         }
-                        .padding(.vertical, APSpacing.xs)
+                        .padding(.vertical, 6)
+                        .background(Color.appSurface)
                         .opacity(isAnimatedIn ? 1 : 0)
                     }
                     
@@ -514,13 +519,21 @@ struct TablesView: View {
                     Text(String(format: "table_label".localized(for: appLanguage), table.tableNumber))
                         .font(.headline).fontWeight(.black)
                         .foregroundColor(.textPrimary)
-                    
+
                     Spacer()
-                    
+
                     APBadge(
                         text: isOccupied ? "occupied".localized(for: appLanguage) : "vacant".localized(for: appLanguage),
                         color: statusColor
                     )
+                }
+
+                // ── Elapsed time badge (same as canvas view) ──
+                if isOccupied {
+                    HStack {
+                        ElapsedTimeBadge(startedAt: table.sessionStartedAt)
+                        Spacer()
+                    }
                 }
                 
                 Spacer()
@@ -556,11 +569,11 @@ struct TablesView: View {
                 .foregroundColor(color)
             Text("\(count)")
                 .font(.system(size: 12, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
+                .foregroundColor(.textPrimary)
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 4)
-        .background(Color.white.opacity(0.14))
+        .background(color.opacity(0.10))
         .cornerRadius(6)
     }
 

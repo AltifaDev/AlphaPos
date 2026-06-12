@@ -1985,6 +1985,7 @@ struct QRPaymentModalView: View {
     let onConfirm: () -> Void
     @Environment(\.dismiss) private var dismiss
     
+    @AppStorage("promptpay_number") private var promptPayNumber = ""
     @State private var progressStatus = "waiting" // "waiting", "success"
     
     var body: some View {
@@ -1993,37 +1994,86 @@ struct QRPaymentModalView: View {
                 Color.appBackground.ignoresSafeArea()
                 
                 VStack(spacing: APSpacing.lg) {
-                    // QR Content Card
-                    VStack(spacing: APSpacing.md) {
-                        Image(systemName: "qrcode")
-                            .font(.system(size: 140, weight: .light))
-                            .foregroundColor(.textPrimary)
-                            .padding()
-                            .background(Color.white)
-                            .cornerRadius(APRadius.md)
-                            .shadow(color: .black.opacity(0.1), radius: 8)
-                        
-                        Text("Scan PromptPay QR Code to pay")
-                            .font(.subheadline)
-                            .foregroundColor(.textSecondary)
-                        
-                        Text(String(format: "฿%.2f", totalAmount))
-                            .font(.title).fontWeight(.black)
-                            .foregroundStyle(APGradient.accent)
+                    if promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        // Warning: PromptPay not configured
+                        VStack(spacing: APSpacing.md) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 64))
+                                .foregroundColor(.appAmber)
+                                .padding()
+                            
+                            Text("PromptPay Not Configured")
+                                .font(.headline)
+                                .foregroundColor(.textPrimary)
+                            
+                            Text("Please specify your PromptPay number in Store Settings sidebar to accept QR payments.")
+                                .font(.subheadline)
+                                .foregroundColor(.textSecondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.appSurface)
+                        .cornerRadius(APRadius.md)
+                    } else {
+                        // QR Content Card
+                        VStack(spacing: APSpacing.md) {
+                            let payload = generatePromptPayPayload(target: promptPayNumber, amount: totalAmount)
+                            if let qrImage = generateQRCode(from: payload) {
+                                Image(uiImage: qrImage)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 180, height: 180)
+                                    .padding()
+                                    .background(Color.white)
+                                    .cornerRadius(APRadius.md)
+                                    .shadow(color: .black.opacity(0.1), radius: 8)
+                            } else {
+                                Image(systemName: "qrcode")
+                                    .font(.system(size: 140, weight: .light))
+                                    .foregroundColor(.textPrimary)
+                                    .padding()
+                                    .background(Color.white)
+                                    .cornerRadius(APRadius.md)
+                                    .shadow(color: .black.opacity(0.1), radius: 8)
+                            }
+                            
+                            VStack(spacing: 4) {
+                                Text("Scan PromptPay QR Code to pay")
+                                    .font(.subheadline)
+                                    .foregroundColor(.textSecondary)
+                                
+                                Text("PromptPay ID: \(promptPayNumber)")
+                                    .font(.caption)
+                                    .foregroundColor(.textSecondary)
+                                    .fontWeight(.bold)
+                            }
+                            
+                            Text(String(format: "฿%.2f", totalAmount))
+                                .font(.title).fontWeight(.black)
+                                .foregroundStyle(APGradient.accent)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.appSurface)
+                        .cornerRadius(APRadius.md)
                     }
-                    .padding()
-                    .frame(maxWidth: .infinity)
-                    .background(Color.appSurface)
-                    .cornerRadius(APRadius.md)
                     
                     // Status Bar
                     HStack(spacing: APSpacing.sm) {
                         if progressStatus == "waiting" {
-                            ProgressView()
-                                .tint(.appAmber)
-                            Text("Waiting for scan...")
-                                .font(.footnote)
-                                .foregroundColor(.appAmber)
+                            if promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text("Awaiting configuration...")
+                                    .font(.footnote)
+                                    .foregroundColor(.appAmber)
+                            } else {
+                                ProgressView()
+                                    .tint(.appAmber)
+                                Text("Waiting for scan...")
+                                    .font(.footnote)
+                                    .foregroundColor(.appAmber)
+                            }
                         } else {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.title2)
@@ -2048,9 +2098,11 @@ struct QRPaymentModalView: View {
                         Label(progressStatus == "waiting" ? "Force Confirm (Cash received)" : "Confirm & Close Session", systemImage: "checkmark.circle.fill")
                             .apGradientButton(
                                 gradient: progressStatus == "success" ? APGradient.positive : APGradient.accent,
-                                shadow: progressStatus == "success" ? APShadow.positiveGlow : APShadow.glow
+                                shadow: progressStatus == "success" ? APShadow.positiveGlow : APShadow.glow,
+                                disabled: promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && progressStatus == "waiting"
                             )
                     }
+                    .disabled(promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && progressStatus == "waiting")
                 }
                 .padding(APSpacing.md)
             }
@@ -2063,15 +2115,90 @@ struct QRPaymentModalView: View {
                 }
             }
             .onAppear {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                    withAnimation {
-                        progressStatus = "success"
-                        APHaptic.trigger()
+                if !promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        withAnimation {
+                            progressStatus = "success"
+                            APHaptic.trigger()
+                        }
                     }
                 }
             }
         }
         .apColorScheme()
+    }
+    
+    // MARK: - PromptPay QR Code Generation Helpers
+    
+    private func generatePromptPayPayload(target: String, amount: Double) -> String {
+        let sanitized = target.replacingOccurrences(of: " ", with: "")
+                              .replacingOccurrences(of: "-", with: "")
+        
+        var accountInfo = "0016A000000677010111"
+        
+        if sanitized.count == 13 {
+            // National ID or Tax ID
+            accountInfo += "0213\(sanitized)"
+        } else {
+            // Mobile Phone number
+            var phone = sanitized
+            if phone.hasPrefix("0") {
+                phone.removeFirst()
+            }
+            let phoneFormatted = "0066" + phone
+            accountInfo += "0113\(phoneFormatted)"
+        }
+        
+        var payload = "000201010212" // Dynamic QR (locks amount)
+        payload += String(format: "29%02d%@", accountInfo.count, accountInfo)
+        payload += "5303764" // THB Currency
+        
+        let amtStr = String(format: "%.2f", amount)
+        payload += String(format: "54%02d%@", amtStr.count, amtStr)
+        
+        payload += "5802TH"
+        payload += "6304"
+        
+        let crc = crc16(payload)
+        payload += String(format: "%04X", crc)
+        
+        return payload
+    }
+    
+    private func crc16(_ dataString: String) -> UInt16 {
+        let bytes = Array(dataString.utf8)
+        var crc: UInt16 = 0xFFFF
+        let polynomial: UInt16 = 0x1021
+        
+        for byte in bytes {
+            for i in 0..<8 {
+                let bit = ((byte >> (7 - i)) & 1) == 1
+                let c15 = ((crc >> 15) & 1) == 1
+                crc <<= 1
+                if c15 != bit {
+                    crc ^= polynomial
+                }
+            }
+        }
+        return crc
+    }
+    
+    private func generateQRCode(from string: String) -> UIImage? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        let data = string.data(using: .utf8)
+        filter.setValue(data, forKey: "inputMessage")
+        filter.setValue("Q", forKey: "inputCorrectionLevel")
+        
+        guard let ciImage = filter.outputImage else { return nil }
+        
+        let scale = 10.0
+        let transform = CGAffineTransform(scaleX: scale, y: scale)
+        let scaledCIImage = ciImage.transformed(by: transform)
+        
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(scaledCIImage, from: scaledCIImage.extent) else { return nil }
+        
+        return UIImage(cgImage: cgImage)
     }
 }
 

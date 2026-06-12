@@ -497,7 +497,8 @@ final class NetworkManager {
         taxType: String? = nil,
         serviceChargeRate: Double? = nil,
         receiptHeader: String? = nil,
-        receiptFooter: String? = nil
+        receiptFooter: String? = nil,
+        promptPayNumber: String? = nil
     ) async throws -> Bool {
         var payload: [String: Any] = [
             "id": id.uuidString.lowercased(),
@@ -516,6 +517,7 @@ final class NetworkManager {
         if let serviceChargeRate = serviceChargeRate { payload["service_charge_rate"] = serviceChargeRate }
         if let receiptHeader = receiptHeader { payload["receipt_header"] = receiptHeader }
         if let receiptFooter = receiptFooter { payload["receipt_footer"] = receiptFooter }
+        if let promptPayNumber = promptPayNumber { payload["promptpay_number"] = promptPayNumber }
         
         _ = try await sendSupabaseRequest(
             method: "POST",

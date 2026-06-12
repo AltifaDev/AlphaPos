@@ -12,6 +12,8 @@ struct BillingView: View {
     @State private var paymentProcessing = false
     @State private var paymentSuccess = false
     @State private var showingCashModal = false
+    @State private var showingQRModal = false
+    @State private var showingCardModal = false
     
     @Environment(\.dismiss) private var dismiss
     
@@ -109,22 +111,6 @@ struct BillingView: View {
                         .padding()
                     }
                     
-                    // Checkout Button
-                    if selectedMethod != "cash" {
-                        Button(action: {
-                            processCheckout()
-                        }) {
-                            if paymentProcessing {
-                                ProgressView().tint(.white)
-                            } else {
-                                Label("confirm_payment".localized(for: appLanguage), systemImage: "checkmark.circle.fill")
-                                    .apGradientButton(gradient: APGradient.positive)
-                            }
-                        }
-                        .padding()
-                        .background(Color.appSurface)
-                        .disabled(paymentProcessing)
-                    }
                 }
             }
         }
@@ -133,6 +119,16 @@ struct BillingView: View {
         .sheet(isPresented: $showingCashModal) {
             StaffCashPaymentModalView(totalAmount: grandTotal) { received in
                 self.cashReceived = String(format: "%.2f", received)
+                self.processCheckout()
+            }
+        }
+        .sheet(isPresented: $showingQRModal) {
+            StaffQRPaymentModalView(totalAmount: grandTotal) {
+                self.processCheckout()
+            }
+        }
+        .sheet(isPresented: $showingCardModal) {
+            StaffCreditCardPaymentModalView(totalAmount: grandTotal) {
                 self.processCheckout()
             }
         }
@@ -155,6 +151,10 @@ struct BillingView: View {
             selectedMethod = id
             if id == "cash" {
                 showingCashModal = true
+            } else if id == "qr" {
+                showingQRModal = true
+            } else if id == "card" {
+                showingCardModal = true
             }
         }) {
             VStack(spacing: APSpacing.sm) {
@@ -209,20 +209,29 @@ struct BillingView: View {
     
     private var qrSimulateView: some View {
         VStack(spacing: APSpacing.md) {
-            Image(systemName: "qrcode")
-                .font(.system(size: 140))
-                .foregroundColor(.textPrimary)
-                .padding()
-                .background(Color.white)
-                .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
-                .shadow(radius: 6)
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("PromptPay QR")
+                        .font(.headline).fontWeight(.bold)
+                        .foregroundColor(.textPrimary)
+                    Text("scan_promptpay_sub".localized(for: appLanguage))
+                        .font(.caption).foregroundColor(.textSecondary)
+                }
+                Spacer()
+                Image(systemName: "qrcode")
+                    .font(.title)
+                    .foregroundColor(.appRose)
+            }
+            .padding()
+            .apCard()
             
-            Text("scan_promptpay_sub".localized(for: appLanguage))
-                .font(.caption).foregroundColor(.textSecondary)
+            Button(action: {
+                showingQRModal = true
+            }) {
+                Label("Open QR Terminal", systemImage: "qrcode")
+                    .apGradientButton(gradient: APGradient.accent)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding()
-        .apCard()
     }
     
     // MARK: - Card Simulation
@@ -230,21 +239,28 @@ struct BillingView: View {
     private var cardSimulateView: some View {
         VStack(spacing: APSpacing.md) {
             HStack {
-                Image(systemName: "creditcard.and.123")
-                    .font(.title).foregroundColor(.appAccent)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("credit_card".localized(for: appLanguage))
+                        .font(.headline).fontWeight(.bold)
+                        .foregroundColor(.textPrimary)
+                    Text("emv_simulator".localized(for: appLanguage))
+                        .font(.caption).foregroundColor(.textSecondary)
+                }
                 Spacer()
-                Text("emv_simulator".localized(for: appLanguage))
-                    .font(.caption).foregroundColor(.textSecondary)
+                Image(systemName: "creditcard.fill")
+                    .font(.title)
+                    .foregroundColor(.appAccent)
             }
+            .padding()
+            .apCard()
             
-            Text("emv_instruction".localized(for: appLanguage))
-                .font(.subheadline)
-                .foregroundColor(.textPrimary)
-                .multilineTextAlignment(.center)
-                .padding(.vertical)
+            Button(action: {
+                showingCardModal = true
+            }) {
+                Label("Open Card Reader", systemImage: "creditcard")
+                    .apGradientButton(gradient: APGradient.accent)
+            }
         }
-        .padding()
-        .apCard()
     }
     
     // MARK: - Checkout flow logic
@@ -713,18 +729,363 @@ struct StaffCashPaymentModalView: View {
                         .stroke(Color.appTeal.opacity(0.3), lineWidth: 1)
                 )
             }
-            
-            Spacer()
-            
-            // Loading/Countdown indicator
-            HStack(spacing: 8) {
-                ProgressView()
-                    .tint(.textSecondary)
-                Text(String(format: "closing_in_seconds_format".localized(for: appLanguage), delayRemaining))
-                    .font(.caption)
-                    .foregroundColor(.textSecondary)
+        }
+    }
+}
+
+// MARK: - Staff QR Payment Modal View
+
+struct StaffQRPaymentModalView: View {
+    let totalAmount: Double
+    let onConfirm: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("app_language") private var appLanguage = "en"
+    
+    @State private var progressStatus = "waiting" // "waiting", "success"
+    
+    private var promptPayNumber: String {
+        NetworkService.shared.promptPayNumber
+    }
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.appBackground.ignoresSafeArea()
+                
+                VStack(spacing: APSpacing.lg) {
+                    
+                    if promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(spacing: APSpacing.md) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 64))
+                                .foregroundColor(.appAmber)
+                                .padding()
+                            
+                            Text("PromptPay Not Configured")
+                                .font(.headline)
+                                .foregroundColor(.textPrimary)
+                            
+                            Text("Please specify your PromptPay number in Store Settings on iPad first.")
+                                .font(.subheadline)
+                                .foregroundColor(.textSecondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.appSurface)
+                        .cornerRadius(APRadius.md)
+                    } else {
+                        // QR Content Card
+                        VStack(spacing: APSpacing.md) {
+                            let payload = generatePromptPayPayload(target: promptPayNumber, amount: totalAmount)
+                            if let qrImage = generateQRCode(from: payload) {
+                                Image(uiImage: qrImage)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 160, height: 160)
+                                    .padding()
+                                    .background(Color.white)
+                                    .cornerRadius(APRadius.md)
+                                    .shadow(color: .black.opacity(0.1), radius: 8)
+                            } else {
+                                Image(systemName: "qrcode")
+                                    .font(.system(size: 120, weight: .light))
+                                    .foregroundColor(.textPrimary)
+                                    .padding()
+                                    .background(Color.white)
+                                    .cornerRadius(APRadius.md)
+                                    .shadow(color: .black.opacity(0.1), radius: 8)
+                            }
+                            
+                            VStack(spacing: 4) {
+                                Text("Scan PromptPay QR Code to pay")
+                                    .font(.subheadline)
+                                    .foregroundColor(.textSecondary)
+                                
+                                Text("PromptPay ID: \(promptPayNumber)")
+                                    .font(.caption)
+                                    .foregroundColor(.textSecondary)
+                                    .fontWeight(.bold)
+                            }
+                            
+                            Text(String(format: "฿%.2f", totalAmount))
+                                .font(.title2).fontWeight(.black)
+                                .foregroundStyle(APGradient.accent)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.appSurface)
+                        .cornerRadius(APRadius.md)
+                    }
+                    
+                    // Status Bar
+                    HStack(spacing: APSpacing.sm) {
+                        if progressStatus == "waiting" {
+                            if promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text("Awaiting configuration...")
+                                    .font(.footnote)
+                                    .foregroundColor(.appAmber)
+                            } else {
+                                ProgressView()
+                                    .tint(.appAmber)
+                                Text("Waiting for scan...")
+                                    .font(.footnote)
+                                    .foregroundColor(.appAmber)
+                            }
+                        } else {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title3)
+                                .foregroundColor(.appTeal)
+                            Text("Payment confirmed successfully!")
+                                .font(.footnote).fontWeight(.bold)
+                                .foregroundColor(.appTeal)
+                        }
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(progressStatus == "waiting" ? Color.appAmber.opacity(0.08) : Color.appTeal.opacity(0.08))
+                    .cornerRadius(APRadius.md)
+                    
+                    Spacer()
+                    
+                    // CTA Button
+                    Button(action: {
+                        onConfirm()
+                        dismiss()
+                    }) {
+                        Label(progressStatus == "waiting" ? "Force Confirm" : "Confirm & Close", systemImage: "checkmark.circle.fill")
+                            .apGradientButton(
+                                gradient: progressStatus == "success" ? APGradient.positive : APGradient.accent,
+                                shadow: progressStatus == "success" ? APShadow.positiveGlow : APShadow.glow,
+                                disabled: promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && progressStatus == "waiting"
+                            )
+                    }
+                    .disabled(promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && progressStatus == "waiting")
+                }
+                .padding(APSpacing.md)
+            }
+            .navigationTitle("PromptPay QR Code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("cancel".localized(for: appLanguage)) { dismiss() }
+                        .foregroundColor(.textSecondary)
+                }
+            }
+            .onAppear {
+                if !promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        withAnimation {
+                            progressStatus = "success"
+                            APHaptic.trigger()
+                        }
+                    }
+                }
             }
         }
-        .padding(APSpacing.md)
+        .apColorScheme()
+    }
+    
+    // MARK: - PromptPay QR Code Generation Helpers
+    
+    private func generatePromptPayPayload(target: String, amount: Double) -> String {
+        let sanitized = target.replacingOccurrences(of: " ", with: "")
+                              .replacingOccurrences(of: "-", with: "")
+        
+        var accountInfo = "0016A000000677010111"
+        
+        if sanitized.count == 13 {
+            accountInfo += "0213\(sanitized)"
+        } else {
+            var phone = sanitized
+            if phone.hasPrefix("0") {
+                phone.removeFirst()
+            }
+            let phoneFormatted = "0066" + phone
+            accountInfo += "0113\(phoneFormatted)"
+        }
+        
+        var payload = "000201010212"
+        payload += String(format: "29%02d%@", accountInfo.count, accountInfo)
+        payload += "5303764"
+        
+        let amtStr = String(format: "%.2f", amount)
+        payload += String(format: "54%02d%@", amtStr.count, amtStr)
+        
+        payload += "5802TH"
+        payload += "6304"
+        
+        let crc = crc16(payload)
+        payload += String(format: "%04X", crc)
+        
+        return payload
+    }
+    
+    private func crc16(_ dataString: String) -> UInt16 {
+        let bytes = Array(dataString.utf8)
+        var crc: UInt16 = 0xFFFF
+        let polynomial: UInt16 = 0x1021
+        
+        for byte in bytes {
+            for i in 0..<8 {
+                let bit = ((byte >> (7 - i)) & 1) == 1
+                let c15 = ((crc >> 15) & 1) == 1
+                crc <<= 1
+                if c15 != bit {
+                    crc ^= polynomial
+                }
+            }
+        }
+        return crc
+    }
+    
+    private func generateQRCode(from string: String) -> UIImage? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        let data = string.data(using: .utf8)
+        filter.setValue(data, forKey: "inputMessage")
+        filter.setValue("Q", forKey: "inputCorrectionLevel")
+        
+        guard let ciImage = filter.outputImage else { return nil }
+        
+        let scale = 10.0
+        let transform = CGAffineTransform(scaleX: scale, y: scale)
+        let scaledCIImage = ciImage.transformed(by: transform)
+        
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(scaledCIImage, from: scaledCIImage.extent) else { return nil }
+        
+        return UIImage(cgImage: cgImage)
+    }
+}
+
+// MARK: - Staff Credit Card Payment Modal View
+
+struct StaffCreditCardPaymentModalView: View {
+    let totalAmount: Double
+    let onConfirm: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("app_language") private var appLanguage = "en"
+    
+    @State private var step = 1 // 1: Connecting, 2: Insert Card, 3: Processing, 4: Authorized
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.appBackground.ignoresSafeArea()
+                
+                VStack(spacing: APSpacing.lg) {
+                    // Info Card
+                    VStack(spacing: 8) {
+                        Text("Card Total")
+                            .font(.subheadline)
+                            .foregroundColor(.textSecondary)
+                        Text(String(format: "฿%.2f", totalAmount))
+                            .font(.title2).fontWeight(.black)
+                            .foregroundStyle(APGradient.accent)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(Color.appSurface)
+                    .cornerRadius(APRadius.md)
+                    
+                    // Terminal Simulator Screen
+                    VStack(spacing: APSpacing.md) {
+                        Image(systemName: "creditcard.and.123")
+                            .font(.system(size: 64))
+                            .foregroundColor(step == 4 ? .appTeal : .appAccent)
+                        
+                        VStack(spacing: 4) {
+                            switch step {
+                            case 1:
+                                ProgressView()
+                                    .tint(.appAccent)
+                                    .padding(.bottom, 4)
+                                Text("Connecting to Payment Terminal...")
+                                    .font(.headline)
+                                    .foregroundColor(.textPrimary)
+                                Text("Please wait while establishing connection")
+                                    .font(.caption)
+                                    .foregroundColor(.textSecondary)
+                            case 2:
+                                Text("Please Tap, Insert, or Swipe Card")
+                                    .font(.headline)
+                                    .foregroundColor(.textPrimary)
+                                Text("EDC Terminal is ready")
+                                    .font(.caption)
+                                    .foregroundColor(.textSecondary)
+                            case 3:
+                                ProgressView()
+                                    .tint(.appAccent)
+                                    .padding(.bottom, 4)
+                                Text("Authorizing Transaction...")
+                                    .font(.headline)
+                                    .foregroundColor(.textPrimary)
+                                Text("Processing payment request")
+                                    .font(.caption)
+                                    .foregroundColor(.textSecondary)
+                            default:
+                                Image(systemName: "checkmark.seal.fill")
+                                    .font(.title2)
+                                    .foregroundColor(.appTeal)
+                                Text("Transaction Approved")
+                                    .font(.headline).fontWeight(.bold)
+                                    .foregroundColor(.appTeal)
+                                Text("Payment completed successfully")
+                                    .font(.caption)
+                                    .foregroundColor(.textSecondary)
+                            }
+                        }
+                        .multilineTextAlignment(.center)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, minHeight: 200)
+                    .background(Color.appSurface)
+                    .cornerRadius(APRadius.md)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: APRadius.md)
+                            .stroke(Color.appBorderSubtle, lineWidth: 1)
+                    )
+                    
+                    Spacer()
+                    
+                    // Complete Button
+                    Button(action: {
+                        onConfirm()
+                        dismiss()
+                    }) {
+                        Label(step == 4 ? "Finish & Confirm" : "Skip EDC Simulation", systemImage: "checkmark.circle.fill")
+                            .apGradientButton(
+                                gradient: step == 4 ? APGradient.positive : APGradient.accent,
+                                shadow: step == 4 ? APShadow.positiveGlow : APShadow.glow
+                            )
+                    }
+                }
+                .padding(APSpacing.md)
+            }
+            .navigationTitle("Card Checkout")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("cancel".localized(for: appLanguage)) { dismiss() }
+                        .foregroundColor(.textSecondary)
+                }
+            }
+            .onAppear {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    withAnimation { step = 2 }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    withAnimation { step = 3 }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) {
+                    withAnimation {
+                        step = 4
+                        APHaptic.trigger()
+                    }
+                }
+            }
+        }
+        .apColorScheme()
     }
 }

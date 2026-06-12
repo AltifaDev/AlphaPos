@@ -19,6 +19,7 @@ struct StoreManagementView: View {
     @AppStorage("store_receipt_header") private var storeReceiptHeader = "Welcome to AlphaPos!"
     @AppStorage("store_receipt_footer") private var storeReceiptFooter = "Thank you for dining with us!\nVAT Included."
     @AppStorage("store_logo_path") private var storeLogoPath = ""
+    @AppStorage("promptpay_number") private var promptPayNumber = ""
     
     @State private var logoItem: PhotosPickerItem? = nil
     @State private var logoImage: UIImage? = nil
@@ -222,6 +223,20 @@ struct StoreManagementView: View {
                         .foregroundColor(.textPrimary)
                         .cornerRadius(APRadius.md)
                         .onChange(of: storeAddress) { triggerSync() }
+                }
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("PromptPay Number (for QR Code Payment)")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.textSecondary)
+                    TextField("e.g. 0812345678 or 13-digit Tax ID", text: $promptPayNumber)
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .padding(12)
+                        .background(Color.appSurfaceHigh)
+                        .foregroundColor(.textPrimary)
+                        .cornerRadius(APRadius.md)
+                        .onChange(of: promptPayNumber) { triggerSync() }
                 }
             }
             .apCard()

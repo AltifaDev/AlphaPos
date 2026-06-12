@@ -644,7 +644,7 @@ struct SalesDashboardView: View {
             }
 
             HStack(spacing: 12) {
-                ForEach([MenuSegment.star, .plowHorse, .puzzle, .marginal], id: \.rawValue) { seg in
+                ForEach([MenuSegment.star, .plowHorse, .puzzle, .dog], id: \.rawValue) { seg in
                     HStack(spacing: 4) {
                         Circle().fill(seg.color).frame(width: 8, height: 8)
                         VStack(alignment: .leading, spacing: 0) {
