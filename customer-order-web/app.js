@@ -996,13 +996,13 @@ class AlphaPosApp {
 
     translate(key, defaultVal = "") {
         const lang = this.currentLanguage || 'th';
-        const translations = translations[lang];
-        if (translations && translations[key] !== undefined) {
-            return translations[key];
+        const dict = translations[lang];
+        if (dict && dict[key] !== undefined) {
+            return dict[key];
         }
-        const enTranslations = translations['en'];
-        if (enTranslations && enTranslations[key] !== undefined) {
-            return enTranslations[key];
+        const enDict = translations['en'];
+        if (enDict && enDict[key] !== undefined) {
+            return enDict[key];
         }
         return defaultVal || key;
     }
