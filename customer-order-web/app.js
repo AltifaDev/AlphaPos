@@ -2383,13 +2383,31 @@ class AlphaPosApp {
         const indicatorsContainer = document.getElementById("promoIndicators");
         if (!slider || !indicatorsContainer) return;
         
-        if (!promotions || promotions.length === 0) {
-            console.log("No promotions to display, using fallback slide.");
-            return;
-        }
-        
         slider.innerHTML = "";
         indicatorsContainer.innerHTML = "";
+        
+        if (!promotions || promotions.length === 0) {
+            console.log("No promotions to display, using fallback slide.");
+            const slide = document.createElement("div");
+            slide.className = "promo-slide active";
+            slide.innerHTML = `
+                <div class="promo-placeholder-bg"></div>
+                <div class="promo-overlay">
+                    <h3 class="promo-title" data-translate-key="welcomeTitle">${this.translate ? this.translate('welcomeTitle', 'ยินดีต้อนรับสู่ AlphaPos') : 'ยินดีต้อนรับสู่ AlphaPos'}</h3>
+                    <p class="promo-desc" data-translate-key="welcomeDesc">${this.translate ? this.translate('welcomeDesc', 'สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ') : 'สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ'}</p>
+                </div>
+            `;
+            slider.appendChild(slide);
+            
+            const indicator = document.createElement("span");
+            indicator.className = "indicator active";
+            indicatorsContainer.appendChild(indicator);
+            
+            this.currentSlideIdx = 0;
+            this.totalSlides = 1;
+            this.startPromotionCarousel();
+            return;
+        }
         
         promotions.forEach((promo, idx) => {
             const slide = document.createElement("div");

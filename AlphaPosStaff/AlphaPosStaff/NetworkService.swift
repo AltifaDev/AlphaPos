@@ -598,47 +598,19 @@ final class NetworkService {
         }
     }
     
-    func fetchTableOrders(tableNumber: String, sessionToken: String) async throws -> [Order] {
-        // Primary strategy: filter orders by session_token directly (most accurate, no race condition)
-        let directData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
+    func fetchTableOrders(tableNumber: String) async throws -> [Order] {
+        // Fetch ALL non-cancelled orders for this table.
+        // Do NOT filter by session_token here — orders created from the main POS app
+        // (via SyncEngine) may have a different session_token or none at all.
+        // Filtering by session_token causes those orders to be silently dropped.
+        let ordersData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
             URLQueryItem(name: "select", value: "*,order_items(*)"),
             URLQueryItem(name: "table_number", value: "eq.\(tableNumber)"),
-            URLQueryItem(name: "session_token", value: "eq.\(sessionToken)"),
-            URLQueryItem(name: "status", value: "neq.cancelled")
+            URLQueryItem(name: "status", value: "neq.cancelled"),
+            URLQueryItem(name: "order", value: "created_at.asc")
         ])
-        let directArray = (try? JSONSerialization.jsonObject(with: directData) as? [[String: Any]]) ?? []
-        
-        // If we found orders via session_token, use them directly
-        if !directArray.isEmpty {
-            return parseOrders(directArray)
-        }
-        
-        // Fallback: use session start timestamp for orders created before session_token column was added
-        let sessionData = try await sendSupabaseRequest(method: "GET", endpoint: "table_sessions", queryItems: [
-            URLQueryItem(name: "select", value: "created_at"),
-            URLQueryItem(name: "table_number", value: "eq.\(tableNumber)"),
-            URLQueryItem(name: "session_token", value: "eq.\(sessionToken)"),
-            URLQueryItem(name: "is_active", value: "eq.1")
-        ])
-        let sessions = (try? JSONSerialization.jsonObject(with: sessionData) as? [[String: Any]]) ?? []
-        guard let session = sessions.first, let sessionStart = session["created_at"] as? String else {
-            return []
-        }
-        
-        // Normalize timestamp — prevent "+" timezone chars from becoming spaces in URL query
-        var normalizedStart = sessionStart
-        if let plusIndex = sessionStart.firstIndex(of: "+") {
-            normalizedStart = String(sessionStart[..<plusIndex]) + "Z"
-        }
-        
-        let fallbackData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
-            URLQueryItem(name: "select", value: "*,order_items(*)"),
-            URLQueryItem(name: "table_number", value: "eq.\(tableNumber)"),
-            URLQueryItem(name: "created_at", value: "gte.\(normalizedStart)"),
-            URLQueryItem(name: "status", value: "neq.cancelled")
-        ])
-        let fallbackArray = (try? JSONSerialization.jsonObject(with: fallbackData) as? [[String: Any]]) ?? []
-        return parseOrders(fallbackArray)
+        let ordersArray = (try? JSONSerialization.jsonObject(with: ordersData) as? [[String: Any]]) ?? []
+        return parseOrders(ordersArray)
     }
     
     private func parseOrders(_ jsonArray: [[String: Any]]) -> [Order] {

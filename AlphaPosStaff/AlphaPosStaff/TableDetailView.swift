@@ -199,7 +199,7 @@ struct TableDetailView: View {
             }
             
             do {
-                let list = try await NetworkService.shared.fetchTableOrders(tableNumber: currentTable.tableNumber, sessionToken: token)
+                let list = try await NetworkService.shared.fetchTableOrders(tableNumber: currentTable.tableNumber)
                 await MainActor.run {
                     self.orders = list
                     self.isLoading = false

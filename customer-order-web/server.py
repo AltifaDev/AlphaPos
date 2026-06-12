@@ -94,6 +94,54 @@ def sync_menu_from_supabase(conn):
         print(f"[Sync] ⚠️  Supabase offline or error — using local SQLite cache. ({e})")
 
 
+def sync_promotions_from_supabase(conn):
+    """
+    Fetch promotions from Supabase (cloud master) and update local SQLite cache.
+    - If Supabase is online: replace/update all local promotions with latest from Supabase.
+    - If Supabase is offline: silently skip (local SQLite cache is used).
+    """
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/promotions?select=*"
+        req = urllib.request.Request(url)
+        req.add_header("apikey", SUPABASE_ANON_KEY)
+        req.add_header("Authorization", f"Bearer {SUPABASE_ANON_KEY}")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("x-merchant-id", MERCHANT_ID)
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+        
+        if not data:
+            print("[Sync] Supabase returned 0 promotions — skipping SQLite update.")
+            return
+        
+        cursor = conn.cursor()
+        for item in data:
+            is_active = item.get("is_active", 1)
+            if isinstance(is_active, bool):
+                is_active = 1 if is_active else 0
+            is_deleted = item.get("is_deleted", 0)
+            if isinstance(is_deleted, bool):
+                is_deleted = 1 if is_deleted else 0
+                
+            cursor.execute(
+                "INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, is_active, is_deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    item.get("id"),
+                    item.get("title", ""),
+                    item.get("promo_description", ""),
+                    item.get("image_data", ""),
+                    is_active,
+                    is_deleted,
+                    item.get("updated_at", "")
+                )
+            )
+        conn.commit()
+        print(f"[Sync] Successfully cached {len(data)} promotions from Supabase to SQLite.")
+    except Exception as e:
+        print(f"[Sync] ⚠️ Failed to sync promotions from Supabase: {str(e)}")
+
+
 def fetch_promotions_from_supabase():
     """
     Fetch promotions directly from Supabase (cloud master).
@@ -624,7 +672,7 @@ def init_db():
     # Always sync latest menu from Supabase on startup (single source of truth)
     sync_menu_from_supabase(conn)
     sync_table_sessions_from_supabase(conn)
-    # Promotions are now fetched directly from Supabase on each request (no local cache)
+    sync_promotions_from_supabase(conn)
     sync_modifiers_from_supabase(conn)
     
     conn.close()
@@ -1958,22 +2006,30 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 
     def handle_get_promotions(self):
         try:
-            remote_data = fetch_promotions_from_supabase()
+            # Try to sync remote promotions to local SQLite first (failsafe)
+            try:
+                conn = get_db_connection()
+                sync_promotions_from_supabase(conn)
+            except Exception as e:
+                print(f"Server API [Promotion]: Skipped sync during fetch: {str(e)}")
+            
+            # Fetch active, non-deleted promotions from local SQLite
+            conn = get_db_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, title, promo_description, image_data, is_active, is_deleted, updated_at FROM promotions WHERE is_active = 1 AND is_deleted = 0 ORDER BY updated_at DESC")
+            rows = cursor.fetchall()
             
             promotions = []
-            for item in remote_data:
-                is_active = item.get("is_active", 1)
-                if isinstance(is_active, bool):
-                    is_active = 1 if is_active else 0
-                
+            for row in rows:
                 promotions.append({
-                    "id": item.get("id", ""),
-                    "title": item.get("title", ""),
-                    "promoDescription": item.get("promo_description", ""),
-                    "imageData": item.get("image_data", ""),
-                    "isActive": bool(is_active),
-                    "isDeleted": False,
-                    "updatedAt": item.get("updated_at", "")
+                    "id": row["id"],
+                    "title": row["title"],
+                    "promoDescription": row["promo_description"],
+                    "imageData": row["image_data"],
+                    "isActive": bool(row["is_active"]),
+                    "isDeleted": bool(row["is_deleted"]),
+                    "updatedAt": row["updated_at"]
                 })
             
             response_data = json.dumps(promotions).encode("utf-8")
@@ -2012,6 +2068,23 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 "merchant_id": MERCHANT_ID
             }
             
+            # Save to SQLite local DB cache first
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, is_active, is_deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    promo_id,
+                    title,
+                    promo_desc or "",
+                    image_data or "",
+                    1 if is_active else 0,
+                    1 if is_deleted else 0,
+                    updated_at
+                )
+            )
+            conn.commit()
+            
             success, _ = supabase_request("POST", "promotions", payload, {"on_conflict": "id"})
             
             if not success:
@@ -2036,6 +2109,15 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             if not promo_id:
                 self.send_error(400, "id is required")
                 return
+            
+            # Soft-delete on local SQLite database first
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE promotions SET is_deleted = 1, updated_at = ? WHERE id = ?",
+                (get_utc_now_iso(), promo_id)
+            )
+            conn.commit()
             
             # Soft-delete on Supabase (matching Staff app behavior)
             payload = {

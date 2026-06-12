@@ -615,9 +615,11 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         for promotion in promotions {
             if promotion.isDeleted {
                 do {
-                    _ = try await NetworkManager.shared.deletePromotionOnServer(id: promotion.id)
-                    modelContext.delete(promotion)
-                    try modelContext.save()
+                    let success = try await NetworkManager.shared.deletePromotionOnServer(id: promotion.id)
+                    if success {
+                        modelContext.delete(promotion)
+                        try modelContext.save()
+                    }
                 } catch {
                     print("SyncEngine [Promotion Delete Error]: \(error.localizedDescription)")
                 }
