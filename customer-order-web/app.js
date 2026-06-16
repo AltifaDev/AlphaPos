@@ -121,6 +121,7 @@ class AlphaPosApp {
         this.edgeFunctionUrl = cfg.edgeFunctionUrl || '';
         this.supabase = null;
         this.merchantId = cfg.merchantId || '';
+        this.localServerURL = cfg.localServerURL || window.location.origin;
         this.merchantToken = null; // JWT token with merchant_id claim
         this._submitInProgress = false;
         this.syncHealthInterval = null;
@@ -504,7 +505,7 @@ class AlphaPosApp {
         if (!panel || !title || !meta || !retryBtn) return;
 
         try {
-            const res = await fetch("/v1/sync/status");
+            const res = await fetch(`${this.localServerURL}/v1/sync/status`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const status = await res.json();
             const pending = Number(status.pendingCount || 0);
@@ -589,7 +590,7 @@ class AlphaPosApp {
             }
             if (token) headers.Authorization = `Bearer ${token}`;
 
-            const res = await fetch("/v1/sync/retry", { method: "POST", headers });
+            const res = await fetch(`${this.localServerURL}/v1/sync/retry`, { method: "POST", headers });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             await this.refreshSyncHealth();
             this._showToast("Sync retry complete", 2500);
@@ -724,7 +725,7 @@ class AlphaPosApp {
             }
             return res;
         };
-        const localUrl = `${window.ALPHAPOS_CONFIG?.localServerURL || window.location.origin}/v1/merchants`;
+        const localUrl = `${this.localServerURL}/v1/merchants`;
 
         try {
             const res = await fetch(localUrl, { headers: { 'Content-Type': 'application/json' } });
@@ -861,7 +862,7 @@ class AlphaPosApp {
 
         if (!success) {
             try {
-                const res = await fetch("/v1/sessions");
+                const res = await fetch(`${this.localServerURL}/v1/sessions`);
                 if (res.ok) {
                     const sessions = await res.json();
                     session = sessions.find(s => String(s.tableNumber) === String(this.tableNumber)) || null;
@@ -996,7 +997,7 @@ class AlphaPosApp {
 
         if (!success) {
             try {
-                const res = await fetch("/v1/sessions");
+                const res = await fetch(`${this.localServerURL}/v1/sessions`);
                 if (res.ok) {
                     const sessions = await res.json();
                     const matched = sessions.find(s => String(s.tableNumber) === String(this.tableNumber) && s.sessionToken === token);
@@ -1232,7 +1233,7 @@ class AlphaPosApp {
 
             if (!success) {
                 // Local server fallback
-                const res = await fetch("/v1/sessions/open", {
+                const res = await fetch(`${this.localServerURL}/v1/sessions/open`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -1327,7 +1328,7 @@ class AlphaPosApp {
 
         if (!success) {
             try {
-                const res = await fetch("/v1/modifiers-config");
+                const res = await fetch(`${this.localServerURL}/v1/modifiers-config`);
                 if (res.ok) {
                     this.modifiersConfig = await res.json();
                     success = true;
@@ -1377,7 +1378,7 @@ class AlphaPosApp {
 
         if (!success) {
             try {
-                const res = await fetch("/v1/menu");
+                const res = await fetch(`${this.localServerURL}/v1/menu`);
                 if (res.ok) {
                     const data = await res.json();
                     if (data && data.length > 0) {
@@ -2074,7 +2075,7 @@ class AlphaPosApp {
 
         if (!success) {
             try {
-                const res = await fetch(`/v1/orders?table=${this.tableNumber}&token=${this.sessionToken}`);
+                const res = await fetch(`${this.localServerURL}/v1/orders?table=${this.tableNumber}&token=${this.sessionToken}`);
                 if (res.ok) {
                     formattedOrders = await res.json();
                     success = true;
@@ -2285,7 +2286,7 @@ class AlphaPosApp {
 
         // Fallback to local server
         try {
-            await fetch(`/v1/order-items/${itemId}/note`, {
+            await fetch(`${this.localServerURL}/v1/order-items/${itemId}/note`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ customer_note: note })
@@ -2481,7 +2482,7 @@ class AlphaPosApp {
 
         if (!success) {
             try {
-                const res = await fetch(`/v1/orders?table=${this.tableNumber}&token=${this.sessionToken}`);
+                const res = await fetch(`${this.localServerURL}/v1/orders?table=${this.tableNumber}&token=${this.sessionToken}`);
                 if (res.ok) {
                     ordersData = await res.json();
                     success = true;
@@ -2557,7 +2558,7 @@ class AlphaPosApp {
 
         if (!success) {
             try {
-                const res = await fetch("/v1/requests", {
+                const res = await fetch(`${this.localServerURL}/v1/requests`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -2697,7 +2698,7 @@ class AlphaPosApp {
 
         if (!success) {
             try {
-                const res = await fetch("/v1/orders", {
+                const res = await fetch(`${this.localServerURL}/v1/orders`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -2787,7 +2788,7 @@ class AlphaPosApp {
         // 2. If empty/failed, try local python server
         if (promoData.length === 0) {
             try {
-                const res = await fetch('/v1/promotions');
+                const res = await fetch(`${this.localServerURL}/v1/promotions`);
                 if (res.ok) {
                     const data = await res.json();
                     promoData = data.filter(p => p.isActive && !p.isDeleted && this.isPromotionCurrentlyVisible(p));
