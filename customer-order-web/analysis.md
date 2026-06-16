@@ -45,10 +45,21 @@ Browser (app.js)
 
 | Issue | Location | Details |
 |-------|----------|---------|
-| **Supabase credentials in template files** | `config.EXAMPLE.js`, `.env.example` | Both contain **live production** anon key and merchant ID. Anyone with source access can make anonymous Supabase API calls. |
-| **Fallback credentials in app.js** | `app.js:221-224` | Hardcoded Supabase URL/key as defaults if `config.js` fails to load. |
 | **SQL injection via f-string** | `server.py:553,556` | `f"PRAGMA table_info({table})"` and `f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"`. Mitigated by allowlist but still fragile. |
 | **Database connection leaks** | `server.py` (get_menu, get_orders, get_sessions, get_employees, get_timecards, get_tables, get_modifiers_config) | `conn.close()` only called on success path. Exceptions leave connections open → `sqlite3.OperationalError: database is locked` under load. |
+
+## ✅ Recently Resolved
+
+| Issue | Status |
+|-------|--------|
+| Supabase credentials in template and local config files | Replaced with placeholders; runtime credentials must come from `.env`, `config.js`, `Config.plist`, or environment variables. |
+| Hardcoded Swift app fallback credentials | Removed from POS and Staff config code. |
+| Hardcoded customer web CSP Supabase host | Replaced with dynamic CSP host generation from `SUPABASE_URL`. |
+| Missing requirements.txt | Added. |
+| Direct customer order writes to Supabase | Customer orders now submit through `/v1/orders` so server-side validation is enforced before dual-write. |
+| Missing server-side price validation for customer orders | `/v1/orders` recalculates menu item, modifier, service charge, VAT, and total from server-side data and rejects mismatches. |
+| Silent Supabase dual-write failures | Failed Supabase writes are now stored in `pending_supabase_writes` and retried on server startup. |
+| Missing retry queue visibility | Added `/v1/sync/status` and authenticated `/v1/sync/retry` endpoints for queue monitoring and manual retry. |
 
 ---
 
@@ -56,10 +67,8 @@ Browser (app.js)
 
 | Issue | Details |
 |-------|---------|
-| **No price validation** | Server accepts `total`/`price` from client without cross-checking against menu database. Malicious client can submit arbitrary amounts. |
 | **Monolithic app.js** | 3,145 lines, all logic in one file/one class. No modularization. |
-| **Missing requirements.txt** | Cannot reproduce Python venv. |
-| **Dual-write inconsistency** | Writes SQLite first, then best-effort Supabase. If Supabase fails, data is out of sync with no alert. |
+| **Dual-write admin UI** | Queue status/retry APIs exist, but the admin UI still needs a visible health panel. |
 | **Cart state is in-memory only** | Page refresh loses cart (modifiers, quantities, notes). Only session token persists via localStorage. |
 | **No retry on Supabase failure** | Errors logged via `print()` only — no retry, no alert mechanism. |
 | **Native alert() for validation** | `app.js:3072,3121` — uses browser `alert()` instead of in-app toast system. Not localized, browser-dependent styling. |

@@ -48,7 +48,7 @@ import { defaultMenuItems } from './js/data.js';
 
 /**
  * AlphaPos - Customer Self-Ordering App Controller
- * 
+ *
  * Manages application state, cart modifications, menu rendering,
  * and ordering submissions to the KDS backend.
  */
@@ -96,10 +96,10 @@ class AlphaPosApp {
 
         // Categories List
         this.categories = [
-            { id: "mains", name: "🍛 Main Dishes" },
-            { id: "appetizers", name: "🍲 Appetizers" },
-            { id: "drinks", name: "🥤 Beverages" },
-            { id: "desserts", name: "🥭 Desserts" }
+            { id: "mains", name: "Main Dishes" },
+            { id: "appetizers", name: "Appetizers" },
+            { id: "drinks", name: "Beverages" },
+            { id: "desserts", name: "Desserts" }
         ];
 
         // App States
@@ -112,23 +112,32 @@ class AlphaPosApp {
         this.selectedGuestCount = 2; // Default
         this.currentOnboardingStep = 1;
         this.currentView = "menu";
-        
-        // Developer panel toggles
-        this.isDevPanelMinimized = true;
+        this.branchCode = "";
 
         // Configuration (loaded from config.js or environment)
         const cfg = window.ALPHAPOS_CONFIG || {};
-        this.supabaseUrl = cfg.supabaseUrl || 'https://sdmtkixrqkmwcpwoisrg.supabase.co';
-        this.supabaseKey = cfg.supabaseKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNkbXRraXhycWttd2Nwd29pc3JnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NDIxNjAsImV4cCI6MjA5NjQxODE2MH0.rjLwVE0ShXIFoT0k982XO_lVCQMsA4uTKMW1Su-NUws';
+        this.supabaseUrl = cfg.supabaseUrl || '';
+        this.supabaseKey = cfg.supabaseKey || '';
+        this.edgeFunctionUrl = cfg.edgeFunctionUrl || '';
         this.supabase = null;
-        this.merchantId = cfg.merchantId || '163350b0-056d-4d5e-b5d4-24e7aac5ab6d';
+        this.merchantId = cfg.merchantId || '';
+        this.merchantToken = null; // JWT token with merchant_id claim
         this._submitInProgress = false;
-        
+        this.syncHealthInterval = null;
+        this._activeModal = null;
+        this._lastFocusedElement = null;
+
         this.lastFetchedOrders = [];
         this.currentLanguage = 'th';
 
-        // Multi-Language Translation Dictionary
-        ;
+        // Register Service Worker for offline capability
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                    .then(reg => console.log('Service Worker registered successfully:', reg.scope))
+                    .catch(err => console.error('Service Worker registration failed:', err));
+            });
+        }
     }
 
     // Retry wrapper with exponential backoff
@@ -265,17 +274,17 @@ class AlphaPosApp {
     /**
      * GUEST COUNT PERSISTENCE (SessionStorage)
      */
-     
+
     setGuestCount(count) {
         // Parse guest count (handle "8+" special case)
         this.selectedGuestCount = count === '8+' ? 8 : parseInt(count);
-        
+
         // Persist to SessionStorage
         sessionStorage.setItem('alphapos_guest_count', this.selectedGuestCount);
         sessionStorage.setItem('alphapos_guest_count_timestamp', Date.now());
-        
+
         console.log(`[Guest Count] Set to ${this.selectedGuestCount} persons`);
-        
+
         // Update UI
         this.renderInteractiveSeats();
         this.updateTableVisualization();
@@ -284,23 +293,23 @@ class AlphaPosApp {
     restoreGuestCount() {
         const saved = sessionStorage.getItem('alphapos_guest_count');
         const timestamp = parseInt(sessionStorage.getItem('alphapos_guest_count_timestamp') || '0');
-        
+
         // Only restore if set within last 30 minutes
         const EXPIRY_MS = 30 * 60 * 1000;
         const isExpired = (Date.now() - timestamp) > EXPIRY_MS;
-        
+
         if (saved && !isExpired) {
             const guestCount = parseInt(saved);
             console.log(`[Guest Count] Restored from session: ${guestCount} persons`);
             return guestCount;
         }
-        
+
         if (saved && isExpired) {
             console.warn(`[Guest Count] Session expired (${Math.round((Date.now() - timestamp) / 1000)}s ago)`);
             sessionStorage.removeItem('alphapos_guest_count');
             sessionStorage.removeItem('alphapos_guest_count_timestamp');
         }
-        
+
         return null;
     }
 
@@ -318,22 +327,22 @@ class AlphaPosApp {
     /**
      * SEAT VISUALIZATION
      */
-     
+
     renderInteractiveSeats() {
         const container = document.getElementById('interactiveSeatsContainer');
         if (!container) return;
-        
+
         container.innerHTML = ''; // Clear existing
-        
+
         const TOTAL_SEATS = 8;  // Show up to 8 seats visually
         const guestCount = this.selectedGuestCount || 2;
-        
+
         // Create seat grid
         for (let i = 1; i <= TOTAL_SEATS; i++) {
             const seat = document.createElement('div');
             seat.className = 'interactive-seat';
             seat.setAttribute('data-seat-number', i);
-            
+
             // Color seats based on occupancy status
             if (i <= guestCount) {
                 // Active seat (guest assigned)
@@ -341,13 +350,14 @@ class AlphaPosApp {
                 seat.style.opacity = '1';
                 seat.style.cursor = 'pointer';
                 seat.title = `Seat ${i} (Occupied)`;
-                
+
                 // Optional: add visual indicator
                 const occupant = document.createElement('span');
                 occupant.className = 'seat-occupant';
-                occupant.textContent = '👤';
+                occupant.className = 'seat-occupant app-icon icon-users';
+                occupant.setAttribute('aria-hidden', 'true');
                 seat.appendChild(occupant);
-                
+
             } else {
                 // Vacant seat (gray out)
                 seat.classList.add('seat-vacant');
@@ -357,17 +367,17 @@ class AlphaPosApp {
                 seat.style.backgroundColor = '#d3d3d3'; // Light gray
                 seat.title = 'No guest assigned';
             }
-            
+
             container.appendChild(seat);
         }
-        
+
         console.log(`[Seats] Rendered ${TOTAL_SEATS} seats (${guestCount} occupied)`);
     }
 
     updateTableVisualization() {
         const tableLabel = document.getElementById('tableLabelNum');
         const guestCount = this.selectedGuestCount || 2;
-        
+
         if (tableLabel) {
             tableLabel.textContent = guestCount;
         }
@@ -375,25 +385,25 @@ class AlphaPosApp {
 
     validateGuestCount() {
         const guestCount = this.getGuestCount();
-        
+
         if (!guestCount) {
             return {
                 valid: false,
-                message: '❌ Please select number of guests before ordering'
+                message: 'Please select number of guests before ordering'
             };
         }
-        
+
         if (guestCount < 1 || guestCount > 100) {
             return {
                 valid: false,
-                message: '❌ Invalid guest count (must be 1-100)'
+                message: 'Invalid guest count (must be 1-100)'
             };
         }
-        
+
         return {
             valid: true,
             guestCount: guestCount,
-            message: `✅ Order for ${guestCount} guest${guestCount > 1 ? 's' : ''}`
+            message: `Order for ${guestCount} guest${guestCount > 1 ? 's' : ''}`
         };
     }
 
@@ -403,16 +413,28 @@ class AlphaPosApp {
     async init() {
         this.parseURLParams();
         this.loadCartFromStorage();
-        
+
         window.addEventListener("beforeunload", () => {
             this.unsubscribeRealtimeChannels();
         });
-        
-        // Initialize Supabase Client with merchant ID custom header
-        this.supabase = (window.supabase && this.supabaseKey) ? window.supabase.createClient(this.supabaseUrl, this.supabaseKey, {
+
+        // Initialize Supabase Client
+        // If a JWT token with merchant_id claim is available (from QR code URL),
+        // use it as the access token. This replaces the old x-merchant-id header approach.
+        // The JWT is signed by the Supabase JWT Secret, so PostgREST trusts its claims.
+        const hasSupabaseConfig = this.supabaseUrl &&
+            this.supabaseKey &&
+            !this.supabaseUrl.includes('your-supabase-project') &&
+            !this.supabaseKey.includes('your-anon-key');
+        const effectiveKey = this.merchantToken || this.supabaseKey;
+        this.supabase = (window.supabase && hasSupabaseConfig) ? window.supabase.createClient(this.supabaseUrl, this.supabaseKey, {
             global: {
                 headers: {
-                    'x-merchant-id': this.merchantId
+                    // When using JWT, merchant_id is embedded in the token claims — no header needed
+                    // Keep x-merchant-id as fallback for backward compatibility during transition
+                    ...(this.merchantToken
+                        ? { 'Authorization': `Bearer ${this.merchantToken}` }
+                        : { 'x-merchant-id': this.merchantId })
                 }
             }
         }) : null;
@@ -424,26 +446,31 @@ class AlphaPosApp {
         this.renderCategories();
         this.renderMenuItems();
         this.updateCartUI();
-        
+
         // Start status polling
         this.startStatusPolling();
-        
+        this.startSyncHealthPolling();
+        this.setupAccessibilityHandlers();
+
         // Initialize Theme from localStorage (Default: Light Mode)
         const savedTheme = localStorage.getItem("theme") || "light";
         const body = document.body;
         const iconEl = document.querySelector("#themeToggleBtn .theme-toggle-icon");
-        
+
         if (savedTheme === "dark") {
             body.classList.add("dark-theme");
-            if (iconEl) iconEl.innerText = "☀️";
+            if (iconEl) {
+                iconEl.classList.remove("icon-moon");
+                iconEl.classList.add("icon-sun");
+            }
         } else {
             body.classList.remove("dark-theme");
-            if (iconEl) iconEl.innerText = "🌙";
+            if (iconEl) {
+                iconEl.classList.remove("icon-sun");
+                iconEl.classList.add("icon-moon");
+            }
         }
 
-        // Add dev-panel minimized state class initially
-        document.getElementById("devPanel").classList.add("minimized");
-        
         // Initialize language switcher
         const savedLang = localStorage.getItem("lang") || "th";
         this.switchLanguage(savedLang);
@@ -461,6 +488,117 @@ class AlphaPosApp {
 
         // Developer auto-onboard check for headless testing
         this.autoOnboardIfRequested();
+    }
+
+    startSyncHealthPolling() {
+        this.refreshSyncHealth();
+        if (this.syncHealthInterval) clearInterval(this.syncHealthInterval);
+        this.syncHealthInterval = setInterval(() => this.refreshSyncHealth(), 30000);
+    }
+
+    async refreshSyncHealth() {
+        const panel = document.getElementById("syncHealthPanel");
+        const title = document.getElementById("syncHealthTitle");
+        const meta = document.getElementById("syncHealthMeta");
+        const retryBtn = document.getElementById("syncRetryBtn");
+        if (!panel || !title || !meta || !retryBtn) return;
+
+        try {
+            const res = await fetch("/v1/sync/status");
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const status = await res.json();
+            const pending = Number(status.pendingCount || 0);
+            const maxAttempts = Number(status.maxAttempts || 0);
+
+            panel.classList.toggle("pending", pending > 0);
+            panel.classList.toggle("synced", pending === 0);
+            panel.classList.toggle("has-issue", pending > 0);
+            title.textContent = pending > 0 ? "Pending sync" : "Synced";
+            meta.textContent = pending > 0
+                ? `${pending} pending${maxAttempts > 0 ? ` · ${maxAttempts} attempts` : ""}`
+                : "0 pending";
+            retryBtn.classList.toggle("hide", pending === 0);
+        } catch (error) {
+            panel.classList.remove("synced");
+            panel.classList.add("pending");
+            panel.classList.add("has-issue");
+            title.textContent = "Sync status unavailable";
+            meta.textContent = "Check server";
+            retryBtn.classList.add("hide");
+        }
+    }
+
+    setupAccessibilityHandlers() {
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                if (document.getElementById("productDetailModal")?.classList.contains("active")) {
+                    this.closeProductDetailModal();
+                    return;
+                }
+                if (document.getElementById("cartDrawerOverlay")?.classList.contains("show")) {
+                    this.toggleCartDrawer(false);
+                    return;
+                }
+            }
+
+            if (event.key !== "Tab" || !this._activeModal) return;
+
+            const focusable = Array.from(this._activeModal.querySelectorAll(
+                'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+            )).filter(el => el.offsetParent !== null);
+
+            if (focusable.length === 0) return;
+
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        });
+    }
+
+    setActiveModal(modal) {
+        this._activeModal = modal || null;
+        if (modal) {
+            this._lastFocusedElement = document.activeElement;
+            const firstFocusable = modal.querySelector('button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])');
+            setTimeout(() => firstFocusable?.focus(), 40);
+        } else if (this._lastFocusedElement && typeof this._lastFocusedElement.focus === "function") {
+            this._lastFocusedElement.focus();
+            this._lastFocusedElement = null;
+        }
+    }
+
+    async retrySyncQueue() {
+        const retryBtn = document.getElementById("syncRetryBtn");
+        if (retryBtn) retryBtn.disabled = true;
+
+        try {
+            let headers = {};
+            const configuredToken = window.ALPHAPOS_CONFIG?.apiAuthToken || "";
+            const storedToken = sessionStorage.getItem("alphapos_api_token") || "";
+            let token = configuredToken || storedToken;
+            if (!token && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
+                token = window.prompt("API token") || "";
+                if (token) sessionStorage.setItem("alphapos_api_token", token);
+            }
+            if (token) headers.Authorization = `Bearer ${token}`;
+
+            const res = await fetch("/v1/sync/retry", { method: "POST", headers });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            await this.refreshSyncHealth();
+            this._showToast("Sync retry complete", 2500);
+        } catch (error) {
+            console.error("Sync retry failed:", error);
+            this._showToast("Sync retry failed", 3500);
+        } finally {
+            if (retryBtn) retryBtn.disabled = false;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -507,46 +645,36 @@ class AlphaPosApp {
         const urlParams = new URLSearchParams(window.location.search);
         if (urlParams.get('autoOnboard') !== 'true') return;
         console.log("[AutoOnboard] Started automatic onboarding...");
-        
-        // Wait for the button to become enabled
-        let btn1 = document.getElementById("btnOnboardingNext1");
+
         let attempts = 0;
-        while ((!btn1 || btn1.disabled) && attempts < 100) {
+        while (this.currentOnboardingStep !== 2 && attempts < 100) {
             await new Promise(r => setTimeout(r, 100));
-            btn1 = document.getElementById("btnOnboardingNext1");
             attempts++;
         }
-        
-        if (btn1 && !btn1.disabled && this.currentOnboardingStep === 1) {
-            console.log("[AutoOnboard] Step 1: Clicking proceed...");
-            btn1.click();
+
+        if (this.currentOnboardingStep === 2) {
+            console.log("[AutoOnboard] Guest-count step is ready; selecting 4 guests...");
+            this.setGuestCount(4);
+            await new Promise(r => setTimeout(r, 400));
+            const btn2 = document.getElementById("startOrderBtn");
+            if (btn2) btn2.click();
         } else {
-            console.log("[AutoOnboard] Step 1: Button not enabled or step mismatch.");
+            console.log("[AutoOnboard] Guest-count step was not reached.");
             return;
         }
-        
-        // Wait for step 1 transition animation to complete
-        await new Promise(r => setTimeout(r, 800));
-        
-        if (this.currentOnboardingStep === 2) {
-            console.log("[AutoOnboard] Step 2: Selecting 4 guests and starting session...");
-            this.setGuestCount(4);
-            await new Promise(r => setTimeout(r, 500));
-            const btn2 = document.getElementById("startOrderBtn");
-            if (btn2) {
-                console.log("[AutoOnboard] Step 2: Clicking start order button...");
-                btn2.click();
-            }
-        }
+
+        await new Promise(r => setTimeout(r, 1200));
+
+        console.log("[AutoOnboard] Onboarding completed via new flow.");
 
         // Check if automated ordering/detail test is requested
         const autoOrder = urlParams.get('autoOrder') === 'true';
         const autoOpenDetail = urlParams.get('autoOpenDetail') === 'true';
-        
+
         if (autoOrder) {
             // Wait for onboarding overlay to dismiss and menu to render
             await new Promise(r => setTimeout(r, 2500));
-            
+
             // Add first loaded item to cart
             const item = this.menuItems[0];
             console.log("[AutoOnboard] Adding first item to cart:", item ? item.id : "none");
@@ -557,21 +685,21 @@ class AlphaPosApp {
                 this.updateCartUI();
                 this.jiggleCartNotification();
             }
-            
+
             // Wait for cart jiggle animation
             await new Promise(r => setTimeout(r, 800));
-            
+
             // Open cart drawer
             console.log("[AutoOnboard] Opening cart drawer...");
             this.toggleCartDrawer(true);
-            
+
             // Wait for drawer slide-up animation
             await new Promise(r => setTimeout(r, 800));
-            
+
             // Submit order
             console.log("[AutoOnboard] Submitting order to local server...");
             await this.submitOrder();
-            
+
             // Wait for toast notification and then switch to order status view
             await new Promise(r => setTimeout(r, 2000));
             console.log("[AutoOnboard] Switching to status view...");
@@ -585,94 +713,268 @@ class AlphaPosApp {
         }
     }
 
+    async fetchMerchantSettings() {
+        const branchCode = this.branchCode;
+        const pickMerchant = (res) => {
+            if (Array.isArray(res)) {
+                return res.find(m =>
+                    (!this.merchantId || m.id === this.merchantId) &&
+                    (!branchCode || m.branch_code === branchCode || m.branchCode === branchCode)
+                ) || res.find(m => !this.merchantId || m.id === this.merchantId) || res[0];
+            }
+            return res;
+        };
+        const localUrl = `${window.ALPHAPOS_CONFIG?.localServerURL || window.location.origin}/v1/merchants`;
+
+        try {
+            const res = await fetch(localUrl, { headers: { 'Content-Type': 'application/json' } });
+            if (res.ok) {
+                const localSettings = pickMerchant(await res.json());
+                if (localSettings) return localSettings;
+            }
+        } catch (error) {
+            console.warn("Local merchant settings unavailable, trying Supabase:", error);
+        }
+
+        const { success, data } = await this._fetchWithFallback({
+            supabaseFn: async () => {
+                let query = this.supabase
+                    .from('merchants')
+                    .select('id, name, branch_code, is_table_system_enabled, is_web_ordering_enabled');
+
+                if (this.merchantId) query = query.eq('id', this.merchantId);
+                if (branchCode) query = query.eq('branch_code', branchCode);
+
+                const settingsPromise = query.limit(1).maybeSingle();
+                const timeoutPromise = new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error("Merchant settings lookup timed out")), 1500);
+                });
+                const { data, error } = await Promise.race([settingsPromise, timeoutPromise]);
+                if (error) throw error;
+                return data;
+            },
+            localUrl,
+            transform: pickMerchant
+        });
+        return success ? data : null;
+    }
+
+    showOnboardingPanel(panelId) {
+        const wizard = document.getElementById("onboardingWizard");
+        if (!wizard) return;
+        wizard.classList.add("active");
+        ["onboardingLoading", "onboardingStep1", "onboardingStep2", "onboardingStep3"].forEach(id => {
+            const panel = document.getElementById(id);
+            if (panel) panel.classList.toggle("active", id === panelId);
+        });
+    }
+
+    showAppLoading(message = "") {
+        this.showOnboardingPanel("onboardingLoading");
+        const titleEl = document.getElementById("loadingBrandTitle");
+        const descEl = document.getElementById("loadingBrandDesc");
+        if (titleEl) titleEl.textContent = "AlphaPos";
+        if (descEl) descEl.textContent = message || this.translate("preparingTable", "Preparing your table...");
+    }
+
+    showBlockingState(title, desc, buttonText) {
+        this.showOnboardingPanel("onboardingStep1");
+        const verifyTitle = document.getElementById("verifyTitle");
+        const verifyDesc = document.getElementById("verifyDesc");
+        const radarContainer = document.querySelector(".radar-container");
+        const nextBtn = document.getElementById("btnOnboardingNext1");
+        if (verifyTitle) {
+            verifyTitle.removeAttribute("data-translate-key");
+            verifyTitle.textContent = title;
+        }
+        if (verifyDesc) {
+            verifyDesc.removeAttribute("data-translate-key");
+            verifyDesc.textContent = desc;
+        }
+        if (radarContainer) radarContainer.innerHTML = '<span class="app-icon icon-alert" aria-hidden="true"></span>';
+        if (nextBtn) {
+            nextBtn.removeAttribute("data-translate-key");
+            nextBtn.classList.add("disabled");
+            nextBtn.disabled = true;
+            nextBtn.textContent = buttonText;
+        }
+    }
+
+    finishOnboardingLoading(message, delay = 650) {
+        this.showOnboardingPanel("onboardingStep3");
+        const loadingStatus = document.getElementById("loadingStatusText");
+        const progressFill = document.getElementById("setupProgressFill");
+        if (loadingStatus) loadingStatus.textContent = message;
+        if (progressFill) {
+            progressFill.style.width = "0";
+            setTimeout(() => { progressFill.style.width = "100%"; }, 50);
+        }
+
+        setTimeout(() => {
+            const wizard = document.getElementById("onboardingWizard");
+            if (!wizard) return;
+            wizard.style.opacity = "0";
+            setTimeout(() => {
+                wizard.classList.remove("active");
+                wizard.style.opacity = "";
+                this.animateMenuEntrance();
+            }, 350);
+        }, delay);
+    }
+
+    async getActiveSessionForTable() {
+        let success = false;
+        let session = null;
+
+        if (this.supabase) {
+            try {
+                let query = this.supabase
+                    .from('table_sessions')
+                    .select('*')
+                    .eq('table_number', this.tableNumber)
+                    .eq('is_active', 1);
+
+                if (this.merchantId) query = query.eq('merchant_id', this.merchantId);
+
+                const sessionPromise = query
+                    .order('created_at', { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
+                const timeoutPromise = new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error("Active session lookup timed out")), 1500);
+                });
+                const { data, error } = await Promise.race([sessionPromise, timeoutPromise]);
+
+                if (error) throw error;
+                if (data) {
+                    session = {
+                        sessionToken: data.session_token,
+                        guestCount: data.guest_count || 1,
+                        createdAt: data.created_at || data.started_at
+                    };
+                }
+                success = true;
+            } catch (error) {
+                console.error("Failed to read active Supabase session, trying local fallback:", error);
+            }
+        }
+
+        if (!success) {
+            try {
+                const res = await fetch("/v1/sessions");
+                if (res.ok) {
+                    const sessions = await res.json();
+                    session = sessions.find(s => String(s.tableNumber) === String(this.tableNumber)) || null;
+                    success = true;
+                }
+            } catch (localErr) {
+                console.error("Failed to read active local session:", localErr);
+            }
+        }
+
+        return session;
+    }
+
     async checkOrOpenSession() {
         const urlParams = new URLSearchParams(window.location.search);
         const tableParam = urlParams.get('table');
+        this.showAppLoading(this.translate("checkingTable", "Checking table availability..."));
+
+        // Check if Table System or Web Ordering is enabled for this merchant
+        const merchantSettings = await this.fetchMerchantSettings();
+        if (merchantSettings) {
+            if (merchantSettings.is_table_system_enabled === false) {
+                this.showBlockingState(
+                    "ระบบโต๊ะอาหารปิดใช้งานอยู่",
+                    "ระบบโต๊ะอาหารถูกปิดการใช้งานชั่วคราวโดยร้านค้านี้ กรุณาติดต่อพนักงาน",
+                    "ไม่สามารถใช้บริการได้"
+                );
+                return;
+            }
+            if (merchantSettings.is_web_ordering_enabled === false) {
+                this.showBlockingState(
+                    "ปิดระบบสั่งอาหารออนไลน์",
+                    "สาขา/ร้านค้านี้ปิดการรับออเดอร์ผ่านเว็บชั่วคราว กรุณาสั่งอาหารผ่านพนักงาน",
+                    "ปิดระบบชั่วคราว"
+                );
+                return;
+            }
+        }
 
         // Block access if table parameter is missing
         if (!tableParam) {
-            const wizard = document.getElementById("onboardingWizard");
-            wizard.classList.add("active");
-            document.getElementById("onboardingStep1").classList.add("active");
-
-            document.getElementById("verifyTitle").innerText = "⚠️ ไม่พบรหัสโต๊ะอาหาร";
-            document.getElementById("verifyDesc").innerText = "กรุณาสแกน QR Code บนโต๊ะอาหารของคุณเพื่อเริ่มสั่งอาหาร";
-
-            const nextBtn = document.getElementById("btnOnboardingNext1");
-            if (nextBtn) {
-                nextBtn.classList.add("disabled");
-                nextBtn.disabled = true;
-                nextBtn.innerHTML = "<span>กรุณาสแกน QR Code</span>";
-            }
+            this.showBlockingState(
+                "ไม่พบรหัสโต๊ะอาหาร",
+                "กรุณาสแกน QR Code บนโต๊ะอาหารของคุณเพื่อเริ่มสั่งอาหาร",
+                "กรุณาสแกน QR Code"
+            );
             return;
         }
 
-        // Always show the onboarding wizard overlay initially
-        const wizard = document.getElementById("onboardingWizard");
-        wizard.classList.add("active");
-        
         document.getElementById("welcomeTableNum").innerText = this.tableNumber;
         document.getElementById("tableLabelNum").innerText = this.tableNumber;
-        
+
         // Verify token (either URL parameter or localStorage)
         const cachedToken = localStorage.getItem(`sessionToken_T${this.tableNumber}`);
         const tokenToVerify = this.sessionToken || cachedToken;
-        
+
         if (tokenToVerify) {
             // Verify if session token is still active on the server
             const isActive = await this.verifySessionWithServer(tokenToVerify);
             if (isActive) {
                 this.sessionToken = tokenToVerify;
                 localStorage.setItem(`sessionToken_T${this.tableNumber}`, tokenToVerify);
-                
-                // Directly bypass onboarding to menu with a fast checkmark screen
-                document.getElementById("onboardingStep1").classList.remove("active");
-                document.getElementById("onboardingStep3").classList.add("active");
-                document.getElementById("loadingStatusText").innerText = "Welcome back! Resuming session...";
-                
-                const progressFill = document.getElementById("setupProgressFill");
-                setTimeout(() => {
-                    progressFill.style.width = "100%";
-                }, 50);
-                
-                setTimeout(() => {
-                    wizard.style.opacity = "0";
-                    setTimeout(() => {
-                        wizard.classList.remove("active");
-                        wizard.style.opacity = "";
-                        this.animateMenuEntrance();
-                    }, 400);
-                }, 1000);
-                
+                this.finishOnboardingLoading(this.translate("resumingSession", "Resuming your table session..."));
                 console.log("Resumed session verified by server:", this.sessionToken);
                 return;
             } else {
                 // Clear invalid/expired session
                 this.sessionToken = null;
                 localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
+
+                // If URL had a token (fresh QR scan) but it's invalid, show QR error
+                if (this.sessionToken === null && urlParams.get('token')) {
+                    this.showQrInvalidError();
+                    return;
+                }
             }
         }
-        
-        // No valid active session -> Start Step 1
-        this.currentOnboardingStep = 1;
-        document.getElementById("onboardingStep1").classList.add("active");
-        
-        // Hook location verifier to update Step 1 status box
-        if (window.locationVerifier) {
-            const originalUpdateBanner = window.locationVerifier.updateBanner.bind(window.locationVerifier);
-            window.locationVerifier.updateBanner = (status, title, description) => {
-                originalUpdateBanner(status, title, description);
-                this.updateOnboardingVerification(status, title, description);
-            };
-            // Re-run verification to capture initial state on wizard
-            window.locationVerifier.runVerification();
+
+        // If URL has a token but we never entered the verify block (no cached token either), validate it
+        if (!this.sessionToken && urlParams.get('token')) {
+            const urlToken = urlParams.get('token');
+            const isValid = await this.verifySessionWithServer(urlToken);
+            if (!isValid) {
+                this.showQrInvalidError();
+                return;
+            } else {
+                this.sessionToken = urlToken;
+                localStorage.setItem(`sessionToken_T${this.tableNumber}`, urlToken);
+                this.finishOnboardingLoading(this.translate("resumingSession", "Resuming your table session..."));
+                return;
+            }
         }
+
+        const activeSession = await this.getActiveSessionForTable();
+        if (activeSession && activeSession.sessionToken) {
+            this.sessionToken = activeSession.sessionToken;
+            this.selectedGuestCount = activeSession.guestCount || this.selectedGuestCount;
+            localStorage.setItem(`sessionToken_T${this.tableNumber}`, this.sessionToken);
+            this.finishOnboardingLoading(this.translate("resumingSession", "Resuming your table session..."));
+            console.log("Active table session resumed without asking guest count:", this.sessionToken);
+            return;
+        }
+
+        // No active session exists. Ask for guest count directly; location verification runs in the background.
+        this.currentOnboardingStep = 2;
+        this.showOnboardingPanel("onboardingStep2");
+        this.renderInteractiveSeats();
     }
 
     async verifySessionWithServer(token) {
         let success = false;
         let isActive = false;
-        
+
         if (this.supabase) {
             try {
                 const { data, error } = await this.supabase
@@ -682,7 +984,7 @@ class AlphaPosApp {
                     .eq('session_token', token)
                     .eq('is_active', 1)
                     .maybeSingle();
-                
+
                 if (!error && data) {
                     isActive = true;
                     success = true;
@@ -691,7 +993,7 @@ class AlphaPosApp {
                 console.error("Failed to verify session with Supabase, trying local server fallback:", e);
             }
         }
-        
+
         if (!success) {
             try {
                 const res = await fetch("/v1/sessions");
@@ -706,8 +1008,45 @@ class AlphaPosApp {
                 console.error("Failed to verify session with local server:", localErr);
             }
         }
-        
+
         return isActive;
+    }
+
+    /**
+     * Show QR code invalid/expired error to the customer
+     * Displays bilingual error message (Thai + English)
+     */
+    showQrInvalidError() {
+        const wizard = document.getElementById("onboardingWizard");
+        wizard.classList.add("active");
+        document.getElementById("onboardingStep1").classList.add("active");
+
+        const title = this.translate("qrInvalidTitle");
+        const message = this.translate("qrInvalidMessage");
+
+        document.getElementById("verifyTitle").innerText = title;
+        document.getElementById("verifyDesc").innerText = message;
+
+        // Also show English fallback below if current language is not English
+        if (this.currentLanguage !== 'en') {
+            const enMsg = "This QR code is no longer valid. Please scan the QR code at your table again.";
+            document.getElementById("verifyDesc").innerText = message + "\n" + enMsg;
+        }
+
+        // Hide the radar animation and show error state
+        const radarContainer = document.querySelector(".radar-container");
+        if (radarContainer) {
+            radarContainer.innerHTML = '<span class="app-icon icon-alert" aria-hidden="true"></span>';
+        }
+
+        const nextBtn = document.getElementById("btnOnboardingNext1");
+        if (nextBtn) {
+            nextBtn.classList.add("disabled");
+            nextBtn.disabled = true;
+            nextBtn.innerHTML = "<span>" + this.translate("qrInvalidTitle") + "</span>";
+        }
+
+        console.warn("[QR Validation] Token mismatch or table not occupied. Access denied.");
     }
 
     updateOnboardingVerification(status, title, description) {
@@ -715,13 +1054,13 @@ class AlphaPosApp {
         const titleEl = document.getElementById("verifyTitle");
         const descEl = document.getElementById("verifyDesc");
         const nextBtn = document.getElementById("btnOnboardingNext1");
-        
+
         if (!box || !titleEl || !descEl || !nextBtn) return;
-        
+
         box.className = "verification-status-box " + status;
         titleEl.innerText = title;
         descEl.innerText = description;
-        
+
         if (status === "checking") {
             nextBtn.classList.add("disabled");
             nextBtn.disabled = true;
@@ -752,24 +1091,24 @@ class AlphaPosApp {
         const container = document.getElementById("interactiveSeatsContainer");
         const textEl = document.getElementById("tableLabelNum");
         if (!container) return;
-        
+
         container.innerHTML = "";
         textEl.innerText = this.tableNumber;
-        
+
         const count = this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount);
-        
+
         for (let i = 0; i < count; i++) {
             const angle = (i * 360 / count) * Math.PI / 180;
             const radius = 52;
             const x = Math.round(50 + radius * Math.cos(angle - Math.PI/2)) + "%";
             const y = Math.round(50 + radius * Math.sin(angle - Math.PI/2)) + "%";
-            
+
             const seat = document.createElement("div");
             seat.className = "seat";
             seat.style.left = x;
             seat.style.top = y;
             seat.style.animationDelay = `${i * 0.08}s`;
-            seat.innerHTML = "🍽️";
+            seat.innerHTML = '<span class="app-icon icon-utensils" aria-hidden="true"></span>';
             container.appendChild(seat);
         }
     }
@@ -792,7 +1131,7 @@ class AlphaPosApp {
         const btn = document.getElementById("startOrderBtn");
         btn.disabled = true;
         btn.querySelector("span").innerText = "Starting session...";
-        
+
         const generateUUID = () => {
             if (typeof crypto !== 'undefined' && crypto.randomUUID) {
                 return crypto.randomUUID();
@@ -810,12 +1149,12 @@ class AlphaPosApp {
                 return v.toString(16);
             });
         };
-        
+
         try {
             const guestCount = this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount);
             let sessionToken = null;
             let success = false;
-            
+
             if (this.supabase) {
                 try {
                     // Check if there is already an active session for this table
@@ -825,14 +1164,14 @@ class AlphaPosApp {
                         .eq('table_number', this.tableNumber)
                         .eq('is_active', 1)
                         .maybeSingle();
-                        
+
                     if (!fetchError && existingSession) {
                         const sessionDate = new Date(existingSession.created_at);
                         const today = new Date();
                         const isToday = sessionDate.getDate() === today.getDate() &&
                                         sessionDate.getMonth() === today.getMonth() &&
                                         sessionDate.getFullYear() === today.getFullYear();
-                                        
+
                         if (isToday) {
                             console.log("Reusing existing active session for today:", existingSession.session_token);
                             sessionToken = existingSession.session_token;
@@ -845,11 +1184,11 @@ class AlphaPosApp {
                                 .eq('id', existingSession.id);
                         }
                     }
-                    
+
                     if (!success) {
                         const sessionId = generateUUID();
                         sessionToken = "session-" + sessionId.replace(/-/g, '').substring(0, 13);
-                        
+
                         const { error } = await this.supabase
                             .from('table_sessions')
                             .insert([{
@@ -861,7 +1200,7 @@ class AlphaPosApp {
                                 created_at: new Date().toISOString(),
                                 merchant_id: this.merchantId
                             }]);
-                            
+
                         if (error) {
                             // If a conflict still occurs (e.g. race condition), try fetching the active session one more time
                             if (error.code === '23505' || String(error.message).includes('duplicate') || String(error.code) === '409') {
@@ -871,7 +1210,7 @@ class AlphaPosApp {
                                     .eq('table_number', this.tableNumber)
                                     .eq('is_active', 1)
                                     .maybeSingle();
-                                    
+
                                 if (!retryError && retrySession) {
                                     sessionToken = retrySession.session_token;
                                     success = true;
@@ -890,7 +1229,7 @@ class AlphaPosApp {
                     console.error("Supabase failed to open session, falling back to local server:", supabaseError);
                 }
             }
-            
+
             if (!success) {
                 // Local server fallback
                 const res = await fetch("/v1/sessions/open", {
@@ -898,7 +1237,9 @@ class AlphaPosApp {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         table_number: this.tableNumber,
-                        guest_count: guestCount
+                        guest_count: guestCount,
+                        merchant_id: this.merchantId,
+                        branch_code: this.branchCode
                     })
                 });
                 if (!res.ok) throw new Error("Local server failed to open session");
@@ -906,20 +1247,20 @@ class AlphaPosApp {
                 sessionToken = resData.session_token;
                 success = true;
             }
-            
+
             this.sessionToken = sessionToken;
             localStorage.setItem(`sessionToken_T${this.tableNumber}`, this.sessionToken);
-            
+
             // Show Step 3 (Success Progress Screen)
             document.getElementById("onboardingStep2").classList.remove("active");
             document.getElementById("onboardingStep3").classList.add("active");
             this.currentOnboardingStep = 3;
-            
+
             const progressFill = document.getElementById("setupProgressFill");
             setTimeout(() => {
                 progressFill.style.width = "100%";
             }, 100);
-            
+
             setTimeout(() => {
                 const wizard = document.getElementById("onboardingWizard");
                 wizard.style.opacity = "0";
@@ -931,9 +1272,9 @@ class AlphaPosApp {
                     this.animateMenuEntrance();
                 }, 500);
             }, 1800);
-            
+
             console.log("Session established successfully:", this.sessionToken);
-            
+
         } catch (error) {
             console.error("Failed to open table session:", error);
             this._showToast(this.translate("failedConnectServer"), 5000);
@@ -954,7 +1295,7 @@ class AlphaPosApp {
                 tab.style.transform = "translateX(0)";
             }, index * 60);
         });
-        
+
         this.renderMenuItems();
     }
 
@@ -967,11 +1308,11 @@ class AlphaPosApp {
                     this.supabase.from('modifiers').select('*').eq('is_deleted', false),
                     this.supabase.from('menu_item_modifier_groups').select('*').eq('is_deleted', false)
                 ]);
-                
+
                 if (groupsRes.error) throw groupsRes.error;
                 if (modsRes.error) throw modsRes.error;
                 if (linksRes.error) throw linksRes.error;
-                
+
                 this.modifiersConfig = {
                     groups: groupsRes.data,
                     modifiers: modsRes.data,
@@ -983,7 +1324,7 @@ class AlphaPosApp {
                 console.error("[Modifiers] Failed to load modifiers from Supabase, trying local fallback:", error);
             }
         }
-        
+
         if (!success) {
             try {
                 const res = await fetch("/v1/modifiers-config");
@@ -996,7 +1337,7 @@ class AlphaPosApp {
                 console.error("[Modifiers] Local server modifiers config failed:", localErr);
             }
         }
-        
+
         if (!success) {
             this.modifiersConfig = { groups: [], modifiers: [], links: [] };
         }
@@ -1014,7 +1355,7 @@ class AlphaPosApp {
                 const { data, error } = await this.supabase
                     .from('menu_items')
                     .select('*');
-                
+
                 if (error) throw error;
                 if (data && data.length > 0) {
                     this.menuItems = data.map(item => ({
@@ -1023,7 +1364,7 @@ class AlphaPosApp {
                         desc: item.description,
                         price: parseFloat(item.price),
                         category: item.category,
-                        emoji: item.emoji || "🍛",
+                        emoji: item.emoji || "",
                         imgClass: item.img_class || "img-main",
                         imageUrl: item.image_url || item.imageUrl || ""
                     }));
@@ -1033,7 +1374,7 @@ class AlphaPosApp {
                 console.error("Failed to load menu from Supabase, trying local server fallback...", error);
             }
         }
-        
+
         if (!success) {
             try {
                 const res = await fetch("/v1/menu");
@@ -1046,7 +1387,7 @@ class AlphaPosApp {
                             desc: item.desc || item.description,
                             price: parseFloat(item.price),
                             category: item.category,
-                            emoji: item.emoji || "🍛",
+                            emoji: item.emoji || "",
                             imgClass: item.imgClass || item.img_class || "img-main",
                             imageUrl: item.image_url || item.imageUrl || ""
                         }));
@@ -1067,15 +1408,21 @@ class AlphaPosApp {
     toggleTheme() {
         const body = document.body;
         body.classList.toggle("dark-theme");
-        
+
         const isDark = body.classList.contains("dark-theme");
         const iconEl = document.querySelector("#themeToggleBtn .theme-toggle-icon");
-        
+
         if (isDark) {
-            if (iconEl) iconEl.innerText = "☀️";
+            if (iconEl) {
+                iconEl.classList.remove("icon-moon");
+                iconEl.classList.add("icon-sun");
+            }
             localStorage.setItem("theme", "dark");
         } else {
-            if (iconEl) iconEl.innerText = "🌙";
+            if (iconEl) {
+                iconEl.classList.remove("icon-sun");
+                iconEl.classList.add("icon-moon");
+            }
             localStorage.setItem("theme", "light");
         }
     }
@@ -1084,8 +1431,12 @@ class AlphaPosApp {
      * Switch UI language and dynamically update all texts
      */
     switchLanguage(lang) {
+        if (!translations[lang]) {
+            lang = "th";
+        }
         this.currentLanguage = lang;
         localStorage.setItem("lang", lang);
+        document.documentElement.lang = lang;
 
         const items = document.querySelectorAll(".lang-dropdown-item");
         const currentFlag = document.getElementById("langCurrentFlag");
@@ -1174,7 +1525,9 @@ class AlphaPosApp {
         const urlParams = new URLSearchParams(window.location.search);
         const table = urlParams.get('table');
         const merchant = urlParams.get('merchant');
+        const branch = urlParams.get('branch') || urlParams.get('branch_code');
         const token = urlParams.get('token');
+        const jwt = urlParams.get('jwt'); // Merchant JWT token from QR code
 
         // Validate table number: must be a positive integer
         if (table && /^\d+$/.test(table)) {
@@ -1184,16 +1537,26 @@ class AlphaPosApp {
         if (token) {
             this.sessionToken = token;
         }
-        
-        // Only allow merchant override if a valid config exists
+
+        // Use JWT token from URL if provided (generated by iPad POS for this table's QR code)
+        if (jwt) {
+            this.merchantToken = jwt;
+            console.log('[Auth] Using merchant JWT token from QR code URL');
+        }
+
         let savedMerchant = localStorage.getItem('active_merchant_id');
         if (savedMerchant === '00000000-0000-0000-0000-000000000000') {
             savedMerchant = '';
         }
-        // Prefer saved merchant over URL param to prevent IDOR
-        this.merchantId = savedMerchant || (merchant && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(merchant) ? merchant : (window.ALPHAPOS_CONFIG?.merchantId || ''));
+        // Prioritize URL parameter 'merchant' over saved merchant in localStorage to support scanning new store QR codes.
+        // Fall back to saved merchant if URL param is absent.
+        this.merchantId = (merchant && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(merchant) ? merchant : savedMerchant) || (window.ALPHAPOS_CONFIG?.merchantId || '');
         if (this.merchantId) {
             localStorage.setItem('active_merchant_id', this.merchantId);
+        }
+        this.branchCode = branch || localStorage.getItem('active_branch_code') || (window.ALPHAPOS_CONFIG?.branchCode || '');
+        if (this.branchCode) {
+            localStorage.setItem('active_branch_code', this.branchCode);
         }
 
         // Update Header Badge
@@ -1278,18 +1641,27 @@ class AlphaPosApp {
         itemsToRender.forEach((item, index) => {
             const card = document.createElement("div");
             const inCartQty = this.getItemTotalQuantity(item.id);
-            
+
             card.className = `menu-item-card ${inCartQty > 0 ? 'selected' : ''}`;
             card.style.animationDelay = `${index * 0.05}s`;
             card.setAttribute("onclick", `app.openProductDetailModal('${item.id}')`);
+            card.setAttribute("role", "button");
+            card.setAttribute("tabindex", "0");
+            card.setAttribute("aria-label", `${this.translate('item_' + item.id + '_name', item.name)} ฿${item.price.toFixed(2)}`);
+            card.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    this.openProductDetailModal(item.id);
+                }
+            });
 
             const disabledAttr = inCartQty === 0 ? "disabled" : "";
             const disabledClass = inCartQty === 0 ? "disabled-btn" : "";
             const actionBtnHtml = `
                 <div class="quantity-control" onclick="event.stopPropagation()">
-                    <button class="qty-btn dec-btn ${disabledClass}" ${disabledAttr} onclick="app.updateCartQuantity('${item.id}', -1); event.stopPropagation();">-</button>
+                    <button class="qty-btn dec-btn ${disabledClass}" ${disabledAttr} aria-label="Decrease ${escapeHtml(item.name)}" onclick="app.updateCartQuantity('${item.id}', -1); event.stopPropagation();">-</button>
                     <span class="qty-value">${inCartQty}</span>
-                    <button class="qty-btn inc-btn" onclick="app.updateCartQuantity('${item.id}', 1); event.stopPropagation();">+</button>
+                    <button class="qty-btn inc-btn" aria-label="Increase ${escapeHtml(item.name)}" onclick="app.updateCartQuantity('${item.id}', 1); event.stopPropagation();">+</button>
                 </div>
             `;
 
@@ -1345,7 +1717,7 @@ class AlphaPosApp {
     addToCart(itemId, quantity = 1, selectedModifiers = [], notes = "") {
         const sortedModIds = selectedModifiers.map(m => m.id).sort();
         const notesKey = notes ? btoa(unescape(encodeURIComponent(notes))).slice(0, 10) : "";
-        const cartKey = sortedModIds.length > 0 
+        const cartKey = sortedModIds.length > 0
             ? `${itemId}-${sortedModIds.join("-")}${notesKey ? "-" + notesKey : ""}`
             : itemId;
 
@@ -1581,27 +1953,14 @@ class AlphaPosApp {
         const overlay = document.getElementById("cartDrawerOverlay");
         if (show) {
             overlay.classList.add("show");
+            this.setActiveModal(overlay);
         } else {
             overlay.classList.remove("show");
+            if (this._activeModal === overlay) this.setActiveModal(null);
         }
     }
 
-    /**
-     * Toggle Developer Panel expansion
-     */
-    toggleDevPanel() {
-        const panel = document.getElementById("devPanel");
-        const icon = document.getElementById("devToggleIcon");
-        this.isDevPanelMinimized = !this.isDevPanelMinimized;
 
-        if (this.isDevPanelMinimized) {
-            panel.classList.add("minimized");
-            icon.innerText = "▲";
-        } else {
-            panel.classList.remove("minimized");
-            icon.innerText = "▼";
-        }
-    }
 
     /**
      * Animate cart bar on new item additions
@@ -1620,14 +1979,19 @@ class AlphaPosApp {
 
     switchView(viewName) {
         this.currentView = viewName;
-        
+
+        // Smooth scroll to top when switching views
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        const appContainer = document.querySelector('.app-container');
+        if (appContainer) appContainer.scrollTop = 0;
+
         // Switch active tabs
         document.querySelectorAll(".nav-tab").forEach(tab => tab.classList.remove("active"));
         document.querySelectorAll(".view-panel").forEach(panel => {
             panel.classList.add("hide");
             panel.classList.remove("active");
         });
-        
+
         if (viewName === "menu") {
             document.getElementById("navTabMenu").classList.add("active");
             document.getElementById("menuView").classList.remove("hide");
@@ -1649,10 +2013,10 @@ class AlphaPosApp {
 
     async fetchOrderHistory() {
         if (!this.sessionToken) return;
-        
+
         let success = false;
         let formattedOrders = [];
-        
+
         if (this.supabase) {
             try {
                 const { data: sessionData, error: sessionError } = await this.supabase
@@ -1662,7 +2026,7 @@ class AlphaPosApp {
                     .eq('session_token', this.sessionToken)
                     .eq('is_active', 1)
                     .maybeSingle();
-                    
+
                 if (sessionError) throw sessionError;
                 if (sessionData) {
                     const { data: ordersData, error: ordersError } = await this.supabase
@@ -1671,9 +2035,9 @@ class AlphaPosApp {
                         .eq('table_number', this.tableNumber)
                         .gte('created_at', sessionData.created_at)
                         .order('created_at', { ascending: true });
-                        
+
                     if (ordersError) throw ordersError;
-                    
+
                     formattedOrders = ordersData.map(order => {
                         const items = (order.order_items || []).map(item => ({
                             id: item.id,
@@ -1707,7 +2071,7 @@ class AlphaPosApp {
                 console.error("Supabase error fetching order history, falling back to local server:", error);
             }
         }
-        
+
         if (!success) {
             try {
                 const res = await fetch(`/v1/orders?table=${this.tableNumber}&token=${this.sessionToken}`);
@@ -1719,7 +2083,7 @@ class AlphaPosApp {
                 console.error("Local server error fetching order history:", localErr);
             }
         }
-        
+
         if (success) {
             this.lastFetchedOrders = formattedOrders;
             this.renderOrderHistory(formattedOrders);
@@ -1731,18 +2095,18 @@ class AlphaPosApp {
         const pastContainer = document.getElementById("pastOrdersList");
         const grandTotalEl = document.getElementById("sessionGrandTotal");
         const badgeEl = document.getElementById("statusTabBadge");
-        
+
         activeContainer.innerHTML = "";
         pastContainer.innerHTML = "";
-        
+
         let grandTotal = 0;
         let activeCookingCount = 0;
         let activeItems = [];
         let pastItems = [];
-        
+
         orders.forEach(order => {
             grandTotal += order.total;
-            
+
             order.items.forEach(item => {
                 const status = (item.status || "cooking").toLowerCase();
                 if (status === "cooking" || status === "preparing" || status === "ready") {
@@ -1767,29 +2131,31 @@ class AlphaPosApp {
                 }
             });
         });
-        
+
         grandTotalEl.innerText = `฿${grandTotal.toFixed(2)}`;
-        
+
         if (activeCookingCount > 0) {
             badgeEl.innerText = activeCookingCount;
             badgeEl.classList.remove("hide");
         } else {
             badgeEl.classList.add("hide");
         }
-        
+
         if (activeItems.length === 0) {
             activeContainer.innerHTML = `<div class="empty-state">${this.translate('noActiveItems')}</div>`;
         } else {
             activeItems.forEach(item => {
-                const statusEmoji = item.status === "ready" ? "🛎️" : "🍳";
                 const statusLabel = item.status === "ready" ? this.translate('readyStatus') : this.translate('cookingStatus');
                 const statusClass = item.status === "ready" ? "ready" : "cooking";
-                
+                const statusIcon = item.status === "ready" ? "icon-bell" : "icon-clock";
+
                 const matchedMenuItem = this.menuItems.find(m => m.name === item.name);
                 const displayName = matchedMenuItem ? this.translate('item_' + matchedMenuItem.id + '_name', item.name) : item.name;
 
                 const el = document.createElement("div");
                 el.className = "status-item-card";
+                const noteKey = `item_note_${item.id}`;
+                const savedNote = localStorage.getItem(noteKey) || '';
                 el.innerHTML = `
                     <div class="item-info">
                         <div class="item-header">
@@ -1797,26 +2163,32 @@ class AlphaPosApp {
                             <span class="item-qty">× ${item.quantity}</span>
                         </div>
                         <div class="item-meta">${this.translate('orderLabel')}: ${escapeHtml(item.orderNumber || '')}</div>
-                      </div>
-                      <span class="status-badge ${statusClass}">${statusEmoji} ${statusLabel}</span>
-                  `;
+                        ${savedNote ? `<div class="item-note-display"><span class="note-icon app-icon icon-menu" aria-hidden="true"></span> <span class="note-text">${escapeHtml(savedNote)}</span></div>` : ''}
+                    </div>
+                    <div class="status-action-group">
+                        <button class="add-note-btn" aria-label="${this.translate('addNoteBtn')}" onclick="app.addItemNote('${item.id}', '${escapeHtml(displayName)}')" title="${this.translate('addNoteBtn')}"><span class="app-icon icon-menu" aria-hidden="true"></span></button>
+                        <span class="status-badge ${statusClass}"><span class="app-icon ${statusIcon}" aria-hidden="true"></span>${statusLabel}</span>
+                    </div>
+                `;
                 activeContainer.appendChild(el);
             });
         }
-        
+
         if (pastItems.length === 0) {
             pastContainer.innerHTML = `<div class="empty-state">${this.translate('noServedItems')}</div>`;
         } else {
             pastItems.forEach(item => {
-                const statusEmoji = item.status === "cancelled" ? "❌" : "🍽️";
                 const statusLabel = item.status === "cancelled" ? this.translate('cancelledStatus') : this.translate('servedStatus');
                 const statusClass = item.status === "cancelled" ? "cancelled" : "served";
-                
+                const statusIcon = item.status === "cancelled" ? "icon-alert" : "icon-utensils";
+
                 const matchedMenuItem = this.menuItems.find(m => m.name === item.name);
                 const displayName = matchedMenuItem ? this.translate('item_' + matchedMenuItem.id + '_name', item.name) : item.name;
 
                 const el = document.createElement("div");
                 el.className = "status-item-card served-item";
+                const pastNoteKey = `item_note_${item.id}`;
+                const pastSavedNote = localStorage.getItem(pastNoteKey) || '';
                 el.innerHTML = `
                     <div class="item-info">
                         <div class="item-header">
@@ -1824,9 +2196,11 @@ class AlphaPosApp {
                             <span class="item-qty">× ${item.quantity}</span>
                         </div>
                         <div class="item-meta">${this.translate('orderLabel')}: ${escapeHtml(item.orderNumber || '')}</div>
+                        ${pastSavedNote ? `<div class="item-note-display"><span class="note-icon app-icon icon-menu" aria-hidden="true"></span> <span class="note-text">${escapeHtml(pastSavedNote)}</span></div>` : ''}
                     </div>
                     <div class="served-action-group">
-                        <span class="status-badge ${statusClass}">${statusEmoji} ${statusLabel}</span>
+                        <button class="add-note-btn" aria-label="${this.translate('addNoteBtn')}" onclick="app.addItemNote('${item.id}', '${escapeHtml(displayName)}')" title="${this.translate('addNoteBtn')}"><span class="app-icon icon-menu" aria-hidden="true"></span></button>
+                        <span class="status-badge ${statusClass}"><span class="app-icon ${statusIcon}" aria-hidden="true"></span>${statusLabel}</span>
                         ${item.status !== "cancelled" ? `<button class="reorder-action-btn" onclick="app.reorderItem('${escapeHtml(item.name)}')">${this.translate('orderAgainBtn')}</button>` : ''}
                     </div>
                 `;
@@ -1842,10 +2216,10 @@ class AlphaPosApp {
             this.cart[item.id] = currentQty + 1;
             this.updateCartUI();
             this.jiggleCartNotification();
-            
+
             this.switchView("menu");
             this.toggleCartDrawer(true);
-            
+
             const translatedName = this.translate('item_' + item.id + '_name', item.name);
             const toast = document.getElementById("toast");
             toast.innerText = this.translate('addedToCartMsg').replace('{name}', translatedName);
@@ -1858,6 +2232,70 @@ class AlphaPosApp {
         }
     }
 
+    /**
+     * Add/edit a note for an order item (post-order).
+     * Stores locally and attempts to PATCH to server.
+     */
+    addItemNote(itemId, itemName) {
+        const noteKey = `item_note_${itemId}`;
+        const existingNote = localStorage.getItem(noteKey) || '';
+        const promptText = this.translate('addNotePrompt');
+
+        const note = prompt(promptText, existingNote);
+
+        if (note === null) return; // User cancelled
+
+        if (note.trim() === '') {
+            localStorage.removeItem(noteKey);
+        } else {
+            localStorage.setItem(noteKey, note.trim());
+        }
+
+        // Attempt to send note to server (best-effort, non-blocking)
+        this._sendItemNoteToServer(itemId, note.trim());
+
+        // Show confirmation toast
+        if (note.trim()) {
+            const msg = this.translate('noteSavedMsg').replace('{name}', itemName);
+            this._showToast(msg, 2500);
+        }
+
+        // Re-render order history to show updated note
+        if (this.lastFetchedOrders && this.lastFetchedOrders.length > 0) {
+            this.renderOrderHistory(this.lastFetchedOrders);
+        }
+    }
+
+    async _sendItemNoteToServer(itemId, note) {
+        // Try Supabase first
+        if (this.supabase) {
+            try {
+                const { error } = await this.supabase
+                    .from('order_items')
+                    .update({ customer_note: note })
+                    .eq('id', itemId);
+                if (!error) {
+                    console.log(`[Note] Saved note for item ${itemId} to server`);
+                    return;
+                }
+            } catch (e) {
+                console.warn('[Note] Supabase PATCH failed, trying local:', e);
+            }
+        }
+
+        // Fallback to local server
+        try {
+            await fetch(`/v1/order-items/${itemId}/note`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ customer_note: note })
+            });
+            console.log(`[Note] Saved note for item ${itemId} to local server`);
+        } catch (e) {
+            console.warn('[Note] Local server PATCH also failed:', e);
+        }
+    }
+
     startStatusPolling() {
         // Debounce helper to prevent rapid-fire fetches from multiple Realtime events
         this._debouncedFetchHistory = this._debounce(() => {
@@ -1867,43 +2305,58 @@ class AlphaPosApp {
                 this.updateStatusTabBadgeCount();
             }
         }, 1500);
-        
+
         this.realtimeChannels = [];
-        
+
         if (this.supabase) {
             try {
                 const ch1 = this.supabase
                     .channel('status-changes')
-                    .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, payload => {
+                    .on('postgres_changes', {
+                        event: '*',
+                        schema: 'public',
+                        table: 'order_items',
+                        filter: `merchant_id=eq.${this.merchantId}`
+                    }, payload => {
                         console.log("Realtime order item update received:", payload);
                         this._debouncedFetchHistory();
                     });
                 ch1.subscribe();
                 this.realtimeChannels.push(ch1);
-                    
+
                 const ch2 = this.supabase
                     .channel('orders-changes')
-                    .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, payload => {
+                    .on('postgres_changes', {
+                        event: '*',
+                        schema: 'public',
+                        table: 'orders',
+                        filter: `merchant_id=eq.${this.merchantId}`
+                    }, payload => {
                         console.log("Realtime order update received:", payload);
                         this._debouncedFetchHistory();
                     });
                 ch2.subscribe();
                 this.realtimeChannels.push(ch2);
-                
+
                 // Listen for table_sessions changes (detect session closure from iPad POS)
                 const ch3 = this.supabase
                     .channel('session-changes')
-                    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'table_sessions' }, payload => {
+                    .on('postgres_changes', {
+                        event: 'UPDATE',
+                        schema: 'public',
+                        table: 'table_sessions',
+                        filter: `merchant_id=eq.${this.merchantId}`
+                    }, payload => {
                         console.log("Realtime session update received:", payload);
                         const newRecord = payload.new;
-                        if (newRecord && newRecord.is_active === 0 && newRecord.table_number === this.tableNumber) {
+                        if (newRecord && (newRecord.is_active === false || newRecord.is_active === 0) && newRecord.table_number === this.tableNumber) {
                             // Session was closed by iPad POS — notify the customer
                             console.warn("Session closed by POS for table:", this.tableNumber);
                             this.sessionToken = null;
                             localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
                             this.cart = {};
                             this.saveCartToStorage(); // Clear cart on session close
-                            
+
                             const toast = document.getElementById("toast");
                             toast.innerText = "Your session has been closed by the staff. Thank you!";
                             toast.className = "toast show";
@@ -1912,17 +2365,22 @@ class AlphaPosApp {
                     });
                 ch3.subscribe();
                 this.realtimeChannels.push(ch3);
-                
+
                 // Listen for menu_items changes (auto-reload when menu is updated)
                 const ch4 = this.supabase
                     .channel('menu-changes')
-                    .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' }, payload => {
+                    .on('postgres_changes', {
+                        event: '*',
+                        schema: 'public',
+                        table: 'menu_items',
+                        filter: `merchant_id=eq.${this.merchantId}`
+                    }, payload => {
                         console.log("Realtime menu update received:", payload);
                         // Reload entire menu from server on any menu change
                         this.loadMenuFromServer().then(() => {
                             this.renderCategories();
                             this.renderMenuItems();
-                            
+
                             const toast = document.getElementById("toast");
                             toast.innerText = "Menu has been updated!";
                             toast.className = "toast show";
@@ -1935,7 +2393,7 @@ class AlphaPosApp {
                 console.error("Failed to initialize Supabase realtime subscriptions:", err);
             }
         }
-        
+
         // Setup a periodic check of session validity + fetching status
         if (this.pollingInterval) {
             clearInterval(this.pollingInterval);
@@ -1948,12 +2406,12 @@ class AlphaPosApp {
                     console.warn("Session closed by POS/server for table:", this.tableNumber);
                     this.sessionToken = null;
                     localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
-                    
+
                     const toast = document.getElementById("toast");
                     toast.innerText = "Your session has been closed by the staff. Thank you!";
                     toast.className = "toast show";
                     setTimeout(() => { toast.className = "toast"; }, 5000);
-                    
+
                     // Show onboarding wizard again
                     const wizard = document.getElementById("onboardingWizard");
                     wizard.style.opacity = "";
@@ -1966,7 +2424,7 @@ class AlphaPosApp {
                     return;
                 }
             }
-            
+
             if (this.currentView === "status") {
                 this.fetchOrderHistory();
             } else {
@@ -1974,7 +2432,7 @@ class AlphaPosApp {
             }
         }, 10000);
     }
-    
+
     /**
      * Debounce utility: Returns a function that delays execution by `delay` ms.
      * If called again before delay expires, previous call is cancelled.
@@ -1991,7 +2449,7 @@ class AlphaPosApp {
         if (!this.sessionToken) return;
         let success = false;
         let ordersData = [];
-        
+
         if (this.supabase) {
             try {
                 const { data: sessionData, error: sessionError } = await this.supabase
@@ -2001,17 +2459,17 @@ class AlphaPosApp {
                     .eq('session_token', this.sessionToken)
                     .eq('is_active', 1)
                     .maybeSingle();
-                    
+
                 if (sessionError || !sessionData) {
                     throw new Error("No active Supabase session found");
                 }
-                
+
                 const { data: ords, error: ordersError } = await this.supabase
                     .from('orders')
                     .select('*, order_items(*)')
                     .eq('table_number', this.tableNumber)
                     .gte('created_at', sessionData.created_at);
-                    
+
                 if (!ordersError) {
                     ordersData = ords;
                     success = true;
@@ -2020,7 +2478,7 @@ class AlphaPosApp {
                 console.error("Supabase error updating status tab badge count, falling back to local server:", e);
             }
         }
-        
+
         if (!success) {
             try {
                 const res = await fetch(`/v1/orders?table=${this.tableNumber}&token=${this.sessionToken}`);
@@ -2032,7 +2490,7 @@ class AlphaPosApp {
                 console.error("Local server error fetching orders for badge:", localErr);
             }
         }
-        
+
         if (success) {
             let activeCookingCount = 0;
             ordersData.forEach(order => {
@@ -2064,12 +2522,12 @@ class AlphaPosApp {
             'General Help': 'callStaffBtn'
         };
         const displayType = this.translate(serviceKeyMap[type] || type);
-        
+
         // Show loading status modal
         this._showStatusModal(this.translate("callingStaff"), this.translate("callingStaffDesc"), false);
-        
+
         let success = false;
-        
+
         if (this.supabase) {
             try {
                 const reqId = crypto.randomUUID
@@ -2078,7 +2536,7 @@ class AlphaPosApp {
                         const r = crypto.getRandomValues(new Uint8Array(1))[0] % 16;
                         return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
                     }))();
-                
+
                 const { error } = await this.supabase
                     .from('service_requests')
                     .insert([{
@@ -2089,14 +2547,14 @@ class AlphaPosApp {
                         created_at: new Date().toISOString(),
                         merchant_id: this.merchantId
                     }]);
-                    
+
                 if (error) throw error;
                 success = true;
             } catch (error) {
                 console.error("Supabase failed to submit service request, falling back to local server:", error);
             }
         }
-        
+
         if (!success) {
             try {
                 const res = await fetch("/v1/requests", {
@@ -2104,7 +2562,9 @@ class AlphaPosApp {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         table_number: this.tableNumber,
-                        request_type: type
+                        request_type: type,
+                        merchant_id: this.merchantId,
+                        branch_code: this.branchCode
                     })
                 });
                 if (!res.ok) throw new Error("Local server failed to post service request");
@@ -2113,7 +2573,7 @@ class AlphaPosApp {
                 console.error("Local server failed to post service request:", localErr);
             }
         }
-        
+
         if (success) {
             const btnNotification = document.getElementById("activeRequestNotification");
             const btnRequestType = document.getElementById("activeRequestType");
@@ -2121,7 +2581,7 @@ class AlphaPosApp {
             if (btnRequestType && btnNotification) {
                 btnRequestType.innerText = displayType;
                 btnNotification.classList.remove("hide");
-                
+
                 if (this._serviceRequestTimeout) clearTimeout(this._serviceRequestTimeout);
                 this._serviceRequestTimeout = setTimeout(() => {
                     btnNotification.classList.add("hide");
@@ -2235,53 +2695,6 @@ class AlphaPosApp {
         const { total } = this.calculateTotals();
         let success = false;
 
-        if (this.supabase) {
-            try {
-                const { error: orderError } = await this.supabase
-                    .from('orders')
-                    .insert([{
-                        id: orderId,
-                        order_number: orderNum,
-                        table_number: this.tableNumber,
-                        total: total,
-                        status: 'preparing',
-                        session_token: this.sessionToken,
-                        guest_count: this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount),
-                        created_at: new Date().toISOString(),
-                        merchant_id: this.merchantId
-                    }]);
-                    
-                if (orderError) throw orderError;
-                
-                const { error: itemsError } = await this.supabase
-                    .from('order_items')
-                    .insert(orderItems.map(item => {
-                        const { modifiers, notes, ...dbItem } = item;
-                        return dbItem;
-                    }));
-                    
-                if (itemsError) throw itemsError;
-
-                const allModifiersToInsert = [];
-                orderItems.forEach(item => {
-                    if (item.modifiers && item.modifiers.length > 0) {
-                        allModifiersToInsert.push(...item.modifiers);
-                    }
-                });
-
-                if (allModifiersToInsert.length > 0) {
-                    const { error: modsError } = await this.supabase
-                        .from('order_item_modifiers')
-                        .insert(allModifiersToInsert);
-                    if (modsError) throw modsError;
-                }
-                
-                success = true;
-            } catch (error) {
-                console.error("Supabase order submission failed, falling back to local server:", error);
-            }
-        }
-
         if (!success) {
             try {
                 const res = await fetch("/v1/orders", {
@@ -2295,19 +2708,28 @@ class AlphaPosApp {
                         status: 'preparing',
                         sessionToken: this.sessionToken,
                         guestCount: this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount),
+                        merchant_id: this.merchantId,
+                        branch_code: this.branchCode,
                         createdAt: new Date().toISOString(),
                         items: orderItems
                     })
                 });
-                if (!res.ok) throw new Error("Local server failed to post order");
+                if (!res.ok) {
+                    let message = "Local server failed to post order";
+                    try {
+                        const err = await res.json();
+                        message = err.error || message;
+                    } catch (_) {}
+                    throw new Error(message);
+                }
                 success = true;
             } catch (localErr) {
                 console.error("Local order submission failed:", localErr);
-                
+
                 // Hide status modal and notify on error
                 this._hideStatusModal();
                 this._showToast(this.translate("orderSentFailed"), 5000);
-                
+
                 btn.classList.remove("disabled");
                 btn.removeAttribute("disabled");
                 btnText.innerText = this.translate("sendToKitchen");
@@ -2322,7 +2744,7 @@ class AlphaPosApp {
 
             btnText.innerText = this.translate("sendToKitchen");
             spinner.classList.add("hide");
-            
+
             // Show success status modal
             this._showStatusModal(
                 this.translate('orderSentSuccess').replace('{num}', orderNum),
@@ -2345,7 +2767,7 @@ class AlphaPosApp {
 
     async loadPromotions() {
         let promoData = [];
-        
+
         // 1. Try to fetch from Supabase
         if (this.supabase) {
             try {
@@ -2355,37 +2777,46 @@ class AlphaPosApp {
                     .eq('is_active', 1)
                     .eq('is_deleted', 0);
                 if (!error && data && data.length > 0) {
-                    promoData = data;
+                    promoData = data.filter(p => this.isPromotionCurrentlyVisible(p));
                 }
             } catch (e) {
                 console.warn("Failed to fetch promotions from Supabase, trying local server:", e);
             }
         }
-        
+
         // 2. If empty/failed, try local python server
         if (promoData.length === 0) {
             try {
                 const res = await fetch('/v1/promotions');
                 if (res.ok) {
                     const data = await res.json();
-                    promoData = data.filter(p => p.isActive && !p.isDeleted);
+                    promoData = data.filter(p => p.isActive && !p.isDeleted && this.isPromotionCurrentlyVisible(p));
                 }
             } catch (e) {
                 console.warn("Failed to fetch promotions from local server:", e);
             }
         }
-        
+
         this.renderPromotions(promoData);
+    }
+
+    isPromotionCurrentlyVisible(promo) {
+        const now = Date.now();
+        const startValue = promo.starts_at || promo.startsAt;
+        const endValue = promo.ends_at || promo.endsAt;
+        if (startValue && Date.parse(startValue) > now) return false;
+        if (endValue && Date.parse(endValue) < now) return false;
+        return true;
     }
 
     renderPromotions(promotions) {
         const slider = document.getElementById("promotionsSlider");
         const indicatorsContainer = document.getElementById("promoIndicators");
         if (!slider || !indicatorsContainer) return;
-        
+
         slider.innerHTML = "";
         indicatorsContainer.innerHTML = "";
-        
+
         if (!promotions || promotions.length === 0) {
             console.log("No promotions to display, using fallback slide.");
             const slide = document.createElement("div");
@@ -2398,23 +2829,33 @@ class AlphaPosApp {
                 </div>
             `;
             slider.appendChild(slide);
-            
+
             const indicator = document.createElement("span");
             indicator.className = "indicator active";
             indicatorsContainer.appendChild(indicator);
-            
+
             this.currentSlideIdx = 0;
             this.totalSlides = 1;
             this.startPromotionCarousel();
             return;
         }
-        
+
         promotions.forEach((promo, idx) => {
             const slide = document.createElement("div");
             slide.className = `promo-slide ${idx === 0 ? 'active' : ''}`;
-            
+
             const imgData = promo.imageData || promo.image_data;
-            if (imgData) {
+            const mediaType = promo.mediaType || promo.media_type || "image";
+            if (imgData && mediaType === "video") {
+                const video = document.createElement("video");
+                video.src = imgData.startsWith("data:") ? imgData : `data:video/mp4;base64,${imgData}`;
+                video.autoplay = true;
+                video.muted = true;
+                video.loop = true;
+                video.playsInline = true;
+                video.setAttribute("playsinline", "");
+                slide.appendChild(video);
+            } else if (imgData) {
                 const img = document.createElement("img");
                 img.src = imgData.startsWith("data:") ? imgData : `data:image/jpeg;base64,${imgData}`;
                 img.alt = promo.title;
@@ -2424,7 +2865,7 @@ class AlphaPosApp {
                 placeholder.className = "promo-placeholder-bg";
                 slide.appendChild(placeholder);
             }
-            
+
             const overlay = document.createElement("div");
             overlay.className = "promo-overlay";
             const desc = promo.promoDescription || promo.promo_description || "";
@@ -2434,16 +2875,16 @@ class AlphaPosApp {
             `;
             slide.appendChild(overlay);
             slider.appendChild(slide);
-            
+
             const indicator = document.createElement("span");
             indicator.className = `indicator ${idx === 0 ? 'active' : ''}`;
             indicator.onclick = () => this.goToSlide(idx);
             indicatorsContainer.appendChild(indicator);
         });
-        
+
         this.currentSlideIdx = 0;
         this.totalSlides = promotions.length;
-        
+
         this.startPromotionCarousel();
     }
 
@@ -2451,10 +2892,10 @@ class AlphaPosApp {
         const slides = document.querySelectorAll(".promo-slide");
         const indicators = document.querySelectorAll(".promo-indicators .indicator");
         if (slides.length === 0 || indicators.length === 0) return;
-        
+
         slides[this.currentSlideIdx].classList.remove("active");
         indicators[this.currentSlideIdx].classList.remove("active");
-        
+
         this.currentSlideIdx = (slideIdx + slides.length) % slides.length;
         slides[this.currentSlideIdx].classList.add("active");
         indicators[this.currentSlideIdx].classList.add("active");
@@ -2464,9 +2905,9 @@ class AlphaPosApp {
         if (this.promoCarouselInterval) {
             clearInterval(this.promoCarouselInterval);
         }
-        
+
         if (this.totalSlides <= 1) return;
-        
+
         this.promoCarouselInterval = setInterval(() => {
             this.goToSlide(this.currentSlideIdx + 1);
         }, 4000);
@@ -2480,7 +2921,7 @@ class AlphaPosApp {
         if (!item) return;
 
         this.activeModalItemId = itemId;
-        
+
         // Reset special instructions textarea
         document.getElementById("specialInstructionsInput").value = "";
 
@@ -2511,7 +2952,7 @@ class AlphaPosApp {
         } else {
             addBtn.innerText = this.translate('addToOrder');
         }
-        
+
         document.getElementById("specialInstructionsInput").placeholder = this.translate("specialInstructionsPlaceholder");
 
         // Render modifier options
@@ -2529,7 +2970,7 @@ class AlphaPosApp {
 
             if (linkedGroups.length > 0) {
                 modalModifiersSection.classList.remove("hide");
-                
+
                 linkedGroups.forEach(group => {
                     const groupContainer = document.createElement("div");
                     groupContainer.className = "modifier-group-container";
@@ -2539,14 +2980,14 @@ class AlphaPosApp {
 
                     const groupHeader = document.createElement("div");
                     groupHeader.className = "modifier-group-header";
-                    
+
                     const groupTitle = document.createElement("div");
                     groupTitle.className = "modifier-group-title";
                     groupTitle.innerText = this.translate('modifier_group_' + group.name, group.name);
 
                     const groupSubtitle = document.createElement("div");
                     groupSubtitle.className = "modifier-group-subtitle";
-                    
+
                     const min = parseInt(group.min_selection || 0);
                     const max = parseInt(group.max_selection || 0);
                     if (min > 0 && max > 0) {
@@ -2581,7 +3022,7 @@ class AlphaPosApp {
                         optionItem.dataset.name = mod.name;
 
                         const inputClass = max === 1 ? "modifier-radio" : "modifier-checkbox";
-                        
+
                         optionItem.innerHTML = `
                             <div class="modifier-option-label">
                                 <span class="${inputClass}"></span>
@@ -2608,7 +3049,8 @@ class AlphaPosApp {
 
         // Show Modal with animation
         modal.classList.add("active");
-        
+        this.setActiveModal(modal);
+
         const cardEl = Array.from(document.querySelectorAll('.menu-item-card')).find(card => card.getAttribute('onclick')?.includes(itemId));
         if (cardEl) {
             cardEl.classList.add('pressed');
@@ -2630,12 +3072,12 @@ class AlphaPosApp {
             const isCurrentlySelected = optionItem.classList.contains("selected");
 
             if (!isCurrentlySelected && max > 0 && selectedCount >= max) {
-                alert(this.translate("validationMax").replace("{max}", max));
+                this._showToast(this.translate("validationMax").replace("{max}", max));
                 return;
             }
             optionItem.classList.toggle("selected");
         }
-        
+
         this.updateModalPriceDisplay();
     }
 
@@ -2660,16 +3102,17 @@ class AlphaPosApp {
         const modal = document.getElementById("productDetailModal");
         modal.classList.remove("active");
         this.activeModalItemId = null;
+        if (this._activeModal === modal) this.setActiveModal(null);
     }
 
     addProductFromModal() {
         if (!this.activeModalItemId) return;
         const itemId = this.activeModalItemId;
-        
+
         // Get selected modifiers
         const selectedModifiers = [];
         const selectedOptions = document.querySelectorAll("#modalModifiersSection .modifier-option-item.selected");
-        
+
         // Validate modifier group constraints
         let validationFailed = false;
         const groupContainers = document.querySelectorAll("#modalModifiersSection .modifier-group-container");
@@ -2679,7 +3122,7 @@ class AlphaPosApp {
             const groupName = container.querySelector(".modifier-group-title").innerText;
 
             if (selectedInGroup < min) {
-                alert(this.translate("validationMin").replace("{min}", min).replace("{group}", groupName));
+                this._showToast(this.translate("validationMin").replace("{min}", min).replace("{group}", groupName));
                 validationFailed = true;
             }
         });

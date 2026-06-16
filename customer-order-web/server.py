@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timedelta
 import hashlib
 from dotenv import load_dotenv
+from contextlib import closing
 
 def sha256_hash(string):
     if not string:
@@ -246,11 +247,11 @@ thread_local = threading.local()
 
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
     if not hasattr(thread_local, "connections"):
         thread_local.connections = []
     thread_local.connections.append(conn)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
 def close_thread_connections():
@@ -261,6 +262,75 @@ def close_thread_connections():
             except Exception:
                 pass
         thread_local.connections.clear()
+
+
+def _as_bool(value, default=True):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() not in ("0", "false", "no", "off")
+
+
+def get_merchant_web_settings(merchant_id=None, branch_code=None):
+    merchant_id = merchant_id or MERCHANT_ID
+    branch_code = branch_code or ""
+    fallback = {
+        "is_table_system_enabled": True,
+        "is_web_ordering_enabled": True,
+    }
+
+    try:
+        with closing(get_db_connection()) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='merchants'")
+            if not cursor.fetchone():
+                return fallback
+
+            clauses = []
+            params = []
+            if merchant_id:
+                clauses.append("id = ?")
+                params.append(merchant_id)
+            if branch_code:
+                clauses.append("branch_code = ?")
+                params.append(branch_code)
+
+            where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+            row = cursor.execute(
+                "SELECT is_table_system_enabled, is_web_ordering_enabled FROM merchants"
+                + where
+                + " LIMIT 1",
+                params
+            ).fetchone()
+
+            if not row and merchant_id and branch_code:
+                row = cursor.execute(
+                    "SELECT is_table_system_enabled, is_web_ordering_enabled FROM merchants WHERE id = ? LIMIT 1",
+                    (merchant_id,)
+                ).fetchone()
+
+            if not row:
+                return fallback
+
+            return {
+                "is_table_system_enabled": _as_bool(row["is_table_system_enabled"]),
+                "is_web_ordering_enabled": _as_bool(row["is_web_ordering_enabled"]),
+            }
+    except Exception as e:
+        print(f"[Merchant Settings] Falling back to enabled settings: {e}")
+        return fallback
+
+
+def web_ordering_enabled_for_payload(payload):
+    settings = get_merchant_web_settings(
+        payload.get("merchant_id") or payload.get("merchantId"),
+        payload.get("branch_code") or payload.get("branchCode") or payload.get("branch")
+    )
+    return settings["is_table_system_enabled"] and settings["is_web_ordering_enabled"]
 
 
 def sync_modifiers_from_supabase(conn):
@@ -334,8 +404,29 @@ def get_utc_now_iso():
     return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
 # Best-effort proxy to Supabase REST API (used for dual-write from local server)
-def supabase_post(endpoint, payload):
+def enqueue_supabase_write(endpoint, payload, last_error=""):
     try:
+        with closing(get_db_connection()) as conn:
+            with conn:
+                conn.execute('''
+                    INSERT INTO pending_supabase_writes (id, endpoint, payload, attempt_count, last_error, created_at, updated_at)
+                    VALUES (?, ?, ?, 0, ?, ?, ?)
+                ''', (
+                    str(uuid.uuid4()),
+                    endpoint,
+                    json.dumps(payload, separators=(",", ":")),
+                    str(last_error)[:500],
+                    get_utc_now_iso(),
+                    get_utc_now_iso()
+                ))
+    except Exception as queue_error:
+        print(f"[Supabase Queue] Failed to enqueue {endpoint}: {queue_error}")
+
+
+def supabase_post(endpoint, payload, queue_on_fail=True):
+    try:
+        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+            raise RuntimeError("Supabase URL/key not configured")
         url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=data, method="POST")
@@ -348,13 +439,50 @@ def supabase_post(endpoint, payload):
             return resp.getcode() in (200, 201, 204)
     except Exception as e:
         print(f"[Supabase Proxy] POST {endpoint} failed: {e}")
+        if queue_on_fail:
+            enqueue_supabase_write(endpoint, payload, str(e))
         return False
+
+
+def flush_pending_supabase_writes(limit=50):
+    try:
+        with closing(get_db_connection()) as conn:
+            conn.row_factory = sqlite3.Row
+            with conn:
+                rows = conn.execute('''
+                    SELECT * FROM pending_supabase_writes
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                ''', (limit,)).fetchall()
+
+                for row in rows:
+                    payload = json.loads(row["payload"])
+                    success = supabase_post(row["endpoint"], payload, queue_on_fail=False)
+                    if success:
+                        conn.execute("DELETE FROM pending_supabase_writes WHERE id = ?", (row["id"],))
+                    else:
+                        conn.execute('''
+                            UPDATE pending_supabase_writes
+                            SET attempt_count = attempt_count + 1,
+                                updated_at = ?
+                            WHERE id = ?
+                        ''', (get_utc_now_iso(), row["id"]))
+                if rows:
+                    print(f"[Supabase Queue] Processed {len(rows)} pending write(s).")
+    except Exception as e:
+        print(f"[Supabase Queue] Flush failed: {e}")
 
 # ==========================================
 # Database Setup & Seeding
 # ==========================================
 def init_db():
     conn = get_db_connection()
+    try:
+        _init_db_helper(conn)
+    finally:
+        conn.close()
+
+def _init_db_helper(conn):
     cursor = conn.cursor()
     
     # 1. Orders table
@@ -574,6 +702,40 @@ def init_db():
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS merchants (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            phone TEXT,
+            currency TEXT DEFAULT 'THB',
+            kitchen_workflow_required BOOLEAN DEFAULT FALSE,
+            website TEXT,
+            address_street TEXT,
+            tax_id TEXT,
+            branch_code TEXT,
+            tax_rate REAL DEFAULT 0.00,
+            tax_type TEXT DEFAULT 'exclusive',
+            service_charge_rate REAL DEFAULT 0.00,
+            receipt_header TEXT,
+            receipt_footer TEXT,
+            is_table_system_enabled BOOLEAN DEFAULT TRUE,
+            is_web_ordering_enabled BOOLEAN DEFAULT TRUE
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pending_supabase_writes (
+            id TEXT PRIMARY KEY,
+            endpoint TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    ''')
+
     cursor.execute("SELECT COUNT(*) FROM restaurant_tables")
     if cursor.fetchone()[0] == 0:
         default_tables = get_default_tables(MERCHANT_ID)
@@ -591,14 +753,21 @@ def init_db():
         ("service_requests", "merchant_id", "TEXT"),
         ("timecards", "merchant_id", "TEXT"),
         ("restaurant_tables", "zone", "TEXT"),
+        ("merchants", "is_table_system_enabled", "BOOLEAN"),
+        ("merchants", "is_web_ordering_enabled", "BOOLEAN"),
+        ("merchants", "branch_code", "TEXT"),
     ]:
-        allowed_tables = {"orders", "order_items", "payments", "table_sessions", "service_requests", "timecards", "employees", "menu_items", "promotions", "restaurant_tables"}
+        allowed_tables = {"orders", "order_items", "payments", "table_sessions", "service_requests", "timecards", "employees", "menu_items", "promotions", "restaurant_tables", "merchants"}
         allowed_col_types = {"TEXT", "INTEGER", "REAL", "BOOLEAN"}
+        allowed_cols = {"merchant_id", "updated_at", "zone", "is_table_system_enabled", "is_web_ordering_enabled", "branch_code"}
         if table not in allowed_tables:
             print(f"Database migration: Skipped unknown table '{table}'")
             continue
         if col_type not in allowed_col_types:
             print(f"Database migration: Skipped unknown column type '{col_type}'")
+            continue
+        if col not in allowed_cols:
+            print(f"Database migration: Skipped unknown column name '{col}'")
             continue
         cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,))
         if not cursor.fetchone():
@@ -674,8 +843,7 @@ def init_db():
     sync_table_sessions_from_supabase(conn)
     sync_promotions_from_supabase(conn)
     sync_modifiers_from_supabase(conn)
-    
-    conn.close()
+    flush_pending_supabase_writes()
 
 
 # ==========================================
@@ -721,9 +889,18 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 return True
         self._send_error_json(401, "Unauthorized: invalid or missing API token")
         return False
+
+    def _is_public_customer_post(self, path):
+        return path in {"/v1/sessions/open", "/v1/orders", "/v1/requests"}
     
     def end_headers(self):
         allowed = self._get_allowed_origin()
+        supabase_connect_src = ""
+        if SUPABASE_URL:
+            supabase_connect_src = (
+                f" {SUPABASE_URL.rstrip('/')}"
+                f" {SUPABASE_URL.rstrip('/').replace('https://', 'wss://').replace('http://', 'ws://')}"
+            )
         if allowed:
             self.send_header('Access-Control-Allow-Origin', allowed)
             self.send_header('Vary', 'Origin')
@@ -740,7 +917,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
             "img-src 'self' data: https:; "
-            "connect-src 'self' https://sdmtkixrqkmwcpwoisrg.supabase.co wss://sdmtkixrqkmwcpwoisrg.supabase.co; "
+            f"connect-src 'self'{supabase_connect_src}; "
             "font-src 'self' data: https://fonts.gstatic.com; "
             "frame-ancestors 'none'")
         if not IS_PRODUCTION:
@@ -797,9 +974,18 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             self.handle_get_timecards()
             return
 
+        # 7.5. API Endpoint: GET /v1/merchants
+        if path == "/v1/merchants":
+            self.handle_get_merchants()
+            return
+
         # 8. API Endpoint: GET /v1/sync
         if path == "/v1/sync":
             self.handle_get_sync()
+            return
+
+        if path == "/v1/sync/status":
+            self.handle_get_sync_status()
             return
 
         # 9. API Endpoint: GET /v1/promotions
@@ -824,8 +1010,8 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
         
-        # Require auth for all API endpoints
-        if not self._require_auth():
+        # Customer self-ordering writes are public by design; admin/POS writes still require auth.
+        if not self._is_public_customer_post(path) and not self._require_auth():
             return
         
         # 0. API Endpoint: POST /v1/employees/verify (Verifies employee PIN hash)
@@ -891,39 +1077,81 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             self.handle_delete_promotion()
             return
 
+        if path == "/v1/sync/retry":
+            self.handle_post_sync_retry()
+            return
+
         self.send_error(404, "Endpoint not found")
 
     # ==========================================
     # Endpoint Handlers
     # ==========================================
+
+    def handle_get_sync_status(self):
+        try:
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute('''
+                    SELECT
+                        COUNT(*) AS pending_count,
+                        COALESCE(MAX(attempt_count), 0) AS max_attempts,
+                        MIN(created_at) AS oldest_created_at,
+                        MAX(updated_at) AS last_attempt_at
+                    FROM pending_supabase_writes
+                ''').fetchone()
+                by_endpoint_rows = conn.execute('''
+                    SELECT endpoint, COUNT(*) AS count
+                    FROM pending_supabase_writes
+                    GROUP BY endpoint
+                    ORDER BY count DESC, endpoint ASC
+                ''').fetchall()
+
+                self._send_json_response(200, {
+                    "pendingCount": row["pending_count"],
+                    "maxAttempts": row["max_attempts"],
+                    "oldestCreatedAt": row["oldest_created_at"],
+                    "lastAttemptAt": row["last_attempt_at"],
+                    "byEndpoint": [
+                        {"endpoint": item["endpoint"], "count": item["count"]}
+                        for item in by_endpoint_rows
+                    ]
+                })
+        except Exception as e:
+            self._send_error_json(500, f"Sync status error: {str(e)}")
+
+    def handle_post_sync_retry(self):
+        try:
+            flush_pending_supabase_writes(limit=100)
+            self.handle_get_sync_status()
+        except Exception as e:
+            self._send_error_json(500, f"Sync retry error: {str(e)}")
     
     def handle_get_menu(self):
         try:
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM menu_items")
-            rows = cursor.fetchall()
-            
-            menu = []
-            for row in rows:
-                menu.append({
-                    "id": row["id"],
-                    "name": row["name"],
-                    "desc": row["description"],
-                    "price": row["price"],
-                    "category": row["category"],
-                    "emoji": row["emoji"],
-                    "imgClass": row["img_class"],
-                    "image_url": row["image_url"] if "image_url" in row.keys() else ""
-                })
-            
-            response_data = json.dumps(menu).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(response_data)
-            conn.close()
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM menu_items")
+                rows = cursor.fetchall()
+                
+                menu = []
+                for row in rows:
+                    menu.append({
+                        "id": row["id"],
+                        "name": row["name"],
+                        "desc": row["description"],
+                        "price": row["price"],
+                        "category": row["category"],
+                        "emoji": row["emoji"],
+                        "imgClass": row["img_class"],
+                        "image_url": row["image_url"] if "image_url" in row.keys() else ""
+                    })
+                
+                response_data = json.dumps(menu).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(response_data)
         except Exception as e:
             self.send_error(500, f"Database error: {str(e)}")
 
@@ -934,89 +1162,88 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             table_number = query_params.get("table", [None])[0]
             token = query_params.get("token", [None])[0]
             
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            if table_number and token:
-                # Find start time of active session
-                cursor.execute("""
-                    SELECT created_at FROM table_sessions 
-                    WHERE table_number = ? AND session_token = ? AND is_active = 1
-                """, (table_number, token))
-                session_row = cursor.fetchone()
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
                 
-                if session_row:
-                    session_start = session_row["created_at"]
-                    # Fetch orders for this table session
+                if table_number and token:
+                    # Find start time of active session
                     cursor.execute("""
-                        SELECT * FROM orders 
-                        WHERE table_number = ? AND created_at >= ?
-                        ORDER BY created_at ASC
-                    """, (table_number, session_start))
-                    order_rows = cursor.fetchall()
+                        SELECT created_at FROM table_sessions 
+                        WHERE table_number = ? AND session_token = ? AND is_active = 1
+                    """, (table_number, token))
+                    session_row = cursor.fetchone()
+                    
+                    if session_row:
+                        session_start = session_row["created_at"]
+                        # Fetch orders for this table session
+                        cursor.execute("""
+                            SELECT * FROM orders 
+                            WHERE table_number = ? AND created_at >= ?
+                            ORDER BY created_at ASC
+                        """, (table_number, session_start))
+                        order_rows = cursor.fetchall()
+                    else:
+                        order_rows = []
                 else:
-                    order_rows = []
-            else:
-                # Fetch preparing kitchen orders + all orders belonging to active table sessions for POS/KDS sync
-                cursor.execute("""
-                    SELECT DISTINCT o.* FROM orders o
-                    LEFT JOIN table_sessions ts ON o.table_number = ts.table_number AND ts.is_active = 1
-                    WHERE o.status IN ('preparing', 'ready')
-                       OR (ts.is_active = 1 AND o.created_at >= ts.created_at)
-                    ORDER BY o.created_at DESC
-                """)
-                order_rows = cursor.fetchall()
+                    # Fetch preparing kitchen orders + all orders belonging to active table sessions for POS/KDS sync
+                    cursor.execute("""
+                        SELECT DISTINCT o.* FROM orders o
+                        LEFT JOIN table_sessions ts ON o.table_number = ts.table_number AND ts.is_active = 1
+                        WHERE o.status IN ('preparing', 'ready')
+                           OR (ts.is_active = 1 AND o.created_at >= ts.created_at)
+                        ORDER BY o.created_at DESC
+                    """)
+                    order_rows = cursor.fetchall()
 
-                
-            orders = []
-            for order_row in order_rows:
-                order_id = order_row["id"]
-                
-                cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
-                item_rows = cursor.fetchall()
-                
-                items = []
-                for item_row in item_rows:
-                    items.append({
-                        "id": item_row["id"],
-                        "name": item_row["item_name"],
-                        "quantity": item_row["quantity"],
-                        "price": item_row["price"],
-                        "status": item_row["status"],
-                        "item_id": item_row["item_id"]
+                    
+                orders = []
+                for order_row in order_rows:
+                    order_id = order_row["id"]
+                    
+                    cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
+                    item_rows = cursor.fetchall()
+                    
+                    items = []
+                    for item_row in item_rows:
+                        items.append({
+                            "id": item_row["id"],
+                            "name": item_row["item_name"],
+                            "quantity": item_row["quantity"],
+                            "price": item_row["price"],
+                            "status": item_row["status"],
+                            "item_id": item_row["item_id"]
+                        })
+                    
+                    # Fetch payments for this order
+                    cursor.execute("SELECT * FROM payments WHERE order_id = ?", (order_id,))
+                    payment_rows = cursor.fetchall()
+                    payments = []
+                    for p_row in payment_rows:
+                        payments.append({
+                            "id": p_row["id"],
+                            "orderId": p_row["order_id"],
+                            "amount": p_row["amount"],
+                            "paymentMethod": p_row["payment_method"],
+                            "createdAt": p_row["created_at"]
+                        })
+                    
+                    orders.append({
+                        "id": order_row["id"],
+                        "orderNumber": order_row["order_number"],
+                        "tableNumber": order_row["table_number"],
+                        "total": order_row["total"],
+                        "status": order_row["status"],
+                        "createdAt": order_row["created_at"],
+                        "items": items,
+                        "payments": payments
                     })
-                
-                # Fetch payments for this order
-                cursor.execute("SELECT * FROM payments WHERE order_id = ?", (order_id,))
-                payment_rows = cursor.fetchall()
-                payments = []
-                for p_row in payment_rows:
-                    payments.append({
-                        "id": p_row["id"],
-                        "orderId": p_row["order_id"],
-                        "amount": p_row["amount"],
-                        "paymentMethod": p_row["payment_method"],
-                        "createdAt": p_row["created_at"]
-                    })
-                
-                orders.append({
-                    "id": order_row["id"],
-                    "orderNumber": order_row["order_number"],
-                    "tableNumber": order_row["table_number"],
-                    "total": order_row["total"],
-                    "status": order_row["status"],
-                    "createdAt": order_row["created_at"],
-                    "items": items,
-                    "payments": payments
-                })
-                
-            response_data = json.dumps(orders).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(response_data)
-            conn.close()
+                    
+                response_data = json.dumps(orders).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(response_data)
         except Exception as e:
             self.send_error(500, f"Database error: {str(e)}")
 
@@ -1026,221 +1253,227 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         
         try:
             order_data = json.loads(post_data.decode("utf-8"))
+            if not web_ordering_enabled_for_payload(order_data):
+                self._send_error_json(403, "Web ordering is disabled for this store or branch.")
+                return
             
-            # Extract fields
-            table_number = order_data.get("tableNumber") or order_data.get("table_number") or "1"
-            total = float(order_data.get("total", 0.0))
+            # Extract and sanitize fields
+            table_number = str(order_data.get("tableNumber") or order_data.get("table_number") or "1")[:10]
+            total_client = float(order_data.get("total", 0.0))
             items = order_data.get("items", [])
-            order_id = order_data.get("id") or str(uuid.uuid4())
-            status = order_data.get("status") or "preparing"
+            order_id = str(order_data.get("id") or str(uuid.uuid4()))[:50]
+            status = str(order_data.get("status") or "preparing")[:20]
+            allowed_order_statuses = {"preparing", "ready", "served", "cancelled"}
+            if status not in allowed_order_statuses:
+                raise ValueError(f"Invalid order status '{status}'.")
             session_token = order_data.get("sessionToken") or order_data.get("session_token")
+            session_token = str(session_token)[:50] if session_token else None
             guest_count = int(order_data.get("guestCount") or order_data.get("guest_count") or 2)
+            guest_count = max(1, min(guest_count, 100))
+            if not isinstance(items, list) or not items:
+                raise ValueError("Order must contain at least one item.")
             
             # Generate clean invoice number (e.g. ORD-6401)
-            order_number = order_data.get("orderNumber") or order_data.get("order_number") or f"ORD-{str(uuid.uuid4().int)[:4]}"
+            order_number = str(order_data.get("orderNumber") or order_data.get("order_number") or f"ORD-{str(uuid.uuid4().int)[:4]}")[:20]
             created_at_str = get_utc_now_iso()
             
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Recalculate and validate prices on the server side
-            computed_subtotal = 0.0
-            verified_items = []
-            
-            for item in items:
-                menu_item_id = item.get("item_id") or item.get("id")
-                qty = int(item.get("quantity") or item.get("qty", 1))
-                if qty < 1:
-                    qty = 1  # Clamp quantity
-                
-                # Fetch base price
-                base_price = 0.0
-                if menu_item_id:
-                    cursor.execute("SELECT price FROM menu_items WHERE id = ?", (menu_item_id,))
-                    row = cursor.fetchone()
-                    if row:
-                        base_price = float(row[0])
-                    else:
-                        base_price = float(item.get("price", 0.0))
-                
-                # Fetch modifiers prices
-                item_modifiers = item.get("modifiers", [])
-                verified_modifiers = []
-                modifier_price_sum = 0.0
-                
-                for mod in item_modifiers:
-                    mod_id = mod.get("modifier_id") or mod.get("id")
-                    mod_price = 0.0
-                    if mod_id:
-                        cursor.execute("SELECT price FROM modifiers WHERE id = ?", (mod_id,))
-                        mod_row = cursor.fetchone()
-                        if mod_row:
-                            mod_price = float(mod_row[0])
-                        else:
-                            cursor.execute("SELECT price FROM modifiers WHERE name = ? OR id = ?", (mod.get("name", ""), mod_id))
-                            mod_row2 = cursor.fetchone()
-                            if mod_row2:
-                                mod_price = float(mod_row2[0])
-                            else:
-                                mod_price = float(mod.get("price", 0.0))
+            with closing(get_db_connection()) as conn:
+                with conn:
+                    cursor = conn.cursor()
                     
-                    modifier_price_sum += mod_price
-                    verified_modifiers.append({
-                        "id": mod.get("id") or str(uuid.uuid4()),
-                        "modifier_id": mod_id,
-                        "price": mod_price
-                    })
-                
-                computed_item_price = base_price + modifier_price_sum
-                computed_subtotal += computed_item_price * qty
-                
-                verified_items.append({
-                    "id": item.get("id") or str(uuid.uuid4()),
-                    "item_id": menu_item_id,
-                    "name": item.get("name") or item.get("item_name") or "Unknown Dish",
-                    "quantity": qty,
-                    "price": computed_item_price,
-                    "status": item.get("status") or "cooking",
-                    "modifiers": verified_modifiers
-                })
-            
-            # Recalculate totals
-            computed_service_charge = computed_subtotal * 0.10
-            computed_tax = (computed_subtotal + computed_service_charge) * 0.07
-            computed_total = computed_subtotal + computed_service_charge + computed_tax
-            
-            total = computed_total
-            items = verified_items
-            
-            # Check if there is an active session for this table
-            cursor.execute("SELECT session_token FROM table_sessions WHERE table_number = ? AND is_active = 1", (table_number,))
-            session_row = cursor.fetchone()
-            if not session_row:
-                # No active session exists on the server! Auto-create one.
-                session_token = str(uuid.uuid4())
-                session_id = str(uuid.uuid4())
-                sess_created_at = (datetime.utcnow() - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
-                
-                cursor.execute('''
-                    INSERT INTO table_sessions (id, table_number, session_token, is_active, created_at, guest_count, merchant_id)
-                    VALUES (?, ?, ?, 1, ?, ?, ?)
-                ''', (session_id, table_number, session_token, sess_created_at, 2, MERCHANT_ID))
-                cursor.execute('''
-                    UPDATE restaurant_tables SET status = 'occupied' WHERE table_number = ? AND merchant_id = ?
-                ''', (table_number, MERCHANT_ID))
-                conn.commit()
-                print(f"Server API [Order Auto-Session]: Opened active session for Table {table_number} (Token: {session_token[:8]}...)")
-            
-            # Check if order already exists
-            cursor.execute("SELECT id FROM orders WHERE id = ?", (order_id,))
-            exists = cursor.fetchone()
-            
-            if exists:
-                # Update Order
-                updated_at_str = get_utc_now_iso()
-                cursor.execute('''
-                    UPDATE orders 
-                    SET status = ?, total = ?, updated_at = ?, session_token = COALESCE(?, session_token), guest_count = ?, is_synced = 1
-                    WHERE id = ?
-                ''', (status, total, updated_at_str, session_token, guest_count, order_id))
-                
-                # Upsert Order Items
-                for item in items:
-                    client_id = item.get("id")
-                    menu_item_id = item.get("item_id") or client_id
-                    name = item.get("name") or item.get("item_name") or "Unknown Dish"
-                    qty = int(item.get("quantity") or item.get("qty", 1))
-                    price = float(item.get("price", 0.0))
-                    item_status = item.get("status") or "cooking"
+                    # Recalculate and validate prices on the server side
+                    computed_subtotal = 0.0
+                    verified_items = []
                     
-                    # Look for existing item *only* within this specific order
-                    item_exists = None
-                    if client_id:
-                        cursor.execute("SELECT id FROM order_items WHERE (id = ? OR item_id = ?) AND order_id = ?", (client_id, client_id, order_id))
-                        item_exists = cursor.fetchone()
-                    
-                    if not item_exists and menu_item_id:
-                        cursor.execute("SELECT id FROM order_items WHERE item_id = ? AND order_id = ?", (menu_item_id, order_id))
-                        item_exists = cursor.fetchone()
+                    for item in items:
+                        menu_item_id = item.get("item_id") or item.get("id")
+                        menu_item_id = str(menu_item_id)[:50] if menu_item_id else None
                         
-                    if item_exists:
+                        qty = int(item.get("quantity") or item.get("qty", 1))
+                        qty = max(1, min(qty, 99))  # Clamp quantity
+                        
+                        # Fetch menu data from local DB strictly
+                        base_price = 0.0
+                        menu_item_name = "Unknown Dish"
+                        if menu_item_id:
+                            cursor.execute("SELECT name, price FROM menu_items WHERE id = ?", (menu_item_id,))
+                            row = cursor.fetchone()
+                            if row:
+                                menu_item_name = str(row[0])
+                                base_price = float(row[1])
+                            else:
+                                raise ValueError(f"Menu item '{menu_item_id}' not found in database.")
+                        else:
+                            raise ValueError("item_id is required for all ordered items.")
+                        
+                        # Fetch modifiers prices
+                        item_modifiers = item.get("modifiers", [])
+                        verified_modifiers = []
+                        modifier_price_sum = 0.0
+                        
+                        for mod in item_modifiers:
+                            mod_id = mod.get("modifier_id") or mod.get("id")
+                            mod_id = str(mod_id)[:50] if mod_id else None
+                            
+                            mod_price = 0.0
+                            if mod_id:
+                                cursor.execute("SELECT extra_price FROM modifiers WHERE id = ? AND is_available = 1", (mod_id,))
+                                mod_row = cursor.fetchone()
+                                if mod_row:
+                                    mod_price = float(mod_row[0])
+                                else:
+                                    cursor.execute("SELECT extra_price FROM modifiers WHERE (name = ? OR id = ?) AND is_available = 1", (mod.get("name", ""), mod_id))
+                                    mod_row2 = cursor.fetchone()
+                                    if mod_row2:
+                                        mod_price = float(mod_row2[0])
+                                    else:
+                                        raise ValueError(f"Modifier '{mod_id}' not found or unavailable in database.")
+                            else:
+                                raise ValueError("modifier_id is required for all selected modifiers.")
+                            
+                            modifier_price_sum += mod_price
+                            verified_modifiers.append({
+                                "id": str(mod.get("id") or str(uuid.uuid4()))[:50],
+                                "modifier_id": mod_id,
+                                "price": mod_price
+                            })
+                        
+                        computed_item_price = base_price + modifier_price_sum
+                        computed_subtotal += computed_item_price * qty
+                        
+                        verified_items.append({
+                            "id": str(item.get("id") or str(uuid.uuid4()))[:50],
+                            "item_id": menu_item_id,
+                            "name": menu_item_name[:100],
+                            "quantity": qty,
+                            "price": computed_item_price,
+                            "status": str(item.get("status") or "cooking")[:20],
+                            "modifiers": verified_modifiers
+                        })
+                    
+                    # Recalculate totals
+                    computed_service_charge = computed_subtotal * 0.10
+                    computed_tax = (computed_subtotal + computed_service_charge) * 0.07
+                    computed_total = computed_subtotal + computed_service_charge + computed_tax
+                    if abs(total_client - computed_total) > 0.05:
+                        raise ValueError(
+                            f"Order total mismatch. Client sent {total_client:.2f}, server calculated {computed_total:.2f}."
+                        )
+                    
+                    total = computed_total
+                    items = verified_items
+                    
+                    # Check if there is an active session for this table
+                    cursor.execute("SELECT session_token FROM table_sessions WHERE table_number = ? AND is_active = 1", (table_number,))
+                    session_row = cursor.fetchone()
+                    if not session_row:
+                        # No active session exists on the server! Auto-create one.
+                        session_token = str(uuid.uuid4())
+                        session_id = str(uuid.uuid4())
+                        sess_created_at = (datetime.utcnow() - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        
                         cursor.execute('''
-                            UPDATE order_items 
-                            SET quantity = ?, price = ?, status = ?
+                            INSERT INTO table_sessions (id, table_number, session_token, is_active, created_at, guest_count, merchant_id)
+                            VALUES (?, ?, ?, 1, ?, ?, ?)
+                        ''', (session_id, table_number, session_token, sess_created_at, 2, MERCHANT_ID))
+                        cursor.execute('''
+                            UPDATE restaurant_tables SET status = 'occupied' WHERE table_number = ? AND merchant_id = ?
+                        ''', (table_number, MERCHANT_ID))
+                        print(f"Server API [Order Auto-Session]: Opened active session for Table {table_number} (Token: {session_token[:8]}...)")
+                    
+                    # Check if order already exists
+                    cursor.execute("SELECT id FROM orders WHERE id = ?", (order_id,))
+                    exists = cursor.fetchone()
+                    
+                    if exists:
+                        # Update Order
+                        updated_at_str = get_utc_now_iso()
+                        cursor.execute('''
+                            UPDATE orders 
+                            SET status = ?, total = ?, updated_at = ?, session_token = COALESCE(?, session_token), guest_count = ?, is_synced = 0
                             WHERE id = ?
-                        ''', (qty, price, item_status, item_exists[0]))
-                        db_id = item_exists[0]
-                    else:
-                        new_item_id = str(uuid.uuid4())
-                        cursor.execute('''
-                            INSERT INTO order_items (id, order_id, item_name, quantity, price, status, item_id, merchant_id)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (new_item_id, order_id, name, qty, price, item_status, menu_item_id, MERCHANT_ID))
-                        db_id = new_item_id
+                        ''', (status, total, updated_at_str, session_token, guest_count, order_id))
                         
-                    # Delete and recreate modifiers for this item
-                    cursor.execute("DELETE FROM order_item_modifiers WHERE order_item_id = ?", (db_id,))
-                    item_modifiers = item.get("modifiers", [])
-                    for mod in item_modifiers:
-                        mod_id = mod.get("id") or mod.get("modifier_id")
-                        mod_price = float(mod.get("price", 0.0))
-                        if mod_id:
-                            mod_db_id = str(uuid.uuid4())
-                            cursor.execute('''
-                                INSERT INTO order_item_modifiers (id, order_item_id, modifier_id, price, merchant_id)
-                                VALUES (?, ?, ?, ?, ?)
-                            ''', (mod_db_id, db_id, mod_id, mod_price, MERCHANT_ID))
-            else:
-                # Insert New Order
-                updated_at_str = get_utc_now_iso()
-                cursor.execute('''
-                    INSERT INTO orders (id, order_number, table_number, total, status, created_at, updated_at, session_token, guest_count, merchant_id, is_synced)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (order_id, order_number, table_number, total, status, created_at_str, updated_at_str, session_token, guest_count, MERCHANT_ID, 1))
-                
-                # Insert Order Items
-                for item in items:
-                    client_id = item.get("id")
-                    menu_item_id = item.get("item_id") or client_id or str(uuid.uuid4())
-                    name = item.get("name") or item.get("item_name") or "Unknown Dish"
-                    qty = int(item.get("quantity") or item.get("qty", 1))
-                    price = float(item.get("price", 0.0))
-                    item_status = item.get("status") or "cooking"
-                    
-                    # Ensure database primary key is unique to prevent UNIQUE constraint violation
-                    db_id = None
-                    if client_id:
-                        cursor.execute("SELECT order_id FROM order_items WHERE id = ?", (client_id,))
-                        existing_item = cursor.fetchone()
-                        if existing_item:
-                            if existing_item[0] == order_id:
-                                db_id = client_id
+                        # Upsert Order Items
+                        for item in items:
+                            client_id = item.get("id")
+                            menu_item_id = item.get("item_id") or client_id
+                            name = item.get("name")
+                            qty = item.get("quantity")
+                            price = item.get("price")
+                            item_status = item.get("status")
+                            
+                            # Look for existing item *only* within this specific order
+                            item_exists = None
+                            if client_id:
+                                cursor.execute("SELECT id FROM order_items WHERE (id = ? OR item_id = ?) AND order_id = ?", (client_id, client_id, order_id))
+                                item_exists = cursor.fetchone()
+                            
+                            if not item_exists and menu_item_id:
+                                cursor.execute("SELECT id FROM order_items WHERE item_id = ? AND order_id = ?", (menu_item_id, order_id))
+                                item_exists = cursor.fetchone()
+                                
+                            if item_exists:
+                                cursor.execute('''
+                                    UPDATE order_items 
+                                    SET quantity = ?, price = ?, status = ?
+                                    WHERE id = ?
+                                ''', (qty, price, item_status, item_exists[0]))
+                                db_id = item_exists[0]
                             else:
-                                db_id = str(uuid.uuid4()) # Safe fallback
-                        else:
-                            db_id = client_id
+                                new_item_id = str(uuid.uuid4())
+                                cursor.execute('''
+                                    INSERT INTO order_items (id, order_id, item_name, quantity, price, status, item_id, merchant_id)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', (new_item_id, order_id, name, qty, price, item_status, menu_item_id, MERCHANT_ID))
+                                db_id = new_item_id
+                                
+                            # Delete and recreate modifiers for this item
+                            cursor.execute("DELETE FROM order_item_modifiers WHERE order_item_id = ?", (db_id,))
+                            item_modifiers = item.get("modifiers", [])
+                            for mod in item_modifiers:
+                                mod_id = mod.get("modifier_id")
+                                mod_price = mod.get("price")
+                                if mod_id:
+                                    mod_db_id = str(uuid.uuid4())
+                                    cursor.execute('''
+                                        INSERT INTO order_item_modifiers (id, order_item_id, modifier_id, price, merchant_id)
+                                        VALUES (?, ?, ?, ?, ?)
+                                    ''', (mod_db_id, db_id, mod_id, mod_price, MERCHANT_ID))
                     else:
-                        db_id = str(uuid.uuid4())
-                    
-                    cursor.execute('''
-                        INSERT INTO order_items (id, order_id, item_name, quantity, price, status, item_id, merchant_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (db_id, order_id, name, qty, price, item_status, menu_item_id, MERCHANT_ID))
-                    
-                    # Insert Order Item Modifiers
-                    item_modifiers = item.get("modifiers", [])
-                    for mod in item_modifiers:
-                        mod_id = mod.get("id") or mod.get("modifier_id")
-                        mod_price = float(mod.get("price", 0.0))
-                        if mod_id:
-                            mod_db_id = str(uuid.uuid4())
+                        # Insert New Order
+                        updated_at_str = get_utc_now_iso()
+                        cursor.execute('''
+                            INSERT INTO orders (id, order_number, table_number, total, status, created_at, updated_at, session_token, guest_count, merchant_id, is_synced)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (order_id, order_number, table_number, total, status, created_at_str, updated_at_str, session_token, guest_count, MERCHANT_ID, 0))
+                        
+                        # Insert Order Items
+                        for item in items:
+                            client_id = item.get("id")
+                            menu_item_id = item.get("item_id")
+                            name = item.get("name")
+                            qty = item.get("quantity")
+                            price = item.get("price")
+                            item_status = item.get("status")
+                            
+                            db_id = client_id or str(uuid.uuid4())
                             cursor.execute('''
-                                INSERT INTO order_item_modifiers (id, order_item_id, modifier_id, price, merchant_id)
-                                VALUES (?, ?, ?, ?, ?)
-                            ''', (mod_db_id, db_id, mod_id, mod_price, MERCHANT_ID))
-                
-            conn.commit()
-            conn.close()
+                                INSERT INTO order_items (id, order_id, item_name, quantity, price, status, item_id, merchant_id)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (db_id, order_id, name, qty, price, item_status, menu_item_id, MERCHANT_ID))
+                            
+                            # Insert Order Item Modifiers
+                            item_modifiers = item.get("modifiers", [])
+                            for mod in item_modifiers:
+                                mod_id = mod.get("modifier_id")
+                                mod_price = mod.get("price")
+                                if mod_id:
+                                    mod_db_id = str(uuid.uuid4())
+                                    cursor.execute('''
+                                        INSERT INTO order_item_modifiers (id, order_item_id, modifier_id, price, merchant_id)
+                                        VALUES (?, ?, ?, ?, ?)
+                                    ''', (mod_db_id, db_id, mod_id, mod_price, MERCHANT_ID))
             
             # Best-effort dual-write to Supabase (so POS apps can see this order)
             supabase_order = {
@@ -1255,17 +1488,21 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 "session_token": session_token,
                 "guest_count": guest_count
             }
-            supabase_post("orders", supabase_order)
+            order_synced = supabase_post("orders", supabase_order)
+            if order_synced:
+                with closing(get_db_connection()) as conn:
+                    with conn:
+                        conn.execute("UPDATE orders SET is_synced = 1 WHERE id = ?", (order_id,))
             for item in items:
-                item_id_db = item.get("id") or str(uuid.uuid4())
+                item_id_db = item.get("id")
                 supabase_item = {
                     "id": item_id_db,
                     "order_id": order_id,
-                    "item_name": item.get("name") or item.get("item_name") or "Unknown Dish",
-                    "quantity": int(item.get("quantity") or item.get("qty", 1)),
-                    "price": float(item.get("price", 0.0)),
-                    "status": item.get("status") or "cooking",
-                    "item_id": item.get("item_id") or item.get("id") or "",
+                    "item_name": item.get("name"),
+                    "quantity": item.get("quantity"),
+                    "price": item.get("price"),
+                    "status": item.get("status"),
+                    "item_id": item.get("item_id"),
                     "merchant_id": MERCHANT_ID
                 }
                 supabase_post("order_items", supabase_item)
@@ -1273,8 +1510,8 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 # Dual-write modifiers to Supabase
                 item_modifiers = item.get("modifiers", [])
                 for mod in item_modifiers:
-                    mod_id = mod.get("id") or mod.get("modifier_id")
-                    mod_price = float(mod.get("price", 0.0))
+                    mod_id = mod.get("modifier_id")
+                    mod_price = mod.get("price")
                     if mod_id:
                         supabase_mod = {
                             "id": str(uuid.uuid4()),
@@ -1290,6 +1527,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 "success": True,
                 "orderId": order_id,
                 "orderNumber": order_number,
+                "total": round(total, 2),
                 "message": "Order successfully created/updated."
             }
             
@@ -1300,13 +1538,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             print(f"Server API [Order]: Saved/Updated {order_number} for Table {table_number} (Total: ฿{total}, Status: {status})")
             
         except Exception as e:
-            if 'conn' in locals() and conn:
-                try:
-                    conn.rollback()
-                    conn.close()
-                except:
-                    pass
-            self.send_error(400, f"Invalid JSON payload: {str(e)}")
+            self._send_error_json(400, f"Invalid order payload: {str(e)}")
 
     def handle_post_payment(self):
         content_length = int(self.headers['Content-Length'])
@@ -1327,14 +1559,22 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             elif method.lower() in ("card", "credit card", "credit_card"):
                 method = "Credit Card"
                 
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR REPLACE INTO payments (id, order_id, amount, payment_method, created_at, merchant_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (pay_id, order_id, amount, method, created_at, MERCHANT_ID))
-            conn.commit()
-            conn.close()
+            if not order_id:
+                raise ValueError("order_id is required.")
+            if amount <= 0:
+                raise ValueError("Payment amount must be greater than zero.")
+
+            with closing(get_db_connection()) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id FROM orders WHERE id = ?", (order_id,))
+                if not cursor.fetchone():
+                    raise ValueError(f"Order '{order_id}' not found.")
+
+                cursor.execute('''
+                    INSERT OR REPLACE INTO payments (id, order_id, amount, payment_method, created_at, merchant_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (pay_id, order_id, amount, method, created_at, MERCHANT_ID))
+                conn.commit()
             
             # Best-effort dual-write to Supabase
             supabase_post("payments", {
@@ -1353,35 +1593,28 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"success": True}).encode("utf-8"))
         except Exception as e:
-            if 'conn' in locals() and conn:
-                try:
-                    conn.rollback()
-                    conn.close()
-                except:
-                    pass
             self.send_error(400, f"Error saving payment: {str(e)}")
 
     def handle_get_sessions(self):
         try:
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            if MERCHANT_ID:
-                cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1 AND merchant_id = ?", (MERCHANT_ID,))
-            else:
-                cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1")
-            rows = cursor.fetchall()
-            
-            sessions = []
-            for row in rows:
-                sessions.append({
-                    "id": row["id"],
-                    "tableNumber": row["table_number"],
-                    "sessionToken": row["session_token"],
-                    "createdAt": row["created_at"],
-                    "guestCount": row["guest_count"]
-                })
-            conn.close()
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                if MERCHANT_ID:
+                    cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1 AND merchant_id = ?", (MERCHANT_ID,))
+                else:
+                    cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1")
+                rows = cursor.fetchall()
+                
+                sessions = []
+                for row in rows:
+                    sessions.append({
+                        "id": row["id"],
+                        "tableNumber": row["table_number"],
+                        "sessionToken": row["session_token"],
+                        "createdAt": row["created_at"],
+                        "guestCount": row["guest_count"]
+                    })
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1395,34 +1628,35 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         post_data = self.rfile.read(content_length)
         try:
             data = json.loads(post_data.decode("utf-8"))
+            if not web_ordering_enabled_for_payload(data):
+                self._send_error_json(403, "Web ordering is disabled for this store or branch.")
+                return
             table_number = str(data.get("table_number") or data.get("tableNumber") or "")
             guest_count = int(data.get("guest_count") or data.get("guestCount") or 2)
             if not table_number:
                 self.send_error(400, "table_number is required")
                 return
             
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Check if there is an active session
-            cursor.execute("SELECT session_token FROM table_sessions WHERE table_number = ? AND is_active = 1", (table_number,))
-            row = cursor.fetchone()
-            if row:
-                session_token = row[0]
-            else:
-                session_token = str(uuid.uuid4())
-                session_id = str(uuid.uuid4())
-                created_at = get_utc_now_iso()
-                cursor.execute('''
-                    INSERT INTO table_sessions (id, table_number, session_token, is_active, created_at, guest_count, merchant_id)
-                    VALUES (?, ?, ?, 1, ?, ?, ?)
-                ''', (session_id, table_number, session_token, created_at, guest_count, MERCHANT_ID))
-                cursor.execute('''
-                    UPDATE restaurant_tables SET status = 'occupied' WHERE table_number = ? AND merchant_id = ?
-                ''', (table_number, MERCHANT_ID))
-                conn.commit()
+            with closing(get_db_connection()) as conn:
+                cursor = conn.cursor()
                 
-            conn.close()
+                # Check if there is an active session
+                cursor.execute("SELECT session_token FROM table_sessions WHERE table_number = ? AND is_active = 1", (table_number,))
+                row = cursor.fetchone()
+                if row:
+                    session_token = row[0]
+                else:
+                    session_token = str(uuid.uuid4())
+                    session_id = str(uuid.uuid4())
+                    created_at = get_utc_now_iso()
+                    cursor.execute('''
+                        INSERT INTO table_sessions (id, table_number, session_token, is_active, created_at, guest_count, merchant_id)
+                        VALUES (?, ?, ?, 1, ?, ?, ?)
+                    ''', (session_id, table_number, session_token, created_at, guest_count, MERCHANT_ID))
+                    cursor.execute('''
+                        UPDATE restaurant_tables SET status = 'occupied' WHERE table_number = ? AND merchant_id = ?
+                    ''', (table_number, MERCHANT_ID))
+                    conn.commit()
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1446,20 +1680,19 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "table_number is required")
                 return
             
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            ended_at = get_utc_now_iso()
-            cursor.execute('''
-                UPDATE table_sessions 
-                SET is_active = 0, ended_at = ?
-                WHERE table_number = ? AND is_active = 1
-            ''', (ended_at, table_number))
-            cursor.execute('''
-                UPDATE restaurant_tables SET status = 'vacant' WHERE table_number = ? AND merchant_id = ?
-            ''', (table_number, MERCHANT_ID))
-            conn.commit()
-            conn.close()
+            with closing(get_db_connection()) as conn:
+                cursor = conn.cursor()
+                
+                ended_at = get_utc_now_iso()
+                cursor.execute('''
+                    UPDATE table_sessions 
+                    SET is_active = 0, ended_at = ?
+                    WHERE table_number = ? AND is_active = 1
+                ''', (ended_at, table_number))
+                cursor.execute('''
+                    UPDATE restaurant_tables SET status = 'vacant' WHERE table_number = ? AND merchant_id = ?
+                ''', (table_number, MERCHANT_ID))
+                conn.commit()
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1474,6 +1707,9 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         post_data = self.rfile.read(content_length)
         try:
             data = json.loads(post_data.decode("utf-8"))
+            if not web_ordering_enabled_for_payload(data):
+                self._send_error_json(403, "Web ordering is disabled for this store or branch.")
+                return
             table_number = str(data.get("table_number") or data.get("tableNumber") or "")
             request_type = str(data.get("request_type") or data.get("requestType") or "")
             if not table_number or not request_type:
@@ -1483,14 +1719,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             req_id = str(uuid.uuid4())
             created_at = get_utc_now_iso()
             
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO service_requests (id, table_number, request_type, status, created_at, merchant_id)
-                VALUES (?, ?, ?, 'pending', ?, ?)
-            ''', (req_id, table_number, request_type, created_at, MERCHANT_ID))
-            conn.commit()
-            conn.close()
+            with closing(get_db_connection()) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO service_requests (id, table_number, request_type, status, created_at, merchant_id)
+                    VALUES (?, ?, ?, 'pending', ?, ?)
+                ''', (req_id, table_number, request_type, created_at, MERCHANT_ID))
+                conn.commit()
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1502,22 +1737,21 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 
     def handle_get_requests(self):
         try:
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM service_requests WHERE status = 'pending' ORDER BY created_at ASC")
-            rows = cursor.fetchall()
-            
-            reqs = []
-            for row in rows:
-                reqs.append({
-                    "id": row["id"],
-                    "tableNumber": row["table_number"],
-                    "requestType": row["request_type"],
-                    "status": row["status"],
-                    "createdAt": row["created_at"]
-                })
-            conn.close()
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM service_requests WHERE status = 'pending' ORDER BY created_at ASC")
+                rows = cursor.fetchall()
+                
+                reqs = []
+                for row in rows:
+                    reqs.append({
+                        "id": row["id"],
+                        "tableNumber": row["table_number"],
+                        "requestType": row["request_type"],
+                        "status": row["status"],
+                        "createdAt": row["created_at"]
+                    })
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1541,11 +1775,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 
     def handle_complete_request(self, req_id):
         try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("UPDATE service_requests SET status = 'completed' WHERE id = ?", (req_id,))
-            conn.commit()
-            conn.close()
+            with closing(get_db_connection()) as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE service_requests SET status = 'completed' WHERE id = ?", (req_id,))
+                conn.commit()
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1565,51 +1798,48 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "order_item_id is required")
                 return
             
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            # Find the item's order_id and pricing details to recalculate total
-            cursor.execute("SELECT order_id, price, quantity FROM order_items WHERE id = ?", (order_item_id,))
-            row = cursor.fetchone()
-            if not row:
-                conn.close()
-                self.send_error(404, "Order item not found")
-                return
-            
-            order_id = row["order_id"]
-            
-            # Delete order item
-            cursor.execute("DELETE FROM order_items WHERE id = ?", (order_item_id,))
-            
-            # Recalculate order total
-            cursor.execute("SELECT SUM(price * quantity) FROM order_items WHERE order_id = ?", (order_id,))
-            remaining_subtotal = cursor.fetchone()[0] or 0.0
-            
-            if remaining_subtotal == 0:
-                # No items left, delete the order entirely
-                cursor.execute("DELETE FROM orders WHERE id = ?", (order_id,))
-                conn.commit()
-                conn.close()
-                print(f"Server API [Order Item]: Deleted order item {order_item_id}. Order {order_id} has no items left and was deleted.")
-            else:
-                # Get old total
-                cursor.execute("SELECT total FROM orders WHERE id = ?", (order_id,))
-                old_total = cursor.fetchone()[0] or 0.0
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
                 
-                # We calculate old subtotal as remaining_subtotal + deleted_item_subtotal
-                deleted_subtotal = float(row["price"]) * int(row["quantity"])
-                old_subtotal = remaining_subtotal + deleted_subtotal
+                # Find the item's order_id and pricing details to recalculate total
+                cursor.execute("SELECT order_id, price, quantity FROM order_items WHERE id = ?", (order_item_id,))
+                row = cursor.fetchone()
+                if not row:
+                    self.send_error(404, "Order item not found")
+                    return
                 
-                if old_subtotal > 0:
-                    new_total = (remaining_subtotal / old_subtotal) * old_total
+                order_id = row["order_id"]
+                
+                # Delete order item
+                cursor.execute("DELETE FROM order_items WHERE id = ?", (order_item_id,))
+                
+                # Recalculate order total
+                cursor.execute("SELECT SUM(price * quantity) FROM order_items WHERE order_id = ?", (order_id,))
+                remaining_subtotal = cursor.fetchone()[0] or 0.0
+                
+                if remaining_subtotal == 0:
+                    # No items left, delete the order entirely
+                    cursor.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+                    conn.commit()
+                    print(f"Server API [Order Item]: Deleted order item {order_item_id}. Order {order_id} has no items left and was deleted.")
                 else:
-                    new_total = remaining_subtotal
+                    # Get old total
+                    cursor.execute("SELECT total FROM orders WHERE id = ?", (order_id,))
+                    old_total = cursor.fetchone()[0] or 0.0
                     
-                cursor.execute("UPDATE orders SET total = ? WHERE id = ?", (new_total, order_id))
-                conn.commit()
-                conn.close()
-                print(f"Server API [Order Item]: Deleted order item {order_item_id}. Updated Order {order_id} total to {new_total:.2f}")
+                    # We calculate old subtotal as remaining_subtotal + deleted_item_subtotal
+                    deleted_subtotal = float(row["price"]) * int(row["quantity"])
+                    old_subtotal = remaining_subtotal + deleted_subtotal
+                    
+                    if old_subtotal > 0:
+                        new_total = (remaining_subtotal / old_subtotal) * old_total
+                    else:
+                        new_total = remaining_subtotal
+                        
+                    cursor.execute("UPDATE orders SET total = ? WHERE id = ?", (new_total, order_id))
+                    conn.commit()
+                    print(f"Server API [Order Item]: Deleted order item {order_item_id}. Updated Order {order_id} total to {new_total:.2f}")
                 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1633,22 +1863,20 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 {"tableNumber": "301 (ROOF)", "capacity": 8, "floor": 3}
             ]
             
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            if MERCHANT_ID:
-                cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1 AND merchant_id = ?", (MERCHANT_ID,))
-            else:
-                cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1")
-            active_sessions = {row["table_number"]: dict(row) for row in cursor.fetchall()}
-            
-            table_totals = {}
-            for table_num, sess in active_sessions.items():
-                cursor.execute("SELECT SUM(total) FROM orders WHERE table_number = ? AND created_at >= ?", (table_num, sess["created_at"]))
-                total = cursor.fetchone()[0] or 0.0
-                table_totals[table_num] = total
-            
-            conn.close()
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                if MERCHANT_ID:
+                    cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1 AND merchant_id = ?", (MERCHANT_ID,))
+                else:
+                    cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1")
+                active_sessions = {row["table_number"]: dict(row) for row in cursor.fetchall()}
+                
+                table_totals = {}
+                for table_num, sess in active_sessions.items():
+                    cursor.execute("SELECT SUM(total) FROM orders WHERE table_number = ? AND created_at >= ?", (table_num, sess["created_at"]))
+                    total = cursor.fetchone()[0] or 0.0
+                    table_totals[table_num] = total
             
             tables = []
             for t in static_tables:
@@ -1698,104 +1926,102 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 {"tableNumber": "301 (ROOF)", "capacity": 8, "floor": 3}
             ]
             
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1")
-            active_sessions = {row["table_number"]: dict(row) for row in cursor.fetchall()}
-            
-            table_totals = {}
-            for table_num, sess in active_sessions.items():
-                cursor.execute("SELECT SUM(total) FROM orders WHERE table_number = ? AND created_at >= ?", (table_num, sess["created_at"]))
-                total = cursor.fetchone()[0] or 0.0
-                table_totals[table_num] = total
-            
-            tables = []
-            for t in static_tables:
-                num = t["tableNumber"]
-                session = active_sessions.get(num)
-                status = "vacant"
-                guest_count = 0
-                session_token = None
-                total = 0.0
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
                 
-                if session:
-                    status = "occupied"
-                    guest_count = session.get("guest_count", 2)
-                    session_token = session["session_token"]
-                    total = table_totals.get(num, 0.0)
+                cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1")
+                active_sessions = {row["table_number"]: dict(row) for row in cursor.fetchall()}
                 
-                tables.append({
-                    "tableNumber": num,
-                    "capacity": t["capacity"],
-                    "floor": t["floor"],
-                    "status": status,
-                    "guestCount": guest_count,
-                    "sessionToken": session_token,
-                    "currentTotal": total
-                })
+                table_totals = {}
+                for table_num, sess in active_sessions.items():
+                    cursor.execute("SELECT SUM(total) FROM orders WHERE table_number = ? AND created_at >= ?", (table_num, sess["created_at"]))
+                    total = cursor.fetchone()[0] or 0.0
+                    table_totals[table_num] = total
                 
-            cursor.execute("SELECT * FROM service_requests WHERE status = 'pending' ORDER BY created_at ASC")
-            req_rows = cursor.fetchall()
-            
-            requests = []
-            for row in req_rows:
-                requests.append({
-                    "id": row["id"],
-                    "tableNumber": row["table_number"],
-                    "requestType": row["request_type"],
-                    "status": row["status"],
-                    "createdAt": row["created_at"]
-                })
-                
-            # Query active/preparing/ready orders
-            cursor.execute("SELECT * FROM orders WHERE status IN ('preparing', 'ready') ORDER BY created_at DESC")
-            order_rows = cursor.fetchall()
-            
-            orders = []
-            for order_row in order_rows:
-                order_id = order_row["id"]
-                
-                cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
-                item_rows = cursor.fetchall()
-                
-                items = []
-                for item_row in item_rows:
-                    items.append({
-                        "id": item_row["id"],
-                        "name": item_row["item_name"],
-                        "quantity": item_row["quantity"],
-                        "price": item_row["price"],
-                        "status": item_row["status"],
-                        "item_id": item_row["item_id"]
+                tables = []
+                for t in static_tables:
+                    num = t["tableNumber"]
+                    session = active_sessions.get(num)
+                    status = "vacant"
+                    guest_count = 0
+                    session_token = None
+                    total = 0.0
+                    
+                    if session:
+                        status = "occupied"
+                        guest_count = session.get("guest_count", 2)
+                        session_token = session["session_token"]
+                        total = table_totals.get(num, 0.0)
+                    
+                    tables.append({
+                        "tableNumber": num,
+                        "capacity": t["capacity"],
+                        "floor": t["floor"],
+                        "status": status,
+                        "guestCount": guest_count,
+                        "sessionToken": session_token,
+                        "currentTotal": total
                     })
+                    
+                cursor.execute("SELECT * FROM service_requests WHERE status = 'pending' ORDER BY created_at ASC")
+                req_rows = cursor.fetchall()
                 
-                # Fetch payments for this order
-                cursor.execute("SELECT * FROM payments WHERE order_id = ?", (order_id,))
-                payment_rows = cursor.fetchall()
-                payments = []
-                for p_row in payment_rows:
-                    payments.append({
-                        "id": p_row["id"],
-                        "orderId": p_row["order_id"],
-                        "amount": p_row["amount"],
-                        "paymentMethod": p_row["payment_method"],
-                        "createdAt": p_row["created_at"]
+                requests = []
+                for row in req_rows:
+                    requests.append({
+                        "id": row["id"],
+                        "tableNumber": row["table_number"],
+                        "requestType": row["request_type"],
+                        "status": row["status"],
+                        "createdAt": row["created_at"]
                     })
+                    
+                # Query active/preparing/ready orders
+                cursor.execute("SELECT * FROM orders WHERE status IN ('preparing', 'ready') ORDER BY created_at DESC")
+                order_rows = cursor.fetchall()
                 
-                orders.append({
-                    "id": order_row["id"],
-                    "orderNumber": order_row["order_number"],
-                    "tableNumber": order_row["table_number"],
-                    "total": order_row["total"],
-                    "status": order_row["status"],
-                    "createdAt": order_row["created_at"],
-                    "items": items,
-                    "payments": payments
-                })
-                
-            conn.close()
+                orders = []
+                for order_row in order_rows:
+                    order_id = order_row["id"]
+                    
+                    cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
+                    item_rows = cursor.fetchall()
+                    
+                    items = []
+                    for item_row in item_rows:
+                        items.append({
+                            "id": item_row["id"],
+                            "name": item_row["item_name"],
+                            "quantity": item_row["quantity"],
+                            "price": item_row["price"],
+                            "status": item_row["status"],
+                            "item_id": item_row["item_id"]
+                        })
+                    
+                    # Fetch payments for this order
+                    cursor.execute("SELECT * FROM payments WHERE order_id = ?", (order_id,))
+                    payment_rows = cursor.fetchall()
+                    payments = []
+                    for p_row in payment_rows:
+                        payments.append({
+                            "id": p_row["id"],
+                            "orderId": p_row["order_id"],
+                            "amount": p_row["amount"],
+                            "paymentMethod": p_row["payment_method"],
+                            "createdAt": p_row["created_at"]
+                        })
+                    
+                    orders.append({
+                        "id": order_row["id"],
+                        "orderNumber": order_row["order_number"],
+                        "tableNumber": order_row["table_number"],
+                        "total": order_row["total"],
+                        "status": order_row["status"],
+                        "createdAt": order_row["created_at"],
+                        "items": items,
+                        "payments": payments
+                    })
             
             sync_data = {
                 "tables": tables,
@@ -1813,32 +2039,31 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 
     def handle_get_employees(self):
         try:
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM employees")
-            rows = cursor.fetchall()
-            
-            employees = []
-            for row in rows:
-                employees.append({
-                    "id": row["id"],
-                    "firstName": row["first_name"],
-                    "lastName": row["last_name"],
-                    "phone": row["phone"],
-                    "nationalId": row["national_id"],
-                    "employmentType": row["employment_type"],
-                    "payRate": row["pay_rate"],
-                    "username": row["username"],
-                    "role": row["role"]
-                })
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM employees")
+                rows = cursor.fetchall()
+                
+                employees = []
+                for row in rows:
+                    employees.append({
+                        "id": row["id"],
+                        "firstName": row["first_name"],
+                        "lastName": row["last_name"],
+                        "phone": row["phone"],
+                        "nationalId": row["national_id"],
+                        "employmentType": row["employment_type"],
+                        "payRate": row["pay_rate"],
+                        "username": row["username"],
+                        "role": row["role"]
+                    })
             
             response_data = json.dumps(employees).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(response_data)
-            conn.close()
         except Exception as e:
             self.send_error(500, f"Database error: {str(e)}")
 
@@ -1865,11 +2090,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 return
             attempts.append(now)
 
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT pin_hash FROM employees WHERE id = ?", (employee_id,))
-            row = cursor.fetchone()
-            conn.close()
+            with closing(get_db_connection()) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT pin_hash FROM employees WHERE id = ?", (employee_id,))
+                row = cursor.fetchone()
 
             # Always use constant-time comparison to prevent timing attacks
             if row:
@@ -1891,44 +2115,104 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_error(500, f"Database error: {str(e)}")
 
+    def handle_get_merchants(self):
+        try:
+            if SUPABASE_URL and SUPABASE_ANON_KEY:
+                import urllib.request
+                import json
+                url = f"{SUPABASE_URL}/rest/v1/merchants?select=id,name,kitchen_workflow_required,is_table_system_enabled,is_web_ordering_enabled"
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "apikey": SUPABASE_ANON_KEY,
+                        "Authorization": f"Bearer {SUPABASE_ANON_KEY}"
+                    }
+                )
+                try:
+                    with urllib.request.urlopen(req) as res:
+                        data = json.loads(res.read().decode("utf-8"))
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        self.wfile.write(json.dumps(data).encode("utf-8"))
+                        return
+                except Exception as ex:
+                    print(f"Error querying remote merchants: {ex}")
+
+            try:
+                with closing(get_db_connection()) as conn:
+                    conn.row_factory = sqlite3.Row
+                    rows = conn.execute('''
+                        SELECT id, name, branch_code, kitchen_workflow_required,
+                               is_table_system_enabled, is_web_ordering_enabled
+                        FROM merchants
+                        ORDER BY name ASC
+                    ''').fetchall()
+                    if rows:
+                        self._send_json_response(200, [{
+                            "id": row["id"],
+                            "name": row["name"],
+                            "branch_code": row["branch_code"],
+                            "kitchen_workflow_required": _as_bool(row["kitchen_workflow_required"], False),
+                            "is_table_system_enabled": _as_bool(row["is_table_system_enabled"]),
+                            "is_web_ordering_enabled": _as_bool(row["is_web_ordering_enabled"])
+                        } for row in rows])
+                        return
+            except Exception as local_ex:
+                print(f"Error querying local merchants: {local_ex}")
+            
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps([{
+                "id": MERCHANT_ID or "163350b0-056d-4d5e-b5d4-24e7aac5ab6d",
+                "name": "AlphaPos HQ",
+                "kitchen_workflow_required": False,
+                "is_table_system_enabled": True,
+                "is_web_ordering_enabled": True
+            }]).encode("utf-8"))
+        except Exception as e:
+            self.send_error(500, f"Error fetching merchant settings: {str(e)}")
+
     def handle_get_timecards(self):
         try:
             parsed_path = urllib.parse.urlparse(self.path)
             query_params = urllib.parse.parse_qs(parsed_path.query)
             employee_id = query_params.get("employee_id", [None])[0]
             
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            if employee_id:
-                cursor.execute("SELECT * FROM timecards WHERE employee_id = ? ORDER BY clock_in DESC", (employee_id,))
-            else:
-                cursor.execute("SELECT * FROM timecards ORDER BY clock_in DESC")
-            rows = cursor.fetchall()
-            
-            timecards = []
-            for row in rows:
-                timecards.append({
-                    "id": row["id"],
-                    "employeeId": row["employee_id"],
-                    "employeeName": row["employee_name"],
-                    "clockIn": row["clock_in"],
-                    "clockOut": row["clock_out"],
-                    "breakDurationMinutes": row["break_duration"],
-                    "overtimeMinutes": row["overtime_minutes"],
-                    "status": row["status"],
-                    "notes": row["notes"],
-                    "clockInFaceConfidence": row["clock_in_confidence"],
-                    "clockOutFaceConfidence": row["clock_out_confidence"]
-                })
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                if employee_id:
+                    cursor.execute("SELECT * FROM timecards WHERE employee_id = ? ORDER BY clock_in DESC", (employee_id,))
+                else:
+                    cursor.execute("SELECT * FROM timecards ORDER BY clock_in DESC")
+                rows = cursor.fetchall()
+                
+                timecards = []
+                for row in rows:
+                    timecards.append({
+                        "id": row["id"],
+                        "employeeId": row["employee_id"],
+                        "employeeName": row["employee_name"],
+                        "clockIn": row["clock_in"],
+                        "clockOut": row["clock_out"],
+                        "breakDurationMinutes": row["break_duration"],
+                        "overtimeMinutes": row["overtime_minutes"],
+                        "status": row["status"],
+                        "notes": row["notes"],
+                        "clockInFaceConfidence": row["clock_in_confidence"],
+                        "clockOutFaceConfidence": row["clock_out_confidence"]
+                    })
             
             response_data = json.dumps(timecards).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(response_data)
-            conn.close()
         except Exception as e:
             self.send_error(500, f"Database error: {str(e)}")
 
@@ -1966,34 +2250,33 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             clock_in_confidence = data.get("clock_in_confidence") or data.get("clockInFaceConfidence")
             clock_out_confidence = data.get("clock_out_confidence") or data.get("clockOutFaceConfidence")
 
-            conn = get_db_connection()
-            cursor = conn.cursor()
+            with closing(get_db_connection()) as conn:
+                cursor = conn.cursor()
 
-            if not employee_id:
-                first_name = employee_name.split(" ")[0]
-                cursor.execute("SELECT id FROM employees WHERE first_name LIKE ? OR username LIKE ?", (first_name, first_name.lower()))
-                row = cursor.fetchone()
-                if row:
-                    employee_id = row[0]
+                if not employee_id:
+                    first_name = employee_name.split(" ")[0]
+                    cursor.execute("SELECT id FROM employees WHERE first_name LIKE ? OR username LIKE ?", (first_name, first_name.lower()))
+                    row = cursor.fetchone()
+                    if row:
+                        employee_id = row[0]
+                    else:
+                        employee_id = "11111111-1111-1111-1111-111111111111"
+
+                cursor.execute("SELECT id FROM timecards WHERE id = ?", (tc_id,))
+                exists = cursor.fetchone()
+                if exists:
+                    cursor.execute('''
+                        UPDATE timecards
+                        SET clock_out = ?, break_duration = ?, overtime_minutes = ?, status = ?, notes = ?, clock_out_confidence = ?
+                        WHERE id = ?
+                    ''', (clock_out, break_duration, overtime_minutes, status, notes, clock_out_confidence, tc_id))
                 else:
-                    employee_id = "11111111-1111-1111-1111-111111111111"
-
-            cursor.execute("SELECT id FROM timecards WHERE id = ?", (tc_id,))
-            exists = cursor.fetchone()
-            if exists:
-                cursor.execute('''
-                    UPDATE timecards
-                    SET clock_out = ?, break_duration = ?, overtime_minutes = ?, status = ?, notes = ?, clock_out_confidence = ?
-                    WHERE id = ?
-                ''', (clock_out, break_duration, overtime_minutes, status, notes, clock_out_confidence, tc_id))
-            else:
-                cursor.execute('''
-                    INSERT INTO timecards (id, employee_id, employee_name, clock_in, clock_out, break_duration, overtime_minutes, status, notes, clock_in_confidence, clock_out_confidence)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (tc_id, employee_id, employee_name, clock_in, clock_out, break_duration, overtime_minutes, status, notes, clock_in_confidence, clock_out_confidence))
-            
-            conn.commit()
-            conn.close()
+                    cursor.execute('''
+                        INSERT INTO timecards (id, employee_id, employee_name, clock_in, clock_out, break_duration, overtime_minutes, status, notes, clock_in_confidence, clock_out_confidence)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (tc_id, employee_id, employee_name, clock_in, clock_out, break_duration, overtime_minutes, status, notes, clock_in_confidence, clock_out_confidence))
+                
+                conn.commit()
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2008,29 +2291,29 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         try:
             # Try to sync remote promotions to local SQLite first (failsafe)
             try:
-                conn = get_db_connection()
-                sync_promotions_from_supabase(conn)
+                with closing(get_db_connection()) as conn:
+                    sync_promotions_from_supabase(conn)
             except Exception as e:
                 print(f"Server API [Promotion]: Skipped sync during fetch: {str(e)}")
             
             # Fetch active, non-deleted promotions from local SQLite
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, title, promo_description, image_data, is_active, is_deleted, updated_at FROM promotions WHERE is_active = 1 AND is_deleted = 0 ORDER BY updated_at DESC")
-            rows = cursor.fetchall()
-            
-            promotions = []
-            for row in rows:
-                promotions.append({
-                    "id": row["id"],
-                    "title": row["title"],
-                    "promoDescription": row["promo_description"],
-                    "imageData": row["image_data"],
-                    "isActive": bool(row["is_active"]),
-                    "isDeleted": bool(row["is_deleted"]),
-                    "updatedAt": row["updated_at"]
-                })
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, title, promo_description, image_data, is_active, is_deleted, updated_at FROM promotions WHERE is_active = 1 AND is_deleted = 0 ORDER BY updated_at DESC")
+                rows = cursor.fetchall()
+                
+                promotions = []
+                for row in rows:
+                    promotions.append({
+                        "id": row["id"],
+                        "title": row["title"],
+                        "promoDescription": row["promo_description"],
+                        "imageData": row["image_data"],
+                        "isActive": bool(row["is_active"]),
+                        "isDeleted": bool(row["is_deleted"]),
+                        "updatedAt": row["updated_at"]
+                    })
             
             response_data = json.dumps(promotions).encode("utf-8")
             self.send_response(200)
@@ -2069,21 +2352,21 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             }
             
             # Save to SQLite local DB cache first
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, is_active, is_deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    promo_id,
-                    title,
-                    promo_desc or "",
-                    image_data or "",
-                    1 if is_active else 0,
-                    1 if is_deleted else 0,
-                    updated_at
+            with closing(get_db_connection()) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, is_active, is_deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        promo_id,
+                        title,
+                        promo_desc or "",
+                        image_data or "",
+                        1 if is_active else 0,
+                        1 if is_deleted else 0,
+                        updated_at
+                    )
                 )
-            )
-            conn.commit()
+                conn.commit()
             
             success, _ = supabase_request("POST", "promotions", payload, {"on_conflict": "id"})
             
@@ -2111,13 +2394,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 return
             
             # Soft-delete on local SQLite database first
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE promotions SET is_deleted = 1, updated_at = ? WHERE id = ?",
-                (get_utc_now_iso(), promo_id)
-            )
-            conn.commit()
+            with closing(get_db_connection()) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE promotions SET is_deleted = 1, updated_at = ? WHERE id = ?",
+                    (get_utc_now_iso(), promo_id)
+                )
+                conn.commit()
             
             # Soft-delete on Supabase (matching Staff app behavior)
             payload = {
@@ -2138,23 +2421,21 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 
     def handle_get_modifiers_config(self):
         try:
-            conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            # 1. Fetch groups
-            cursor.execute("SELECT id, name, min_selection, max_selection, merchant_id FROM modifier_groups")
-            groups = [dict(r) for r in cursor.fetchall()]
-            
-            # 2. Fetch modifiers
-            cursor.execute("SELECT id, modifier_group_id, name, extra_price, is_available, merchant_id FROM modifiers")
-            mods = [dict(r) for r in cursor.fetchall()]
-            
-            # 3. Fetch links
-            cursor.execute("SELECT menu_item_id, modifier_group_id, merchant_id FROM menu_item_modifier_groups")
-            links = [dict(r) for r in cursor.fetchall()]
-            
-            conn.close()
+            with closing(get_db_connection()) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                # 1. Fetch groups
+                cursor.execute("SELECT id, name, min_selection, max_selection, merchant_id FROM modifier_groups")
+                groups = [dict(r) for r in cursor.fetchall()]
+                
+                # 2. Fetch modifiers
+                cursor.execute("SELECT id, modifier_group_id, name, extra_price, is_available, merchant_id FROM modifiers")
+                mods = [dict(r) for r in cursor.fetchall()]
+                
+                # 3. Fetch links
+                cursor.execute("SELECT menu_item_id, modifier_group_id, merchant_id FROM menu_item_modifier_groups")
+                links = [dict(r) for r in cursor.fetchall()]
             
             response_data = json.dumps({
                 "groups": groups,

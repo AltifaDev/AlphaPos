@@ -52,8 +52,10 @@ class HybridLocationVerifier {
         // 1. Check Wi-Fi Layer First (IP Check)
         if (this.simulatedNetwork === "wifi") {
             const ip = this.restaurantWifiIp;
-            document.getElementById("simulatedIp").innerText = ip;
-            document.getElementById("simulatedDistance").innerText = this.translate("wifiNoDistance", "Not required (On Guest Wi-Fi)");
+            const ipEl = document.getElementById("simulatedIp");
+            if (ipEl) ipEl.innerText = ip;
+            const distEl = document.getElementById("simulatedDistance");
+            if (distEl) distEl.innerText = this.translate("wifiNoDistance", "Not required (On Guest Wi-Fi)");
             
             this.isValid = true;
             this.updateBanner(
@@ -67,11 +69,13 @@ class HybridLocationVerifier {
 
         // 2. Fallback to Cellular / GPS Layer
         const cellularIp = "182.52.112.89"; // Simulated cellular carrier IP
-        document.getElementById("simulatedIp").innerText = cellularIp;
+        const ipEl = document.getElementById("simulatedIp");
+        if (ipEl) ipEl.innerText = cellularIp;
 
         if (this.simulatedGpsType === "denied") {
             this.isValid = false;
-            document.getElementById("simulatedDistance").innerText = this.translate("gpsUnavailable", "Unavailable");
+            const distEl = document.getElementById("simulatedDistance");
+            if (distEl) distEl.innerText = this.translate("gpsUnavailable", "Unavailable");
             this.updateBanner(
                 "restricted", 
                 this.translate("orderingBlocked", "Ordering Blocked"), 
@@ -104,7 +108,8 @@ class HybridLocationVerifier {
             this.restaurantCoords.lng
         );
 
-        document.getElementById("simulatedDistance").innerText = this.distance.toFixed(1) + " " + this.translate("meters", "meters");
+        const distEl = document.getElementById("simulatedDistance");
+        if (distEl) distEl.innerText = this.distance.toFixed(1) + " " + this.translate("meters", "meters");
 
         // Validate Distance limit (50 meters Geofence)
         if (this.distance <= 50) {

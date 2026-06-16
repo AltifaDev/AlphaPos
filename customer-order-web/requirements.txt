@@ -4,3 +4,5 @@ pydantic
 python-dotenv
 requests
 python-multipart
+selenium
+webdriver-manager

@@ -17,14 +17,29 @@
 
     <!-- Onboarding Check-in Wizard Overlay -->
     <div id="onboardingWizard" class="onboarding-overlay" role="dialog" aria-modal="true" aria-label="Table check-in wizard">
+        <!-- Step 0: Brand Loading -->
+        <div id="onboardingLoading" class="onboarding-card loading-card active">
+            <div class="brand-loader">
+                <span class="brand-loader-ring"></span>
+                <span class="brand-loader-mark">A</span>
+            </div>
+            <h2 id="loadingBrandTitle">AlphaPos</h2>
+            <p id="loadingBrandDesc">Preparing your table...</p>
+            <div class="loading-skeleton-stack" aria-hidden="true">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </div>
+
         <!-- Step 1: Welcome & Verification -->
-        <div id="onboardingStep1" class="onboarding-card active">
+        <div id="onboardingStep1" class="onboarding-card">
             <div class="onboarding-header anim-fade-in-scale">
                 <div class="logo-animation-container">
                     <span class="logo-pulse-circle"></span>
                     <span class="logo-pulse-circle delay-1"></span>
                     <span class="logo-pulse-circle delay-2"></span>
-                    <span class="logo-icon">🍽️</span>
+                    <span class="logo-icon app-icon icon-utensils" aria-hidden="true"></span>
                 </div>
                 <h2><span data-translate-key="welcomeTable">Welcome to Table</span> <span id="welcomeTableNum">--</span></h2>
                 <p class="subtitle" data-translate-key="diningExperience">AlphaPos Dining Experience</p>
@@ -50,7 +65,7 @@
         <!-- Step 2: Guest Pax Selection -->
         <div id="onboardingStep2" class="onboarding-card">
             <div class="onboarding-header anim-fade-in-down">
-                <span class="onboarding-emoji">👥</span>
+                <span class="onboarding-emoji app-icon icon-users" aria-hidden="true"></span>
                 <h2 data-translate-key="selectGuests">Select Number of Guests</h2>
                 <p data-translate-key="howManyPeople">How many people are dining at your table?</p>
             </div>
@@ -135,10 +150,10 @@
                     </div>
                 </div>
                 <button id="themeToggleBtn" class="theme-toggle-btn" aria-label="Toggle Theme" onclick="app.toggleTheme()">
-                    <span class="theme-toggle-icon">🌙</span>
+                    <span class="theme-toggle-icon app-icon icon-moon" aria-hidden="true"></span>
                 </button>
                 <div class="table-badge" id="tableBadge">
-                    <span class="table-icon">🪑</span>
+                    <span class="table-icon app-icon icon-table" aria-hidden="true"></span>
                     <span class="table-text">Table --</span>
                 </div>
             </div>
@@ -147,12 +162,21 @@
 
         <!-- Dynamic Security HUD Banner (Hidden in CSS, runs in background) -->
         <div id="securityBanner" class="security-banner checking">
-            <div class="banner-icon">📡</div>
+            <div class="banner-icon app-icon icon-signal" aria-hidden="true"></div>
             <div class="banner-content">
                 <div class="banner-title" id="bannerTitle">Verifying Location...</div>
                 <div class="banner-desc" id="bannerDesc">Checking Wi-Fi and GPS signal...</div>
             </div>
             <div class="spinner" id="bannerSpinner"></div>
+        </div>
+
+        <div id="syncHealthPanel" class="sync-health-panel synced" aria-live="polite">
+            <div class="sync-health-main">
+                <span class="sync-health-dot"></span>
+                <span id="syncHealthTitle" class="sync-health-title">Synced</span>
+                <span id="syncHealthMeta" class="sync-health-meta">0 pending</span>
+            </div>
+            <button id="syncRetryBtn" class="sync-health-retry hide" type="button" onclick="app.retrySyncQueue()">Retry</button>
         </div>
 
         <!-- Promotions Banner Carousel -->
@@ -174,16 +198,16 @@
         <!-- Main Navigation Tabs -->
         <nav class="app-nav-tabs anim-fade-in-down" role="tablist" aria-label="App sections">
             <button id="navTabMenu" class="nav-tab active" role="tab" aria-selected="true" aria-controls="menuView" onclick="app.switchView('menu')">
-                <span class="nav-tab-icon">📖</span>
+                <span class="nav-tab-icon app-icon icon-menu" aria-hidden="true"></span>
                 <span class="nav-tab-text" data-translate-key="menuTab">Menu</span>
             </button>
             <button id="navTabStatus" class="nav-tab" role="tab" aria-selected="false" aria-controls="statusView" onclick="app.switchView('status')">
-                <span class="nav-tab-icon">⏳</span>
+                <span class="nav-tab-icon app-icon icon-clock" aria-hidden="true"></span>
                 <span class="nav-tab-text" data-translate-key="statusTab">Status</span>
                 <span id="statusTabBadge" class="status-tab-badge hide">0</span>
             </button>
             <button id="navTabService" class="nav-tab" role="tab" aria-selected="false" aria-controls="serviceView" onclick="app.switchView('service')">
-                <span class="nav-tab-icon">🛎️</span>
+                <span class="nav-tab-icon app-icon icon-bell" aria-hidden="true"></span>
                 <span class="nav-tab-text" data-translate-key="callStaffTab">Call Staff</span>
             </button>
         </nav>
@@ -216,7 +240,7 @@
                         <!-- Menu items will be rendered dynamically -->
                     </div>
                     <div class="search-empty-state" id="searchEmptyState">
-                        <span class="search-empty-icon">🔍</span>
+                        <span class="search-empty-icon app-icon icon-search" aria-hidden="true"></span>
                         <p class="search-empty-text" data-translate-key="noSearchResults">No items found</p>
                     </div>
                 </section>
@@ -262,27 +286,27 @@
                 
                 <div class="service-grid">
                     <button class="service-capsule anim-fade-in-up anim-delay-1" onclick="app.sendServiceRequest('Bill (Cash)')">
-                        <span class="service-icon">💵</span>
+                        <span class="service-icon app-icon icon-cash" aria-hidden="true"></span>
                         <span class="service-label" data-translate-key="payCash">Pay Cash</span>
                     </button>
                     <button class="service-capsule anim-fade-in-up anim-delay-2" onclick="app.sendServiceRequest('Bill (Card)')">
-                        <span class="service-icon">💳</span>
+                        <span class="service-icon app-icon icon-card" aria-hidden="true"></span>
                         <span class="service-label" data-translate-key="payCard">Pay Card</span>
                     </button>
                     <button class="service-capsule anim-fade-in-up anim-delay-3" onclick="app.sendServiceRequest('Bill (QR)')">
-                        <span class="service-icon">📱</span>
+                        <span class="service-icon app-icon icon-phone" aria-hidden="true"></span>
                         <span class="service-label" data-translate-key="payQR">Pay QR</span>
                     </button>
                     <button class="service-capsule anim-fade-in-up anim-delay-4" onclick="app.sendServiceRequest('Ice/Water')">
-                        <span class="service-icon">🥛</span>
+                        <span class="service-icon app-icon icon-water" aria-hidden="true"></span>
                         <span class="service-label" data-translate-key="getWater">Get Water</span>
                     </button>
                     <button class="service-capsule anim-fade-in-up anim-delay-5" onclick="app.sendServiceRequest('Extra Utensils')">
-                        <span class="service-icon">🍴</span>
+                        <span class="service-icon app-icon icon-utensils" aria-hidden="true"></span>
                         <span class="service-label" data-translate-key="utensils">Utensils</span>
                     </button>
                     <button class="service-capsule anim-fade-in-up anim-delay-6" onclick="app.sendServiceRequest('General Help')">
-                        <span class="service-icon">🙋‍♂️</span>
+                        <span class="service-icon app-icon icon-help" aria-hidden="true"></span>
                         <span class="service-label" data-translate-key="callStaffBtn">Call Staff</span>
                     </button>
                 </div>
@@ -318,7 +342,7 @@
                     <div class="drawer-notch"></div>
                     <div class="drawer-title-row">
                         <h3 data-translate-key="yourOrderTray">Your Order Tray</h3>
-                        <button class="close-drawer-btn" onclick="app.toggleCartDrawer(false)">✕</button>
+                        <button class="close-drawer-btn" type="button" aria-label="Close cart" onclick="app.toggleCartDrawer(false)">✕</button>
                     </div>
                 </div>
                 <div class="drawer-body">
@@ -359,58 +383,13 @@
             </div>
         </div>
 
-        <!-- Developer Simulator Panel (Floating toggle at the bottom for demo purposes) -->
-        <div class="dev-panel" id="devPanel">
-            <div class="dev-panel-header" onclick="app.toggleDevPanel()">
-                <div class="dev-title" data-translate-key="devTitle">🛠️ Hybrid Security Simulator</div>
-                <div class="dev-toggle-icon" id="devToggleIcon">▲</div>
-            </div>
-            <div class="dev-panel-body" id="devPanelBody">
-                <div class="dev-section">
-                    <label class="dev-label" data-translate-key="devNetworkType">Connection Network Type</label>
-                    <div class="dev-radio-group">
-                        <label class="dev-radio">
-                            <input type="radio" name="networkType" value="wifi" checked onchange="locationVerifier.simulateNetworkChange('wifi')">
-                            <span data-translate-key="devWifi">Guest Wi-Fi (Same IP)</span>
-                        </label>
-                        <label class="dev-radio">
-                            <input type="radio" name="networkType" value="cellular" onchange="locationVerifier.simulateNetworkChange('cellular')">
-                            <span data-translate-key="devCellular">Cellular 5G/4G (External IP)</span>
-                        </label>
-                    </div>
-                </div>
 
-                <div class="dev-section">
-                    <label class="dev-label" data-translate-key="devGpsSim">GPS Coordinate Simulation</label>
-                    <div class="dev-radio-group">
-                        <label class="dev-radio">
-                            <input type="radio" name="gpsLocation" value="inside" checked onchange="locationVerifier.simulateGpsChange('inside')">
-                            <span data-translate-key="devInside">Inside Restaurant (~15m)</span>
-                        </label>
-                        <label class="dev-radio">
-                            <input type="radio" name="gpsLocation" value="outside" onchange="locationVerifier.simulateGpsChange('outside')">
-                            <span data-translate-key="devOutside">Outside Restaurant (~4.5km)</span>
-                        </label>
-                        <label class="dev-radio">
-                            <input type="radio" name="gpsLocation" value="denied" onchange="locationVerifier.simulateGpsChange('denied')">
-                            <span data-translate-key="devGpsDenied">GPS Denied / Off</span>
-                        </label>
-                    </div>
-                </div>
-
-                <div class="dev-info-box">
-                    <div><strong data-translate-key="devRestCoord">Restaurant Coordinate:</strong> <span class="monospaced">13.7563, 100.5018</span></div>
-                    <div><strong data-translate-key="devSimIp">Simulated Device IP:</strong> <span id="simulatedIp" class="monospaced">192.168.1.100</span></div>
-                    <div><strong data-translate-key="devCalcDist">Calculated Distance:</strong> <span id="simulatedDistance" class="monospaced">0m</span></div>
-                </div>
-            </div>
-        </div>
     </div>
 
     <!-- Product Detail Modal -->
     <div id="productDetailModal" class="product-modal-overlay" onclick="app.closeProductDetailModal()" role="dialog" aria-modal="true" aria-label="Product details">
         <div class="product-modal-content" onclick="event.stopPropagation()">
-            <button class="close-modal-btn" onclick="app.closeProductDetailModal()">✕</button>
+            <button class="close-modal-btn" type="button" aria-label="Close product details" onclick="app.closeProductDetailModal()">✕</button>
             <div class="modal-hero-image" id="modalProductImage"></div>
             <div class="modal-body">
                 <h2 class="modal-title" id="modalProductTitle">Product Title</h2>
@@ -449,6 +428,6 @@
     <!-- Script imports -->
     <script src="config.js"></script>
     <script src="hybrid-location.js"></script>
-    <script type="module" src="app.js"></script>
+    <script type="module" src="app.js?v=7"></script>
 </body>
 </html>

@@ -17,6 +17,9 @@ export const translations = {
                 // Onboarding Step 3
                 checkinComplete: "เช็คอินเสร็จสิ้น!",
                 settingUp: "กำลังตั้งค่าสำหรับโต๊ะของคุณ...",
+                preparingTable: "กำลังเตรียมโต๊ะของคุณ...",
+                checkingTable: "กำลังตรวจสอบสถานะโต๊ะ...",
+                resumingSession: "กำลังเข้าสู่เซสชันโต๊ะของคุณ...",
                 
                 // Search
                 searchPlaceholder: "ค้นหาเมนู...",
@@ -69,7 +72,7 @@ export const translations = {
                 noteLabel: "หมายเหตุ",
                 
                 // Hybrid Security Simulator
-                devTitle: "🛠️ โปรแกรมจำลองความปลอดภัย Hybrid",
+                devTitle: "โปรแกรมจำลองความปลอดภัย Hybrid",
                 devNetworkType: "ประเภทเครือข่ายเชื่อมต่อ",
                 devWifi: "Guest Wi-Fi (IP ตรงกัน)",
                 devCellular: "เครือข่ายมือถือ 5G/4G (IP ภายนอก)",
@@ -85,13 +88,13 @@ export const translations = {
                 verifyingLocationMsg: "กำลังตรวจสอบตำแหน่ง...",
                 checkingWifiGps: "กำลังตรวจสอบสัญญาณ Wi-Fi และ GPS...",
                 orderingActive: "ระบบสั่งอาหารเปิดอยู่",
-                verifiedWifi: "🟢 ยืนยันตำแหน่งผ่าน Wi-Fi ร้านแล้ว (IP: {ip})",
+                verifiedWifi: "ยืนยันตำแหน่งผ่าน Wi-Fi ร้านแล้ว (IP: {ip})",
                 gpsUnavailable: "ไม่สามารถเข้าถึงได้",
                 orderingBlocked: "ระบบสั่งอาหารปิดอยู่",
-                gpsDeniedMsg: "🔴 ปฏิเสธการเข้าถึง GPS กรุณาเชื่อมต่อ Wi-Fi ร้าน หรืออนุญาตสิทธิ์เข้าถึงพิกัด",
+                gpsDeniedMsg: "ปฏิเสธการเข้าถึง GPS กรุณาเชื่อมต่อ Wi-Fi ร้าน หรืออนุญาตสิทธิ์เข้าถึงพิกัด",
                 meters: "เมตร",
-                gpsInsideMsg: "🟢 ยืนยันตำแหน่งผ่าน GPS สำเร็จ (ระยะห่าง {dist}ม. ภายในร้าน)",
-                gpsOutsideMsg: "🔴 คุณอยู่นอกร้านอาหารประมาณ {dist}กม. กรุณาเชื่อมต่อ Wi-Fi ร้านเพื่อสั่งอาหาร",
+                gpsInsideMsg: "ยืนยันตำแหน่งผ่าน GPS สำเร็จ (ระยะห่าง {dist}ม. ภายในร้าน)",
+                gpsOutsideMsg: "คุณอยู่นอกร้านอาหารประมาณ {dist}กม. กรุณาเชื่อมต่อ Wi-Fi ร้านเพื่อสั่งอาหาร",
                 wifiNoDistance: "ไม่ต้องใช้ GPS (เชื่อมต่อ Wi-Fi ร้าน)",
                 
                 // Product details modal
@@ -109,10 +112,10 @@ export const translations = {
                 validationMin: "กรุณาเลือกอย่างน้อย {min} ตัวเลือกสำหรับ \"{group}\"",
                 
                 // Categories
-                category_mains: "🍛 อาหารจานหลัก",
-                category_appetizers: "🍲 ของทานเล่น",
-                category_drinks: "🥤 เครื่องดื่ม",
-                category_desserts: "🥭 ของหวาน",
+                category_mains: "อาหารจานหลัก",
+                category_appetizers: "ของทานเล่น",
+                category_drinks: "เครื่องดื่ม",
+                category_desserts: "ของหวาน",
                 
                 // Item names & descriptions
                 item_app1_name: "ปอเปี๊ยะทอดสีทอง",
@@ -166,7 +169,17 @@ export const translations = {
                 staffCalledSuccess: "ส่งคำขอสำเร็จ!",
                 staffCalledSuccessDesc: "พนักงานบริการรับทราบแล้วและกำลังไปดูแลท่านที่โต๊ะ",
                 sendingOrderDesc: "กำลังส่งรายการสั่งอาหารและบันทึกข้อมูลเข้าห้องครัว",
-                orderSuccessDesc: "ส่งคำสั่งซื้อไปยังห้องครัวเรียบร้อยแล้ว กำลังเตรียมปรุงอาหาร"
+                orderSuccessDesc: "ส่งคำสั่งซื้อไปยังห้องครัวเรียบร้อยแล้ว กำลังเตรียมปรุงอาหาร",
+                
+                // QR Token Validation
+                qrInvalidTitle: "ไม่สามารถเข้าถึงโต๊ะนี้ได้",
+                qrInvalidMessage: "QR Code นี้ไม่สามารถใช้งานได้อีกต่อไป กรุณาสแกน QR Code บนโต๊ะอาหารของคุณอีกครั้ง",
+                
+                // Order Item Notes
+                addNoteBtn: "เพิ่มโน้ต",
+                addNotePrompt: "เพิ่มหมายเหตุสำหรับรายการนี้ (เช่น ไม่เผ็ด, เพิ่มผัก):",
+                noteSavedMsg: "บันทึกหมายเหตุสำหรับ {name} แล้ว",
+                noteLabel: "หมายเหตุ"
             },
             en: {
                 // Onboarding Step 1
@@ -186,6 +199,9 @@ export const translations = {
                 // Onboarding Step 3
                 checkinComplete: "Check-in Complete!",
                 settingUp: "Setting up your dining experience...",
+                preparingTable: "Preparing your table...",
+                checkingTable: "Checking table availability...",
+                resumingSession: "Resuming your table session...",
                 
                 // Search
                 searchPlaceholder: "Search menu...",
@@ -238,7 +254,7 @@ export const translations = {
                 noteLabel: "Note",
                 
                 // Hybrid Security Simulator
-                devTitle: "🛠️ Hybrid Security Simulator",
+                devTitle: "Hybrid Security Simulator",
                 devNetworkType: "Connection Network Type",
                 devWifi: "Guest Wi-Fi (Same IP)",
                 devCellular: "Cellular 5G/4G (External IP)",
@@ -254,13 +270,13 @@ export const translations = {
                 verifyingLocationMsg: "Verifying Location...",
                 checkingWifiGps: "Checking Wi-Fi and GPS signal...",
                 orderingActive: "Ordering Active",
-                verifiedWifi: "🟢 Verified via Restaurant Guest Wi-Fi. (IP: {ip})",
+                verifiedWifi: "Verified via Restaurant Guest Wi-Fi. (IP: {ip})",
                 gpsUnavailable: "Unavailable",
                 orderingBlocked: "Ordering Blocked",
-                gpsDeniedMsg: "🔴 GPS Access Denied. Please connect to Guest Wi-Fi or enable Location services.",
+                gpsDeniedMsg: "GPS Access Denied. Please connect to Guest Wi-Fi or enable Location services.",
                 meters: "meters",
-                gpsInsideMsg: "🟢 Location verified via GPS ({dist}m within venue)",
-                gpsOutsideMsg: "🔴 You are {dist}km outside the restaurant. Please join Guest Wi-Fi.",
+                gpsInsideMsg: "Location verified via GPS ({dist}m within venue)",
+                gpsOutsideMsg: "You are {dist}km outside the restaurant. Please join Guest Wi-Fi.",
                 wifiNoDistance: "Not required (On Guest Wi-Fi)",
                 
                 // Product details modal
@@ -278,10 +294,10 @@ export const translations = {
                 validationMin: "Please select at least {min} option(s) for \"{group}\".",
                 
                 // Categories
-                category_mains: "🍛 Main Dishes",
-                category_appetizers: "🍲 Appetizers",
-                category_drinks: "🥤 Beverages",
-                category_desserts: "🥭 Desserts",
+                category_mains: "Main Dishes",
+                category_appetizers: "Appetizers",
+                category_drinks: "Beverages",
+                category_desserts: "Desserts",
                 
                 // Item names & descriptions
                 item_app1_name: "Crispy Golden Spring Rolls",
@@ -335,7 +351,17 @@ export const translations = {
                 staffCalledSuccess: "Request Sent!",
                 staffCalledSuccessDesc: "The staff has been notified and will be right over to assist you.",
                 sendingOrderDesc: "Writing order details and sending them to the kitchen team.",
-                orderSuccessDesc: "Your order has been sent to the kitchen successfully."
+                orderSuccessDesc: "Your order has been sent to the kitchen successfully.",
+                
+                // QR Token Validation
+                qrInvalidTitle: "Cannot access this table",
+                qrInvalidMessage: "This QR code is no longer valid. Please scan the QR code at your table again.",
+                
+                // Order Item Notes
+                addNoteBtn: "Add Note",
+                addNotePrompt: "Add a note for this item (e.g. no spicy, extra vegetables):",
+                noteSavedMsg: "Note saved for {name}",
+                noteLabel: "Note"
             },
             zh: {
                 // Onboarding Step 1
@@ -407,7 +433,7 @@ export const translations = {
                 noteLabel: "备注",
                 
                 // Hybrid Security Simulator
-                devTitle: "🛠️ 混合安全模拟器",
+                devTitle: "混合安全模拟器",
                 devNetworkType: "连接网络类型",
                 devWifi: "客户 Wi-Fi (相同 IP)",
                 devCellular: "蜂窝网络 5G/4G (外部 IP)",
@@ -423,13 +449,13 @@ export const translations = {
                 verifyingLocationMsg: "正在验证位置...",
                 checkingWifiGps: "正在检查 Wi-Fi 和 GPS 信号...",
                 orderingActive: "点餐系统已启用",
-                verifiedWifi: "🟢 已通过餐厅客户 Wi-Fi 验证。 (IP: {ip})",
+                verifiedWifi: "已通过餐厅客户 Wi-Fi 验证。 (IP: {ip})",
                 gpsUnavailable: "不可用",
                 orderingBlocked: "点餐已禁用",
-                gpsDeniedMsg: "🔴 GPS 权限被拒绝。请连接客户 Wi-Fi 或开启定位服务。",
+                gpsDeniedMsg: "GPS 权限被拒绝。请连接客户 Wi-Fi 或开启定位服务。",
                 meters: "米",
-                gpsInsideMsg: "🟢 已通过 GPS 验证 (在餐厅内 {dist}米)",
-                gpsOutsideMsg: "🔴 您距离餐厅约 {dist}公里。请连接客户 Wi-Fi 以进行点餐。",
+                gpsInsideMsg: "已通过 GPS 验证 (在餐厅内 {dist}米)",
+                gpsOutsideMsg: "您距离餐厅约 {dist}公里。请连接客户 Wi-Fi 以进行点餐。",
                 wifiNoDistance: "无需 GPS (已连 Wi-Fi)",
                 
                 // Product details modal
@@ -447,10 +473,10 @@ export const translations = {
                 validationMin: "请在 \"{group}\" 中至少选择 {min} 个选项。",
                 
                 // Categories
-                category_mains: "🍛 主菜",
-                category_appetizers: "🍲 开胃菜",
-                category_drinks: "🥤 饮料",
-                category_desserts: "🥭 甜点",
+                category_mains: "主菜",
+                category_appetizers: "开胃菜",
+                category_drinks: "饮料",
+                category_desserts: "甜点",
                 
                 // Item names & descriptions
                 item_app1_name: "黄金脆皮春卷",
@@ -504,6 +530,16 @@ export const translations = {
                 staffCalledSuccess: "呼叫成功！",
                 staffCalledSuccessDesc: "服务员已收到通知，将立即前往您的桌台。",
                 sendingOrderDesc: "正在将您的订单发送至厨房。",
-                orderSuccessDesc: "您的订单已成功发送至厨房。"
+                orderSuccessDesc: "您的订单已成功发送至厨房。",
+                
+                // QR Token Validation
+                qrInvalidTitle: "无法访问此桌台",
+                qrInvalidMessage: "此二维码已失效，请重新扫描桌上的二维码。",
+                
+                // Order Item Notes
+                addNoteBtn: "添加备注",
+                addNotePrompt: "为此菜品添加备注（如：不辣、加蔬菜）：",
+                noteSavedMsg: "已为 {name} 保存备注",
+                noteLabel: "备注"
             }
         }
