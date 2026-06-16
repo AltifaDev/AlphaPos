@@ -45,3 +45,9 @@ node_modules/
 # opencode config (may contain MCP secrets)
 opencode.json
 
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
