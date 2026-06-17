@@ -67,7 +67,7 @@ def log_event(level, event, message="", **fields):
     print(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
     try:
         if os.path.exists(DB_FILE):
-            with sqlite3.connect(DB_FILE) as conn:
+            with closing(sqlite3.connect(DB_FILE)) as conn:
                 exists = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='event_logs'"
                 ).fetchone()
@@ -841,26 +841,35 @@ def _init_db_helper(conn):
         ("merchants", "branch_code", "TEXT"),
         ("promotions", "media_type", "TEXT"),
     ]:
-        allowed_tables = {"orders", "order_items", "payments", "table_sessions", "service_requests", "timecards", "employees", "menu_items", "promotions", "restaurant_tables", "merchants"}
-        allowed_col_types = {"TEXT", "INTEGER", "REAL", "BOOLEAN"}
-        allowed_cols = {"merchant_id", "updated_at", "zone", "is_table_system_enabled", "is_web_ordering_enabled", "branch_code", "media_type"}
-        if table not in allowed_tables:
-            print(f"Database migration: Skipped unknown table '{table}'")
+        # Statically define all allowed queries to completely avoid dynamic SQL formatting / SQL injection risk
+        queries = {
+            ("orders", "merchant_id", "TEXT"): ("PRAGMA table_info(orders)", "ALTER TABLE orders ADD COLUMN merchant_id TEXT"),
+            ("orders", "updated_at", "TEXT"): ("PRAGMA table_info(orders)", "ALTER TABLE orders ADD COLUMN updated_at TEXT"),
+            ("order_items", "merchant_id", "TEXT"): ("PRAGMA table_info(order_items)", "ALTER TABLE order_items ADD COLUMN merchant_id TEXT"),
+            ("payments", "merchant_id", "TEXT"): ("PRAGMA table_info(payments)", "ALTER TABLE payments ADD COLUMN merchant_id TEXT"),
+            ("table_sessions", "merchant_id", "TEXT"): ("PRAGMA table_info(table_sessions)", "ALTER TABLE table_sessions ADD COLUMN merchant_id TEXT"),
+            ("service_requests", "merchant_id", "TEXT"): ("PRAGMA table_info(service_requests)", "ALTER TABLE service_requests ADD COLUMN merchant_id TEXT"),
+            ("timecards", "merchant_id", "TEXT"): ("PRAGMA table_info(timecards)", "ALTER TABLE timecards ADD COLUMN merchant_id TEXT"),
+            ("restaurant_tables", "zone", "TEXT"): ("PRAGMA table_info(restaurant_tables)", "ALTER TABLE restaurant_tables ADD COLUMN zone TEXT"),
+            ("merchants", "is_table_system_enabled", "BOOLEAN"): ("PRAGMA table_info(merchants)", "ALTER TABLE merchants ADD COLUMN is_table_system_enabled BOOLEAN"),
+            ("merchants", "branch_code", "TEXT"): ("PRAGMA table_info(merchants)", "ALTER TABLE merchants ADD COLUMN branch_code TEXT"),
+            ("promotions", "media_type", "TEXT"): ("PRAGMA table_info(promotions)", "ALTER TABLE promotions ADD COLUMN media_type TEXT"),
+        }
+
+        query_key = (table, col, col_type)
+        if query_key not in queries:
+            print(f"Database migration: Skipped invalid migration key '{query_key}'")
             continue
-        if col_type not in allowed_col_types:
-            print(f"Database migration: Skipped unknown column type '{col_type}'")
-            continue
-        if col not in allowed_cols:
-            print(f"Database migration: Skipped unknown column name '{col}'")
-            continue
+
         cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,))
         if not cursor.fetchone():
             continue  # Table doesn't exist yet (will be created by CREATE TABLE IF NOT EXISTS)
-        # Use string formatting only after allowlist validation
-        cursor.execute(f"PRAGMA table_info({table})")
-        existing_cols = {col[1] for col in cursor.fetchall()}
+
+        pragma_query, alter_query = queries[query_key]
+        cursor.execute(pragma_query)
+        existing_cols = {row[1] for row in cursor.fetchall()}
         if col not in existing_cols:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+            cursor.execute(alter_query)
             print(f"Database migration: Added {col} to {table}")
 
     # Create Indexes
@@ -944,6 +953,12 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             super().handle()
         finally:
             close_thread_connections()
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        finally:
+            close_thread_connections()
     
     def _get_allowed_origin(self):
         origin = self.headers.get('Origin', '')
@@ -1002,6 +1017,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         self.send_header('Permissions-Policy', 'geolocation=(self), camera=(), microphone=()')
         self.send_header('Content-Security-Policy',
             "default-src 'self'; "
+            "media-src 'self' blob:; "
             "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
             "img-src 'self' data: https:; "

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'alphapos-customer-web-v8';
+const CACHE_NAME = 'alphapos-customer-web-v9';
 const ASSETS_TO_CACHE = [
     './',
     './index.html',

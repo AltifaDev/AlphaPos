@@ -68,6 +68,41 @@ function safeInnerHtml(el, html) {
     el.innerHTML = html.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 }
 
+function base64ToBlobUrl(base64Data, defaultMimeType = 'video/mp4') {
+    if (!base64Data) return '';
+    if (base64Data.startsWith('http://') || base64Data.startsWith('https://') || base64Data.startsWith('blob:')) {
+        return base64Data;
+    }
+    
+    let mimeType = defaultMimeType;
+    let rawBase64 = base64Data;
+    
+    if (base64Data.startsWith('data:')) {
+        const parts = base64Data.split(',');
+        if (parts.length > 1) {
+            const matches = parts[0].match(/data:(.*?);base64/);
+            if (matches && matches[1]) {
+                mimeType = matches[1];
+            }
+            rawBase64 = parts[1];
+        }
+    }
+    
+    try {
+        const byteCharacters = atob(rawBase64.trim());
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: mimeType });
+        return URL.createObjectURL(blob);
+    } catch (e) {
+        console.error("Failed to convert base64 to Blob:", e);
+        return base64Data.startsWith('data:') ? base64Data : `data:${mimeType};base64,${base64Data}`;
+    }
+}
+
 function createSafeElement(tag, attrs = {}, textContent = '') {
     const el = document.createElement(tag);
     Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
@@ -859,7 +894,8 @@ class AlphaPosApp {
 
         // Verify token (either URL parameter or localStorage)
         const cachedToken = localStorage.getItem(`sessionToken_T${this.tableNumber}`);
-        const tokenToVerify = this.sessionToken || cachedToken;
+        // Prioritize cachedToken over this.sessionToken (URL parameter) to prevent stale URLs from resetting active sessions
+        const tokenToVerify = cachedToken || this.sessionToken;
 
         if (tokenToVerify) {
             // Verify if session token is still active on the server
@@ -868,12 +904,17 @@ class AlphaPosApp {
                 this.sessionToken = tokenToVerify;
                 localStorage.setItem(`sessionToken_T${this.tableNumber}`, tokenToVerify);
                 this.finishOnboardingLoading(this.translate("resumingSession", "Resuming your table session..."));
+                this.cleanUrlParams(); // Clean URL params to prevent re-onboarding on reload
                 console.log("Resumed session verified by server:", this.sessionToken);
                 return;
             } else {
                 // Clear invalid/expired session
                 this.sessionToken = null;
                 localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
+                
+                // Clear cart from storage as the session is no longer valid
+                this.cart = {};
+                this.saveCartToStorage();
 
                 // If URL had a token (fresh QR scan) but it's invalid, show QR error
                 if (this.sessionToken === null && urlParams.get('token')) {
@@ -894,6 +935,7 @@ class AlphaPosApp {
                 this.sessionToken = urlToken;
                 localStorage.setItem(`sessionToken_T${this.tableNumber}`, urlToken);
                 this.finishOnboardingLoading(this.translate("resumingSession", "Resuming your table session..."));
+                this.cleanUrlParams(); // Clean URL params to prevent re-onboarding on reload
                 return;
             }
         }
@@ -904,6 +946,7 @@ class AlphaPosApp {
             this.selectedGuestCount = activeSession.guestCount || this.selectedGuestCount;
             localStorage.setItem(`sessionToken_T${this.tableNumber}`, this.sessionToken);
             this.finishOnboardingLoading(this.translate("resumingSession", "Resuming your table session..."));
+            this.cleanUrlParams(); // Clean URL params to prevent re-onboarding on reload
             console.log("Active table session resumed without asking guest count:", this.sessionToken);
             return;
         }
@@ -912,6 +955,26 @@ class AlphaPosApp {
         this.currentOnboardingStep = 2;
         this.showOnboardingPanel("onboardingStep2");
         this.renderInteractiveSeats();
+    }
+
+    cleanUrlParams() {
+        try {
+            const url = new URL(window.location.href);
+            let replaced = false;
+            if (url.searchParams.has('token')) {
+                url.searchParams.delete('token');
+                replaced = true;
+            }
+            if (url.searchParams.has('jwt')) {
+                url.searchParams.delete('jwt');
+                replaced = true;
+            }
+            if (replaced) {
+                window.history.replaceState({}, document.title, url.pathname + url.search);
+            }
+        } catch (e) {
+            console.error("Failed to clean URL parameters:", e);
+        }
     }
 
     async verifySessionWithServer(token) {
@@ -1193,6 +1256,7 @@ class AlphaPosApp {
 
             this.sessionToken = sessionToken;
             localStorage.setItem(`sessionToken_T${this.tableNumber}`, this.sessionToken);
+            this.cleanUrlParams(); // Clean URL params to prevent re-onboarding on reload
 
             // Show Step 3 (Success Progress Screen)
             document.getElementById("onboardingStep2").classList.remove("active");
@@ -2782,7 +2846,7 @@ class AlphaPosApp {
             const mediaType = promo.mediaType || promo.media_type || "image";
             if (imgData && mediaType === "video") {
                 const video = document.createElement("video");
-                video.src = imgData.startsWith("data:") ? imgData : `data:video/mp4;base64,${imgData}`;
+                video.src = base64ToBlobUrl(imgData, "video/mp4");
                 video.autoplay = true;
                 video.muted = true;
                 video.loop = true;
