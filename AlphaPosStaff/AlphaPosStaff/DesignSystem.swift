@@ -141,7 +141,7 @@ extension Color {
     }
     /// Warning amber
     static var appAmber: Color {
-        resolveColor(lightHex: "FC444A", darkHex: "FC444A")
+        resolveColor(lightHex: "F59E0B", darkHex: "FF9F0A")
     }
 
     // ── Text ─────────────────────────────────────────────────────────────────
@@ -562,5 +562,453 @@ struct APHaptic {
         #elseif os(macOS)
         NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .default)
         #endif
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Aurora Background (Flowing Gradient Waves)
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct AuroraBackground: View {
+    @State private var t1: Float = 0
+    @State private var t2: Float = 0
+    @State private var t3: Float = 0
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let date = timeline.date.timeIntervalSinceReferenceDate
+            Canvas { ctx, size in
+                let w = size.width
+                let h = size.height
+
+                // Layer 1 — large warm wave (top)
+                var path1 = Path()
+                path1.move(to: CGPoint(x: 0, y: h * 0.15))
+                path1.addCurve(
+                    to: CGPoint(x: w, y: h * 0.25),
+                    control1: CGPoint(x: w * 0.3, y: h * 0.05 + CGFloat(sin(date * 0.3)) * 30),
+                    control2: CGPoint(x: w * 0.7, y: h * 0.35 + CGFloat(cos(date * 0.25)) * 25)
+                )
+                path1.addLine(to: CGPoint(x: w, y: h * 0.55))
+                path1.addCurve(
+                    to: CGPoint(x: 0, y: h * 0.45),
+                    control1: CGPoint(x: w * 0.65, y: h * 0.65 + CGFloat(sin(date * 0.2)) * 20),
+                    control2: CGPoint(x: w * 0.35, y: h * 0.3 + CGFloat(cos(date * 0.35)) * 18)
+                )
+                path1.closeSubpath()
+
+                ctx.fill(path1, with: .color(
+                    Color(red: 0.18, green: 0.44, blue: 0.97).opacity(0.07)
+                ))
+
+                // Layer 2 — violet wave (middle)
+                var path2 = Path()
+                path2.move(to: CGPoint(x: 0, y: h * 0.35))
+                path2.addCurve(
+                    to: CGPoint(x: w, y: h * 0.5),
+                    control1: CGPoint(x: w * 0.25, y: h * 0.25 + CGFloat(cos(date * 0.22)) * 35),
+                    control2: CGPoint(x: w * 0.75, y: h * 0.6 + CGFloat(sin(date * 0.28)) * 28)
+                )
+                path2.addLine(to: CGPoint(x: w, y: h * 0.75))
+                path2.addCurve(
+                    to: CGPoint(x: 0, y: h * 0.65),
+                    control1: CGPoint(x: w * 0.7, y: h * 0.85 + CGFloat(cos(date * 0.18)) * 22),
+                    control2: CGPoint(x: w * 0.3, y: h * 0.5 + CGFloat(sin(date * 0.32)) * 20)
+                )
+                path2.closeSubpath()
+
+                ctx.fill(path2, with: .color(
+                    Color(red: 0.65, green: 0.55, blue: 0.98).opacity(0.06)
+                ))
+
+                // Layer 3 — teal accent wave (bottom)
+                var path3 = Path()
+                path3.move(to: CGPoint(x: 0, y: h * 0.55))
+                path3.addCurve(
+                    to: CGPoint(x: w, y: h * 0.7),
+                    control1: CGPoint(x: w * 0.35, y: h * 0.45 + CGFloat(sin(date * 0.26)) * 28),
+                    control2: CGPoint(x: w * 0.65, y: h * 0.8 + CGFloat(cos(date * 0.2)) * 24)
+                )
+                path3.addLine(to: CGPoint(x: w, y: h))
+                path3.addLine(to: CGPoint(x: 0, y: h))
+                path3.closeSubpath()
+
+                ctx.fill(path3, with: .color(
+                    Color(red: 0.11, green: 0.51, blue: 0.44).opacity(0.05)
+                ))
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Shimmer Effect (for gradient text / borders)
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct ShimmerEffect: ViewModifier {
+    @State private var phase: CGFloat = -1
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                GeometryReader { geo in
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: max(0, phase - 0.3)),
+                            .init(color: .white.opacity(0.35), location: phase),
+                            .init(color: .clear, location: min(1, phase + 0.3))
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .blendMode(.overlay)
+                }
+            )
+            .clipped()
+            .onAppear {
+                withAnimation(.linear(duration: 2.5).repeatForever(autoreverses: false)) {
+                    phase = 2
+                }
+            }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Glass Morphism Card
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct GlassCard<Content: View>: View {
+    var cornerRadius: CGFloat = 28
+    var opacity: Double = 0.65
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+            .background(
+                ZStack {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .opacity(opacity)
+
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.08),
+                                    Color.white.opacity(0.02)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.18),
+                                    Color.white.opacity(0.05)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 0.8
+                        )
+                }
+            )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Rotating Gradient Ring (Avatar Border)
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct PremiumRotatingRing: View {
+    let size: CGFloat
+    var lineWidth: CGFloat = 3.5
+    @State private var rotation: Double = 0
+
+    var body: some View {
+        ZStack {
+            // Base ring (subtle)
+            Circle()
+                .stroke(Color.white.opacity(0.1), lineWidth: lineWidth)
+
+            // Rotating gradient arc
+            Circle()
+                .trim(from: 0, to: 0.35)
+                .stroke(
+                    AngularGradient(
+                        gradient: Gradient(colors: [
+                            Color(red: 0.18, green: 0.44, blue: 0.97),
+                            Color(red: 0.36, green: 0.64, blue: 1.0),
+                            Color(red: 0.65, green: 0.55, blue: 0.98),
+                            Color(red: 0.18, green: 0.44, blue: 0.97)
+                        ]),
+                        center: .center
+                    ),
+                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                )
+
+            // Second arc (offset, slower)
+            Circle()
+                .trim(from: 0.5, to: 0.7)
+                .stroke(
+                    AngularGradient(
+                        gradient: Gradient(colors: [
+                            Color(red: 0.65, green: 0.55, blue: 0.98),
+                            Color(red: 0.36, green: 0.64, blue: 1.0).opacity(0.3),
+                            Color(red: 0.65, green: 0.55, blue: 0.98)
+                        ]),
+                        center: .center
+                    ),
+                    style: StrokeStyle(lineWidth: lineWidth * 0.6, lineCap: .round)
+                )
+        }
+        .frame(width: size, height: size)
+        .rotationEffect(.degrees(rotation))
+        .onAppear {
+            withAnimation(.linear(duration: 5).repeatForever(autoreverses: false)) {
+                rotation = 360
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Premium Employee Avatar
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct PremiumEmployeeAvatar: View {
+    let initials: String
+    let index: Int
+    var size: CGFloat = 110
+    var isPressed: Bool = false
+
+    @State private var appeared = false
+    @State private var pulseScale: CGFloat = 1.0
+    @State private var glowOpacity: Double = 0.0
+
+    private var entryDelay: Double { Double(index) * 0.15 }
+
+    var body: some View {
+        ZStack {
+            // Layer 0: Ambient glow (breathes)
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color(red: 0.18, green: 0.44, blue: 0.97).opacity(0.25),
+                            Color.clear
+                        ],
+                        center: .center,
+                        startRadius: size * 0.3,
+                        endRadius: size * 0.8
+                    )
+                )
+                .frame(width: size * 1.6, height: size * 1.6)
+                .scaleEffect(pulseScale)
+                .opacity(glowOpacity)
+
+            // Layer 1: Outer rotating ring
+            PremiumRotatingRing(size: size + 16, lineWidth: 3.5)
+                .opacity(appeared ? 1 : 0)
+
+            // Layer 2: Glass circle backing
+            Circle()
+                .fill(.ultraThinMaterial)
+                .frame(width: size + 4, height: size + 4)
+                .opacity(appeared ? 0.6 : 0)
+
+            // Layer 3: Main gradient circle
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.18, green: 0.44, blue: 0.97),
+                            Color(red: 0.36, green: 0.64, blue: 1.0),
+                            Color(red: 0.25, green: 0.52, blue: 0.96)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: size, height: size)
+                .shadow(
+                    color: Color(red: 0.18, green: 0.44, blue: 0.97).opacity(0.4),
+                    radius: 20, x: 0, y: 8
+                )
+
+            // Layer 4: Glass highlight (top reflection)
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.25),
+                            Color.white.opacity(0.05),
+                            .clear
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .center
+                    )
+                )
+                .frame(width: size, height: size)
+                .offset(y: -size * 0.08)
+
+            // Layer 5: Initials
+            Text(initials)
+                .font(.system(size: size * 0.34, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .shadow(color: .black.opacity(0.15), radius: 2, x: 0, y: 1)
+        }
+        .scaleEffect(isPressed ? 0.88 : (appeared ? 1.0 : 0.3))
+        .opacity(appeared ? 1 : 0)
+        .onAppear {
+            // Staggered spring entry
+            DispatchQueue.main.asyncAfter(deadline: .now() + entryDelay) {
+                withAnimation(.spring(response: 0.7, dampingFraction: 0.6)) {
+                    appeared = true
+                }
+            }
+            // Breathing glow
+            withAnimation(
+                .easeInOut(duration: 3.0)
+                .repeatForever(autoreverses: true)
+                .delay(entryDelay + 0.5)
+            ) {
+                pulseScale = 1.15
+                glowOpacity = 1.0
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Floating Particle Stars
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct FloatingStarField: View {
+    let count: Int = 18
+    @State private var stars: [(x: CGFloat, y: CGFloat, size: CGFloat, opacity: Double, speed: Double)] = []
+    @State private var animTick = false
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            Canvas { ctx, size in
+                for i in 0..<stars.count {
+                    let s = stars[i]
+                    let ox = sin(t * s.speed + Double(i)) * 15
+                    let oy = cos(t * s.speed * 0.7 + Double(i) * 1.3) * 12
+                    let flicker = 0.5 + 0.5 * sin(t * s.speed * 2 + Double(i) * 0.8)
+                    let pt = CGPoint(x: s.x + ox, y: s.y + oy)
+
+                    let path = Path(ellipseIn: CGRect(
+                        x: pt.x - s.size / 2,
+                        y: pt.y - s.size / 2,
+                        width: s.size,
+                        height: s.size
+                    ))
+
+                    ctx.fill(path, with: .color(
+                        Color.white.opacity(s.opacity * flicker)
+                    ))
+                }
+            }
+        }
+        .ignoresSafeArea()
+        .onAppear {
+            initStars()
+        }
+    }
+
+    private func initStars() {
+        var result: [(x: CGFloat, y: CGFloat, size: CGFloat, opacity: Double, speed: Double)] = []
+        for _ in 0..<count {
+            result.append((
+                x: CGFloat.random(in: 20...380),
+                y: CGFloat.random(in: 50...750),
+                size: CGFloat.random(in: 2...5),
+                opacity: Double.random(in: 0.15...0.45),
+                speed: Double.random(in: 0.15...0.4)
+            ))
+        }
+        stars = result
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Animated Gradient Title Text
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct GradientTitleText: View {
+    let text: String
+    @State private var phase: CGFloat = 0
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 32, weight: .black, design: .rounded))
+            .foregroundStyle(
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.18, green: 0.44, blue: 0.97),
+                        Color(red: 0.36, green: 0.64, blue: 1.0),
+                        Color(red: 0.65, green: 0.55, blue: 0.98),
+                        Color(red: 0.18, green: 0.44, blue: 0.97)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .overlay(
+                GeometryReader { geo in
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: max(0, phase - 0.3)),
+                            .init(color: .white.opacity(0.4), location: phase),
+                            .init(color: .clear, location: min(1, phase + 0.3))
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .blendMode(.softLight)
+                }
+            )
+            .clipped()
+            .onAppear {
+                withAnimation(.linear(duration: 3).repeatForever(autoreverses: false)) {
+                    phase = 2
+                }
+            }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Glass Pill Badge
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct GlassPillBadge: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+            Text(text)
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        }
+        .foregroundColor(.secondary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(
+            Capsule(style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(Color.white.opacity(0.15), lineWidth: 0.8)
+                )
+        )
     }
 }

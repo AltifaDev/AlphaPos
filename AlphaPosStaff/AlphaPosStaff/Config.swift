@@ -2,21 +2,11 @@ import Foundation
 
 struct AppConfig {
     static var supabaseURL: URL {
-        let urlStr = Bundle.main.infoDictionary?["SUPABASE_URL"] as? String
-            ?? ProcessInfo.processInfo.environment["SUPABASE_URL"]
-            ?? ""
-        let finalUrl = urlStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "https://sdmtkixrqkmwcpwoisrg.supabase.co"
-            : urlStr
-        return URL(string: finalUrl)!
+        requiredURL(requiredConfigValue("SUPABASE_URL"), name: "SUPABASE_URL")
     }
 
     static var supabaseAnonKey: String {
-        let defaultKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNkbXRraXhycWttd2Nwd29pc3JnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NDIxNjAsImV4cCI6MjA5NjQxODE2MH0.rjLwVE0ShXIFoT0k982XO_lVCQMsA4uTKMW1Su-NUws"
-        let key = Bundle.main.infoDictionary?["SUPABASE_ANON_KEY"] as? String
-            ?? ProcessInfo.processInfo.environment["SUPABASE_ANON_KEY"]
-            ?? ""
-        return key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultKey : key
+        requiredConfigValue("SUPABASE_ANON_KEY")
     }
 
     static var supabaseRestURL: URL {
@@ -27,9 +17,52 @@ struct AppConfig {
         URL(string: supabaseURL.absoluteString + "/realtime/v1")!
     }
 
+    static var edgeFunctionURL: URL {
+        URL(string: supabaseURL.absoluteString + "/functions/v1")!
+    }
+
     static var defaultMerchantId: String {
-        let defaultMerchant = "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
-        let merchant = ProcessInfo.processInfo.environment["DEFAULT_MERCHANT_ID"] ?? ""
-        return merchant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultMerchant : merchant
+        requiredConfigValue("DEFAULT_MERCHANT_ID")
+    }
+
+    static var defaultDeviceSecret: String {
+        requiredConfigValue("DEFAULT_DEVICE_SECRET")
+    }
+
+    private static func requiredConfigValue(_ key: String) -> String {
+        guard let value = configValue(key) else {
+            fatalError("Missing required AlphaPosStaff configuration value: \(key). Add it to Config.plist, Info.plist, or the app environment.")
+        }
+        return value
+    }
+
+    private static func configValue(_ key: String) -> String? {
+        nonEmpty(configPlistValue(key))
+            ?? nonEmpty(Bundle.main.infoDictionary?[key] as? String)
+            ?? nonEmpty(ProcessInfo.processInfo.environment[key])
+    }
+
+    private static func configPlistValue(_ key: String) -> String? {
+        guard let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
+              let dict = NSDictionary(contentsOfFile: path) as? [String: Any] else {
+            return nil
+        }
+        return dict[key] as? String
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty,
+              !trimmed.contains("your-") else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func requiredURL(_ value: String, name: String) -> URL {
+        guard let url = URL(string: value) else {
+            fatalError("Invalid AlphaPosStaff configuration URL for \(name): \(value)")
+        }
+        return url
     }
 }

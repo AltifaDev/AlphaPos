@@ -4,6 +4,8 @@ import SwiftData
 
 struct TableView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
+    @EnvironmentObject private var sessionManager: AppSessionManager
     @Query(sort: \RestaurantTable.tableNumber) private var tables: [RestaurantTable]
     
     @Binding var selectedTab: MainDashboardView.DashboardTab
@@ -56,31 +58,24 @@ struct TableView: View {
     }
     
     var body: some View {
+        // Outer GeometryReader วัด available width ก่อน render header
+        GeometryReader { outerGeo in
         ZStack {
                 Color.appBackground.ignoresSafeArea()
                 
                 VStack(spacing: 0) {
-                    // Responsive Header
+                    // Responsive Header — ใช้ outerGeo.size.width แทน headerWidth
                     Group {
-                        if headerWidth == 0 || headerWidth < 780 {
+                        if outerGeo.size.width < 720 {
                             compactHeader
                         } else {
                             wideHeader
                         }
                     }
-                    .padding()
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
                     .background(Color.appSurface)
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear
-                                .onAppear {
-                                    headerWidth = geo.size.width
-                                }
-                                .onChange(of: geo.size.width) { _, newWidth in
-                                    headerWidth = newWidth
-                                }
-                        }
-                    )
                     .overlay(
                         Divider().background(Color.appDivider),
                         alignment: .bottom
@@ -103,7 +98,7 @@ struct TableView: View {
                     }
                 }
             }
-            .navigationTitle("Table Management")
+            .navigationTitle("tab_tables".t)
             .apNavBar()
             .sheet(item: $selectedTable) { table in
                 TableDetailView(table: table, selectedTab: $selectedTab, posTableSession: $activeSession)
@@ -128,6 +123,7 @@ struct TableView: View {
             .fullScreenCover(isPresented: $showingBatchQRSheet) {
                 BatchQRCodePrintView(tables: tables)
             }
+        } // end GeometryReader
     }
     
     @ViewBuilder
@@ -158,7 +154,7 @@ struct TableView: View {
                     .allowsHitTesting(false)
                     
                     // Render partition walls (CAD wall style)
-                    let floorWalls = walls.filter { $0.floor == selectedFloor }
+                    let floorWalls = walls.filter { $0.floor == selectedFloor && !$0.isDeleted }
                     ForEach(floorWalls) { wall in
                         Path { path in
                             path.move(to: CGPoint(x: wall.startX, y: wall.startY))
@@ -209,8 +205,10 @@ struct TableView: View {
                                             modelContext.insert(newSession)
                                             leader.sessions.append(newSession)
                                             leader.status = "occupied"
+                                            leader.isSynced = false
                                             for child in leader.joinedChildren {
                                                 child.status = "occupied"
+                                                child.isSynced = false
                                             }
                                             leader.updatedAt = Date()
                                             for child in leader.joinedChildren {
@@ -221,6 +219,10 @@ struct TableView: View {
                                             activeSession = newSession
                                             selectedTab = .pos
                                             APHaptic.trigger()
+                                            
+                                            Task {
+                                                await SyncEngine.shared.syncAll(modelContext: modelContext)
+                                            }
                                         }
                                     } else {
                                         // Auto-start vacant table session
@@ -228,8 +230,10 @@ struct TableView: View {
                                         modelContext.insert(newSession)
                                         leader.sessions.append(newSession)
                                         leader.status = "occupied"
+                                        leader.isSynced = false
                                         for child in leader.joinedChildren {
                                             child.status = "occupied"
+                                            child.isSynced = false
                                         }
                                         leader.updatedAt = Date()
                                         for child in leader.joinedChildren {
@@ -240,6 +244,10 @@ struct TableView: View {
                                         activeSession = newSession
                                         selectedTab = .pos
                                         APHaptic.trigger()
+                                        
+                                        Task {
+                                            await SyncEngine.shared.syncAll(modelContext: modelContext)
+                                        }
                                     }
                                 }
                             },
@@ -467,6 +475,7 @@ struct TableView: View {
                         .clipShape(Circle())
                         .padding(4)
                 }
+                .accessibilityLabel("Add new table")
                 
                 Divider()
                     .background(Color.appDivider)
@@ -594,10 +603,7 @@ struct TableView: View {
     }
     
     private func checkManagerPermission(for action: AuthAction) {
-        let email = loggedInEmail.lowercased()
-        let isAuthorizedRole = email.contains("owner") || email.contains("manager") || email.contains("admin")
-        
-        if isAuthorizedRole || isLayoutManagerAuthorized {
+        if sessionManager.can(.managerOverride) || isLayoutManagerAuthorized {
             performAuthAction(action)
         } else {
             pendingAuthAction = action
@@ -657,10 +663,10 @@ struct TableView: View {
     @ViewBuilder
     private var modernStatusWidget: some View {
         HStack(spacing: 12) {
-            modernStatusDot(color: .appTeal, label: "Vacant", count: countTables(status: "vacant"))
-            modernStatusDot(color: .appRose, label: "Occupied", count: countTables(status: "occupied"))
-            modernStatusDot(color: .appAmber, label: "Reserved", count: countTables(status: "reserved"))
-            modernStatusDot(color: .appAccent, label: "Cleaning", count: countTables(status: "cleaning"))
+            modernStatusDot(color: .appTeal, label: "table_status_vacant".t, count: countTables(status: "vacant"))
+            modernStatusDot(color: .appRose, label: "table_status_occupied".t, count: countTables(status: "occupied"))
+            modernStatusDot(color: .appAmber, label: "table_status_reserved".t, count: countTables(status: "reserved"))
+            modernStatusDot(color: .appAccent, label: "table_status_cleaning".t, count: countTables(status: "cleaning"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -693,66 +699,85 @@ struct TableView: View {
 
     @ViewBuilder
     private var customFloorPicker: some View {
-        HStack(spacing: 0) {
+        Menu {
             ForEach([1, 2, 3], id: \.self) { floor in
-                let isSelected = selectedFloor == floor
-                let title = floor == 1 ? "1st Floor" : (floor == 2 ? "2nd Floor" : "3rd Floor")
-                Text(title)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(isSelected ? .textPrimary : .textSecondary)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 30)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(isSelected ? Color.appBackground : Color.clear)
-                            .shadow(color: isSelected ? Color.black.opacity(0.12) : .clear, radius: 2, y: 1)
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                            selectedFloor = floor
-                            selectedZone = "All"
-                            APHaptic.trigger()
-                        }
+                let title = floor == 1 ? "table_floor_1".t : (floor == 2 ? "table_floor_2".t : "table_floor_3".t)
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        selectedFloor = floor
+                        selectedZone = "All"
+                        APHaptic.trigger()
                     }
+                } label: {
+                    if selectedFloor == floor {
+                        Label(title, systemImage: "checkmark")
+                    } else {
+                        Text(title)
+                    }
+                }
             }
+        } label: {
+            HStack(spacing: 5) {
+                let floorTitle = selectedFloor == 1 ? "table_floor_1".t : (selectedFloor == 2 ? "table_floor_2".t : "table_floor_3".t)
+                Text(floorTitle)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.textPrimary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.textSecondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Color.appSurfaceHigh)
+            .cornerRadius(9)
+            .overlay(
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(Color.appBorderSubtle, lineWidth: 1)
+            )
         }
-        .padding(3)
-        .background(Color.appSurfaceHigh)
-        .cornerRadius(10)
-        .frame(width: 270)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Floor selector, currently \(selectedFloor == 1 ? "table_floor_1".t : (selectedFloor == 2 ? "table_floor_2".t : "table_floor_3".t))")
     }
 
     @ViewBuilder
     private var customZonePicker: some View {
         let activeZones = zones
         if activeZones.count > 1 {
-            HStack(spacing: 0) {
+            Menu {
                 ForEach(activeZones, id: \.self) { zone in
-                    let isSelected = selectedZone == zone
-                    Text(zone)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(isSelected ? .textPrimary : .textSecondary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 30)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(isSelected ? Color.appBackground : Color.clear)
-                                .shadow(color: isSelected ? Color.black.opacity(0.12) : .clear, radius: 2, y: 1)
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                selectedZone = zone
-                                APHaptic.trigger()
-                            }
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            selectedZone = zone
+                            APHaptic.trigger()
                         }
+                    } label: {
+                        if selectedZone == zone {
+                            Label("table_zone_\(zone.lowercased())".t, systemImage: "checkmark")
+                        } else {
+                            Text("table_zone_\(zone.lowercased())".t)
+                        }
+                    }
                 }
+            } label: {
+                HStack(spacing: 5) {
+                    Text("table_zone_\(selectedZone.lowercased())".t)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.textPrimary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.textSecondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Color.appSurfaceHigh)
+                .cornerRadius(9)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9)
+                        .stroke(Color.appBorderSubtle, lineWidth: 1)
+                )
             }
-            .padding(3)
-            .background(Color.appSurfaceHigh)
-            .cornerRadius(10)
-            .frame(width: CGFloat(min(activeZones.count * 80, 270)))
+            .buttonStyle(.plain)
+            .accessibilityLabel("table_zone_\(selectedZone.lowercased())".t)
             .transition(.opacity.combined(with: .scale))
         }
     }
@@ -810,7 +835,7 @@ struct TableView: View {
                             focusTableId = table.id
                         }
                     }) {
-                        Text("Table \(table.tableNumber) (\(table.capacity) Seats)")
+                        Text(LocalizationManager.shared.t("table_find_item_template", table.tableNumber, table.capacity))
                     }
                 }
             } label: {
@@ -882,35 +907,55 @@ struct TableView: View {
                 .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isEditingLayout)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(isEditingLayout ? "table_exit_edit_mode_acc".t : "table_enter_edit_mode_acc".t)
     }
 
     @ViewBuilder
     private var compactHeader: some View {
-        VStack(spacing: 8) {
-            HStack {
+        VStack(spacing: 6) {
+            // Row 1: status + actions — ไม่ถูกบีบ
+            HStack(spacing: 0) {
                 modernStatusWidget
-                Spacer()
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
                 quickActionsBar
+                    .layoutPriority(1)
             }
-            HStack(spacing: 12) {
-                customFloorPicker
-                customZonePicker
+            // Row 2: pickers — horizontal scroll ป้องกันถูกบีบ
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    customFloorPicker
+                    customZonePicker
+                }
+                .padding(.horizontal, 2)
+                .padding(.vertical, 1)
             }
         }
     }
 
     @ViewBuilder
     private var wideHeader: some View {
-        HStack(spacing: 16) {
+        HStack(alignment: .center, spacing: 0) {
+            // ── Left: Status badges ──
             modernStatusWidget
-            Spacer()
-            HStack(spacing: 12) {
+                .layoutPriority(1)
+
+            Spacer(minLength: 12)
+
+            // ── Center: Floor + Zone pickers ──
+            HStack(spacing: 8) {
                 customFloorPicker
                 customZonePicker
             }
-            Spacer()
+            .layoutPriority(2)   // pickers ได้พื้นที่ก่อน
+
+            Spacer(minLength: 12)
+
+            // ── Right: Action buttons ──
             quickActionsBar
+                .layoutPriority(1)
         }
+        .frame(maxWidth: .infinity)
     }
     
     // MARK: - Active Service Requests Overlay
@@ -922,7 +967,7 @@ struct TableView: View {
                 HStack {
                     Image(systemName: "bell.badge.fill")
                         .foregroundColor(.appAccent)
-                    Text("Service Requests")
+                    Text("table_service_requests_title".t)
                         .font(.headline)
                         .foregroundColor(.textPrimary)
                 }
@@ -958,7 +1003,7 @@ struct TableView: View {
     private func serviceRequestRow(_ request: ServiceRequest) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Table \(request.tableNumber)")
+                Text(LocalizationManager.shared.t("table_number_template", request.tableNumber))
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(.textPrimary)
@@ -1010,7 +1055,7 @@ struct TableView: View {
             }) {
                 HStack(spacing: 6) {
                     Image(systemName: isDrawingWalls ? "paintpalette.fill" : "paintpalette")
-                    Text(isDrawingWalls ? "Exit Wall Draw" : "Draw Walls")
+                    Text(isDrawingWalls ? "table_draw_exit_btn".t : "table_draw_walls_btn".t)
                         .font(.caption).fontWeight(.bold)
                 }
                 .padding(.horizontal, 12)
@@ -1035,7 +1080,7 @@ struct TableView: View {
                     }) {
                         HStack(spacing: 4) {
                             Image(systemName: iconForTool(tool))
-                            Text(tool.rawValue)
+                            Text("table_draw_tool_\(tool.rawValue.lowercased())".t)
                                 .font(.caption).fontWeight(.bold)
                         }
                         .padding(.horizontal, 12)
@@ -1050,9 +1095,11 @@ struct TableView: View {
                 
                 // Undo button (deletes last wall segment)
                 Button(action: {
-                    let floorWalls = walls.filter { $0.floor == selectedFloor }
+                    let floorWalls = walls.filter { $0.floor == selectedFloor && !$0.isDeleted }
                     if let lastWall = floorWalls.last {
-                        modelContext.delete(lastWall)
+                        lastWall.isDeleted = true
+                        lastWall.isSynced = false
+                        lastWall.updatedAt = Date()
                         try? modelContext.save()
                         APHaptic.trigger()
                     }
@@ -1168,7 +1215,7 @@ struct TableView: View {
         } else if selectedDrawTool == .eraser {
             let tapPoint = location
             let threshold: CGFloat = 20.0
-            let floorWalls = walls.filter { $0.floor == selectedFloor }
+            let floorWalls = walls.filter { $0.floor == selectedFloor && !$0.isDeleted }
             
             if let wallToDelete = floorWalls.first(where: { wall in
                 if wall.type == .curved, let cx = wall.controlX, let cy = wall.controlY {
@@ -1184,7 +1231,9 @@ struct TableView: View {
                     ) < threshold
                 }
             }) {
-                modelContext.delete(wallToDelete)
+                wallToDelete.isDeleted = true
+                wallToDelete.isSynced = false
+                wallToDelete.updatedAt = Date()
                 try? modelContext.save()
                 APHaptic.trigger()
             }
@@ -1212,6 +1261,8 @@ struct TableView: View {
 
 struct TableDetailView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
+    @EnvironmentObject private var sessionManager: AppSessionManager
     @Bindable var table: RestaurantTable
     @Environment(\.dismiss) private var dismiss
     
@@ -1229,10 +1280,7 @@ struct TableDetailView: View {
     @State private var showingManagerPinSheet = false
     
     private func deleteTableWithAuth() {
-        let email = loggedInEmail.lowercased()
-        let isAuthorizedRole = email.contains("owner") || email.contains("manager") || email.contains("admin")
-        
-        if isAuthorizedRole {
+        if sessionManager.can(.managerOverride) {
             performDelete()
         } else {
             showingManagerPinSheet = true
@@ -1331,13 +1379,13 @@ struct TableDetailView: View {
                             .padding(16)
                             .frame(height: 140)
                             
-                            Text("Table \(table.tableNumber)")
+                            Text(LocalizationManager.shared.t("table_number_template", table.tableNumber))
                                 .font(.title2)
                                 .fontWeight(.bold)
                                 .foregroundColor(.textPrimary)
                             
                             HStack(spacing: 12) {
-                                Label("Capacity:", systemImage: "chair.lounge.fill")
+                                Label("table_capacity_lbl".t, systemImage: "chair.lounge.fill")
                                     .font(.subheadline)
                                     .foregroundColor(.textSecondary)
                                 
@@ -1381,11 +1429,11 @@ struct TableDetailView: View {
                                         }
                                     }
                                     
-                                    Button("Done") { editingCapacity = false }
+                                    Button("done".t) { editingCapacity = false }
                                         .font(.caption)
                                         .foregroundColor(.appAccent)
                                 } else {
-                                    Text("\(table.capacity) Seats")
+                                    Text("\(table.capacity) \("table_seats_sub".t.lowercased())")
                                         .font(.subheadline)
                                         .fontWeight(.semibold)
                                         .foregroundColor(.textPrimary)
@@ -1399,17 +1447,17 @@ struct TableDetailView: View {
                             }
                             
                             HStack(spacing: 12) {
-                                Label("Zone:", systemImage: "rectangle.3.group")
+                                Label("table_zone_lbl".t, systemImage: "rectangle.3.group")
                                     .font(.subheadline)
                                     .foregroundColor(.textSecondary)
                                 
                                 Menu {
-                                    Button("Indoor") { updateTableZone("Indoor") }
-                                    Button("Outdoor") { updateTableZone("Outdoor") }
-                                    Button("Rooftop") { updateTableZone("Rooftop") }
+                                    Button("table_zone_indoor".t) { updateTableZone("Indoor") }
+                                    Button("table_zone_outdoor".t) { updateTableZone("Outdoor") }
+                                    Button("table_zone_rooftop".t) { updateTableZone("Rooftop") }
                                 } label: {
                                     HStack(spacing: 4) {
-                                        Text(table.zone ?? "Indoor")
+                                        Text("table_zone_\((table.zone ?? "Indoor").lowercased())".t)
                                             .font(.subheadline)
                                             .fontWeight(.semibold)
                                             .foregroundColor(.appAccent)
@@ -1434,7 +1482,7 @@ struct TableDetailView: View {
                             
                             // 1. Table Grouping Section
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("TABLE GROUPING")
+                                Text("table_grouping_title".t)
                                     .font(.caption)
                                     .fontWeight(.bold)
                                     .foregroundColor(.appAccent)
@@ -1442,7 +1490,7 @@ struct TableDetailView: View {
                                 
                                 if let parent = table.joinedParent {
                                     HStack {
-                                        Label("Combined with Table \(parent.tableNumber)", systemImage: "link")
+                                        Label(LocalizationManager.shared.t("table_combined_with_template", parent.tableNumber), systemImage: "link")
                                             .font(.subheadline)
                                             .foregroundColor(.textPrimary)
                                         Spacer()
@@ -1456,7 +1504,7 @@ struct TableDetailView: View {
                                                 await SyncEngine.shared.syncAll(modelContext: modelContext)
                                             }
                                         }) {
-                                            Text("Split")
+                                            Text("table_split_btn".t)
                                                 .font(.caption)
                                                 .fontWeight(.bold)
                                                 .foregroundColor(.appRose)
@@ -1473,17 +1521,17 @@ struct TableDetailView: View {
                                 } else {
                                     VStack(alignment: .leading, spacing: 6) {
                                         if !table.joinedChildren.isEmpty {
-                                            Text("Combined Group: Table \(table.tableNumber) + " + table.joinedChildren.map { "T\($0.tableNumber)" }.joined(separator: ", "))
+                                            Text(LocalizationManager.shared.t("table_combined_group_template", table.tableNumber) + " + " + table.joinedChildren.map { "T\($0.tableNumber)" }.joined(separator: ", "))
                                                 .font(.caption)
                                                 .foregroundColor(.textPrimary)
                                             
                                             ForEach(table.joinedChildren) { child in
                                                 HStack {
-                                                    Label("Table \(child.tableNumber)", systemImage: "link")
+                                                    Label(LocalizationManager.shared.t("table_number_template", child.tableNumber), systemImage: "link")
                                                         .font(.caption)
                                                         .foregroundColor(.textSecondary)
                                                     Spacer()
-                                                    Button("Split") {
+                                                    Button("table_split_btn".t) {
                                                         child.joinedParent = nil
                                                         child.status = "vacant"
                                                         child.isSynced = false
@@ -1516,13 +1564,13 @@ struct TableDetailView: View {
                                                             await SyncEngine.shared.syncAll(modelContext: modelContext)
                                                         }
                                                     }) {
-                                                        Text("Table \(targetTable.tableNumber) (\(targetTable.capacity) Seats)")
+                                                        Text(LocalizationManager.shared.t("table_find_item_template", targetTable.tableNumber, targetTable.capacity))
                                                     }
                                                 }
                                             } label: {
                                                 HStack {
                                                     Image(systemName: "plus.circle")
-                                                    Text("Combine with Table...")
+                                                    Text("table_combine_with_btn".t)
                                                     Spacer()
                                                     Image(systemName: "chevron.down").font(.caption)
                                                 }
@@ -1537,7 +1585,7 @@ struct TableDetailView: View {
                                                 )
                                             }
                                         } else {
-                                            Text("No other vacant tables to combine with.")
+                                            Text("table_no_vacant_combine_hint".t)
                                                 .font(.caption2)
                                                 .foregroundColor(.textTertiary)
                                                 .padding(.vertical, 2)
@@ -1551,14 +1599,14 @@ struct TableDetailView: View {
                             // 2. Active Session / Status Actions Panel
                             VStack(alignment: .leading, spacing: 8) {
                                 if let session = activeSession {
-                                    Text("ACTIVE DINING SESSION")
+                                    Text("table_active_dining_session".t)
                                         .font(.caption)
                                         .fontWeight(.bold)
                                         .foregroundColor(.appAccent)
                                         .tracking(1.0)
                                     
                                     HStack(spacing: 12) {
-                                        Label("Started At:", systemImage: "clock")
+                                        Label("table_started_at_lbl".t, systemImage: "clock")
                                             .font(.subheadline)
                                             .foregroundColor(.textSecondary)
                                         Spacer()
@@ -1603,7 +1651,7 @@ struct TableDetailView: View {
                                             selectedTab = .pos
                                             dismiss()
                                         }) {
-                                            Text("Place Order")
+                                            Text("table_place_order_btn".t)
                                                 .frame(maxWidth: .infinity)
                                         }
                                         .apGradientButton(gradient: APGradient.accent, shadow: APShadow.glow)
@@ -1636,14 +1684,14 @@ struct TableDetailView: View {
                                             updateGroupStatus("cleaning")
                                             dismiss()
                                         }) {
-                                            Text("Check Out")
+                                            Text("table_checkout_btn".t)
                                                 .frame(maxWidth: .infinity)
                                         }
                                         .apGradientButton(gradient: APGradient.destructive, shadow: APShadow.destructiveGlow)
                                     }
                                     .padding(.top, 4)
                                 } else {
-                                    Text("TABLE ACTIONS")
+                                    Text("table_actions_title".t)
                                         .font(.caption)
                                         .fontWeight(.bold)
                                         .foregroundColor(.appAccent)
@@ -1651,7 +1699,7 @@ struct TableDetailView: View {
                                     
                                     VStack(spacing: 10) {
                                         Button(action: startNewSession) {
-                                            Text("Start Session")
+                                            Text("table_start_session_btn".t)
                                                 .frame(maxWidth: .infinity)
                                         }
                                         .apGradientButton(gradient: APGradient.positive, shadow: APShadow.positiveGlow)
@@ -1664,7 +1712,7 @@ struct TableDetailView: View {
                                                 }
                                                 dismiss()
                                             }) {
-                                                Text("Reserve")
+                                                Text("table_reserve_btn".t)
                                                     .font(.headline)
                                                     .foregroundColor(.textPrimary)
                                                     .frame(maxWidth: .infinity)
@@ -1685,7 +1733,7 @@ struct TableDetailView: View {
                                                 }
                                                 dismiss()
                                             }) {
-                                                Text("Vacant")
+                                                Text("table_vacant_btn".t)
                                                     .font(.headline)
                                                     .foregroundColor(.textPrimary)
                                                     .frame(maxWidth: .infinity)
@@ -1704,7 +1752,7 @@ struct TableDetailView: View {
                                         }) {
                                             HStack {
                                                 Image(systemName: "trash.fill")
-                                                Text("Delete Table")
+                                                Text("table_delete_btn".t)
                                             }
                                             .font(.headline)
                                             .foregroundColor(.white)
@@ -1732,18 +1780,18 @@ struct TableDetailView: View {
                     .padding(24)
                 }
             }
-            .navigationTitle("Table Details")
+            .navigationTitle("table_details_title".t)
             .apNavBar()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
+                    Button("close_btn".t) { dismiss() }
                         .foregroundColor(.textPrimary)
                 }
             }
-            .alert("Dynamic QR Code Simulation", isPresented: $showingQRPopover) {
-                Button("Done", role: .cancel) { }
+            .alert("table_qr_sim_title".t, isPresented: $showingQRPopover) {
+                Button("done".t, role: .cancel) { }
             } message: {
-                Text("This URL allows customers seated at Table \(table.tableNumber) to order direct-to-kitchen:\n\n\(dynamicQRUrl)\n\n(Only valid while this session remains open.)")
+                Text(LocalizationManager.shared.t("table_qr_sim_message_template", table.tableNumber, dynamicQRUrl))
             }
             .sheet(isPresented: $showingManagerPinSheet) {
                 ManagerPINVerificationSheet(
@@ -1951,7 +1999,7 @@ struct DynamicTableLayoutView: View {
                 .foregroundColor(.textPrimary)
                 .lineLimit(1)
             
-            Text(status.uppercased())
+            Text("table_status_\(status.lowercased())".t.uppercased())
                 .font(.system(size: 8, weight: .heavy))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
@@ -1961,7 +2009,7 @@ struct DynamicTableLayoutView: View {
 
             if status.lowercased() == "occupied", let table = table {
                 let elapsedMin = table.elapsedMinutes
-                Text("\(elapsedMin) min")
+                Text("\(elapsedMin) \("time_minutes".t.lowercased())")
                     .padding(.vertical, 1)
                     .padding(.horizontal, 3)
                     .background(Color.appSurfaceHigh.opacity(0.6))
@@ -1980,7 +2028,7 @@ struct DynamicTableLayoutView: View {
                 HStack(spacing: 2) {
                     Image(systemName: "link")
                         .font(.system(size: 6))
-                    Text("Joined to \(parent)")
+                    Text(LocalizationManager.shared.t("table_joined_to_template", parent))
                         .font(.system(size: 6, weight: .bold))
                 }
                 .foregroundColor(.textSecondary)
@@ -1989,7 +2037,7 @@ struct DynamicTableLayoutView: View {
                 HStack(spacing: 2) {
                     Image(systemName: "link")
                         .font(.system(size: 6))
-                    Text("Leader")
+                    Text("table_leader_badge".t)
                         .font(.system(size: 6, weight: .bold))
                 }
                 .foregroundColor(.appTeal)
@@ -2123,6 +2171,8 @@ struct InteractiveTableCard: View {
         .onLongPressGesture {
             onLongPress()
         }
+        .accessibilityLabel("Table \(table.tableNumber), \(table.status), \(table.capacity) guests")
+        .accessibilityHint("Double-tap to open table")
     }
 }
 
@@ -2177,15 +2227,16 @@ struct InteractiveTableCardWrapper: View {
 }
 
 struct EmptyCanvasOverlayView: View {
+    @EnvironmentObject private var lm: LocalizationManager
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "square.grid.3x3.fill")
                 .font(.system(size: 44))
                 .foregroundColor(.textTertiary)
-            Text("No Tables on This Floor")
+            Text("table_empty_canvas_title".t)
                 .font(.headline)
                 .foregroundColor(.textSecondary)
-            Text("Add a table to begin mapping this floor layout.")
+            Text("table_empty_canvas_subtitle".t)
                 .font(.caption)
                 .foregroundColor(.textTertiary)
                 .multilineTextAlignment(.center)

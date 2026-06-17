@@ -4,7 +4,7 @@
 -- Description: Creates tables for Purchase Orders, Purchase Order Items,
 --              and Delivery Prices — features existing in SwiftData (iPad)
 --              but previously absent from Supabase.
--- Status: APPLIED to Supabase (sdmtkixrqkmwcpwoisrg)
+-- Status: APPLIED to Supabase (your-project-ref)
 -- =========================================================================
 
 -- -------------------------------------------------------------------------

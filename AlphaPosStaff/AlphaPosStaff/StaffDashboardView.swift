@@ -15,7 +15,9 @@ struct StaffDashboardView: View {
     @State private var isClearingCache = false
     @State private var showStatusMessage = false
     @State private var statusMessage = ""
+    @State private var showingSignOutAlert = false
     @AppStorage("enable_notifications") private var enableNotifications = true
+    @AppStorage("logged_in_employee_id") private var loggedInEmployeeId = ""
     
     var totalHours: Double {
         timecards.filter { $0.clockOut != nil && $0.clockOut! > 0 }.map { card in
@@ -165,7 +167,7 @@ struct StaffDashboardView: View {
                             
                             // Diagnostics & System Status
                             VStack(alignment: .leading, spacing: APSpacing.sm) {
-                                Text("DIAGNOSTICS & SYSTEM STATUS")
+                                Text("diagnostics_system_status".localized(for: appLanguage).uppercased())
                                     .font(.caption)
                                     .fontWeight(.bold)
                                     .foregroundColor(.appAccent)
@@ -174,21 +176,21 @@ struct StaffDashboardView: View {
                                 Divider().background(Color.appDivider)
                                 
                                 HStack {
-                                    Text("Connection Status")
+                                    Text("connection_status".localized(for: appLanguage))
                                         .font(.subheadline).foregroundColor(.textSecondary)
                                     Spacer()
-                                    Text(NetworkService.shared.connectionError ? "Offline 🔴" : "Online 🟢")
+                                    Text((NetworkService.shared.connectionError ? "offline_status" : "online_status").localized(for: appLanguage) + (NetworkService.shared.connectionError ? " 🔴" : " 🟢"))
                                         .font(.subheadline).fontWeight(.bold)
                                         .foregroundColor(NetworkService.shared.connectionError ? .appRose : .appTeal)
                                 }
                                 .padding(.vertical, 2)
                                 
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text("Store ID (Merchant UUID)")
+                                    Text("merchant_uuid_label".localized(for: appLanguage))
                                         .font(.caption2).foregroundColor(.textSecondary)
                                     
                                     HStack {
-                                        Text(activeMerchantId.isEmpty ? "None (Not Paired)" : activeMerchantId)
+                                        Text(activeMerchantId.isEmpty ? "not_paired_status".localized(for: appLanguage) : activeMerchantId)
                                             .font(.system(.caption, design: .monospaced))
                                             .foregroundColor(.textPrimary)
                                             .lineLimit(1)
@@ -229,7 +231,7 @@ struct StaffDashboardView: View {
                                             await NetworkService.shared.refreshAll()
                                             await MainActor.run {
                                                 isClearingCache = false
-                                                statusMessage = "Cache cleared and data re-synced successfully."
+                                                statusMessage = "cache_cleared_success".localized(for: appLanguage)
                                                 showStatusMessage = true
                                             }
                                         }
@@ -237,7 +239,7 @@ struct StaffDashboardView: View {
                                         if isClearingCache {
                                             ProgressView().tint(.white)
                                         } else {
-                                            Label("Clear Cache", systemImage: "trash.fill")
+                                            Label("clear_cache".localized(for: appLanguage), systemImage: "trash.fill")
                                                 .font(.caption)
                                                 .fontWeight(.bold)
                                                 .foregroundColor(.white)
@@ -255,7 +257,7 @@ struct StaffDashboardView: View {
                                         if isResetting {
                                             ProgressView().tint(.white)
                                         } else {
-                                            Label("Reset Server Data", systemImage: "arrow.counterclockwise.circle.fill")
+                                            Label("reset_server_data".localized(for: appLanguage), systemImage: "arrow.counterclockwise.circle.fill")
                                                 .font(.caption)
                                                 .fontWeight(.bold)
                                                 .foregroundColor(.white)
@@ -271,13 +273,26 @@ struct StaffDashboardView: View {
                             .padding()
                             .apCard()
                             
-                            // Actions
+                            // Sign Out
                             Button(action: {
                                 APHaptic.trigger()
-                                loggedInEmployee = nil
+                                showingSignOutAlert = true
                             }) {
-                                Label("log_out".localized(for: appLanguage), systemImage: "arrow.uturn.left.circle.fill")
-                                    .apGradientButton(gradient: APGradient.destructive)
+                                HStack(spacing: APSpacing.sm) {
+                                    Image(systemName: "rectangle.portrait.and.arrow.right")
+                                        .font(.headline)
+                                    Text("log_out".localized(for: appLanguage))
+                                        .font(.headline)
+                                        .fontWeight(.bold)
+                                }
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, APSpacing.md)
+                                .background(
+                                    RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                                        .fill(Color(hex: "FC4A4A"))
+                                )
+                                .shadow(color: Color(hex: "FC4A4A").opacity(0.35), radius: 16, x: 0, y: 0)
                             }
                         }
                         .padding()
@@ -293,9 +308,9 @@ struct StaffDashboardView: View {
             .onAppear {
                 loadTimecardHistory()
             }
-            .alert("Wipe Transactions & Sessions?", isPresented: $showingResetAlert) {
-                Button("Cancel", role: .cancel) { }
-                Button("Yes, Wipe", role: .destructive) {
+            .alert("wipe_transactions_title".localized(for: appLanguage), isPresented: $showingResetAlert) {
+                Button("cancel".localized(for: appLanguage), role: .cancel) { }
+                Button("yes_wipe".localized(for: appLanguage), role: .destructive) {
                     APHaptic.trigger()
                     isResetting = true
                     Task {
@@ -304,25 +319,35 @@ struct StaffDashboardView: View {
                             await NetworkService.shared.refreshAll()
                             await MainActor.run {
                                 isResetting = false
-                                statusMessage = "All active sessions and orders wiped from Supabase. Tables reset to vacant."
+                                statusMessage = "wipe_success".localized(for: appLanguage)
                                 showStatusMessage = true
                             }
                         } catch {
                             await MainActor.run {
                                 isResetting = false
-                                statusMessage = "Wipe failed: \(error.localizedDescription)"
+                                statusMessage = "\("wipe_failed_prefix".localized(for: appLanguage)) \(error.localizedDescription)"
                                 showStatusMessage = true
                             }
                         }
                     }
                 }
             } message: {
-                Text("This will delete all active sessions, orders, and service requests on the server. Menu items and staff profiles will remain untouched.")
+                Text("wipe_transactions_body".localized(for: appLanguage))
             }
-            .alert("System Notification", isPresented: $showStatusMessage) {
-                Button("OK", role: .cancel) { }
+            .alert("system_notification".localized(for: appLanguage), isPresented: $showStatusMessage) {
+                Button("ok".localized(for: appLanguage), role: .cancel) { }
             } message: {
                 Text(statusMessage)
+            }
+            .alert("log_out".localized(for: appLanguage), isPresented: $showingSignOutAlert) {
+                Button("cancel".localized(for: appLanguage), role: .cancel) { }
+                Button("log_out".localized(for: appLanguage), role: .destructive) {
+                    APHaptic.trigger()
+                    loggedInEmployeeId = ""
+                    loggedInEmployee = nil
+                }
+            } message: {
+                Text("sign_out_confirm_body".localized(for: appLanguage))
             }
         }
     }

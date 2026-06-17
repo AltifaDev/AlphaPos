@@ -54,6 +54,7 @@ struct NotificationListView: View {
     
     @State private var isLoading = false
     @State private var collapsedTables = Set<String>()
+    @State private var processingAlertIds = Set<String>()
 
     private var alerts: [StaffAlert] {
         var list: [StaffAlert] = []
@@ -90,12 +91,16 @@ struct NotificationListView: View {
             guard isSessionActive || isWithin24Hours else { continue }
             
             let statusLower = order.status.lowercased()
-            let isActive = statusLower == "preparing" || statusLower == "ready"
+            // Waiters need alerts for preparing/cooking and ready orders.
+            // Only cancelled orders are filtered out.
+            guard statusLower != "cancelled" else { continue }
+            
+            let isActive = statusLower == "ready" || statusLower == "preparing" || statusLower == "cooking"
             let priority: AlertPriority = statusLower == "ready" ? .high : .medium
             
             let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
             let statusLabel = statusLower == "ready" ? "order_ready".localized(for: appLanguage) :
-                              statusLower == "preparing" ? "order_preparing".localized(for: appLanguage) :
+                              (statusLower == "preparing" || statusLower == "cooking") ? "order_preparing".localized(for: appLanguage) :
                               statusLower == "served" ? "order_served".localized(for: appLanguage) :
                               "order_completed".localized(for: appLanguage)
             
@@ -328,17 +333,26 @@ struct NotificationListView: View {
                 }
                 
                 if !actableAlerts.isEmpty {
+                    let isProcessing = actableAlerts.contains(where: { processingAlertIds.contains($0.id) })
                     Button(action: {
                         resolveAllForTable(actableAlerts)
                     }) {
-                        Text(actionText)
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(highlightColor)
-                            .cornerRadius(12)
+                        if isProcessing {
+                            ProgressView()
+                                .tint(.white)
+                                .scaleEffect(0.7)
+                                .frame(width: 40, height: 12)
+                        } else {
+                            Text(actionText)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white)
+                        }
                     }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(isProcessing ? Color.gray : highlightColor)
+                    .cornerRadius(12)
+                    .disabled(isProcessing)
                     .buttonStyle(.plain)
                 }
             }
@@ -436,19 +450,36 @@ struct NotificationListView: View {
             Spacer()
             
             if alert.isActive {
+                let alertId = alert.id
+                let isProcessing = processingAlertIds.contains(alertId)
+                
                 switch alert.type {
                 case .serviceRequest(let req):
                     Button(action: {
                         resolveRequest(req: req)
                     }) {
-                        Text("resolve".localized(for: appLanguage))
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(APGradient.positive)
-                            .clipShape(Capsule())
+                        if isProcessing {
+                            ProgressView()
+                                .tint(.white)
+                                .scaleEffect(0.7)
+                                .frame(width: 38, height: 12)
+                        } else {
+                            Text("resolve".localized(for: appLanguage))
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.white)
+                        }
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background {
+                        if isProcessing {
+                            Color.gray
+                        } else {
+                            APGradient.positive
+                        }
+                    }
+                    .clipShape(Capsule())
+                    .disabled(isProcessing)
                     .buttonStyle(.plain)
                     
                 case .order(let order):
@@ -456,14 +487,28 @@ struct NotificationListView: View {
                         Button(action: {
                             serveOrder(order: order)
                         }) {
-                            Text("serve_action".localized(for: appLanguage))
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(APGradient.accent)
-                                .clipShape(Capsule())
+                            if isProcessing {
+                                ProgressView()
+                                    .tint(.white)
+                                    .scaleEffect(0.7)
+                                    .frame(width: 32, height: 12)
+                            } else {
+                                Text("serve_action".localized(for: appLanguage))
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background {
+                            if isProcessing {
+                                Color.gray
+                            } else {
+                                APGradient.accent
+                            }
+                        }
+                        .clipShape(Capsule())
+                        .disabled(isProcessing)
                         .buttonStyle(.plain)
                     }
                 }
@@ -621,23 +666,38 @@ struct NotificationListView: View {
     }
     
     private func resolveRequest(req: ServiceRequest) {
+        let alertId = "req-\(req.id)"
+        guard !processingAlertIds.contains(alertId) else { return }
+        processingAlertIds.insert(alertId)
         APHaptic.trigger()
         Task {
             _ = try? await networkService.resolveRequest(requestId: req.id)
+            processingAlertIds.remove(alertId)
         }
     }
     
     private func serveOrder(order: Order) {
+        let alertId = "order-\(order.id)"
+        guard !processingAlertIds.contains(alertId) else { return }
+        processingAlertIds.insert(alertId)
         APHaptic.trigger()
         Task {
             _ = try? await networkService.serveOrder(orderId: order.id)
+            processingAlertIds.remove(alertId)
         }
     }
     
     private func resolveAllForTable(_ alerts: [StaffAlert]) {
+        let toProcess = alerts.filter { !processingAlertIds.contains($0.id) }
+        guard !toProcess.isEmpty else { return }
+        
+        for alert in toProcess {
+            processingAlertIds.insert(alert.id)
+        }
+        
         APHaptic.trigger()
         Task {
-            for alert in alerts {
+            for alert in toProcess {
                 switch alert.type {
                 case .serviceRequest(let req):
                     _ = try? await networkService.resolveRequest(requestId: req.id)
@@ -646,6 +706,7 @@ struct NotificationListView: View {
                         _ = try? await networkService.serveOrder(orderId: order.id)
                     }
                 }
+                processingAlertIds.remove(alert.id)
             }
         }
     }

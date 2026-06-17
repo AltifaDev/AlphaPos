@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=10">
     <!-- Supabase JS Client SDK -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -219,15 +219,26 @@
                 </div>
 
                 <!-- Categories Slider -->
+                <div class="category-header-container">
+                    <h2 class="category-header-title" data-translate-key="foodCategories">Food Categories</h2>
+                </div>
                 <div class="category-tabs-container">
                     <div class="category-tabs" id="categoryTabs">
                         <!-- Categories will be rendered dynamically -->
                     </div>
                 </div>
 
+                <!-- Featured Menu Section -->
+                <div id="featuredMenuSection" class="featured-menu-section">
+                    <h2 class="section-title-vertical" id="featuredMenuTitle" data-translate-key="featuredMenu">Featured Menu</h2>
+                    <div class="featured-menu-grid" id="featuredMenuGrid">
+                        <!-- Featured items will be rendered dynamically -->
+                    </div>
+                </div>
+
                 <!-- Menu Grid -->
                 <section class="menu-section">
-                    <h2 class="section-title" id="currentCategoryTitle" data-translate-key="menuTab">Menu</h2>
+                    <h2 class="section-title-vertical" id="currentCategoryTitle" data-translate-key="menuTab">Menu</h2>
                     <div class="menu-grid" id="menuGrid">
                         <!-- Menu items will be rendered dynamically -->
                     </div>
@@ -414,12 +425,25 @@
         </div>
     </div>
 
+    <!-- Floating Request Button -->
+    <button id="floatingRequestBtn" class="floating-request-btn" onclick="app.switchView('service')" aria-label="Request staff service">
+        <span class="request-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                <circle cx="9" cy="12" r="1" fill="currentColor"></circle>
+                <circle cx="12" cy="12" r="1" fill="currentColor"></circle>
+                <circle cx="15" cy="12" r="1" fill="currentColor"></circle>
+            </svg>
+        </span>
+        <span class="request-text" data-translate-key="requestLabel">Request</span>
+    </button>
+
     <!-- Notification Toast -->
     <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true">Order Sent Successfully!</div>
 
     <!-- Script imports -->
     <script src="config.js"></script>
     <script src="hybrid-location.js"></script>
-    <script type="module" src="app.js?v=9"></script>
+    <script type="module" src="app.js?v=10"></script>
 </body>
 </html>

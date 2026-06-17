@@ -110,7 +110,7 @@ struct PayrollDashboardView: View {
                     
                     // RIGHT PANEL: Payroll Calculator Engine
                     VStack(spacing: 0) {
-                        Text("Payroll Engine")
+                        Text("payroll_engine_title".t)
                             .font(.title3)
                             .fontWeight(.bold)
                             .foregroundColor(.textPrimary)
@@ -119,7 +119,7 @@ struct PayrollDashboardView: View {
                             .background(Color.appSurfaceHigh)
                         
                         VStack(alignment: .leading, spacing: 20) {
-                            Text("PAYROLL PERIOD")
+                            Text("payroll_period_header".t)
                                 .font(.caption)
                                 .fontWeight(.bold)
                                 .foregroundColor(.appAccent)
@@ -150,7 +150,7 @@ struct PayrollDashboardView: View {
                                     ProgressView()
                                         .tint(.white)
                                 } else {
-                                    Label("Run Calculations", systemImage: "slider.horizontal.3")
+                                    Label("run_calculations_btn".t, systemImage: "slider.horizontal.3")
                                 }
                             }
                             .apGradientButton(gradient: APGradient.accent, shadow: APShadow.glow, disabled: isCalculating)
@@ -168,7 +168,7 @@ struct PayrollDashboardView: View {
                                 ProgressView()
                                     .tint(.appAccent)
                                     .scaleEffect(1.2)
-                                Text("Computing payroll metrics...")
+                                Text("computing_payroll_metrics".t)
                                     .font(.subheadline)
                                     .foregroundColor(.textSecondary)
                             }
@@ -179,7 +179,7 @@ struct PayrollDashboardView: View {
                                 Image(systemName: "percent")
                                     .font(.system(size: 40))
                                     .foregroundColor(.textTertiary)
-                                Text("No slips calculated for the selected range.")
+                                Text("no_slips_calculated".t)
                                     .font(.caption)
                                     .foregroundColor(.textSecondary)
                             }
@@ -204,7 +204,7 @@ struct PayrollDashboardView: View {
                                                     Spacer()
                                                     
                                                     VStack(alignment: .trailing, spacing: 4) {
-                                                        Text("NET PAY")
+                                                        Text("net_pay_label".t)
                                                             .font(.system(size: 9, weight: .bold))
                                                             .foregroundColor(.appTeal)
                                                             .tracking(1.0)
@@ -221,7 +221,7 @@ struct PayrollDashboardView: View {
                                                 // Detailed columns
                                                 HStack(alignment: .center) {
                                                     VStack(alignment: .leading, spacing: 2) {
-                                                        Text("HOURS WORKED")
+                                                        Text("hours_worked_label".t)
                                                             .font(.system(size: 8, weight: .bold))
                                                             .foregroundColor(.textSecondary)
                                                         Text("\(slip.hoursWorked, specifier: "%.1f") hrs")
@@ -231,7 +231,7 @@ struct PayrollDashboardView: View {
                                                     }
                                                     Spacer()
                                                     VStack(alignment: .leading, spacing: 2) {
-                                                        Text("OT PAY")
+                                                        Text("ot_pay_label".t)
                                                             .font(.system(size: 8, weight: .bold))
                                                             .foregroundColor(.textSecondary)
                                                         Text("\(slip.otPay, specifier: "%.1f") ฿")
@@ -241,7 +241,7 @@ struct PayrollDashboardView: View {
                                                     }
                                                     Spacer()
                                                     VStack(alignment: .leading, spacing: 2) {
-                                                        Text("SSF DEDUCTION")
+                                                        Text("ssf_deduction_label".t)
                                                             .font(.system(size: 8, weight: .bold))
                                                             .foregroundColor(.textSecondary)
                                                         Text("-\(slip.ssfDeduction, specifier: "%.1f") ฿")
@@ -271,7 +271,7 @@ struct PayrollDashboardView: View {
                     .overlay(Rectangle().fill(Color.appDivider).frame(width: 1), alignment: .leading)
                 }
             }
-            .navigationTitle("Payroll & Shifts")
+            .navigationTitle("payroll_shifts_title".t)
             .apNavBar()
             .sheet(isPresented: $showingEmployeeSheet) {
                 employeeFormSheet
@@ -295,7 +295,7 @@ struct PayrollDashboardView: View {
             let pendingAudits = allTimecards.filter { $0.status == "pending_audit" }
             VStack(alignment: .leading, spacing: 12) {
                 Label {
-                    Text("Pending Face Scan Audits")
+                    Text("pending_face_scan_audits".t)
                         .foregroundColor(.textPrimary)
                 } icon: {
                     Image(systemName: "eye.trianglebadge.exclamationmark")
@@ -305,7 +305,7 @@ struct PayrollDashboardView: View {
                 .fontWeight(.bold)
                 
                 if pendingAudits.isEmpty {
-                    Text("No pending biometric audits. Face match accuracy is solid.")
+                    Text("no_pending_biometric_audits".t)
                         .font(.subheadline)
                         .foregroundColor(.textSecondary)
                         .padding()
@@ -351,7 +351,7 @@ struct PayrollDashboardView: View {
                 }
                 
                 if allTimecards.isEmpty {
-                    Text("No clock-in records found.")
+                    Text("no_clockin_records".t)
                         .font(.subheadline)
                         .foregroundColor(.textSecondary)
                         .padding()
@@ -478,7 +478,7 @@ struct PayrollDashboardView: View {
             
             let shifts = employees.flatMap { $0.shifts }
             if shifts.isEmpty {
-                Text("No employee shifts scheduled.")
+                Text("no_shifts_scheduled".t)
                     .foregroundColor(.textSecondary)
                     .padding()
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -551,7 +551,7 @@ struct PayrollDashboardView: View {
             }
             
             if employees.isEmpty {
-                Text("No employees registered yet.")
+                Text("no_employees_registered".t)
                     .foregroundColor(.textSecondary)
                     .padding()
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -629,7 +629,7 @@ struct PayrollDashboardView: View {
                     Image(systemName: "person.crop.square.fill")
                         .font(.system(size: 32))
                         .foregroundColor(.appAccent)
-                    Text("Reference")
+                    Text("reference_label".t)
                         .font(.system(size: 8, weight: .bold))
                         .foregroundColor(.textSecondary)
                 }
@@ -648,7 +648,7 @@ struct PayrollDashboardView: View {
                     Image(systemName: "person.crop.square")
                         .font(.system(size: 32))
                         .foregroundColor(.appRose)
-                    Text("Selfie Scan")
+                    Text("selfie_scan_label".t)
                         .font(.system(size: 8, weight: .bold))
                         .foregroundColor(.textSecondary)
                 }
@@ -665,7 +665,7 @@ struct PayrollDashboardView: View {
                 // Verify action buttons
                 VStack(spacing: 8) {
                     Button(action: { approveTimecard(timecard) }) {
-                        Text("Verify Match")
+                        Text("verify_match_btn".t)
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.white)
@@ -677,7 +677,7 @@ struct PayrollDashboardView: View {
                     .buttonStyle(PlainButtonStyle())
                     
                     Button(action: { rejectTimecard(timecard) }) {
-                        Text("Reject")
+                        Text("reject_btn_label".t)
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.textPrimary)
@@ -767,7 +767,7 @@ struct PayrollDashboardView: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("Gross Wages")
+                    Text("gross_wages_label".t)
                         .font(.system(size: 8, weight: .bold))
                         .foregroundColor(.textTertiary)
                     Text("\(totalWages, specifier: "%.1f") ฿")
@@ -1258,7 +1258,7 @@ struct PayrollDashboardView: View {
     private var employeeFormSheet: some View {
         NavigationStack {
             Form {
-                Section(header: Text("PERSONAL INFO")) {
+                Section(header: Text("personal_info_header".t)) {
                     TextField("First Name", text: $empFirstName)
                     TextField("Last Name", text: $empLastName)
                     TextField("Phone Number", text: $empPhone)
@@ -1270,14 +1270,14 @@ struct PayrollDashboardView: View {
                         .textInputAutocapitalization(.never)
                 }
                 
-                Section(header: Text("ADDITIONAL DETAILS (HR STANDARDS)")) {
+                Section(header: Text("additional_details_hr_header".t)) {
                     Toggle("Specify Date of Birth", isOn: $specifyDOB)
                     if specifyDOB {
                         DatePicker("Date of Birth", selection: $empDateOfBirth, displayedComponents: .date)
                     }
                     
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("HOME ADDRESS")
+                        Text("home_address_header".t)
                             .font(.caption2)
                             .fontWeight(.bold)
                             .foregroundColor(.appAccent)
@@ -1287,7 +1287,7 @@ struct PayrollDashboardView: View {
                         
                         HStack(spacing: 12) {
                             Picker("Province", selection: $selectedProvinceId) {
-                                Text("Select Province...").tag(nil as Int?)
+                                Text("select_province_placeholder".t).tag(nil as Int?)
                                 ForEach(ThailandAddressManager.shared.provinces) { prov in
                                     Text(prov.displayName(for: appLanguage)).tag(prov.id as Int?)
                                 }
@@ -1302,7 +1302,7 @@ struct PayrollDashboardView: View {
                             let availableDistricts = ThailandAddressManager.shared.provinces.first(where: { $0.id == selectedProvinceId })?.districts ?? []
                             
                             Picker("District", selection: $selectedDistrictId) {
-                                Text("Select District...").tag(nil as Int?)
+                                Text("select_district_placeholder".t).tag(nil as Int?)
                                 ForEach(availableDistricts) { dist in
                                     Text(dist.displayName(for: appLanguage)).tag(dist.id as Int?)
                                 }
@@ -1320,7 +1320,7 @@ struct PayrollDashboardView: View {
                             let availableSubDistricts = province?.districts.first(where: { $0.id == selectedDistrictId })?.subDistricts ?? []
                             
                             Picker("Subdistrict", selection: $selectedSubDistrictId) {
-                                Text("Select Subdistrict...").tag(nil as Int?)
+                                Text("select_subdistrict_placeholder".t).tag(nil as Int?)
                                 ForEach(availableSubDistricts) { sub in
                                     Text(sub.displayName(for: appLanguage)).tag(sub.id as Int?)
                                 }
@@ -1343,7 +1343,7 @@ struct PayrollDashboardView: View {
                     }
                     
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("EMERGENCY CONTACT")
+                        Text("emergency_contact_header".t)
                             .font(.caption2)
                             .fontWeight(.bold)
                             .foregroundColor(.appAccent)
@@ -1354,16 +1354,16 @@ struct PayrollDashboardView: View {
                     }
                 }
                 
-                Section(header: Text("COMPENSATION & START DATE")) {
+                Section(header: Text("compensation_start_date_header".t)) {
                     Picker("Employment Type", selection: $empEmploymentType) {
-                        Text("Hourly").tag("hourly")
-                        Text("Daily").tag("daily")
-                        Text("Monthly Fixed").tag("monthly")
+                        Text("hourly_pay_type".t).tag("hourly")
+                        Text("daily_pay_type".t).tag("daily")
+                        Text("monthly_fixed_pay_type".t).tag("monthly")
                     }
                     .pickerStyle(SegmentedPickerStyle())
                     
                     HStack {
-                        Text("Pay Rate (฿)")
+                        Text("pay_rate_label".t)
                         Spacer()
                         TextField("Amount", value: $empPayRate, format: .number)
                             .keyboardType(.decimalPad)
@@ -1378,7 +1378,7 @@ struct PayrollDashboardView: View {
                     }
                 }
                 
-                Section(header: Text("BANKING DETAILS")) {
+                Section(header: Text("banking_details_header".t)) {
                     Picker("bank_name".localized(for: appLanguage), selection: $empBankName) {
                         Text("select_bank".localized(for: appLanguage)).tag("")
                         ForEach(thaiBanks) { bank in
@@ -1389,7 +1389,7 @@ struct PayrollDashboardView: View {
                         .keyboardType(.numberPad)
                 }
                 
-                Section(header: Text("SYSTEM ACCESS & login credentials")) {
+                Section(header: Text("system_access_credentials_header".t)) {
                     Toggle("Enable Waitstaff App Access", isOn: $enableLoginAccess)
                     
                     if enableLoginAccess {
@@ -1404,7 +1404,7 @@ struct PayrollDashboardView: View {
                             .keyboardType(.numberPad)
                         
                         Picker("Access Role", selection: $empRoleId) {
-                            Text("No System Role").tag(nil as UUID?)
+                            Text("no_system_role".t).tag(nil as UUID?)
                             ForEach(allRoles) { role in
                                 Text(role.name).tag(role.id as UUID?)
                             }
@@ -1412,13 +1412,13 @@ struct PayrollDashboardView: View {
                     }
                 }
                 
-                Section(header: Text("BIOMETRICS (FACE ID SCANNER)")) {
+                Section(header: Text("biometrics_faceid_scanner_header".t)) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Face Scanner Biometrics")
+                            Text("face_scanner_biometrics_title".t)
                                 .fontWeight(.semibold)
                             if faceEmbeddingData != nil {
-                                Text("🟢 Enrolled / Face ID Registered")
+                                Text("face_id_registered_status".t)
                                     .font(.caption)
                                     .foregroundColor(.appTeal)
                                 if let regDate = faceRegisteredAt {
@@ -1427,10 +1427,10 @@ struct PayrollDashboardView: View {
                                         .foregroundColor(.textSecondary)
                                 }
                             } else {
-                                Text("🔴 Not Enrolled / Not Registered")
+                                Text("face_id_not_registered_status".t)
                                     .font(.caption)
                                     .foregroundColor(.appRose)
-                                Text("Face ID can be enrolled by the staff member during their first terminal clock-in.")
+                                Text("face_id_enroll_desc".t)
                                     .font(.system(size: 10))
                                     .foregroundColor(.textSecondary)
                                     .lineLimit(2)
@@ -1445,7 +1445,7 @@ struct PayrollDashboardView: View {
                                 faceEmbeddingData = nil
                                 faceRegisteredAt = nil
                             }) {
-                                Text("Reset / Clear")
+                                Text("reset_clear_btn".t)
                                     .font(.caption)
                                     .fontWeight(.bold)
                             }
@@ -1458,13 +1458,13 @@ struct PayrollDashboardView: View {
             .navigationTitle(editingEmployee == nil ? "add_employee".localized(for: appLanguage) : "edit_employee".localized(for: appLanguage))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button(L.Common.cancel.t) {
                         showingEmployeeSheet = false
                         editingEmployee = nil
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("save_btn_label".t) {
                         saveEmployee()
                     }
                     .disabled(empFirstName.isEmpty || empLastName.isEmpty || (enableLoginAccess && empUsername.isEmpty))
@@ -1538,7 +1538,7 @@ struct PayrollDashboardView: View {
                 } else {
                     Section(header: Text("employee_header".localized(for: appLanguage))) {
                         Picker("Select Employee", selection: $shiftEmployeeId) {
-                            Text("Choose...").tag(nil as UUID?)
+                            Text("choose_dropdown_placeholder".t).tag(nil as UUID?)
                             ForEach(employees) { emp in
                                 Text("\(emp.firstName) \(emp.lastName)").tag(emp.id as UUID?)
                             }
@@ -1591,30 +1591,30 @@ struct PayrollDashboardView: View {
     private var timecardFormSheet: some View {
         NavigationStack {
             Form {
-                Section(header: Text("EMPLOYEE")) {
+                Section(header: Text("employee_header_title".t)) {
                     Picker("Select Employee", selection: $tcEmployeeId) {
-                        Text("Choose...").tag(nil as UUID?)
+                        Text("choose_dropdown_placeholder".t).tag(nil as UUID?)
                         ForEach(employees) { emp in
                             Text("\(emp.firstName) \(emp.lastName)").tag(emp.id as UUID?)
                         }
                     }
                 }
                 
-                Section(header: Text("SHIFT DURATION")) {
+                Section(header: Text("shift_duration_header".t)) {
                     DatePicker("Clock In", selection: $tcClockIn)
                     DatePicker("Clock Out", selection: $tcClockOut)
                 }
                 
-                Section(header: Text("BREAK & OVERTIME")) {
+                Section(header: Text("break_overtime_header".t)) {
                     HStack {
-                        Text("Break (Minutes)")
+                        Text("break_minutes_label".t)
                         Spacer()
                         TextField("Minutes", value: $tcBreakMinutes, format: .number)
                             .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
                     }
                     HStack {
-                        Text("Overtime (Minutes)")
+                        Text("overtime_minutes_label".t)
                         Spacer()
                         TextField("Minutes", value: $tcOvertimeMinutes, format: .number)
                             .keyboardType(.numberPad)
@@ -1622,11 +1622,11 @@ struct PayrollDashboardView: View {
                     }
                 }
                 
-                Section(header: Text("REVIEW STATUS")) {
+                Section(header: Text("review_status_header".t)) {
                     Picker("Status", selection: $tcStatus) {
-                        Text("Approved").tag("approved")
-                        Text("Pending").tag("pending_audit")
-                        Text("Rejected").tag("rejected")
+                        Text("approved_status_tag".t).tag("approved")
+                        Text("pending_status_tag".t).tag("pending_audit")
+                        Text("rejected_status_tag".t).tag("rejected")
                     }
                     .pickerStyle(SegmentedPickerStyle())
                     
@@ -1636,13 +1636,13 @@ struct PayrollDashboardView: View {
             .navigationTitle(editingTimecard == nil ? "add_timecard".localized(for: appLanguage) : "Edit Timecard")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button(L.Common.cancel.t) {
                         showingTimecardSheet = false
                         editingTimecard = nil
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("save_btn_label".t) {
                         saveTimecard()
                     }
                     .disabled(tcEmployeeId == nil || tcClockIn >= tcClockOut)
@@ -1662,7 +1662,7 @@ struct PayrollReportView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("ALPHAPOS PAYROLL REPORT")
+            Text("payroll_report_title".t)
                 .font(.title).fontWeight(.bold)
                 .foregroundColor(.black)
                 
@@ -1836,240 +1836,6 @@ class ThailandAddressManager {
 
 fileprivate extension String {
     func localized(for language: String) -> String {
-        let dict: [String: [String: String]] = [
-            "timecard_log": [
-                "en": "Timecard Log",
-                "th": "ประวัติการลงเวลา",
-                "lo": "ປະຫວັດການລົງເວລາ",
-                "km": "កំណត់ត្រាម៉ោងការងារ",
-                "vi": "Lịch sử điểm danh",
-                "my": "အလုပ်ချိန်မှတ်တမ်း"
-            ],
-            "shift_planner": [
-                "en": "Shift Planner",
-                "th": "ตารางกะทำงาน",
-                "lo": "ຕາຕະລາງກະລາຍວັນ",
-                "km": "ផែនការវេនការងារ",
-                "vi": "Lịch làm việc",
-                "my": "ဂျူတီစီစဉ်သူ"
-            ],
-            "staff_registry": [
-                "en": "Staff Registry",
-                "th": "รายชื่อพนักงาน",
-                "lo": "ລາຍຊື່ພະນັກງານ",
-                "km": "បញ្ជីឈ្មោះបុគ្គលិក",
-                "vi": "Danh sách nhân viên",
-                "my": "ဝန်ထမ်းစာရင်း"
-            ],
-            "add_timecard": [
-                "en": "Manual Timecard",
-                "th": "บันทึกเวลาทำงานย้อนหลัง",
-                "lo": "ບັນທຶກເວລາເຮັດວຽກຍ້ອນຫຼັງ",
-                "km": "កាតម៉ោងដោយដៃ",
-                "vi": "Điểm danh thủ công",
-                "my": "အလုပ်ချိန်ကိုယ်တိုင်ပြင်ဆင်ရန်"
-            ],
-            "schedule_shift": [
-                "en": "Schedule Shift",
-                "th": "จัดกะการทำงาน",
-                "lo": "จัดกະລายວັນ",
-                "km": "រៀបចំវេនการងារ",
-                "vi": "Lên lịch ca",
-                "my": "ဂျူတီချိန်သတ်မှတ်ရန်"
-            ],
-            "add_employee": [
-                "en": "Add Employee",
-                "th": "เพิ่มพนักงาน",
-                "lo": "ເພີ່ມພະນັກງານ",
-                "km": "បន្ថែមបុគ្គលិក",
-                "vi": "Thêm nhân viên",
-                "my": "ဝန်ထမ်းအသစ်ထည့်ရန်"
-            ],
-            "edit_employee": [
-                "en": "Edit Employee",
-                "th": "แก้ไขพนักงาน",
-                "lo": "ແກ້ໄຂພະນັກງານ",
-                "km": "កែសម្រួលបុគ្គលិក",
-                "vi": "Sửa nhân viên",
-                "my": "ဝန်ထမ်းအချက်အလက်ပြင်ရန်"
-            ],
-            "total_payroll": [
-                "en": "Total Payroll",
-                "th": "ยอดรวมค่าจ้างทั้งหมด",
-                "lo": "ຍອດລວມຄ່າຈ้างທັງໝົດ",
-                "km": "សរុបប្រាក់បៀវត្សរ៍",
-                "vi": "Tổng chi lương",
-                "my": "စုစုပေါင်း လစာစရိတ်"
-            ],
-            "export_report": [
-                "en": "Export Report",
-                "th": "ส่งออกรายงาน",
-                "lo": "ສົ່ງອອກລາຍງານ",
-                "km": "នាំចេញរបាយការណ៍",
-                "vi": "Xuất báo cáo",
-                "my": "အစီရင်ခံစာထုတ်ရန်"
-            ],
-            "total_hours": [
-                "en": "Total Hours",
-                "th": "ชั่วโมงทำงานรวม",
-                "lo": "ຊົ່ວໂມງເຮັດວຽກລວມ",
-                "km": "សរុបម៉ោងធ្វើការ",
-                "vi": "Tổng số giờ",
-                "my": "စုစုပေါင်း နာရီ"
-            ],
-            "total_ssf": [
-                "en": "Total SSF",
-                "th": "เงินสมทบประกันสังคมรวม",
-                "lo": "ເງິນປະກันສັງຄົມລວມ",
-                "km": "សរុបវិភាគទានសង្គម",
-                "vi": "Tổng BHXH",
-                "my": "စုစုပေါင်း လူမှုဖူလုံရေး"
-            ],
-            "weekly_calendar_view": [
-                "en": "Weekly Calendar Scheduler",
-                "th": "ตารางกะทำงานรายสัปดาห์",
-                "lo": "ຕາຕະລາງກະລາຍອາທິດ",
-                "km": "ផែនការវេនการងារប្រចាំសប្តាហ៍",
-                "vi": "Lịch làm việc hàng tuần",
-                "my": "အပတ်စဉ် ဂျူတီစီစဉ်သူ"
-            ],
-            "weekly_calendar_sub": [
-                "en": "Full-screen interactive view, matching Outlook scheduling principle.",
-                "th": "ตารางการจัดการแบบเต็มจอในรูปแบบปฏิทินแบบเดียวกับ Outlook",
-                "lo": "ຕາຕະລາງການຈັດການແບບເຕັมຈໍໃນຮູບແບບປະຕິທินແບບດຽວກັບ Outlook",
-                "km": "តារាងគ្រប់គ្រងពេញអេក្រង់ជាទម្រង់ប្រតិទិនដូច Outlook",
-                "vi": "Lịch quản lý toàn màn hình dưới dạng lịch giống như Outlook",
-                "my": "Outlook စတိုင် အပြည့်အစုံဖြင့် အပတ်စဉ်ဂျူတီ စีစဉ်ရန်"
-            ],
-            "open_scheduler": [
-                "en": "Open Full-Screen Scheduler",
-                "th": "เปิดตารางการจัดกะทำงานแบบเต็มจอ",
-                "lo": "ເປີດຕາຕະລາງการจัดกະລายวันเต็มจอ",
-                "km": "បើកតារាងវេនการងារពេញអេក្រង់",
-                "vi": "Mở lịch làm việc toàn màn hình",
-                "my": "အပြည့်အစုံ ဂျူတီစီစဉ်သူ ဖွင့်ရန်"
-            ],
-            "bank_name": [
-                "en": "Bank Name",
-                "th": "ธนาคาร",
-                "lo": "ທະນາຄານ",
-                "km": "ធនាគារ",
-                "vi": "Ngân hàng",
-                "my": "ဘဏ်အမည်"
-            ],
-            "select_bank": [
-                "en": "Select Bank...",
-                "th": "เลือกธนาคาร...",
-                "lo": "ເລືອກທະນາຄານ...",
-                "km": "ជ្រើសរើសធនាគារ...",
-                "vi": "Chọn ngân hàng...",
-                "my": "ဘဏ်ရွေးချယ်ပါ..."
-            ],
-            "select_employees_batch": [
-                "en": "Select Employees (Batch)",
-                "th": "เลือกพนักงาน (กลุ่ม)",
-                "lo": "ເລືອກພະນັກງານ (ກຸ່ມ)",
-                "km": "ជ្រើសរើសបុគ្គលិក (ជាក្រុម)",
-                "vi": "Chọn nhân viên (Hàng loạt)",
-                "my": "ဝန်ထမ်းများကိုရွေးချယ်ပါ (အုပ်စု)"
-            ],
-            "select_all": [
-                "en": "Select All",
-                "th": "เลือกทั้งหมด",
-                "lo": "ເລືອກທັງໝົດ",
-                "km": "ជ្រើសរើសទាំងអស់",
-                "vi": "Chọn tất cả",
-                "my": "အားလုံးရွေးပါ"
-            ],
-            "clear_all": [
-                "en": "Clear All",
-                "th": "ล้างทั้งหมด",
-                "lo": "ລຶບທັງໝົດ",
-                "km": "សម្អាតทั้งหมด",
-                "vi": "Xóa tất cả",
-                "my": "အားလုံးရှင်းလင်းပါ"
-            ],
-            "employee_header": [
-                "en": "Employee",
-                "th": "พนักงาน",
-                "lo": "ພະນັກງານ",
-                "km": "បុគ្គលិក",
-                "vi": "Nhân viên",
-                "my": "ဝန်ထမ်း"
-            ],
-            "time_date_header": [
-                "en": "Time & Date",
-                "th": "วันและเวลา",
-                "lo": "ວັນ ແລະ ເວລາ",
-                "km": "ថ្ងៃ និង ម៉ោង",
-                "vi": "Ngày & Giờ",
-                "my": "နေ့ရက်နှင့်အချိန်"
-            ],
-            "role_notes_header": [
-                "en": "Role & Notes",
-                "th": "ตำแหน่งและบันทึก",
-                "lo": "ຕຳແໜ່ງ ແລະ ບັນທຶກ",
-                "km": "តួនាទី និង កំណត់ចំណាំ",
-                "vi": "Vai trò & Ghi chú",
-                "my": "ရာထူးและမှတ်စု"
-            ],
-            "notes_field": [
-                "en": "Notes",
-                "th": "บันทึกเพิ่มเติม",
-                "lo": "ບັນທຶກເພີ່ມເຕີม",
-                "km": "កំណត់ចំណាំបន្ថែម",
-                "vi": "Ghi chú",
-                "my": "မှတ်စု"
-            ],
-            "role_field_placeholder": [
-                "en": "Role (e.g. Cashier, Cook)",
-                "th": "ตำแหน่ง (เช่น แคชเชียร์, กุ๊ก)",
-                "lo": "ຕຳແໜ່ງ (ເຊັ່ນ: ແຄັດເຊຍ, ກຸ໊ກ)",
-                "km": "តួនាទី (ឧទាហរណ៍៖ កាប៊ិន, ចុងភៅ)",
-                "vi": "Vai trò (Ví dụ: Thu ngân, Đầu bếp)",
-                "my": "ရာထူး (ဥပမာ - ငွေကိုင်၊ ထမင်းချက်)"
-            ],
-            "starts_field": [
-                "en": "Starts",
-                "th": "เริ่มต้น",
-                "lo": "ເລີ່ມຕົ້ນ",
-                "km": "ចាប់ផ្តើម",
-                "vi": "Bắt đầu",
-                "my": "စတင်သည်"
-            ],
-            "ends_field": [
-                "en": "Ends",
-                "th": "สิ้นสุด",
-                "lo": "สิ้นสุด",
-                "km": "បញ្ចប់",
-                "vi": "Kết thúc",
-                "my": "ပြီးဆုံးသည်"
-            ],
-            "delete_shift_btn": [
-                "en": "Delete Shift",
-                "th": "ลบกะทำงาน",
-                "lo": "ລຶບກະລາຍວັນ",
-                "km": "លុបវេនការងារ",
-                "vi": "Xóa ca làm việc",
-                "my": "ဂျူတီဖျက်သိမ်းရန်"
-            ],
-            "cancel_btn": [
-                "en": "Cancel",
-                "th": "ยกเลิก",
-                "lo": "ຍົກເລີກ",
-                "km": "បោះបង់",
-                "vi": "Hủy",
-                "my": "ပယ်ဖျက်ပါ"
-            ],
-            "save_btn": [
-                "en": "Save",
-                "th": "บันทึก",
-                "lo": "ບັນທຶກ",
-                "km": "រក្សាទុក",
-                "vi": "Lưu",
-                "my": "သိမ်းဆည်းပါ"
-            ]
-        ]
-        return dict[self]?[language] ?? dict[self]?["en"] ?? self
+        return LocalizationManager.shared.t(self)
     }
 }

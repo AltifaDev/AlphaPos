@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true
+  },
+  "include": [
+    "customer-order-web/**/*"
+  ],
+  "exclude": [
+    "supabase",
+    "**/node_modules",
+    "**/venv",
+    ".build"
+  ]
+}

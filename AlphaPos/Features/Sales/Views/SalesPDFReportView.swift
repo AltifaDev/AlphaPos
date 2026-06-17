@@ -24,7 +24,7 @@ struct SalesPDFReportView: View {
             // Header
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("ALPHAPOS RESTAURANT MANAGEMENT")
+                    Text("report_brand_header".t)
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.gray)
                     Text(title)
@@ -50,7 +50,7 @@ struct SalesPDFReportView: View {
             // Meta Information
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Generated At:")
+                    Text("generated_at_lbl".t)
                         .font(.system(size: 8, weight: .bold))
                         .foregroundColor(.gray)
                     Text(generatedAt)
@@ -59,10 +59,10 @@ struct SalesPDFReportView: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text("Report Scope:")
+                    Text("report_scope_lbl".t)
                         .font(.system(size: 8, weight: .bold))
                         .foregroundColor(.gray)
-                    Text("Completed Transactions")
+                    Text("completed_transactions_lbl".t)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.black)
                 }
@@ -70,25 +70,25 @@ struct SalesPDFReportView: View {
             
             // Financial KPI Matrix
             VStack(alignment: .leading, spacing: 10) {
-                Text("FINANCIAL SUMMARY")
+                Text("financial_summary_lbl".t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.black)
                     .tracking(1.0)
                 
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 10) {
                     GridRow {
-                        kpiBlock(title: "GROSS SALES", value: "฿\(grossSales.formatted(.number.precision(.fractionLength(2))))")
-                        kpiBlock(title: "NET SALES", value: "฿\(netSales.formatted(.number.precision(.fractionLength(2))))")
-                        kpiBlock(title: "TAX COLLECTED", value: "฿\(tax.formatted(.number.precision(.fractionLength(2))))")
+                        kpiBlock(title: "kpi_total_revenue".t, value: "฿\(grossSales.formatted(.number.precision(.fractionLength(2))))")
+                        kpiBlock(title: "net_sales_lbl".t, value: "฿\(netSales.formatted(.number.precision(.fractionLength(2))))")
+                        kpiBlock(title: "kpi_tax_collected".t, value: "฿\(tax.formatted(.number.precision(.fractionLength(2))))")
                     }
                     GridRow {
-                        kpiBlock(title: "SERVICE CHARGE", value: "฿\(serviceCharge.formatted(.number.precision(.fractionLength(2))))")
-                        kpiBlock(title: "DISCOUNTS GIVEN", value: "฿\(discount.formatted(.number.precision(.fractionLength(2))))")
-                        kpiBlock(title: "TOTAL ORDERS", value: "\(totalOrders)")
+                        kpiBlock(title: "service_charge_lbl".t, value: "฿\(serviceCharge.formatted(.number.precision(.fractionLength(2))))")
+                        kpiBlock(title: "discounts_given_lbl".t, value: "฿\(discount.formatted(.number.precision(.fractionLength(2))))")
+                        kpiBlock(title: "kpi_total_orders".t, value: "\(totalOrders)")
                     }
                     GridRow {
-                        kpiBlock(title: "AVG ORDER VALUE", value: "฿\(averageTicket.formatted(.number.precision(.fractionLength(2))))")
-                        kpiBlock(title: "TOTAL ITEMS SOLD", value: "\(totalItems)")
+                        kpiBlock(title: "kpi_avg_ticket".t, value: "฿\(averageTicket.formatted(.number.precision(.fractionLength(2))))")
+                        kpiBlock(title: "kpi_items_sold".t, value: "\(totalItems)")
                         Color.clear
                     }
                 }
@@ -103,17 +103,17 @@ struct SalesPDFReportView: View {
             
             // Payment Breakdown
             VStack(alignment: .leading, spacing: 8) {
-                Text("PAYMENT METHOD BREAKDOWN")
+                Text("payment_methods".t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.black)
                 
                 TableSection {
                     HStack {
-                        Text("Method").bold()
+                        Text("method_header".t).bold()
                         Spacer()
-                        Text("Transactions").bold()
+                        Text("transactions_header".t).bold()
                         Spacer().frame(width: 80)
-                        Text("Revenue").bold()
+                        Text("revenue_header".t).bold()
                     }
                     .font(.system(size: 10))
                     .foregroundColor(.gray)
@@ -121,7 +121,7 @@ struct SalesPDFReportView: View {
                     Divider()
                     
                     if payments.isEmpty {
-                        Text("No transactions recorded.")
+                        Text("no_transactions_pdf".t)
                             .font(.system(size: 10))
                             .foregroundColor(.gray)
                             .padding(.vertical, 4)
@@ -130,7 +130,7 @@ struct SalesPDFReportView: View {
                             HStack {
                                 Text(pt.method)
                                 Spacer()
-                                Text("\(pt.count) orders")
+                                Text(LocalizationManager.shared.t("orders_count_template", pt.count))
                                 Spacer().frame(width: 80)
                                 Text("฿\(pt.amount.formatted(.number.precision(.fractionLength(2))))")
                             }
@@ -144,19 +144,19 @@ struct SalesPDFReportView: View {
             
             // Top Products Summary (Preview of top 6)
             VStack(alignment: .leading, spacing: 8) {
-                Text("TOP PRODUCTS SUMMARY")
+                Text("top_products_summary_lbl".t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.black)
                 
                 TableSection {
                     HStack {
-                        Text("Item Name").bold()
+                        Text("item_name_header".t).bold()
                         Spacer()
-                        Text("Category").bold()
+                        Text("category_header".t).bold()
                         Spacer().frame(width: 80)
-                        Text("Qty Sold").bold()
+                        Text("qty_sold_header".t).bold()
                         Spacer().frame(width: 80)
-                        Text("Total Revenue").bold()
+                        Text("total_revenue_header".t).bold()
                     }
                     .font(.system(size: 10))
                     .foregroundColor(.gray)
@@ -164,7 +164,7 @@ struct SalesPDFReportView: View {
                     Divider()
                     
                     if products.isEmpty {
-                        Text("No items sold.")
+                        Text("no_items_sold_pdf".t)
                             .font(.system(size: 10))
                             .foregroundColor(.gray)
                             .padding(.vertical, 4)
@@ -194,14 +194,14 @@ struct SalesPDFReportView: View {
                 VStack(alignment: .center, spacing: 40) {
                     Color.clear.frame(height: 1)
                     Divider().background(Color.black)
-                    Text("PREPARED BY (CASHIER)")
+                    Text("prepared_by".t)
                         .font(.system(size: 8, weight: .bold))
                         .foregroundColor(.gray)
                 }
                 VStack(alignment: .center, spacing: 40) {
                     Color.clear.frame(height: 1)
                     Divider().background(Color.black)
-                    Text("APPROVED BY (STORE MANAGER)")
+                    Text("approved_by".t)
                         .font(.system(size: 8, weight: .bold))
                         .foregroundColor(.gray)
                 }

@@ -48,128 +48,143 @@ enum NotificationType {
         }
     }
     
-    var soundFile: String? {
+    /// System sound IDs that are guaranteed to play on all iOS devices
+    var systemSoundID: SystemSoundID {
         switch self {
-        case .order: return "notification_order"      // Urgent beep
-        case .urgent: return "notification_urgent"    // Multiple beeps
-        case .request: return "notification_request"  // Gentle ding
-        case .tableStatus: return nil
-        case .system: return nil
+        case .order: return 1315    // Anticipate — attention-grabbing chime
+        case .urgent: return 1304   // Alarm — urgent alert
+        case .request: return 1016  // Tweet — gentle notification
+        case .tableStatus: return 1057 // Tink — subtle status change
+        case .system: return 1007   // Tink — minimal system info
         }
     }
     
     var shouldVibrate: Bool {
         switch self {
-        case .order, .urgent: return true
+        case .order, .urgent, .request: return true
         default: return false
-        }
-    }
-    
-    var vibrationPattern: [NSNumber] {
-        switch self {
-        case .order: return [0, 200, 100, 200]        // Short-long pattern
-        case .urgent: return [0, 150, 100, 150, 100]  // Urgent pattern
-        default: return [0, 100]                       // Single tap
         }
     }
 }
 
-// MARK: - Enhanced Notification Manager (Observable)
+// MARK: - Enhanced Notification Manager (Observable, with FIFO Queue)
 @Observable
 final class EnhancedNotificationManager {
     static let shared = EnhancedNotificationManager()
     
-    // Current alert dialog item (top priority)
-    var alertItem: EnhancedNotificationItem?
+    // Currently visible banner (driven by the queue)
+    var currentBanner: EnhancedNotificationItem?
     
-    // In-app notification (banner at top)
-    var bannerItem: EnhancedNotificationItem?
+    // Number of pending items in queue (for badge display on banner)
+    var queueCount: Int = 0
     
-    // Badge count (for app icon)
+    // FIFO queue of pending notifications
     @ObservationIgnored
-    var badgeCount: Int = 0 {
-        didSet {
-            DispatchQueue.main.async {
-                UIApplication.shared.applicationIconBadgeNumber = self.badgeCount
-            }
-        }
-    }
+    private var queue: [EnhancedNotificationItem] = []
     
-    // Recent notifications history
     @ObservationIgnored
-    var recentNotifications: [EnhancedNotificationItem] = []
+    private var isProcessingQueue = false
     
-    private let audioPlayer = NotificationAudioPlayer()
+    @ObservationIgnored
+    private var currentDismissTask: Task<Void, Never>?
+    
     private let hapticGenerator = UINotificationFeedbackGenerator()
     
     private init() {}
     
-    // MARK: - Public Methods
+    // MARK: - Public: Enqueue a notification (called by NotificationManager router)
     
-    /// Show alert dialog (modal interrupt) - for high priority items
-    func showAlert(title: String, body: String, type: NotificationType = .system, action: (() -> Void)? = nil) {
+    /// Add a notification to the FIFO queue. If nothing is currently showing,
+    /// it will be displayed immediately. Otherwise it waits in line.
+    func enqueue(title: String, body: String, type: NotificationType, action: (() -> Void)? = nil) {
         let item = EnhancedNotificationItem(title: title, body: body, type: type, action: action)
         
         Task { @MainActor in
-            // Play sound & vibrate immediately
-            self.playNotificationSound(type: type)
-            self.triggerHaptic(type: type)
+            self.queue.append(item)
+            self.queueCount = self.queue.count
             
-            // Show alert dialog
-            self.alertItem = item
-            self.addToHistory(item)
+            #if DEBUG
+            print("EnhancedNotificationManager [ENQUEUE]: '\(title)' — queue size: \(self.queue.count)")
+            #endif
             
-            // Auto-dismiss after 6 seconds if no action taken
-            try? await Task.sleep(nanoseconds: 6_000_000_000)
-            if self.alertItem?.id == item.id {
-                self.alertItem = nil
+            if !self.isProcessingQueue {
+                self.processNextInQueue()
             }
         }
     }
     
-    /// Show banner notification (non-intrusive) - for lower priority items
-    func showBanner(title: String, body: String, type: NotificationType = .system) {
-        let item = EnhancedNotificationItem(title: title, body: body, type: type)
-        
+    /// Dismiss the current banner immediately and show the next one
+    func dismissCurrent() {
         Task { @MainActor in
-            // Play sound & vibrate
-            self.playNotificationSound(type: type)
-            if type.shouldVibrate {
-                self.triggerHaptic(type: type)
-            }
-            
-            // Show banner
-            self.bannerItem = item
-            self.addToHistory(item)
-            
-            // Auto-dismiss after 4 seconds
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if self.bannerItem?.id == item.id {
-                self.bannerItem = nil
-            }
+            self.currentDismissTask?.cancel()
+            self.currentBanner = nil
+            // Small delay before showing next
+            try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s gap
+            self.processNextInQueue()
         }
     }
     
-    /// Update badge count
-    func updateBadge(_ count: Int) {
-        self.badgeCount = count
-    }
-    
-    /// Clear all notifications
+    /// Clear everything
     func clearAll() {
-        self.alertItem = nil
-        self.bannerItem = nil
-        self.badgeCount = 0
-        self.recentNotifications.removeAll()
+        currentDismissTask?.cancel()
+        currentBanner = nil
+        queue.removeAll()
+        queueCount = 0
+        isProcessingQueue = false
         UIApplication.shared.applicationIconBadgeNumber = 0
     }
     
-    // MARK: - Private Methods
+    // MARK: - Private Queue Processing
     
-    private func playNotificationSound(type: NotificationType) {
-        if let soundFile = type.soundFile {
-            audioPlayer.play(soundFile: soundFile)
+    @MainActor
+    private func processNextInQueue() {
+        guard !queue.isEmpty else {
+            isProcessingQueue = false
+            queueCount = 0
+            return
         }
+        
+        isProcessingQueue = true
+        let item = queue.removeFirst()
+        queueCount = queue.count
+        
+        // Play sound & haptic
+        playSystemSound(type: item.type)
+        triggerHaptic(type: item.type)
+        
+        // Show the banner
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            self.currentBanner = item
+        }
+        
+        // Schedule auto-dismiss
+        let displayDuration: UInt64 = item.type == .order || item.type == .urgent
+            ? 5_000_000_000    // 5s for important items
+            : 3_500_000_000    // 3.5s for info/status items
+        
+        currentDismissTask = Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            do {
+                try await Task.sleep(nanoseconds: displayDuration)
+            } catch {
+                return // Task was cancelled — don't auto-dismiss
+            }
+            
+            // Auto-dismiss and show next
+            withAnimation(.easeOut(duration: 0.25)) {
+                self.currentBanner = nil
+            }
+            
+            // Delay before next item
+            try? await Task.sleep(nanoseconds: 400_000_000) // 0.4s gap
+            self.processNextInQueue()
+        }
+    }
+    
+    // MARK: - Sound & Haptics
+    
+    private func playSystemSound(type: NotificationType) {
+        AudioServicesPlaySystemSoundWithCompletion(type.systemSoundID) { }
     }
     
     private func triggerHaptic(type: NotificationType) {
@@ -177,187 +192,103 @@ final class EnhancedNotificationManager {
         
         switch type {
         case .order:
-            // Heavy impact for orders
             let impact = UIImpactFeedbackGenerator(style: .heavy)
             impact.impactOccurred()
-            
-            // Follow up with notification feedback
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 self.hapticGenerator.notificationOccurred(.success)
             }
-            
         case .urgent:
-            // Multiple light impacts for urgent
             for i in 0..<3 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.15) {
                     let impact = UIImpactFeedbackGenerator(style: .light)
                     impact.impactOccurred()
                 }
             }
-            
         default:
             hapticGenerator.notificationOccurred(.warning)
         }
-    }
-    
-    private func addToHistory(_ item: EnhancedNotificationItem) {
-        recentNotifications.insert(item, at: 0)
-        // Keep only last 50 notifications
-        if recentNotifications.count > 50 {
-            recentNotifications.removeLast()
-        }
-    }
-}
-
-// MARK: - Audio Player Helper
-fileprivate class NotificationAudioPlayer {
-    private var audioPlayer: AVAudioPlayer?
-    
-    func play(soundFile: String) {
-        guard let url = Bundle.main.url(forResource: soundFile, withExtension: "wav") ??
-              Bundle.main.url(forResource: soundFile, withExtension: "mp3") else {
-            // Fallback to system sound if custom file not found
-            playSystemSound()
-            return
-        }
-        
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback, options: [.duckOthers, .defaultToSpeaker])
-            try audioSession.setActive(true)
-            
-            self.audioPlayer = try AVAudioPlayer(contentsOf: url)
-            self.audioPlayer?.play()
-        } catch {
-            print("Error playing sound: \(error)")
-            playSystemSound()
-        }
-    }
-    
-    private func playSystemSound() {
-        // Use iOS system sound as fallback
-        AudioServicesPlaySystemSoundWithCompletion(1016) { }
     }
 }
 
 // MARK: - UI Views
 
-struct EnhancedAlertDialogView: View {
-    let item: EnhancedNotificationItem
-    let onDismiss: () -> Void
-    let onAction: (() -> Void)?
-    
-    var body: some View {
-        ZStack {
-            // Backdrop
-            Color.black.opacity(0.4)
-                .ignoresSafeArea()
-                .onTapGesture { onDismiss() }
-            
-            // Alert Card
-            VStack(spacing: 16) {
-                // Header
-                HStack(spacing: 12) {
-                    Image(systemName: item.type.icon)
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundColor(item.type.color)
-                    
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(item.title)
-                            .font(.headline)
-                            .foregroundColor(.primary)
-                        Text(item.body)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .lineLimit(2)
-                    }
-                    
-                    Spacer()
-                }
-                .padding(.bottom, 4)
-                
-                // Buttons
-                HStack(spacing: 12) {
-                    Button(action: onDismiss) {
-                        Text("Dismiss")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(Color.gray.opacity(0.2))
-                            .foregroundColor(.primary)
-                            .cornerRadius(8)
-                    }
-                    
-                    if let onAction = onAction {
-                        Button(action: onAction) {
-                            Text("View")
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
-                                .background(item.type.color)
-                                .foregroundColor(.white)
-                                .cornerRadius(8)
-                        }
-                    }
-                }
-            }
-            .padding(16)
-            .background(Color(uiColor: .systemBackground))
-            .cornerRadius(12)
-            .shadow(radius: 12)
-            .padding(20)
-            .transition(.scale.combined(with: .opacity))
-        }
-    }
-}
-
 struct EnhancedBannerNotificationView: View {
     let item: EnhancedNotificationItem
+    let pendingCount: Int
     let onDismiss: () -> Void
     
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: item.type.icon)
-                .font(.system(size: 18, weight: .bold))
-                .foregroundColor(.white)
-                .frame(width: 28, height: 28)
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .font(.subheadline)
-                    .fontWeight(.bold)
-                    .foregroundColor(.white)
-                    .lineLimit(1)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                // Type icon
+                ZStack {
+                    Circle()
+                        .fill(item.type.color.opacity(0.2))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: item.type.icon)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(item.type.color)
+                }
                 
-                Text(item.body)
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.85))
-                    .lineLimit(2)
+                // Text content
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(item.title)
+                            .font(.subheadline)
+                            .fontWeight(.bold)
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                        
+                        if pendingCount > 0 {
+                            Text("+\(pendingCount)")
+                                .font(.caption2)
+                                .fontWeight(.heavy)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.red)
+                                .clipShape(Capsule())
+                        }
+                    }
+                    
+                    Text(item.body)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+                
+                Spacer(minLength: 8)
+                
+                // Dismiss button
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(.secondary.opacity(0.6))
+                }
             }
-            
-            Spacer(minLength: 8)
-            
-            Button(action: onDismiss) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 16))
-                    .foregroundColor(.white.opacity(0.7))
-            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
         .background(
-            LinearGradient(
-                gradient: Gradient(colors: [
-                    item.type.color,
-                    item.type.color.opacity(0.8)
-                ]),
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            RoundedRectangle(cornerRadius: 14)
+                .fill(.ultraThinMaterial)
+                .shadow(color: item.type.color.opacity(0.25), radius: 12, x: 0, y: 6)
         )
-        .cornerRadius(10)
-        .shadow(color: item.type.color.opacity(0.5), radius: 8, x: 0, y: 4)
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(item.type.color.opacity(0.3), lineWidth: 1)
+        )
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
         .transition(.move(edge: .top).combined(with: .opacity))
+        .gesture(
+            DragGesture(minimumDistance: 10)
+                .onEnded { value in
+                    if value.translation.height < -20 {
+                        onDismiss() // Swipe up to dismiss
+                    }
+                }
+        )
     }
 }
 
@@ -366,32 +297,16 @@ struct EnhancedNotificationContainer: View {
     
     var body: some View {
         ZStack(alignment: .top) {
-            // Alert Dialog (highest layer)
-            if let alertItem = manager.alertItem {
-                EnhancedAlertDialogView(
-                    item: alertItem,
-                    onDismiss: {
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            manager.alertItem = nil
-                        }
-                    },
-                    onAction: alertItem.action
-                )
-            }
-            
-            // Banner Notification (below alert)
-            if let bannerItem = manager.bannerItem, manager.alertItem == nil {
+            if let bannerItem = manager.currentBanner {
                 EnhancedBannerNotificationView(
                     item: bannerItem,
+                    pendingCount: manager.queueCount,
                     onDismiss: {
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            manager.bannerItem = nil
-                        }
+                        manager.dismissCurrent()
                     }
                 )
             }
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: manager.alertItem?.id)
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: manager.bannerItem?.id)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: manager.currentBanner?.id)
     }
 }

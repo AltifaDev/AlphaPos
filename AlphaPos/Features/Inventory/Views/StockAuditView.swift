@@ -6,6 +6,7 @@ import SwiftData
 
 struct StockAuditView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
     @Query(sort: \InventoryItem.name) private var ingredients: [InventoryItem]
     
     @State private var viewModel = InventoryViewModel()
@@ -70,10 +71,10 @@ struct StockAuditView: View {
             // Header Search & Statistics
             VStack(spacing: APSpacing.md) {
                 HStack(spacing: APSpacing.md) {
-                    statRow(title: "Items to Audit", value: "\(auditLines.count)", icon: "shippingbox.fill", color: .appAccent)
-                    statRow(title: "Adjusted Items", value: "\(adjustedItemsCount)", icon: "pencil.circle.fill", color: .appAmber)
+                    statRow(title: "items_to_audit".t, value: "\(auditLines.count)", icon: "shippingbox.fill", color: .appAccent)
+                    statRow(title: "adjusted_items".t, value: "\(adjustedItemsCount)", icon: "pencil.circle.fill", color: .appAmber)
                     statRow(
-                        title: "Net Variance Cost",
+                        title: "net_variance_cost".t,
                         value: "฿\(String(format: "%.2f", totalVarianceCost))",
                         icon: totalVarianceCost < 0 ? "arrow.down.forward.and.arrow.up.backward" : "arrow.up.right.circle.fill",
                         color: totalVarianceCost < 0 ? .appRose : (totalVarianceCost > 0 ? .appTeal : .textSecondary)
@@ -85,7 +86,7 @@ struct StockAuditView: View {
                     HStack(spacing: APSpacing.sm) {
                         Image(systemName: "magnifyingglass")
                             .foregroundColor(.textSecondary)
-                        TextField("Filter ingredients for audit...", text: $searchPattern)
+                        TextField("filter_ingredients_audit".t, text: $searchPattern)
                             .font(.subheadline)
                             .foregroundColor(.textPrimary)
                         
@@ -117,7 +118,7 @@ struct StockAuditView: View {
                             Image(systemName: "mappin.and.ellipse")
                                 .font(.footnote)
                                 .foregroundColor(.textSecondary)
-                            Picker("Location", selection: $selectedLocation) {
+                            Picker("location_label".t, selection: $selectedLocation) {
                                 ForEach(locations, id: \.self) { loc in
                                     Text(loc).tag(loc)
                                 }
@@ -146,7 +147,7 @@ struct StockAuditView: View {
                     Image(systemName: "tray.circle")
                         .font(.system(size: 48))
                         .foregroundColor(.textTertiary)
-                    Text("No Inventory items to audit")
+                    Text("no_inventory_to_audit".t)
                         .font(.subheadline)
                         .foregroundColor(.textSecondary)
                 }
@@ -172,10 +173,10 @@ struct StockAuditView: View {
             viewModel.modelContext = modelContext
             initializeAudit()
         }
-        .alert("Audit Committed", isPresented: $showingSuccessAlert) {
-            Button("OK") { initializeAudit() }
+        .alert("audit_committed_title".t, isPresented: $showingSuccessAlert) {
+            Button("ok_btn_label".t) { initializeAudit() }
         } message: {
-            Text("Stock levels have been adjusted, and transactions have been created for all differences.")
+            Text("audit_committed_message".t)
         }
         .sheet(isPresented: $showingScanner) {
             BarcodeScannerView(onScan: handleBarcodeScan)
@@ -220,7 +221,7 @@ struct StockAuditView: View {
                         .font(.subheadline)
                         .fontWeight(.semibold)
                         .foregroundColor(.textPrimary)
-                    Text("System: \(String(format: "%.1f", line.wrappedValue.item.currentQuantity)) \(line.wrappedValue.item.unit)  ·  Cost: ฿\(String(format: "%.2f", line.wrappedValue.item.costPrice))/\(line.wrappedValue.item.unit)")
+                    Text(LocalizationManager.shared.t("system_stock_cost_template", line.wrappedValue.item.currentQuantity, line.wrappedValue.item.unit, line.wrappedValue.item.costPrice, line.wrappedValue.item.unit))
                         .font(.caption)
                         .foregroundColor(.textSecondary)
                 }
@@ -258,12 +259,12 @@ struct StockAuditView: View {
             HStack(spacing: APSpacing.md) {
                 // Variance Info
                 HStack(spacing: 4) {
-                    Text("Variance:")
+                    Text("variance_label".t)
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
                     
                     if diff == 0 {
-                        Text("No Discrepancy")
+                        Text("no_discrepancy_label".t)
                             .font(.caption2)
                             .foregroundColor(.textTertiary)
                     } else {
@@ -283,7 +284,7 @@ struct StockAuditView: View {
                         Image(systemName: "pencil")
                             .font(.system(size: 10))
                             .foregroundColor(.textTertiary)
-                        TextField("Discrepancy reason...", text: line.notes)
+                        TextField("discrepancy_reason_placeholder".t, text: line.notes)
                             .font(.system(size: 11))
                             .foregroundColor(.textPrimary)
                             .frame(width: 180)
@@ -307,7 +308,7 @@ struct StockAuditView: View {
             Button(action: {
                 initializeAudit()
             }) {
-                Text("Reset Fields")
+                Text("reset_fields_btn".t)
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
@@ -319,7 +320,7 @@ struct StockAuditView: View {
             .buttonStyle(.plain)
             
             Button(action: commitAudit) {
-                Text("Commit Audit Adjustments")
+                Text("commit_audit_adjustments_btn".t)
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(adjustedItemsCount > 0 ? .white : .textTertiary)

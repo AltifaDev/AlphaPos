@@ -45,11 +45,11 @@ struct BarcodeScannerView: View {
                 }
                 #endif
             }
-            .navigationTitle("Barcode Scanner")
+            .navigationTitle("barcode_scanner_title".t)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button(L.Common.cancel.t) {
                         dismiss()
                     }
                     .foregroundColor(.textPrimary)
@@ -79,11 +79,11 @@ struct BarcodeScannerView: View {
                         .font(.system(size: 60, weight: .thin))
                         .foregroundColor(.appTeal)
                     
-                    Text("Simulator Mode")
+                    Text("scanner_sim_mode".t)
                         .font(.headline)
                         .foregroundColor(.textPrimary)
                     
-                    Text("Camera is unavailable in Simulator.")
+                    Text("scanner_sim_unavailable_desc".t)
                         .font(.caption)
                         .foregroundColor(.textSecondary)
                 }
@@ -91,7 +91,7 @@ struct BarcodeScannerView: View {
             
             // Manual entry
             VStack(alignment: .leading, spacing: APSpacing.xs) {
-                Text("MANUAL BARCODE ENTRY")
+                Text("scanner_manual_entry_header".t)
                     .font(.caption2)
                     .fontWeight(.bold)
                     .foregroundColor(.appTeal)
@@ -114,7 +114,7 @@ struct BarcodeScannerView: View {
                             dismiss()
                         }
                     }) {
-                        Text("Scan")
+                        Text("btn_scan".t)
                             .fontWeight(.semibold)
                             .foregroundColor(.black)
                             .padding(.horizontal, APSpacing.lg)
@@ -128,7 +128,7 @@ struct BarcodeScannerView: View {
             
             // Quick Shortcuts
             VStack(alignment: .leading, spacing: APSpacing.sm) {
-                Text("QUICK SEED BARCODES (TESTING)")
+                Text("scanner_quick_seed_header".t)
                     .font(.caption2)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
@@ -174,11 +174,11 @@ struct BarcodeScannerView: View {
                 .font(.system(size: 64))
                 .foregroundColor(.appRose)
             
-            Text("Camera Access Denied")
+            Text("scanner_camera_denied_title".t)
                 .font(.title3).fontWeight(.bold)
                 .foregroundColor(.textPrimary)
             
-            Text("AlphaPos needs camera permission to scan barcodes. Please enable camera access in iOS Settings.")
+            Text("scanner_camera_denied_desc".t)
                 .font(.subheadline)
                 .foregroundColor(.textSecondary)
                 .multilineTextAlignment(.center)
@@ -186,7 +186,7 @@ struct BarcodeScannerView: View {
             
             // Offer fallback text input anyway in case of permission issues
             VStack(alignment: .leading, spacing: APSpacing.xs) {
-                Text("MANUAL BARCODE FALLBACK")
+                Text("scanner_manual_fallback_header".t)
                     .font(.caption2).fontWeight(.bold).foregroundColor(.textSecondary)
                 
                 HStack {
@@ -195,7 +195,7 @@ struct BarcodeScannerView: View {
                         .background(Color.appSurface)
                         .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
                     
-                    Button("Submit") {
+                    Button("submit_btn".t) {
                         if !manualBarcode.isEmpty {
                             onScan(manualBarcode)
                             dismiss()
@@ -266,7 +266,7 @@ struct BarcodeScannerView: View {
             
             Spacer()
             
-            Text("Align barcode inside the frame to scan")
+            Text("barcode_scanner_desc".t)
                 .font(.subheadline)
                 .foregroundColor(.white)
                 .padding(.horizontal, APSpacing.md)

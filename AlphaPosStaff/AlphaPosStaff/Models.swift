@@ -18,22 +18,33 @@ struct RestaurantTable: Codable, Identifiable, Hashable {
     // MARK: - Computed Properties
     
     /// Elapsed minutes since table was occupied (live-calculated)
+    /// Uses ElapsedTimeBadge.parseDate for robust Postgres/Supabase timestamp handling
     var elapsedMinutes: Int {
         guard status.lowercased() == "occupied",
               let startedAtStr = sessionStartedAt else { return 0 }
         
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        
-        // Try with fractional seconds first, then without
-        if let date = formatter.date(from: startedAtStr) {
-            return Int(Date().timeIntervalSince(date) / 60)
-        }
-        formatter.formatOptions = [.withInternetDateTime]
-        if let date = formatter.date(from: startedAtStr) {
+        if let date = ElapsedTimeBadge.parseDate(startedAtStr) {
             return Int(Date().timeIntervalSince(date) / 60)
         }
         return 0
+    }
+}
+
+struct RestaurantWall: Codable, Identifiable, Hashable {
+    let id: String
+    let floor: Int
+    let typeString: String
+    let startX: Double
+    let startY: Double
+    let endX: Double
+    let endY: Double
+    let controlX: Double?
+    let controlY: Double?
+    let strokeWidth: Double
+    let isDeleted: Bool
+    
+    enum CodingKeys: String, CodingKey {
+        case id, floor, startX = "start_x", startY = "start_y", endX = "end_x", endY = "end_y", controlX = "control_x", controlY = "control_y", strokeWidth = "stroke_width", isDeleted = "is_deleted", typeString = "type_string"
     }
 }
 
@@ -51,10 +62,17 @@ struct MenuItem: Codable, Identifiable, Hashable {
 struct OrderItem: Codable, Identifiable, Hashable {
     let id: String
     let name: String
-    let quantity: Int
+    var quantity: Int          // mutable for edit
     let price: Double
-    var status: String // "cooking", "ready", "served"
+    var status: String         // "cooking", "ready", "served"
     let item_id: String?
+    var notes: String?         // special instructions / add-on text
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, quantity, price, status
+        case item_id
+        case notes
+    }
 }
 
 struct Order: Codable, Identifiable, Hashable {

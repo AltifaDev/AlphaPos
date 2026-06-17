@@ -25,11 +25,11 @@ struct BranchManagerView: View {
                         HStack {
                             Image(systemName: "building.2.crop.left.back.grid")
                                 .foregroundColor(.appTeal)
-                            Text("Multi-Branch Management")
+                            Text("branch_mgmt_title".t)
                                 .font(.headline)
                                 .foregroundColor(.textPrimary)
                         }
-                        Text("Manage physical store locations, track branch-specific stock levels, and swap active storefronts.")
+                        Text("branch_mgmt_desc".t)
                             .font(.caption)
                             .foregroundColor(.textSecondary)
                     }
@@ -54,17 +54,17 @@ struct BranchManagerView: View {
                     }
                 }
             }
-            .navigationTitle("Store Branches")
+            .navigationTitle("store_branches_title".t)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") {
+                    Button("close_btn_label".t) {
                         dismiss()
                     }
                     .foregroundColor(.textPrimary)
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: { showingAddSheet = true }) {
-                        Label("Add Branch", systemImage: "plus")
+                        Label("add_branch_btn".t, systemImage: "plus")
                             .foregroundColor(.appTeal)
                     }
                 }
@@ -112,7 +112,7 @@ struct BranchManagerView: View {
                     activeBranchId = branch.id.uuidString
                     APHaptic.trigger()
                 }) {
-                    Text("Select Store")
+                    Text("branch_select_store_btn".t)
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.black)
@@ -141,7 +141,7 @@ struct BranchManagerView: View {
                     VStack(alignment: .leading, spacing: APSpacing.lg) {
                         
                         VStack(alignment: .leading, spacing: APSpacing.xs) {
-                            Text("BRANCH NAME")
+                            Text("branch_name_label".t)
                                 .font(.caption2).fontWeight(.bold).foregroundColor(.appTeal).tracking(0.5)
                             TextField("e.g., Siam Paragon, Chiang Mai Outlet", text: $newName)
                                 .padding(APSpacing.md)
@@ -150,7 +150,7 @@ struct BranchManagerView: View {
                         }
                         
                         VStack(alignment: .leading, spacing: APSpacing.xs) {
-                            Text("LOCATION ADDRESS")
+                            Text("branch_address_label".t)
                                 .font(.caption2).fontWeight(.bold).foregroundColor(.appTeal).tracking(0.5)
                             TextField("Street address, City", text: $newLocation)
                                 .padding(APSpacing.md)
@@ -159,7 +159,7 @@ struct BranchManagerView: View {
                         }
                         
                         VStack(alignment: .leading, spacing: APSpacing.xs) {
-                            Text("PHONE NUMBER")
+                            Text("branch_phone_label".t)
                                 .font(.caption2).fontWeight(.bold).foregroundColor(.appTeal).tracking(0.5)
                             TextField("Contact phone", text: $newPhone)
                                 .padding(APSpacing.md)
@@ -168,7 +168,7 @@ struct BranchManagerView: View {
                                 .keyboardType(.phonePad)
                         }
                         
-                        Text("Creating a new branch will copy all existing catalog items with 0 starting quantity so you can manage stock levels immediately.")
+                        Text("branch_create_info_desc".t)
                             .font(.caption2)
                             .foregroundColor(.textSecondary)
                             .padding(.top, APSpacing.sm)
@@ -177,18 +177,18 @@ struct BranchManagerView: View {
                     .padding()
                 }
             }
-            .navigationTitle("Create Store Branch")
+            .navigationTitle("create_branch_title".t)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button(L.Common.cancel.t) {
                         showingAddSheet = false
                         resetFields()
                     }
                     .foregroundColor(.textPrimary)
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Save") {
+                    Button("save_btn_label".t) {
                         saveNewBranch()
                     }
                     .fontWeight(.semibold)

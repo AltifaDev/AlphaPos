@@ -22,11 +22,11 @@ struct DeliverySettingsSheet: View {
                 
                 VStack(spacing: APSpacing.lg) {
                     VStack(alignment: .leading, spacing: APSpacing.md) {
-                        Text("Configure Platform Fees")
+                        Text("delivery_config_fees_title".t)
                             .font(.headline)
                             .foregroundColor(.textPrimary)
                         
-                        Text("Set the GP commission percentage and other marketing or operational costs incurred for this \(brandName) order.")
+                        Text(String(format: "delivery_config_fees_desc_template".t, brandName))
                             .font(.caption)
                             .foregroundColor(.textSecondary)
                         
@@ -34,7 +34,7 @@ struct DeliverySettingsSheet: View {
                         
                         // GP Input
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Platform GP Commission (%)")
+                            Text("delivery_gp_commission_lbl".t)
                                 .font(.caption)
                                 .fontWeight(.bold)
                                 .foregroundColor(.textSecondary)
@@ -59,7 +59,7 @@ struct DeliverySettingsSheet: View {
                         // Ad Fee Input
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
-                                Text("Advertising / Marketing Costs")
+                                Text("delivery_marketing_costs_lbl".t)
                                     .font(.caption)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textSecondary)
@@ -95,7 +95,7 @@ struct DeliverySettingsSheet: View {
                         
                         // Other Expenses
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Other Operational Fees / Packaging (฿)")
+                            Text("delivery_packaging_fees_lbl".t)
                                 .font(.caption)
                                 .fontWeight(.bold)
                                 .foregroundColor(.textSecondary)
@@ -129,7 +129,7 @@ struct DeliverySettingsSheet: View {
                         otherFee = Double(otherFeeString) ?? 0.0
                         dismiss()
                     }) {
-                        Text("Apply Configurations")
+                        Text("delivery_apply_btn".t)
                             .apGradientButton()
                     }
                     .padding(.horizontal, APSpacing.lg)
@@ -141,7 +141,7 @@ struct DeliverySettingsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(L.Common.cancel.t) { dismiss() }
                         .foregroundColor(.textSecondary)
                 }
             }

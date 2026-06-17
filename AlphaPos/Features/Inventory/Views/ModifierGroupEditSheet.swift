@@ -35,7 +35,7 @@ struct ModifierGroupEditSheet: View {
                         VStack(spacing: APSpacing.md) {
                             // Section 1: Group properties
                             VStack(alignment: .leading, spacing: APSpacing.sm) {
-                                Text("Group Setup")
+                                Text("modifier_group_setup".t)
                                     .font(.caption)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textSecondary)
@@ -45,7 +45,7 @@ struct ModifierGroupEditSheet: View {
                                 
                                 HStack(spacing: APSpacing.md) {
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text("Min Selection")
+                                        Text("min_selection_label".t)
                                             .font(.caption2)
                                             .foregroundColor(.textSecondary)
                                         Stepper("\(minSelection)", value: $minSelection, in: 0...10)
@@ -55,7 +55,7 @@ struct ModifierGroupEditSheet: View {
                                     }
                                     
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text("Max Selection")
+                                        Text("max_selection_label".t)
                                             .font(.caption2)
                                             .foregroundColor(.textSecondary)
                                         Stepper("\(maxSelection)", value: $maxSelection, in: 1...20)
@@ -114,7 +114,7 @@ struct ModifierGroupEditSheet: View {
                     onDismiss()
                 }
             } message: {
-                Text("Are you sure you want to delete this group? All extra options under this group will be deleted too.")
+                Text("delete_modifier_group_confirm".t)
             }
         }
     }
@@ -124,7 +124,7 @@ struct ModifierGroupEditSheet: View {
     private func modifiersSection(_ group: ModifierGroup) -> some View {
         VStack(alignment: .leading, spacing: APSpacing.md) {
             HStack {
-                Text("Modifier Options")
+                Text("modifier_options_title".t)
                     .font(.caption)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
@@ -136,7 +136,7 @@ struct ModifierGroupEditSheet: View {
                     selectedModifier = nil
                     showingModifierSheet = true
                 }) {
-                    Label("Add Option", systemImage: "plus.circle.fill")
+                    Label("add_option_btn".t, systemImage: "plus.circle.fill")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.appAccent)
@@ -149,7 +149,7 @@ struct ModifierGroupEditSheet: View {
                     Image(systemName: "plus.circle")
                         .font(.title2)
                         .foregroundColor(.textTertiary)
-                    Text("No options added yet")
+                    Text("no_options_added".t)
                         .font(.caption2)
                         .foregroundColor(.textTertiary)
                 }
@@ -201,18 +201,18 @@ struct ModifierGroupEditSheet: View {
     
     private var deleteSectionCard: some View {
         VStack(alignment: .leading, spacing: APSpacing.sm) {
-            Text("Danger Zone")
+            Text("danger_zone_title".t)
                 .font(.caption)
                 .fontWeight(.bold)
                 .foregroundColor(.appRose)
                 .textCase(.uppercase)
             
-            Text("Deleting this group will delete all options and unlink it from all associated products. This cannot be undone.")
+            Text("delete_modifier_group_danger_desc".t)
                 .font(.caption2)
                 .foregroundColor(.textSecondary)
             
             Button(action: { showingDeleteAlert = true }) {
-                Text("Delete Modifier Group")
+                Text("delete_modifier_group_btn".t)
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(.white)
@@ -230,7 +230,7 @@ struct ModifierGroupEditSheet: View {
     private var bottomActionPanel: some View {
         HStack(spacing: APSpacing.md) {
             Button(action: onDismiss) {
-                Text("Cancel")
+                Text("cancel_btn_label".t)
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
@@ -328,7 +328,7 @@ struct ModifierOptionEditSheet: View {
                     VStack(spacing: APSpacing.md) {
                         // Details
                         VStack(alignment: .leading, spacing: APSpacing.sm) {
-                            Text("Option Info")
+                            Text("option_info_title".t)
                                 .font(.caption)
                                 .fontWeight(.bold)
                                 .foregroundColor(.textSecondary)
@@ -342,18 +342,18 @@ struct ModifierOptionEditSheet: View {
                         
                         // Inventory Link
                         VStack(alignment: .leading, spacing: APSpacing.sm) {
-                            Text("Inventory Stock Deduction Link")
+                            Text("stock_deduction_link_title".t)
                                 .font(.caption)
                                 .fontWeight(.bold)
                                 .foregroundColor(.textSecondary)
                                 .textCase(.uppercase)
                             
-                            Text("If selecting this option consumes raw inventory, choose the item and quantity here.")
+                            Text("stock_deduction_link_desc".t)
                                 .font(.caption2)
                                 .foregroundColor(.textTertiary)
                             
                             Picker("Linked Ingredient", selection: $selectedIngredientId) {
-                                Text("— None —").tag(nil as UUID?)
+                                Text("none_label".t).tag(nil as UUID?)
                                 ForEach(ingredients) { ing in
                                     Text("\(ing.name) (\(ing.unit))").tag(ing.id as UUID?)
                                 }
@@ -370,14 +370,14 @@ struct ModifierOptionEditSheet: View {
                         
                         if isEditing {
                             VStack(alignment: .leading, spacing: APSpacing.sm) {
-                                Text("Delete Option")
+                                Text("delete_option_btn".t)
                                     .font(.caption)
                                     .fontWeight(.bold)
                                     .foregroundColor(.appRose)
                                     .textCase(.uppercase)
                                 
                                 Button(action: { showingDeleteAlert = true }) {
-                                    Text("Delete Option")
+                                    Text("delete_option_btn".t)
                                         .font(.subheadline)
                                         .fontWeight(.bold)
                                         .foregroundColor(.white)
@@ -398,10 +398,10 @@ struct ModifierOptionEditSheet: View {
                 .apNavBar(background: Color.appSurface)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { onDismiss() }.foregroundColor(.textSecondary)
+                        Button(L.Common.cancel.t) { onDismiss() }.foregroundColor(.textSecondary)
                     }
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") {
+                        Button("save_btn_label".t) {
                             saveModifier()
                         }
                         .disabled(name.isEmpty)
@@ -417,7 +417,7 @@ struct ModifierOptionEditSheet: View {
                         onDismiss()
                     }
                 } message: {
-                    Text("Are you sure you want to delete this option?")
+                    Text("delete_option_confirm".t)
                 }
                 .onAppear {
                     if let mod = modifier {

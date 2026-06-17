@@ -21,18 +21,35 @@ struct StoreManagementView: View {
     @AppStorage("store_logo_path") private var storeLogoPath = ""
     @AppStorage("promptpay_number") private var promptPayNumber = ""
     
+    // QR Code Customizer settings
+    @AppStorage("qr_custom_store_name") private var qrCustomStoreName = "AlphaPos Restaurant"
+    @AppStorage("qr_custom_header") private var qrCustomHeader = "Scan to Order"
+    @AppStorage("qr_custom_show_logo") private var qrCustomShowLogo = true
+    @AppStorage("qr_custom_logo_preset") private var qrCustomLogoPreset = "bolt.fill"
+    @AppStorage("qr_custom_color") private var qrCustomColor = "#111115"
+    
     @State private var logoItem: PhotosPickerItem? = nil
     @State private var logoImage: UIImage? = nil
     
     @State private var activeTab: ConfigTab = .profile
+    @EnvironmentObject private var lm: LocalizationManager
     
     enum ConfigTab: String, CaseIterable {
         case profile = "General Profile"
         case taxation = "Tax & Service Charge"
+        case qrCustomizer = "QR Code Customizer"
         var icon: String {
             switch self {
             case .profile: return "storefront.fill"
             case .taxation: return "percent"
+            case .qrCustomizer: return "qrcode"
+            }
+        }
+        var localizedName: String {
+            switch self {
+            case .profile: return L.Store.tabProfile.t
+            case .taxation: return L.Store.tabTax.t
+            case .qrCustomizer: return L.Store.tabQR.t
             }
         }
     }
@@ -54,7 +71,7 @@ struct StoreManagementView: View {
                                 }) {
                                     HStack(spacing: 8) {
                                         Image(systemName: tab.icon)
-                                        Text(tab.rawValue)
+                                        Text(tab.localizedName)
                                     }
                                     .font(.subheadline)
                                     .fontWeight(.bold)
@@ -69,7 +86,6 @@ struct StoreManagementView: View {
                                     )
                                 }
                             }
-                            Spacer()
                         }
                         .padding(.horizontal)
                         
@@ -77,8 +93,10 @@ struct StoreManagementView: View {
                             VStack(alignment: .leading, spacing: 24) {
                                 if activeTab == .profile {
                                     generalProfileForm
-                                } else {
+                                } else if activeTab == .taxation {
                                     taxationForm
+                                } else {
+                                    qrCustomizerForm
                                 }
                             }
                             .padding()
@@ -86,12 +104,16 @@ struct StoreManagementView: View {
                     }
                     .frame(maxWidth: .infinity)
                     
-                    // RIGHT COLUMN: Live Receipt Preview (Monospaced, clean paper receipt style)
-                    receiptPreviewPanel
+                    // RIGHT COLUMN: Live Preview Panel (Receipt or QR Card)
+                    if activeTab == .qrCustomizer {
+                        qrCardPreviewPanel
+                    } else {
+                        receiptPreviewPanel
+                    }
                 }
                 .padding()
             }
-            .navigationTitle("Store Management")
+            .navigationTitle(L.Store.title.t)
             .apNavBar(background: Color.appBackground)
             .onAppear {
                 loadSavedLogo()
@@ -101,7 +123,7 @@ struct StoreManagementView: View {
     // MARK: - General Profile Form
     private var generalProfileForm: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("STORE BRANDING & INFORMATION")
+            Text(L.Store.brandingHeader.t)
                 .font(.caption)
                 .fontWeight(.bold)
                 .foregroundColor(.appAccent)
@@ -131,7 +153,7 @@ struct StoreManagementView: View {
                     
                     VStack(alignment: .leading, spacing: 8) {
                         PhotosPicker(selection: $logoItem, matching: .images, photoLibrary: .shared()) {
-                            Label("Select Logo", systemImage: "photo.badge.plus")
+                            Label(L.Store.selectLogo.t, systemImage: "photo.badge.plus")
                                 .font(.subheadline)
                                 .fontWeight(.bold)
                                 .foregroundColor(.white)
@@ -152,7 +174,7 @@ struct StoreManagementView: View {
                                 storeLogoPath = ""
                                 APHaptic.trigger()
                             }) {
-                                Text("Remove Logo")
+                                Text("remove_logo".t)
                                     .font(.caption)
                                     .fontWeight(.semibold)
                                     .foregroundColor(.appRose)
@@ -168,11 +190,11 @@ struct StoreManagementView: View {
                 
                 // Fields
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Store Name")
+                    Text(L.Store.nameLabel.t)
                         .font(.caption)
                         .fontWeight(.bold)
                         .foregroundColor(.textSecondary)
-                    TextField("Enter Store Name", text: $storeName)
+                    TextField(L.Store.nameLabel.t, text: $storeName)
                         .textFieldStyle(PlainTextFieldStyle())
                         .padding(12)
                         .background(Color.appSurfaceHigh)
@@ -183,7 +205,7 @@ struct StoreManagementView: View {
                 
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Store Phone")
+                        Text("store_phone".t)
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.textSecondary)
@@ -197,7 +219,7 @@ struct StoreManagementView: View {
                     }
                     
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Website")
+                        Text(L.Store.websiteLabel.t)
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.textSecondary)
@@ -212,7 +234,7 @@ struct StoreManagementView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Store Address")
+                    Text("store_address".t)
                         .font(.caption)
                         .fontWeight(.bold)
                         .foregroundColor(.textSecondary)
@@ -226,7 +248,7 @@ struct StoreManagementView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("PromptPay Number (for QR Code Payment)")
+                    Text("promptpay_number_label".t)
                         .font(.caption)
                         .fontWeight(.bold)
                         .foregroundColor(.textSecondary)
@@ -246,7 +268,7 @@ struct StoreManagementView: View {
     // MARK: - Taxation Form
     private var taxationForm: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("TAXATION & RECEIPTS SETTINGS")
+            Text("taxation_receipts_settings".t)
                 .font(.caption)
                 .fontWeight(.bold)
                 .foregroundColor(.appAccent)
@@ -255,7 +277,7 @@ struct StoreManagementView: View {
             VStack(spacing: 16) {
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Tax ID / VAT Registration")
+                        Text("tax_id_vat_registration".t)
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.textSecondary)
@@ -270,7 +292,7 @@ struct StoreManagementView: View {
                     }
                     
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Branch Code")
+                        Text(L.Store.branchLabel.t)
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.textSecondary)
@@ -285,13 +307,13 @@ struct StoreManagementView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Tax Calculation Mode")
+                    Text("tax_calculation_mode".t)
                         .font(.caption)
                         .fontWeight(.bold)
                         .foregroundColor(.textSecondary)
                     Picker("Tax Calculation Mode", selection: $storeTaxType) {
-                        Text("Tax-Inclusive (VAT In)").tag("inclusive")
-                        Text("Tax-Exclusive (VAT Add)").tag("exclusive")
+                        Text(L.Store.taxInclusiveOpt.t).tag("inclusive")
+                        Text(L.Store.taxExclusiveOpt.t).tag("exclusive")
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: storeTaxType) { triggerSync() }
@@ -299,7 +321,7 @@ struct StoreManagementView: View {
                 
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Default Tax Rate (%)")
+                        Text("default_tax_rate".t)
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.textSecondary)
@@ -317,7 +339,7 @@ struct StoreManagementView: View {
                     }
                     
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Service Charge (%)")
+                        Text("service_charge_percent".t)
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.textSecondary)
@@ -339,7 +361,7 @@ struct StoreManagementView: View {
                     .background(Color.appDivider)
                 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Receipt Header Message")
+                    Text("receipt_header_message".t)
                         .font(.caption)
                         .fontWeight(.bold)
                         .foregroundColor(.textSecondary)
@@ -353,7 +375,7 @@ struct StoreManagementView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Receipt Footer Message")
+                    Text("receipt_footer_message".t)
                         .font(.caption)
                         .fontWeight(.bold)
                         .foregroundColor(.textSecondary)
@@ -373,7 +395,7 @@ struct StoreManagementView: View {
     // MARK: - Receipt Preview Panel
     private var receiptPreviewPanel: some View {
         VStack(spacing: 12) {
-            Text("LIVE TAX INVOICE PREVIEW")
+            Text("live_tax_invoice_preview".t)
                 .font(.caption)
                 .fontWeight(.bold)
                 .foregroundColor(.textSecondary)
@@ -407,21 +429,21 @@ struct StoreManagementView: View {
                     .padding(.horizontal)
                 
                 VStack(spacing: 2) {
-                    Text("Phone: \(storePhone)")
-                    Text("Web: \(storeWebsite)")
+                    Text(LocalizationManager.shared.t("phone_preview_lbl") + ": \(storePhone)")
+                    Text(LocalizationManager.shared.t("web_preview_lbl") + ": \(storeWebsite)")
                 }
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundColor(.gray)
                 
-                Text("TAX INVOICE (ABB.) / ใบกำกับภาษีอย่างย่อ")
+                Text(L.Store.taxInvoiceHeader.t)
                     .font(.system(.caption2, design: .monospaced))
                     .fontWeight(.bold)
                     .padding(.vertical, 4)
                 
                 HStack {
-                    Text("TAX ID: \(storeTaxId)")
+                    Text(LocalizationManager.shared.t("tax_id_preview_lbl") + ": \(storeTaxId)")
                     Spacer()
-                    Text("BRANCH: \(storeBranchCode)")
+                    Text(LocalizationManager.shared.t("branch_preview_lbl") + ": \(storeBranchCode)")
                 }
                 .font(.system(size: 9, design: .monospaced))
                 
@@ -473,27 +495,27 @@ struct StoreManagementView: View {
                 
                 VStack(spacing: 4) {
                     HStack {
-                        Text("SUBTOTAL")
+                        Text(L.Store.subtotalLbl.t)
                         Spacer()
                         Text(String(format: "%.2f", rawSubtotal))
                     }
                     
                     if serviceCharge > 0 {
                         HStack {
-                            Text(String(format: "SERVICE CHARGE (%.0f%%)", storeServiceChargeRate))
+                            Text(LocalizationManager.shared.t("service_charge_lbl") + String(format: " (%.0f%%)", storeServiceChargeRate))
                             Spacer()
                             Text(String(format: "%.2f", serviceCharge))
                         }
                     }
                     
                     HStack {
-                        Text(String(format: "VAT (%.1f%%) - %@", storeTaxRate, storeTaxType == "inclusive" ? "INCL" : "ADD"))
+                        Text(LocalizationManager.shared.t("vat_lbl") + String(format: " (%.1f%%) - %@", storeTaxRate, storeTaxType == "inclusive" ? "INCL" : "ADD"))
                         Spacer()
                         Text(String(format: "%.2f", taxAmount))
                     }
                     
                     HStack {
-                        Text("TOTAL")
+                        Text(L.Store.totalLbl.t)
                             .fontWeight(.bold)
                         Spacer()
                         Text(String(format: "฿%.2f", grandTotal))
@@ -606,5 +628,185 @@ struct StoreManagementView: View {
                 }
             }
         }
+    }
+    
+    // MARK: - QR Code Customizer Form
+    private var qrCustomizerForm: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text(L.Store.qrBrandingHeader.t)
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.appAccent)
+                .tracking(1.0)
+            
+            VStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L.Store.qrStoreNameLbl.t)
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.textSecondary)
+                    TextField(L.Store.nameLabel.t, text: $qrCustomStoreName)
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .padding(12)
+                        .background(Color.appSurfaceHigh)
+                        .foregroundColor(.textPrimary)
+                        .cornerRadius(APRadius.md)
+                }
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L.Store.qrHeaderLbl.t)
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.textSecondary)
+                    TextField(L.Store.qrHeaderLbl.t, text: $qrCustomHeader)
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .padding(12)
+                        .background(Color.appSurfaceHigh)
+                        .foregroundColor(.textPrimary)
+                        .cornerRadius(APRadius.md)
+                }
+                
+                Toggle(L.Store.qrShowLogoToggle.t, isOn: $qrCustomShowLogo)
+                    .tint(.appAccent)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                
+                if qrCustomShowLogo {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(L.Store.qrLogoPresetLbl.t)
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.textSecondary)
+                        Picker(L.Store.qrLogoPresetLbl.t, selection: $qrCustomLogoPreset) {
+                            Text(L.Store.presetBolt.t).tag("bolt.fill")
+                            Text(L.Store.presetForkKnife.t).tag("fork.knife")
+                            Text(L.Store.presetStar.t).tag("star.fill")
+                            Text(L.Store.presetHeart.t).tag("heart.fill")
+                            Text(L.Store.presetCoffee.t).tag("cup.and.saucer.fill")
+                            Text(L.Store.presetBeer.t).tag("mug.fill")
+                        }
+                        .pickerStyle(.menu)
+                        .padding(4)
+                        .background(Color.appSurfaceHigh)
+                        .cornerRadius(APRadius.md)
+                    }
+                }
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L.Store.qrThemeColorLbl.t)
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.textSecondary)
+                    
+                    HStack(spacing: 12) {
+                        ForEach([
+                            ("#111115", "Space"),
+                            ("#2D71F8", "Royal Blue"),
+                            ("#1C8370", "Forest Green"),
+                            ("#F59E0B", "Amber"),
+                            ("#FC444A", "Rose")
+                        ], id: \.0) { hex, name in
+                            Button(action: {
+                                qrCustomColor = hex
+                                APHaptic.trigger()
+                            }) {
+                                Circle()
+                                    .fill(Color(hex: hex))
+                                    .frame(width: 36, height: 36)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color.white, lineWidth: qrCustomColor == hex ? 3 : 0)
+                                    )
+                                    .shadow(radius: 2)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .apCard()
+        }
+    }
+    
+    // MARK: - QR Preview Panel
+    private var qrCardPreviewPanel: some View {
+        VStack(spacing: 12) {
+            Text(L.Store.liveQRPreview.t)
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.textSecondary)
+                .tracking(1.0)
+            
+            VStack(spacing: 12) {
+                Text(qrCustomStoreName)
+                    .font(.subheadline)
+                    .fontWeight(.bold)
+                    .foregroundColor(.black)
+                    .lineLimit(1)
+                    .padding(.top, 4)
+                
+                Text(LocalizationManager.shared.t("pos_table_number") + " 15")
+                    .font(.title2)
+                    .fontWeight(.black)
+                    .foregroundColor(Color(hex: qrCustomColor))
+                
+                if let qrImg = qrPreviewImage {
+                    Image(uiImage: qrImg)
+                        .resizable()
+                        .interpolation(.none)
+                        .frame(width: 160, height: 160)
+                        .padding(8)
+                        .background(Color.white)
+                        .cornerRadius(8)
+                        .shadow(color: Color.black.opacity(0.08), radius: 3)
+                } else {
+                    ProgressView()
+                        .frame(width: 176, height: 176)
+                }
+                
+                Text(qrCustomHeader)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.gray)
+                    .padding(.bottom, 4)
+            }
+            .padding(20)
+            .background(Color.white)
+            .cornerRadius(APRadius.md)
+            .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: 8)
+            .frame(width: 300)
+        }
+        .padding()
+        .background(Color.appSurface)
+        .cornerRadius(APRadius.md)
+        .overlay(
+            RoundedRectangle(cornerRadius: APRadius.md)
+                .stroke(Color.appBorderSubtle, lineWidth: 1)
+        )
+    }
+    
+    private var qrPreviewImage: UIImage? {
+        let string = "https://alphapos.altifadev.workers.dev/?table=15&merchant=Preview"
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(string.data(using: .utf8), forKey: "inputMessage")
+        filter.setValue("H", forKey: "inputCorrectionLevel")
+        
+        let transform = CGAffineTransform(scaleX: 10, y: 10)
+        guard let ciImage = filter.outputImage?.transformed(by: transform) else { return nil }
+        
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
+        
+        let qrImage = UIImage(cgImage: cgImage)
+        let tintColor = UIColor(hex: qrCustomColor)
+        
+        // Tint
+        guard let tintedImage = qrImage.tinted(with: tintColor) else { return qrImage }
+        
+        // Logo
+        if qrCustomShowLogo {
+            return tintedImage.overlayLogo(systemIconName: qrCustomLogoPreset, tintColor: tintColor)
+        }
+        return tintedImage
     }
 }

@@ -11,6 +11,54 @@ struct EmployeeTimecardView: View {
 
     @State private var viewModel = EmployeeTimecardViewModel()
 
+    private var filteredEmployees: [Employee] {
+        employees.filter { employee in
+            let query = viewModel.employeeSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !query.isEmpty {
+                let fullName = "\(employee.firstName) \(employee.lastName)".lowercased()
+                let phoneMatches = employee.phone?.contains(query) == true
+                if !fullName.contains(query) && !phoneMatches {
+                    return false
+                }
+            }
+            
+            let isActive = recentTimecards.contains { $0.employee?.id == employee.id && $0.clockOut == nil }
+            if viewModel.employeeFilterStatus == 1 && !isActive {
+                return false
+            }
+            if viewModel.employeeFilterStatus == 2 && isActive {
+                return false
+            }
+            
+            return true
+        }
+    }
+
+    private var filteredTimecards: [Timecard] {
+        recentTimecards.filter { card in
+            let query = viewModel.timecardSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !query.isEmpty {
+                let empName = "\(card.employee?.firstName ?? "") \(card.employee?.lastName ?? "")".lowercased()
+                if !empName.contains(query) {
+                    return false
+                }
+            }
+            
+            if viewModel.timecardFilterStatus == 1 && card.status != "approved" {
+                return false
+            }
+            if viewModel.timecardFilterStatus == 2 && card.status == "approved" {
+                return false
+            }
+            
+            if let filterDate = viewModel.timecardFilterDate {
+                return Calendar.current.isDate(card.clockIn, inSameDayAs: filterDate)
+            }
+            
+            return true
+        }
+    }
+
     enum ScannerMode { case clockIn, clockOut }
 
     var body: some View {
@@ -25,20 +73,61 @@ struct EmployeeTimecardView: View {
                     timecardLogPanel
                 }
             }
-        }
-        .navigationTitle("Timecard Register")
-        .apNavBar(background: Color.appBackground)
-        .sheet(isPresented: $viewModel.showingScanner) {
-            if let emp = viewModel.selectedEmployee {
+            
+            if viewModel.showingScanner, let emp = viewModel.selectedEmployee {
+                Color.black.opacity(0.45)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                            viewModel.showingScanner = false
+                        }
+                    }
+                    .transition(.opacity)
+                
                 BiometricFaceScannerSimulator(
                     employee: emp,
-                    mode: viewModel.scannerMode
+                    mode: viewModel.scannerMode,
+                    onCancel: {
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                            viewModel.showingScanner = false
+                        }
+                    }
                 ) { success, confidence in
-                    viewModel.handleScanResult(employee: emp, success: success, confidence: confidence)
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        viewModel.handleScanResult(employee: emp, success: success, confidence: confidence)
+                    }
                 }
+                .frame(maxWidth: 540, maxHeight: 700)
+                .background(Color.appSurface)
+                .cornerRadius(24)
+                .shadow(color: Color.black.opacity(0.25), radius: 25, x: 0, y: 12)
+                .transition(.asymmetric(
+                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                    removal: .move(edge: .top).combined(with: .opacity)
+                ))
+                .zIndex(10)
             }
         }
+        .navigationTitle(L.Timecard.title.t)
+        .apNavBar(background: Color.appBackground)
         .onAppear { viewModel.modelContext = modelContext }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                NavigationLink(destination: TimecardChartsView()) {
+                    Label("สถิติ", systemImage: "chart.line.uptrend.xyaxis")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.appAccent)
+                
+                NavigationLink(destination: PayrollMonthlyReportView()) {
+                    Label("ค่าแรง", systemImage: "banknote")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.appAccent)
+            }
+        }
     }
 
     // MARK: - Empty State
@@ -51,10 +140,10 @@ struct EmployeeTimecardView: View {
                     .font(.system(size: 44))
                     .foregroundStyle(APGradient.accent)
             }
-            Text("No Employees Registered")
+            Text(L.Timecard.noEmployeesTitle.t)
                 .font(.title2).fontWeight(.bold)
                 .foregroundColor(.textPrimary)
-            Text("Add employees to begin tracking clock-in/out with face verification.")
+            Text(L.Timecard.noEmployeesSubtitle.t)
                 .font(.subheadline).foregroundColor(.textSecondary)
                 .multilineTextAlignment(.center).frame(maxWidth: 320)
         }
@@ -69,26 +158,81 @@ struct EmployeeTimecardView: View {
         return VStack(spacing: 0) {
             // Stats header
             HStack(spacing: APSpacing.md) {
-                statPill(icon: "person.3.fill",        value: "\(employees.count)", label: "Staff",       color: Color.appAccent)
-                statPill(icon: "clock.fill",            value: "\(clockedInCount)",  label: "Clocked In",  color: Color.appTeal)
-                statPill(icon: "checkmark.circle.fill", value: "\(approvedCount)",   label: "Approved",    color: Color.appAmber)
+                statPill(icon: "person.3.fill",        value: "\(employees.count)", label: L.Timecard.statStaff.t,       color: Color.appAccent)
+                statPill(icon: "clock.fill",            value: "\(clockedInCount)",  label: L.Timecard.statClockedIn.t,  color: Color.appTeal)
+                statPill(icon: "checkmark.circle.fill", value: "\(approvedCount)",   label: L.Timecard.statApproved.t,    color: Color.appAmber)
             }
             .padding(APSpacing.md)
             .background(Color.appSurface)
 
             Divider().background(Color.appDivider)
 
+            // Search Bar & Filter Picker (Left Panel)
+            VStack(spacing: 8) {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.textSecondary)
+                    TextField("ค้นหาพนักงานด้วยชื่อหรือเบอร์...", text: Binding(
+                        get: { viewModel.employeeSearchQuery },
+                        set: { val in
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                viewModel.employeeSearchQuery = val
+                            }
+                        }
+                    ))
+                    .textFieldStyle(.plain)
+                    
+                    if !viewModel.employeeSearchQuery.isEmpty {
+                        Button(action: {
+                            withAnimation { viewModel.employeeSearchQuery = "" }
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(10)
+                .background(Color.appSurfaceHigh)
+                .cornerRadius(10)
+                
+                Picker("", selection: Binding(
+                    get: { viewModel.employeeFilterStatus },
+                    set: { val in
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            viewModel.employeeFilterStatus = val
+                        }
+                    }
+                )) {
+                    Text("ทั้งหมด").tag(0)
+                    Text("เข้างานอยู่").tag(1)
+                    Text("ยังไม่เข้างาน").tag(2)
+                }
+                .pickerStyle(.segmented)
+            }
+            .padding(.horizontal, APSpacing.md)
+            .padding(.vertical, 10)
+            .background(Color.appSurface)
+
+            Divider().background(Color.appDivider)
+
             ScrollView {
                 LazyVStack(spacing: APSpacing.sm) {
-                    ForEach(employees) { employee in
+                    ForEach(filteredEmployees) { employee in
                         let active = recentTimecards.first(where: {
                             $0.employee?.id == employee.id && $0.clockOut == nil
                         })
                         EmployeeRow(employee: employee, isActive: active != nil) { mode in
-                            viewModel.selectedEmployee = employee
-                            viewModel.scannerMode = mode
-                            viewModel.showingScanner = true
+                            withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                                viewModel.selectedEmployee = employee
+                                viewModel.scannerMode = mode
+                                viewModel.showingScanner = true
+                            }
                         }
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .leading).combined(with: .opacity)
+                        ))
                     }
                 }
                 .padding(APSpacing.md)
@@ -118,10 +262,10 @@ struct EmployeeTimecardView: View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Recent Activity")
+                    Text(L.Timecard.recentActivity.t)
                         .font(.headline).fontWeight(.bold)
                         .foregroundColor(.textPrimary)
-                    Text("Last \(min(recentTimecards.count, 15)) records")
+                    Text(LocalizationManager.shared.t(L.Timecard.recentRecordsTemplate, min(filteredTimecards.count, 30)))
                         .font(.caption2).foregroundColor(.textSecondary)
                 }
                 Spacer()
@@ -133,11 +277,92 @@ struct EmployeeTimecardView: View {
 
             Divider().background(Color.appDivider)
 
-            if recentTimecards.isEmpty {
+            // Search & Filters (Right Panel)
+            VStack(spacing: 8) {
+                // Search field
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.textSecondary)
+                    TextField("ค้นหาชื่อพนักงาน...", text: Binding(
+                        get: { viewModel.timecardSearchQuery },
+                        set: { val in
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                viewModel.timecardSearchQuery = val
+                            }
+                        }
+                    ))
+                    .textFieldStyle(.plain)
+                    
+                    if !viewModel.timecardSearchQuery.isEmpty {
+                        Button(action: {
+                            withAnimation { viewModel.timecardSearchQuery = "" }
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(8)
+                .background(Color.appSurfaceHigh)
+                .cornerRadius(8)
+                
+                HStack(spacing: 8) {
+                    // Status Picker
+                    Picker("", selection: Binding(
+                        get: { viewModel.timecardFilterStatus },
+                        set: { val in
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                viewModel.timecardFilterStatus = val
+                            }
+                        }
+                    )) {
+                        Text("ทั้งหมด").tag(0)
+                        Text("อนุมัติแล้ว").tag(1)
+                        Text("รอนุมัติ").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                    
+                    // Date Picker
+                    DatePicker("", selection: Binding(
+                        get: { viewModel.timecardFilterDate ?? Date() },
+                        set: { val in
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                viewModel.timecardFilterDate = val
+                            }
+                        }
+                    ), displayedComponents: .date)
+                    .labelsHidden()
+                    .accentColor(.appAccent)
+                    .background(Color.appSurfaceHigh)
+                    .cornerRadius(8)
+                    
+                    if viewModel.timecardFilterDate != nil {
+                        Button(action: {
+                            withAnimation { viewModel.timecardFilterDate = nil }
+                        }) {
+                            Image(systemName: "calendar.badge.minus")
+                                .font(.subheadline)
+                                .foregroundColor(.appRose)
+                                .padding(8)
+                                .background(Color.appSurfaceHigh)
+                                .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(.horizontal, APSpacing.md)
+            .padding(.vertical, 10)
+            .background(Color.appSurface)
+
+            Divider().background(Color.appDivider)
+
+            if filteredTimecards.isEmpty {
                 VStack(spacing: APSpacing.md) {
                     Image(systemName: "tray.fill")
                         .font(.system(size: 36)).foregroundColor(.textTertiary)
-                    Text("No records yet")
+                    Text(L.Timecard.noRecordsYet.t)
                         .font(.subheadline).foregroundColor(.textSecondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -145,8 +370,12 @@ struct EmployeeTimecardView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: APSpacing.sm) {
-                        ForEach(Array(recentTimecards.prefix(15))) { card in
+                        ForEach(Array(filteredTimecards.prefix(30))) { card in
                             TimecardLogRow(card: card)
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                                    removal: .move(edge: .top).combined(with: .opacity)
+                                ))
                         }
                     }
                     .padding(APSpacing.md)
@@ -187,10 +416,10 @@ private struct EmployeeRow: View {
                         .font(.subheadline).fontWeight(.semibold)
                         .foregroundColor(.textPrimary)
                     if isActive {
-                        APBadge(text: "On Shift", color: .appTeal, icon: "circle.fill")
+                        APBadge(text: L.Timecard.badgeOnShift.t, color: .appTeal, icon: "circle.fill")
                     }
                 }
-                Text(employee.employmentType.capitalized + " · Staff")
+                Text(employee.employmentType.capitalized + " · " + L.Timecard.badgeStaffLabel.t)
                     .font(.caption)
                     .foregroundColor(.textSecondary)
             }
@@ -200,7 +429,7 @@ private struct EmployeeRow: View {
             // Action button
             if isActive {
                 Button(action: { onAction(.clockOut) }) {
-                    Label("Clock Out", systemImage: "door.right.hand.open")
+                    Label(L.Timecard.btnClockOut.t, systemImage: "door.right.hand.open")
                         .font(.caption).fontWeight(.bold)
                         .foregroundColor(.white)
                         .padding(.horizontal, 14)
@@ -211,7 +440,7 @@ private struct EmployeeRow: View {
                 }
             } else {
                 Button(action: { onAction(.clockIn) }) {
-                    Label("Clock In", systemImage: "door.left.hand.open")
+                    Label(L.Timecard.btnClockIn.t, systemImage: "door.left.hand.open")
                         .font(.caption).fontWeight(.bold)
                         .foregroundColor(.white)
                         .padding(.horizontal, 14)
@@ -261,7 +490,7 @@ private struct TimecardLogRow: View {
                             Text("→")
                             Text(out, style: .time)
                         } else {
-                            Text("→ Active now")
+                            Text("→ " + L.Timecard.logActiveNow.t)
                                 .foregroundColor(.appTeal)
                                 .fontWeight(.semibold)
                         }
@@ -273,7 +502,7 @@ private struct TimecardLogRow: View {
                 Spacer()
 
                 APBadge(
-                    text: isApproved ? "Approved" : "Pending",
+                    text: isApproved ? L.Timecard.badgeApproved.t : L.Timecard.badgePending.t,
                     color: isApproved ? .appTeal : .appAmber,
                     icon: isApproved ? "checkmark" : "clock"
                 )
@@ -317,6 +546,7 @@ private struct TimecardLogRow: View {
 struct BiometricFaceScannerSimulator: View {
     let employee:     Employee
     let mode:         EmployeeTimecardView.ScannerMode
+    var onCancel:     () -> Void = {}
     let onCompletion: (Bool, Double) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -327,12 +557,14 @@ struct BiometricFaceScannerSimulator: View {
     @State private var ringOpacity:   Double  = 0.0
     @State private var scanLineY:     CGFloat = -130
 
-    private let scanMessages = [
-        "Position face in frame...",
-        "Extracting facial metrics vector...",
-        "Comparing biometric templates...",
-        "Calculating Euclidean distance..."
-    ]
+    private var scanMessages: [String] {
+        [
+            L.Timecard.scanMsgPosition.t,
+            L.Timecard.scanMsgExtracting.t,
+            L.Timecard.scanMsgComparing.t,
+            L.Timecard.scanMsgDistance.t
+        ]
+    }
 
     var body: some View {
         NavigationStack {
@@ -344,7 +576,7 @@ struct BiometricFaceScannerSimulator: View {
 
                     // Mode label
                     APBadge(
-                        text: mode == .clockIn ? "CLOCK IN" : "CLOCK OUT",
+                        text: mode == .clockIn ? L.Timecard.btnClockIn.t.uppercased() : L.Timecard.btnClockOut.t.uppercased(),
                         color: mode == .clockIn ? .appTeal : .appRose,
                         icon: mode == .clockIn ? "door.left.hand.open" : "door.right.hand.open"
                     )
@@ -424,7 +656,7 @@ struct BiometricFaceScannerSimulator: View {
                     // Confidence slider
                     VStack(spacing: APSpacing.sm) {
                         HStack {
-                            Label("Simulated Match Confidence", systemImage: "waveform.path.ecg")
+                            Label(L.Timecard.faceIdSliderLbl.t, systemImage: "waveform.path.ecg")
                                 .font(.caption)
                                 .foregroundColor(.textSecondary)
                             Spacer()
@@ -448,7 +680,7 @@ struct BiometricFaceScannerSimulator: View {
                     if !isScanning {
                         Button(action: startScan) {
                             Label(
-                                mode == .clockIn ? "Authenticate & Clock In" : "Authenticate & Clock Out",
+                                mode == .clockIn ? L.Timecard.faceBtnClockIn.t : L.Timecard.faceBtnClockOut.t,
                                 systemImage: "faceid"
                             )
                             .apGradientButton(
@@ -462,11 +694,15 @@ struct BiometricFaceScannerSimulator: View {
                     Spacer()
                 }
             }
-            .navigationTitle("Face Verification")
+            .navigationTitle(L.Timecard.faceScannerTitle.t)
             .apNavBar(background: Color.appBackground)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }.foregroundColor(.textSecondary)
+                    Button("cancel_btn".t) {
+                        onCancel()
+                        dismiss()
+                    }
+                    .foregroundColor(.textSecondary)
                 }
             }
         }

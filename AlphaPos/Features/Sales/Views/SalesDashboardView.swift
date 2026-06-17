@@ -11,6 +11,7 @@ struct SalesDashboardView: View {
     @Query private var allInventory: [InventoryItem]
     @Query private var allEmployees: [Employee]
     @Query private var allTimecards: [Timecard]
+    @EnvironmentObject private var lm: LocalizationManager
 
     @State private var viewModel = SalesViewModel()
     @State private var selectedTab: AnalyticsTab = .overview
@@ -26,6 +27,17 @@ struct SalesDashboardView: View {
         case menu          = "Menu"
         case inventory     = "Inventory"
         case staff         = "Staff"
+
+        var localizedName: String {
+            switch self {
+            case .overview:      return L.Sales.tabAnalyticsOverview.t
+            case .profitability: return L.Sales.tabAnalyticsPL.t
+            case .delivery:      return L.Sales.tabAnalyticsDelivery.t
+            case .menu:          return L.Sales.tabAnalyticsMenu.t
+            case .inventory:     return L.Sales.tabAnalyticsInventory.t
+            case .staff:         return L.Sales.tabAnalyticsStaff.t
+            }
+        }
 
         var icon: String {
             switch self {
@@ -53,12 +65,13 @@ struct SalesDashboardView: View {
                         analyticsTabBar
                         tabContent
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .animation(.easeInOut(duration: 0.25), value: selectedTab)
                     }
                 }
                 .padding(APSpacing.md)
             }
         }
-        .navigationTitle("Sales & Analytics")
+        .navigationTitle(L.Sales.title.t)
         .apNavBar(background: Color.appBackground)
         .onAppear { refreshData(); triggerEntranceAnimations() }
         .onChange(of: viewModel.summaryMode)  { refreshData() }
@@ -83,7 +96,7 @@ struct SalesDashboardView: View {
                         HStack(spacing: 5) {
                             Image(systemName: tab.icon)
                                 .font(.system(size: 11, weight: .bold))
-                            Text(tab.rawValue)
+                            Text(tab.localizedName)
                                 .font(.system(size: 11, weight: .bold))
                         }
                         .padding(.horizontal, 12)
@@ -105,14 +118,21 @@ struct SalesDashboardView: View {
     // ─── Tab Content Router ───────────────────────────────────────────
     @ViewBuilder
     private var tabContent: some View {
-        switch selectedTab {
-        case .overview:      overviewTab
-        case .profitability: profitabilityTab
-        case .delivery:      deliveryTab
-        case .menu:          menuTab
-        case .inventory:     inventoryTab
-        case .staff:         staffTab
+        Group {
+            switch selectedTab {
+            case .overview:      overviewTab
+            case .profitability: profitabilityTab
+            case .delivery:      deliveryTab
+            case .menu:          menuTab
+            case .inventory:     inventoryTab
+            case .staff:         staffTab
+            }
         }
+        .id(selectedTab)
+        .transition(.asymmetric(
+            insertion: .move(edge: .trailing).combined(with: .opacity),
+            removal: .move(edge: .leading).combined(with: .opacity)
+        ))
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -128,21 +148,21 @@ struct SalesDashboardView: View {
 
     private var periodSelectorCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("REPORTING PERIOD")
+            Text(L.Sales.title.t.uppercased())
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
 
             Picker("Mode", selection: $viewModel.summaryMode) {
-                Text("Daily Summary").tag(SalesViewModel.SummaryMode.daily)
-                Text("Monthly Summary").tag(SalesViewModel.SummaryMode.monthly)
+                Text(L.Sales.dailySummary.t).tag(SalesViewModel.SummaryMode.daily)
+                Text(L.Sales.monthlySummary.t).tag(SalesViewModel.SummaryMode.monthly)
             }
             .pickerStyle(.segmented)
 
             if viewModel.summaryMode == .daily {
-                DatePicker("Target Date", selection: $viewModel.selectedDate, displayedComponents: .date)
+                DatePicker("starts_field".t, selection: $viewModel.selectedDate, displayedComponents: .date)
                     .datePickerStyle(.compact).foregroundColor(.textPrimary)
             } else {
                 HStack(spacing: 8) {
-                    Picker("Month", selection: $viewModel.selectedMonth) {
+                    Picker("month_label".t, selection: $viewModel.selectedMonth) {
                         ForEach(1...12, id: \.self) { i in
                             Text(viewModel.monthsList[i - 1]).tag(i)
                         }
@@ -163,30 +183,25 @@ struct SalesDashboardView: View {
 
     private var paymentBreakdownCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("PAYMENT METHOD")
+            Text(L.Sales.paymentMethods.t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
 
             if viewModel.paymentBreakdown.isEmpty {
-                emptyLabel("No payments recorded.")
+                emptyLabel("no_data".t)
             } else {
                 HStack(spacing: 16) {
                     Chart(viewModel.paymentBreakdown) { pt in
                         SectorMark(angle: .value("Rev", pt.amount), innerRadius: .ratio(0.55), angularInset: 1.5)
                             .cornerRadius(4)
-                            .foregroundStyle(by: .value("Method", pt.method))
+                            .foregroundStyle(colorForPaymentMethod(pt.method))
                     }
-                    .chartForegroundStyleScale([
-                        "Cash": Color.appAccent,
-                        "Credit Card": Color.appTeal,
-                        "PromptPay QR": Color.appRose,
-                        "TrueMoney Wallet": Color.appAccent.opacity(0.6)
-                    ])
                     .frame(width: 100, height: 100)
                     .chartLegend(.hidden)
 
                     VStack(alignment: .leading, spacing: 5) {
                         ForEach(viewModel.paymentBreakdown) { pt in
-                            HStack {
+                            HStack(spacing: 6) {
+                                Circle().fill(colorForPaymentMethod(pt.method)).frame(width: 6, height: 6)
                                 Text(pt.method).font(.caption2).foregroundColor(.textSecondary).lineLimit(1)
                                 Spacer()
                                 Text("฿\(pt.amount.formatted(.number.precision(.fractionLength(0))))")
@@ -203,11 +218,11 @@ struct SalesDashboardView: View {
 
     private var ordersHistoryLogCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("TRANSACTION LOG")
+            Text(L.Sales.recentOrders.t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
 
             if viewModel.historicalOrders.isEmpty {
-                emptyLabel("No matching orders found.")
+                emptyLabel("no_data".t)
             } else {
                 ScrollView {
                     VStack(spacing: 6) {
@@ -246,17 +261,17 @@ struct SalesDashboardView: View {
                 // KPI Row 1 — Revenue
                 Grid(horizontalSpacing: APSpacing.sm, verticalSpacing: APSpacing.sm) {
                     GridRow {
-                        kpiCard("GROSS REVENUE",    "฿\(fmt(viewModel.grossRevenue))",     "Net ฿\(fmt(viewModel.netRevenue, 0))",           .appTeal)
-                        kpiCard("TOTAL ORDERS",     "\(viewModel.totalOrders)",              "Avg ฿\(fmt(viewModel.averageTicketValue, 0))",   .appAccent)
-                        kpiCard("ITEMS SOLD",       "\(viewModel.totalItemsSold)",           "Cancelled: \(viewModel.cancelledItemsCount)",   .appTeal)
-                        kpiCard("DISCOUNTS",        "฿\(fmt(viewModel.discountGiven))",      "Refunds: ฿\(fmt(viewModel.refundedAmount, 0))",  .appRose)
+                        kpiCard(L.Sales.totalRevenue.t,    "฿\(fmt(viewModel.grossRevenue))",     LocalizationManager.shared.t("net_revenue_template", fmt(viewModel.netRevenue, 0)),           .appTeal)
+                        kpiCard(L.Sales.totalOrders.t,     "\(viewModel.totalOrders)",              LocalizationManager.shared.t(L.Sales.averageTicketTemplate, fmt(viewModel.averageTicketValue, 0)),   .appAccent)
+                        kpiCard(L.Sales.itemsSold.t,       "\(viewModel.totalItemsSold)",           LocalizationManager.shared.t(L.Sales.cancelledItemsTemplate, viewModel.cancelledItemsCount),   .appTeal)
+                        kpiCard("discounts_title".t,        "฿\(fmt(viewModel.discountGiven))",      LocalizationManager.shared.t("refunds_template", fmt(viewModel.refundedAmount, 0)),  .appRose)
                     }
                     GridRow {
-                        kpiCard("TAX COLLECTED",    "฿\(fmt(viewModel.taxCollected))",       "VAT",                                           .appAccent)
-                        kpiCard("SERVICE CHARGE",   "฿\(fmt(viewModel.serviceChargeCollected))", "Svc fee",                                   .appTeal)
-                        kpiCard("MODIFIER REVENUE", "฿\(fmt(viewModel.modifierRevenue))",    "Add-ons & Toppings",                            .appAccent)
-                        kpiCard("PEAK HOUR",
-                                viewModel.peakHour != nil ? HourlySalesPoint(hour: viewModel.peakHour!, revenue: 0).hourLabel : "–",
+                        kpiCard(L.Sales.taxCollected.t,    "฿\(fmt(viewModel.taxCollected))",       "VAT",                                           .appAccent)
+                        kpiCard("service_charge_lbl".t,   "฿\(fmt(viewModel.serviceChargeCollected))", "Svc fee",                                   .appTeal)
+                        kpiCard("modifier_revenue_lbl".t, "฿\(fmt(viewModel.modifierRevenue))",    "Add-ons & Toppings",                            .appAccent)
+                        kpiCard("peak_hour_lbl".t,
+                                viewModel.peakHour.map { HourlySalesPoint(hour: $0, revenue: 0).hourLabel } ?? "–",
                                 "฿\(fmt(viewModel.peakHourRevenue, 0))",                                                                    .appTeal)
                     }
                 }
@@ -277,12 +292,12 @@ struct SalesDashboardView: View {
 
     private var orderTypeMixCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("ORDER TYPE MIX")
+            Text(L.Sales.salesByOrderType.t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
             HStack(spacing: APSpacing.sm) {
-                orderTypeStat("🪑 Dine-In",  viewModel.dineInOrders,   viewModel.dineInRevenue,   .appTeal)
-                orderTypeStat("🥡 Take-Out", viewModel.takeOutOrders,  viewModel.takeOutRevenue,  .appAccent)
-                orderTypeStat("🚚 Delivery", viewModel.deliveryOrders, viewModel.deliveryRevenue, .appRose)
+                orderTypeStat(L.Sales.dineIn.t,  viewModel.dineInOrders,   viewModel.dineInRevenue,   .appTeal)
+                orderTypeStat(L.Sales.takeOut.t, viewModel.takeOutOrders,  viewModel.takeOutRevenue,  .appAccent)
+                orderTypeStat(L.Sales.delivery.t, viewModel.deliveryOrders, viewModel.deliveryRevenue, .appRose)
             }
         }
         .apCard()
@@ -303,7 +318,7 @@ struct SalesDashboardView: View {
 
     private var trendsChartCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("SALES REVENUE TREND")
+            Text("sales_revenue_trend".t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
 
             if viewModel.summaryMode == .daily {
@@ -332,11 +347,11 @@ struct SalesDashboardView: View {
     private var productSalesCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("PRODUCT SALES REPORT")
+                Text(L.Sales.productReportTitle.t)
                     .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
                 Spacer()
                 Button(action: shareProductReportAction) {
-                    Label("Export PDF", systemImage: "square.and.arrow.up")
+                    Label("export_pdf".t, systemImage: "square.and.arrow.up")
                         .font(.system(size: 10, weight: .bold))
                 }
                 .buttonStyle(.plain).foregroundColor(.appAccent)
@@ -345,9 +360,9 @@ struct SalesDashboardView: View {
             }
 
             if viewModel.productSales.isEmpty {
-                emptyLabel("No item sales recorded.")
+                emptyLabel(L.Sales.noTopProducts.t)
             } else {
-                tableHeader(["Item Name", "Category", "Qty", "Revenue", "Margin %"])
+                tableHeader([L.Sales.itemNameHeader.t, L.Sales.categoryHeader.t, L.Sales.qtyHeader.t, L.Sales.totalRevenue.t, L.Sales.marginHeader.t])
                 Divider()
                 ForEach(viewModel.productSales) { prod in
                     HStack {
@@ -365,7 +380,7 @@ struct SalesDashboardView: View {
             }
 
             Button(action: shareFullReportAction) {
-                Label("Export Full Summary Report (PDF)", systemImage: "doc.plaintext.fill")
+                Label("export_full_summary".t, systemImage: "doc.plaintext.fill")
                     .frame(maxWidth: .infinity).padding(.vertical, 8)
             }
             .apGradientButton(gradient: APGradient.accent, shadow: APShadow.glow)
@@ -383,16 +398,16 @@ struct SalesDashboardView: View {
                 // P&L Summary KPIs
                 Grid(horizontalSpacing: APSpacing.sm, verticalSpacing: APSpacing.sm) {
                     GridRow {
-                        kpiCard("GROSS REVENUE",  "฿\(fmt(viewModel.grossRevenue))",         "ยอดขายรวม",                      .appTeal)
-                        kpiCard("TOTAL COGS",     "฿\(fmt(viewModel.totalCOGS))",             "ต้นทุนสินค้าจากสูตรอาหาร",       .appRose)
-                        kpiCard("GROSS PROFIT",   "฿\(fmt(viewModel.grossProfit))",            "กำไรขั้นต้น",                    viewModel.grossProfit >= 0 ? .appTeal : .appRose)
-                        kpiCard("GROSS MARGIN",   "\(String(format: "%.1f", viewModel.grossMarginPct))%", "Gross Margin %",   viewModel.grossMarginPct >= 40 ? .appTeal : .appRose)
+                        kpiCard(L.Sales.totalRevenue.t,  "฿\(fmt(viewModel.grossRevenue))",         L.Sales.totalRevenue.t,                      .appTeal)
+                        kpiCard("TOTAL COGS",     "฿\(fmt(viewModel.totalCOGS))",             L.Sales.cogsFormulaSubtitle.t,       .appRose)
+                        kpiCard("gross_profit_lbl".t,   "฿\(fmt(viewModel.grossProfit))",            L.Sales.profitLoss.t,                    viewModel.grossProfit >= 0 ? .appTeal : .appRose)
+                        kpiCard("gross_margin_lbl".t,   "\(String(format: "%.1f", viewModel.grossMarginPct))%", "Gross Margin %",   viewModel.grossMarginPct >= 40 ? .appTeal : .appRose)
                     }
                     GridRow {
-                        kpiCard("LABOR COST",     "฿\(fmt(viewModel.totalLaborCost))",        "\(String(format: "%.1f", viewModel.laborCostPct))% of Revenue",  .appAccent)
-                        kpiCard("WASTE COST",     "฿\(fmt(viewModel.totalWasteCost))",        "Loss from spoilage/waste",       .appRose)
-                        kpiCard("ESTIMATED NET",  "฿\(fmt(viewModel.estimatedNetProfit))",    "หลังหักค่าแรง + waste",          viewModel.estimatedNetProfit >= 0 ? .appTeal : .appRose)
-                        kpiCard("NET MARGIN",     "\(String(format: "%.1f", viewModel.netProfitMarginPct))%", "Net Profit %", viewModel.netProfitMarginPct >= 15 ? .appTeal : .appRose)
+                        kpiCard(L.Sales.laborCost.t,     "฿\(fmt(viewModel.totalLaborCost))",        LocalizationManager.shared.t(L.Sales.laborPctTemplate, String(format: "%.1f", viewModel.laborCostPct)),  .appAccent)
+                        kpiCard(L.Sales.wasteCost.t,     "฿\(fmt(viewModel.totalWasteCost))",        L.Sales.wasteFormulaSubtitle.t,       .appRose)
+                        kpiCard("estimated_net_lbl".t,  "฿\(fmt(viewModel.estimatedNetProfit))",    L.Sales.profitLoss.t,          viewModel.estimatedNetProfit >= 0 ? .appTeal : .appRose)
+                        kpiCard("net_margin_lbl".t,     "\(String(format: "%.1f", viewModel.netProfitMarginPct))%", "Net Profit %", viewModel.netProfitMarginPct >= 15 ? .appTeal : .appRose)
                     }
                 }
 
@@ -415,13 +430,13 @@ struct SalesDashboardView: View {
 
     private var plWaterfallCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("P&L BREAKDOWN")
+            Text(L.Sales.profitLoss.t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
 
             let rows: [(String, Double, Bool)] = [
-                ("Gross Revenue",      viewModel.grossRevenue,              false),
+                (L.Sales.totalRevenue.t.capitalized,      viewModel.grossRevenue,              false),
                 ("(-) COGS",           -viewModel.totalCOGS,               true),
-                ("= Gross Profit",     viewModel.grossProfit,              false),
+                ("= " + "gross_profit_lbl".t,     viewModel.grossProfit,              false),
                 ("(-) Labor Cost",     -viewModel.totalLaborCost,          true),
                 ("(-) Waste Cost",     -viewModel.totalWasteCost,          true),
                 ("(-) Discounts",      -viewModel.discountGiven,           true),
@@ -452,9 +467,9 @@ struct SalesDashboardView: View {
 
     private var topMarginItemsCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("TOP MARGIN ITEMS")
+            Text(L.Sales.topMarginProducts.t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
-            tableHeader(["Item", "Qty", "Revenue", "COGS", "Margin %"])
+            tableHeader([L.Sales.itemNameHeader.t, L.Sales.qtyHeader.t, L.Sales.totalRevenue.t, "COGS", L.Sales.marginHeader.t])
             Divider()
             ForEach(viewModel.topMarginItems.prefix(10)) { prod in
                 HStack {
@@ -475,25 +490,21 @@ struct SalesDashboardView: View {
 
     private var categoryBreakdownCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("REVENUE BY CATEGORY")
+            Text(L.Sales.revenueByCategory.t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
             HStack(alignment: .top, spacing: 20) {
                 Chart(viewModel.categoryBreakdown) { cat in
                     SectorMark(angle: .value("Rev", cat.revenue), innerRadius: .ratio(0.5), angularInset: 1.5)
                         .cornerRadius(4)
-                        .foregroundStyle(by: .value("Category", cat.category))
+                        .foregroundStyle(colorForCategory(cat.category))
                 }
-                .chartForegroundStyleScale([
-                    "Main Dishes": Color.appAccent,
-                    "Appetizers": Color.appTeal,
-                    "Beverages": Color.appRose
-                ])
                 .frame(width: 130, height: 130)
                 .chartLegend(.hidden)
 
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(viewModel.categoryBreakdown) { cat in
-                        HStack {
+                        HStack(spacing: 6) {
+                            Circle().fill(colorForCategory(cat.category)).frame(width: 6, height: 6)
                             Text(cat.category).font(.caption2).foregroundColor(.textSecondary).lineLimit(1)
                             Spacer()
                             Text("฿\(fmt(cat.revenue, 0))")
@@ -517,10 +528,10 @@ struct SalesDashboardView: View {
                 // Summary KPIs
                 Grid(horizontalSpacing: APSpacing.sm, verticalSpacing: APSpacing.sm) {
                     GridRow {
-                        kpiCard("DELIVERY ORDERS",  "\(viewModel.deliveryOrders)",                "จำนวน order delivery",                                         .appAccent)
-                        kpiCard("GROSS DELIVERY",   "฿\(fmt(viewModel.deliveryRevenue))",         "ยอดขายรวม delivery",                                           .appAccent)
-                        kpiCard("TOTAL GP FEES",    "฿\(fmt(viewModel.totalDeliveryGPFees))",     "GP ที่ถูก platform หัก",                                       .appRose)
-                        kpiCard("NET DELIVERY REV", "฿\(fmt(viewModel.netDeliveryRevenue))",      "หลังหัก GP + Ad + Fee",                                        .appTeal)
+                        kpiCard("delivery_orders_lbl".t,  "\(viewModel.deliveryOrders)",                L.Sales.delivery.t,                                         .appAccent)
+                        kpiCard("gross_delivery_lbl".t,   "฿\(fmt(viewModel.deliveryRevenue))",         L.Sales.delivery.t,                                           .appAccent)
+                        kpiCard("total_gp_fees_lbl".t,    "฿\(fmt(viewModel.totalDeliveryGPFees))",     L.Sales.delivery.t,                                       .appRose)
+                        kpiCard("net_delivery_rev_lbl".t, "฿\(fmt(viewModel.netDeliveryRevenue))",      L.Sales.delivery.t,                                        .appTeal)
                     }
                 }
 
@@ -538,21 +549,21 @@ struct SalesDashboardView: View {
 
     private var deliveryPlatformTable: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("PLATFORM BREAKDOWN")
+            Text("platform_breakdown_lbl".t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
 
             if viewModel.deliveryPlatformBreakdown.isEmpty {
-                emptyLabel("No delivery orders in this period.")
+                emptyLabel("no_data".t)
             } else {
                 // Header
                 HStack {
-                    Text("Platform").frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Orders").frame(width: 55, alignment: .trailing)
-                    Text("Gross").frame(width: 85, alignment: .trailing)
-                    Text("GP Fee").frame(width: 80, alignment: .trailing)
-                    Text("Ad Fee").frame(width: 75, alignment: .trailing)
-                    Text("Net Rev").frame(width: 85, alignment: .trailing)
-                    Text("Margin").frame(width: 65, alignment: .trailing)
+                    Text("platform_header".t).frame(maxWidth: .infinity, alignment: .leading)
+                    Text("orders_header".t).frame(width: 55, alignment: .trailing)
+                    Text("gross_header".t).frame(width: 85, alignment: .trailing)
+                    Text("gp_fee_header".t).frame(width: 80, alignment: .trailing)
+                    Text("ad_fee_header".t).frame(width: 75, alignment: .trailing)
+                    Text("net_rev_header".t).frame(width: 85, alignment: .trailing)
+                    Text("margin_header_short".t).frame(width: 65, alignment: .trailing)
                 }
                 .font(.caption2).fontWeight(.bold).foregroundColor(.textSecondary)
                 .padding(.vertical, 6).padding(.horizontal, 8)
@@ -581,7 +592,7 @@ struct SalesDashboardView: View {
 
                 // Totals row
                 HStack {
-                    Text("TOTAL").fontWeight(.bold).frame(maxWidth: .infinity, alignment: .leading)
+                    Text("total_lbl".t).fontWeight(.bold).frame(maxWidth: .infinity, alignment: .leading)
                     Text("\(viewModel.deliveryOrders)").fontWeight(.bold).frame(width: 55, alignment: .trailing)
                     Text("฿\(fmt(viewModel.deliveryRevenue, 0))").fontWeight(.bold).frame(width: 85, alignment: .trailing)
                     Text("฿\(fmt(viewModel.totalDeliveryGPFees, 0))").foregroundColor(.appRose).fontWeight(.bold).frame(width: 80, alignment: .trailing)
@@ -599,7 +610,7 @@ struct SalesDashboardView: View {
 
     private var deliveryMarginChart: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("NET MARGIN BY PLATFORM")
+            Text("net_margin_by_platform_lbl".t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
 
             Chart(viewModel.deliveryPlatformBreakdown) { platform in
@@ -637,9 +648,9 @@ struct SalesDashboardView: View {
     private var menuEngineeringCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("MENU ENGINEERING MATRIX")
+                Text("menu_engineering_matrix_lbl".t)
                     .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
-                Text("จัดหมวดเมนูตาม Popularity × Profit Margin")
+                Text("menu_engineering_desc".t)
                     .font(.system(size: 10)).foregroundColor(.textTertiary)
             }
 
@@ -659,7 +670,7 @@ struct SalesDashboardView: View {
             if viewModel.menuEngineeringMatrix.isEmpty {
                 emptyLabel("No sales data for menu analysis.")
             } else {
-                tableHeader(["Menu Item", "Category", "Qty", "Revenue", "Margin", "Segment"])
+                tableHeader([L.Sales.itemNameHeader.t, L.Sales.categoryHeader.t, L.Sales.qtyHeader.t, L.Sales.totalRevenue.t, L.Sales.marginHeader.t, L.Sales.segmentHeader.t])
                 Divider()
                 ForEach(viewModel.menuEngineeringMatrix.prefix(20)) { item in
                     HStack {
@@ -695,10 +706,10 @@ struct SalesDashboardView: View {
                 // KPIs
                 Grid(horizontalSpacing: APSpacing.sm, verticalSpacing: APSpacing.sm) {
                     GridRow {
-                        kpiCard("STOCK VALUE",       "฿\(fmt(viewModel.totalInventoryValue))", "มูลค่าสต็อกทั้งหมด",              .appTeal)
-                        kpiCard("COGS USED",         "฿\(fmt(viewModel.totalCOGS))",           "ต้นทุนวัตถุดิบที่ใช้ไป",          .appRose)
-                        kpiCard("WASTE COST",        "฿\(fmt(viewModel.totalWasteCost))",      "Loss / Waste",                    .appRose)
-                        kpiCard("TURNOVER RATE",     String(format: "%.2fx", viewModel.inventoryTurnoverRate), "COGS / Stock Value", .appAccent)
+                        kpiCard(L.Dashboard.stockValue.t,       "฿\(fmt(viewModel.totalInventoryValue))", L.Dashboard.stockValue.t,              .appTeal)
+                        kpiCard("cogs_used_lbl".t,         "฿\(fmt(viewModel.totalCOGS))",           L.Sales.cogsFormulaSubtitle.t,          .appRose)
+                        kpiCard(L.Sales.wasteCost.t,        "฿\(fmt(viewModel.totalWasteCost))",      L.Sales.wasteFormulaSubtitle.t,                    .appRose)
+                        kpiCard("turnover_rate_lbl".t,     String(format: "%.2fx", viewModel.inventoryTurnoverRate), "COGS / Stock Value", .appAccent)
                     }
                 }
 
@@ -725,7 +736,7 @@ struct SalesDashboardView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.appRose)
-                Text("LOW STOCK ALERTS")
+                Text(L.Dashboard.lowStockAlert.t.uppercased())
                     .font(.caption).fontWeight(.bold).foregroundColor(.appRose).tracking(1.0)
                 Spacer()
                 Text("\(viewModel.lowStockItems.count) items")
@@ -755,12 +766,12 @@ struct SalesDashboardView: View {
 
     private var inventoryUsageCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("THEORETICAL INGREDIENT USAGE")
+            Text("theoretical_usage_lbl".t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
-            Text("คำนวณจากสูตรอาหาร × ยอดขาย")
+            Text("theoretical_usage_desc".t)
                 .font(.system(size: 10)).foregroundColor(.textTertiary)
 
-            tableHeader(["Ingredient", "Used (Theory)", "Cost Used"])
+            tableHeader(["ingredient_header".t, "used_theory_header".t, "cost_used_header".t])
             Divider()
             ForEach(viewModel.inventoryUsageSummary.prefix(15)) { item in
                 HStack {
@@ -778,9 +789,9 @@ struct SalesDashboardView: View {
 
     private var wasteLogCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("WASTE LOG")
+            Text("waste_log_lbl".t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
-            tableHeader(["Ingredient", "Qty", "Cost", "Date"])
+            tableHeader(["ingredient_header".t, L.Sales.qtyHeader.t, "cost_header".t, "date_header".t])
             Divider()
             ForEach(viewModel.wasteTransactions.prefix(15)) { waste in
                 HStack {
@@ -806,10 +817,10 @@ struct SalesDashboardView: View {
                 // Labor KPIs
                 Grid(horizontalSpacing: APSpacing.sm, verticalSpacing: APSpacing.sm) {
                     GridRow {
-                        kpiCard("TOTAL LABOR COST",    "฿\(fmt(viewModel.totalLaborCost))",          "ค่าแรงรวม",                                                       .appAccent)
-                        kpiCard("LABOR HOURS",         String(format: "%.1f hrs", viewModel.totalLaborHours), "ชั่วโมงทำงานรวม",                                .appTeal)
-                        kpiCard("LABOR COST %",        "\(String(format: "%.1f", viewModel.laborCostPct))%",  "% ของ Revenue",                                   viewModel.laborCostPct <= 30 ? .appTeal : .appRose)
-                        kpiCard("REV/LABOR HOUR",      "฿\(fmt(viewModel.revenuePerLaborHour, 0))",   "Revenue per Hr",                                          .appTeal)
+                        kpiCard("total_labor_cost_lbl".t,    "฿\(fmt(viewModel.totalLaborCost))",          L.Sales.laborCost.t,                                                       .appAccent)
+                        kpiCard("labor_hours_lbl".t,         String(format: "%.1f hrs", viewModel.totalLaborHours), L.Sales.laborCost.t,                                .appTeal)
+                        kpiCard("labor_cost_pct_lbl".t,        "\(String(format: "%.1f", viewModel.laborCostPct))%",  L.Sales.laborCost.t,                                   viewModel.laborCostPct <= 30 ? .appTeal : .appRose)
+                        kpiCard("rev_per_labor_hour_lbl".t,      "฿\(fmt(viewModel.revenuePerLaborHour, 0))",   "Revenue per Hr",                                          .appTeal)
                     }
                 }
 
@@ -827,13 +838,13 @@ struct SalesDashboardView: View {
 
     private var cashierPerformanceCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("CASHIER PERFORMANCE")
+            Text("cashier_performance_lbl".t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
 
             if viewModel.cashierPerformance.isEmpty {
                 emptyLabel("No orders recorded.")
             } else {
-                tableHeader(["Cashier", "Orders", "Revenue", "Items Sold", "Avg Ticket"])
+                tableHeader(["cashier_header".t, "orders_header".t, "revenue_header".t, "items_sold_header".t, "avg_ticket_header".t])
                 Divider()
                 ForEach(viewModel.cashierPerformance) { cashier in
                     HStack {
@@ -858,9 +869,9 @@ struct SalesDashboardView: View {
 
     private var staffLaborCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("LABOR COST BREAKDOWN")
+            Text("labor_cost_breakdown_lbl".t)
                 .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1.0)
-            tableHeader(["Employee", "Hours", "OT (hrs)", "Labor Cost"])
+            tableHeader(["employee_header".t, "hours_header".t, "ot_hours_header".t, "labor_cost_header".t])
             Divider()
             ForEach(viewModel.staffLaborBreakdown) { staff in
                 HStack {
@@ -881,6 +892,36 @@ struct SalesDashboardView: View {
     // ─────────────────────────────────────────────────────────────────
     // MARK: HELPERS
     // ─────────────────────────────────────────────────────────────────
+    private func colorForPaymentMethod(_ method: String) -> Color {
+        switch method.lowercased() {
+        case let m where m.contains("cash"):
+            return Color.appAccent
+        case let m where m.contains("credit") || m.contains("card"):
+            return Color.appTeal
+        case let m where m.contains("promptpay") || m.contains("qr"):
+            return Color.appRose
+        case let m where m.contains("truemoney") || m.contains("wallet"):
+            return Color.appAccent.opacity(0.6)
+        default:
+            return Color.appAccent.opacity(0.4)
+        }
+    }
+
+    private func colorForCategory(_ category: String) -> Color {
+        switch category.lowercased() {
+        case let c where c.contains("main") || c.contains("dish"):
+            return Color.appAccent
+        case let c where c.contains("appetizer") || c.contains("snack") || c.contains("starter"):
+            return Color.appTeal
+        case let c where c.contains("bev") || c.contains("drink") || c.contains("water") || c.contains("soda"):
+            return Color.appRose
+        default:
+            let hash = abs(category.hashValue)
+            let colors: [Color] = [.appAccent, .appTeal, .appRose, .appAccent.opacity(0.6)]
+            return colors[hash % colors.count]
+        }
+    }
+
     private func kpiCard(_ title: String, _ value: String, _ subtitle: String, _ color: Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.system(size: 8, weight: .bold)).foregroundColor(.textTertiary).tracking(0.5)
@@ -953,7 +994,7 @@ struct SalesDashboardView: View {
             title: viewModel.summaryMode == .daily ? "Daily Sales Summary" : "Monthly Sales Summary",
             subtitle: viewModel.summaryMode == .daily
                 ? viewModel.selectedDate.formatted(date: .long, time: .omitted)
-                : "\(viewModel.monthsList[viewModel.selectedMonth - 1]) \(viewModel.selectedYear)",
+                : "\(viewModel.selectedMonthName) \(viewModel.selectedYear)",
             generatedAt: Date().formatted(date: .abbreviated, time: .shortened),
             grossSales: viewModel.grossRevenue,
             netSales: viewModel.netRevenue,
@@ -978,7 +1019,7 @@ struct SalesDashboardView: View {
             title: viewModel.summaryMode == .daily ? "Daily Report" : "Monthly Report",
             subtitle: viewModel.summaryMode == .daily
                 ? viewModel.selectedDate.formatted(date: .long, time: .omitted)
-                : "\(viewModel.monthsList[viewModel.selectedMonth - 1]) \(viewModel.selectedYear)",
+                : "\(viewModel.selectedMonthName) \(viewModel.selectedYear)",
             generatedAt: Date().formatted(date: .abbreviated, time: .shortened),
             products: viewModel.productSales
         )

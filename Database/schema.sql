@@ -90,7 +90,8 @@ CREATE TABLE table_sessions (
 CREATE TABLE orders (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     merchant_id UUID REFERENCES merchants(id) ON DELETE CASCADE NOT NULL,
-    order_number VARCHAR(20) UNIQUE NOT NULL,
+    order_number VARCHAR(20) NOT NULL,
+    CONSTRAINT unique_merchant_order_number UNIQUE (merchant_id, order_number),
     table_number VARCHAR(10) NOT NULL,
     total DECIMAL(10,2) NOT NULL DEFAULT 0.00,
     status VARCHAR(20) DEFAULT 'preparing', -- 'preparing', 'ready', 'served', 'completed', 'cancelled'
@@ -113,6 +114,7 @@ CREATE TABLE order_items (
     price DECIMAL(10,2) NOT NULL,
     status VARCHAR(20) DEFAULT 'cooking', -- 'cooking', 'preparing', 'ready', 'served'
     item_id TEXT, -- References menu_items(id) loosely
+    branch_id UUID,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -130,10 +132,11 @@ CREATE TABLE service_requests (
 CREATE TABLE payments (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     merchant_id UUID REFERENCES merchants(id) ON DELETE CASCADE NOT NULL,
-    order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
+    order_id UUID REFERENCES orders(id) ON DELETE RESTRICT,
     amount DECIMAL(10,2) NOT NULL,
     payment_method VARCHAR(30) NOT NULL, -- 'cash', 'credit_card', 'qr_promptpay'
     status VARCHAR(20) DEFAULT 'completed',
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -147,7 +150,8 @@ CREATE TABLE employees (
     national_id VARCHAR(20),
     employment_type VARCHAR(20) NOT NULL, -- 'hourly', 'monthly'
     pay_rate DECIMAL(10,2) NOT NULL,
-    username VARCHAR(50) UNIQUE NOT NULL,
+    username VARCHAR(50) NOT NULL,
+    CONSTRAINT unique_merchant_username UNIQUE (merchant_id, username),
     pin_hash TEXT NOT NULL DEFAULT '', -- SHA256 hash of PIN (use bcrypt/argon2 in production)
     role VARCHAR(50) NOT NULL,
     resigned_at TIMESTAMP WITH TIME ZONE,
@@ -178,8 +182,35 @@ CREATE TABLE promotions (
     title VARCHAR(200) NOT NULL,
     promo_description TEXT,
     image_data TEXT,
+    media_type VARCHAR(20) DEFAULT 'image',
     is_active INTEGER DEFAULT 1,
+    discount_type VARCHAR(30) DEFAULT 'none',
+    discount_value DECIMAL(10,2) DEFAULT 0,
+    minimum_spend DECIMAL(10,2) DEFAULT 0,
+    applies_to_menu_item_id TEXT REFERENCES menu_items(id) ON DELETE SET NULL,
+    reward_menu_item_id TEXT REFERENCES menu_items(id) ON DELETE SET NULL,
+    required_quantity INTEGER DEFAULT 1,
+    reward_quantity INTEGER DEFAULT 0,
+    max_redemptions INTEGER,
+    current_redemptions INTEGER DEFAULT 0,
+    per_customer_limit INTEGER,
+    starts_at TIMESTAMP WITH TIME ZONE,
+    ends_at TIMESTAMP WITH TIME ZONE,
     is_deleted INTEGER DEFAULT 0,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Promotion Bundle Items (bundle_price component definitions)
+CREATE TABLE promotion_bundle_items (
+    id UUID PRIMARY KEY,
+    merchant_id UUID REFERENCES merchants(id) ON DELETE CASCADE NOT NULL,
+    promotion_id UUID REFERENCES promotions(id) ON DELETE CASCADE NOT NULL,
+    menu_item_id TEXT REFERENCES menu_items(id) ON DELETE CASCADE NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity >= 1),
+    display_order INTEGER NOT NULL DEFAULT 0,
+    is_synced BOOLEAN NOT NULL DEFAULT FALSE,
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -191,6 +222,15 @@ CREATE TABLE inventory_transactions (
     item_name VARCHAR(200) NOT NULL,
     quantity DECIMAL(10,2) NOT NULL,
     type VARCHAR(50) NOT NULL,
+    item_id UUID,
+    transaction_type VARCHAR(50),
+    cost_price DECIMAL(10,2),
+    reference_id UUID,
+    notes TEXT,
+    branch_id UUID,
+    is_synced BOOLEAN NOT NULL DEFAULT FALSE,
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -218,7 +258,13 @@ CREATE INDEX idx_orders_merchant_status ON orders (merchant_id, status);
 CREATE INDEX idx_orders_merchant_table ON orders (merchant_id, table_number);
 CREATE INDEX idx_promotions_merchant ON promotions (merchant_id);
 CREATE INDEX idx_promotions_active ON promotions (is_active, is_deleted);
+CREATE INDEX idx_promotions_product_rule ON promotions (merchant_id, applies_to_menu_item_id, is_active, is_deleted);
+CREATE INDEX idx_promotions_effective ON promotions (merchant_id, is_active, is_deleted, starts_at, ends_at, current_redemptions);
+CREATE INDEX idx_promotion_bundle_items_promotion ON promotion_bundle_items (promotion_id, display_order);
 CREATE INDEX idx_inventory_transactions_merchant ON inventory_transactions (merchant_id);
+CREATE INDEX idx_inventory_transactions_item_branch_time ON inventory_transactions (merchant_id, item_id, branch_id, updated_at DESC);
+CREATE UNIQUE INDEX idx_inventory_transactions_reference_unique
+    ON inventory_transactions (merchant_id, transaction_type, reference_id, item_id);
 
 -- =========================================================================
 -- 4. UTILITY HELPER FUNCTIONS
@@ -228,7 +274,7 @@ CREATE INDEX idx_inventory_transactions_merchant ON inventory_transactions (merc
 -- NOTE: HTTP header fallback has been REMOVED for security.
 -- Accepting merchant_id from request headers allows anon users to impersonate any merchant.
 -- Only the JWT token (which is cryptographically signed) should be trusted.
-CREATE OR REPLACE FUNCTION get_merchant_id() 
+CREATE OR REPLACE FUNCTION get_merchant_id()
 RETURNS UUID AS $$
 DECLARE
     v_merchant_id TEXT;
@@ -247,18 +293,18 @@ BEGIN
 
     -- standard Supabase Auth app_metadata claim path
     v_merchant_id := v_claims->'app_metadata'->>'merchant_id';
-    
+
     -- fallback direct claim path
     IF v_merchant_id IS NULL OR v_merchant_id = '' THEN
         v_merchant_id := v_claims->>'merchant_id';
     END IF;
-    
+
     RETURN NULLIF(v_merchant_id, '')::UUID;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- Points to get_merchant_id() for backward compatibility
-CREATE OR REPLACE FUNCTION get_active_merchant_id() 
+CREATE OR REPLACE FUNCTION get_active_merchant_id()
 RETURNS UUID AS $$
 BEGIN
     RETURN get_merchant_id();
@@ -282,6 +328,7 @@ ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE employees ENABLE ROW LEVEL SECURITY;
 ALTER TABLE timecards ENABLE ROW LEVEL SECURITY;
 ALTER TABLE promotions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE promotion_bundle_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_transactions ENABLE ROW LEVEL SECURITY;
 
 -- Define policies
@@ -343,6 +390,9 @@ CREATE POLICY "merchant_isolation_timecards_update" ON timecards
 CREATE POLICY "merchant_isolation_promotions" ON promotions
     FOR ALL TO anon USING (merchant_id = get_active_merchant_id()) WITH CHECK (merchant_id = get_active_merchant_id());
 
+CREATE POLICY "merchant_isolation_promotion_bundle_items" ON promotion_bundle_items
+    FOR ALL TO anon USING (merchant_id = get_active_merchant_id()) WITH CHECK (merchant_id = get_active_merchant_id());
+
 CREATE POLICY "merchant_isolation_inventory_transactions" ON inventory_transactions
     FOR ALL TO anon USING (merchant_id = get_active_merchant_id()) WITH CHECK (merchant_id = get_active_merchant_id());
 
@@ -367,13 +417,13 @@ DECLARE
 BEGIN
     -- Verify caller's merchant_id matches the order's merchant_id
     v_caller_merchant_id := get_merchant_id();
-    
+
     SELECT merchant_id INTO v_merchant_id FROM orders WHERE id = p_order_id;
-    
+
     IF v_merchant_id IS NULL THEN
         RAISE EXCEPTION 'Order not found';
     END IF;
-    
+
     IF v_caller_merchant_id IS DISTINCT FROM v_merchant_id THEN
         RAISE EXCEPTION 'Permission denied: merchant mismatch';
     END IF;
@@ -434,5 +484,3 @@ DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW EXECUTE FUNCTION public.handle_new_merchant_user();
-
-

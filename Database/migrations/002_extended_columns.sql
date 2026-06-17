@@ -4,7 +4,7 @@
 -- Description: Adds columns required to sync SwiftData models from the
 --              iPad POS app. All ALTER TABLE statements use ADD COLUMN IF NOT EXISTS
 --              so they are safe to re-run (idempotent).
--- Status: APPLIED to Supabase (sdmtkixrqkmwcpwoisrg)
+-- Status: APPLIED to Supabase (your-project-ref)
 -- =========================================================================
 
 -- -------------------------------------------------------------------------

@@ -6,6 +6,7 @@ import SwiftData
 
 struct SupplierManagerView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
     @Query(sort: \Supplier.name) private var suppliers: [Supplier]
     @Query(sort: \InventoryItem.name) private var allInventoryItems: [InventoryItem]
     
@@ -39,7 +40,7 @@ struct SupplierManagerView: View {
                         Image(systemName: "magnifyingglass")
                             .foregroundColor(.textSecondary)
                             .font(.footnote)
-                        TextField("Search supplier...", text: $searchText)
+                        TextField("search_supplier_placeholder".t, text: $searchText)
                             .font(.subheadline)
                             .foregroundColor(.textPrimary)
                     }
@@ -66,7 +67,7 @@ struct SupplierManagerView: View {
                         Image(systemName: "person.2.slash.fill")
                             .font(.largeTitle)
                             .foregroundColor(.textTertiary)
-                        Text("No Suppliers")
+                        Text("no_suppliers_found".t)
                             .font(.subheadline)
                             .foregroundColor(.textSecondary)
                     }
@@ -80,13 +81,13 @@ struct SupplierManagerView: View {
                                         .font(.subheadline)
                                         .fontWeight(.semibold)
                                         .foregroundColor(.textPrimary)
-                                    Text(supplier.contactName ?? "No Contact Name")
+                                    Text(supplier.contactName ?? "no_contact_name".t)
                                         .font(.caption2)
                                         .foregroundColor(.textSecondary)
                                 }
                                 Spacer()
                                 if supplier.inventoryItems.count > 0 {
-                                    Text("\(supplier.inventoryItems.count) items")
+                                    Text(LocalizationManager.shared.t("items_count_template", supplier.inventoryItems.count))
                                         .font(.system(size: 10, weight: .bold))
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
@@ -113,11 +114,11 @@ struct SupplierManagerView: View {
                     Image(systemName: "building.2.fill")
                         .font(.system(size: 64))
                         .foregroundStyle(APGradient.accent)
-                    Text("Select a Supplier")
+                    Text("select_supplier_title".t)
                         .font(.title3)
                         .fontWeight(.bold)
                         .foregroundColor(.textPrimary)
-                    Text("Choose from the left to view supplier contact info and raw materials supply list.")
+                    Text("select_supplier_subtitle".t)
                         .font(.subheadline)
                         .foregroundColor(.textSecondary)
                         .multilineTextAlignment(.center)
@@ -151,7 +152,7 @@ struct SupplierManagerView: View {
                                 .font(.title3)
                                 .fontWeight(.bold)
                                 .foregroundColor(.textPrimary)
-                            Text("Supplier Profile & Details")
+                            Text("supplier_profile_details".t)
                                 .font(.caption)
                                 .foregroundColor(.textSecondary)
                         }
@@ -161,10 +162,10 @@ struct SupplierManagerView: View {
                     Divider().background(Color.appDivider)
                     
                     Grid(alignment: .leading, horizontalSpacing: APSpacing.lg, verticalSpacing: APSpacing.sm) {
-                        detailGridRow(label: "Contact Person", value: supplier.contactName ?? "—")
-                        detailGridRow(label: "Phone Number", value: supplier.phone ?? "—")
-                        detailGridRow(label: "Email Address", value: supplier.email ?? "—")
-                        detailGridRow(label: "Address", value: supplier.address ?? "—")
+                        detailGridRow(label: "supplier_contact_person".t, value: supplier.contactName ?? "—")
+                        detailGridRow(label: "supplier_phone_number".t, value: supplier.phone ?? "—")
+                        detailGridRow(label: "supplier_email_address".t, value: supplier.email ?? "—")
+                        detailGridRow(label: "supplier_address".t, value: supplier.address ?? "—")
                     }
                 }
                 .padding(APSpacing.md)
@@ -172,7 +173,7 @@ struct SupplierManagerView: View {
                 
                 // Supplied Items list
                 VStack(alignment: .leading, spacing: APSpacing.sm) {
-                    Text("Supplied Raw Ingredients")
+                    Text("supplied_raw_ingredients".t)
                         .font(.caption)
                         .fontWeight(.bold)
                         .foregroundColor(.textSecondary)
@@ -181,7 +182,7 @@ struct SupplierManagerView: View {
                     let suppliedItems = allInventoryItems.filter { $0.supplier?.id == supplier.id }
                     
                     if suppliedItems.isEmpty {
-                        Text("No ingredients linked to this supplier. Link ingredients in Stock Levels.")
+                        Text("no_supplied_ingredients_linked".t)
                             .font(.caption)
                             .foregroundColor(.textTertiary)
                             .padding(.vertical, 8)
@@ -200,11 +201,11 @@ struct SupplierManagerView: View {
                                     }
                                     Spacer()
                                     VStack(alignment: .trailing, spacing: 2) {
-                                        Text("Cost: ฿\(String(format: "%.2f", item.costPrice))/\(item.unit)")
+                                        Text(LocalizationManager.shared.t("cost_per_unit_template", item.costPrice, item.unit))
                                             .font(.caption)
                                             .fontWeight(.bold)
                                             .foregroundColor(.textPrimary)
-                                        Text("On Hand: \(String(format: "%.1f", item.currentQuantity)) \(item.unit)")
+                                        Text(LocalizationManager.shared.t("on_hand_with_unit_template", item.currentQuantity, item.unit))
                                             .font(.caption2)
                                             .foregroundColor(.textSecondary)
                                     }
@@ -247,34 +248,34 @@ struct SupplierManagerView: View {
                 ScrollView {
                     VStack(spacing: APSpacing.md) {
                         VStack(alignment: .leading, spacing: APSpacing.sm) {
-                            Text("Supplier Contact details")
+                            Text("supplier_contact_details_section".t)
                                 .font(.caption)
                                 .fontWeight(.bold)
                                 .foregroundColor(.textSecondary)
                                 .textCase(.uppercase)
                             
-                            inputRow(label: "Company / Supplier Name", placeholder: "e.g., CP FreshMart", text: $name)
-                            inputRow(label: "Contact Person Name", placeholder: "e.g., Somchai Jaidee", text: $contactName)
-                            inputRow(label: "Phone Number", placeholder: "e.g., 0812345678", text: $phone)
-                            inputRow(label: "Email Address", placeholder: "e.g., contact@company.com", text: $email)
-                            inputRow(label: "Full Address", placeholder: "e.g., 123 Sukhumvit Rd, Bangkok", text: $address)
+                            inputRow(label: "company_supplier_name_label".t, placeholder: "company_supplier_name_placeholder".t, text: $name)
+                            inputRow(label: "contact_person_name_label".t, placeholder: "contact_person_name_placeholder".t, text: $contactName)
+                            inputRow(label: "phone_number_label".t, placeholder: "phone_number_placeholder".t, text: $phone)
+                            inputRow(label: "email_address_label".t, placeholder: "email_address_placeholder".t, text: $email)
+                            inputRow(label: "full_address_label".t, placeholder: "full_address_placeholder".t, text: $address)
                         }
                         .apCard()
                     }
                     .padding(APSpacing.md)
                 }
             }
-            .navigationTitle("Add New Supplier")
+            .navigationTitle("add_new_supplier_title".t)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("cancel_btn".t) {
                         dismissAddSheet()
                     }
                     .foregroundColor(.textSecondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
+                    Button("add_btn".t) {
                         viewModel.addSupplier(
                             name: name,
                             contactName: contactName.isEmpty ? nil : contactName,

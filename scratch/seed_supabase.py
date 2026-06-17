@@ -1,8 +1,8 @@
 import urllib.request
 import json
 
-url = "https://sdmtkixrqkmwcpwoisrg.supabase.co/rest/v1/"
-anon_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNkbXRraXhycWttd2Nwd29pc3JnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NDIxNjAsImV4cCI6MjA5NjQxODE2MH0.rjLwVE0ShXIFoT0k982XO_lVCQMsA4uTKMW1Su-NUws"
+url = "https://your-supabase-project.supabase.co/rest/v1/"
+anon_key = "your-anon-key"
 
 headers = {
     "apikey": anon_key,

@@ -64,7 +64,7 @@ struct ShiftSchedulerCalendarView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button(action: { dismiss() }) {
-                        Text("Close")
+                        Text("close_btn_label".t)
                             .fontWeight(.bold)
                             .foregroundColor(.appRose)
                     }
@@ -73,7 +73,7 @@ struct ShiftSchedulerCalendarView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack(spacing: 16) {
                         Button(action: exportReportPDF) {
-                            Label("Share", systemImage: "square.and.arrow.up")
+                            Label("share_btn_label".t, systemImage: "square.and.arrow.up")
                         }
                         .disabled(allShifts.isEmpty)
                         
@@ -107,7 +107,7 @@ struct ShiftSchedulerCalendarView: View {
             }) {
                 HStack {
                     Image(systemName: "chevron.left")
-                    Text("Prev Week")
+                    Text("prev_week_btn".t)
                 }
                 .font(.subheadline)
                 .fontWeight(.bold)
@@ -128,7 +128,7 @@ struct ShiftSchedulerCalendarView: View {
                 currentWeekStart = Calendar.current.date(byAdding: .day, value: 7, to: currentWeekStart) ?? currentWeekStart
             }) {
                 HStack {
-                    Text("Next Week")
+                    Text("next_week_btn".t)
                     Image(systemName: "chevron.right")
                 }
                 .font(.subheadline)
@@ -630,145 +630,7 @@ struct ShiftSchedulerCalendarView: View {
 
 fileprivate extension String {
     func localized(for language: String) -> String {
-        let dict: [String: [String: String]] = [
-            "shift_planner": [
-                "en": "Shift Planner",
-                "th": "ตารางกะทำงาน",
-                "lo": "ຕາຕະລາງກະລາຍວັນ",
-                "km": "ផែនការវេនการងារ",
-                "vi": "Lịch làm việc",
-                "my": "ဂျူတီစီစဉ်သူ"
-            ],
-            "schedule_shift": [
-                "en": "Schedule Shift",
-                "th": "จัดกะการทำงาน",
-                "lo": "ຈັດກະລາຍວັນ",
-                "km": "រៀបចំវេនการងារ",
-                "vi": "Lên lịch ca",
-                "my": "ဂျူတီချိန်သတ်မှတ်ရန်"
-            ],
-            "morning_shift_lbl": [
-                "en": "Morning",
-                "th": "กะเช้า",
-                "lo": "ກະລາຍເຊົ້າ",
-                "km": "វេនព្រឹក",
-                "vi": "Ca sáng",
-                "my": "မနက်ဂျူတီ"
-            ],
-            "afternoon_shift_lbl": [
-                "en": "Afternoon",
-                "th": "กะบ่าย",
-                "lo": "ກະລາຍບ່າຍ",
-                "km": "វេនរសៀល",
-                "vi": "Ca chiều",
-                "my": "ညနေဂျူတီ"
-            ],
-            "select_employees_batch": [
-                "en": "Select Employees (Batch)",
-                "th": "เลือกพนักงาน (กลุ่ม)",
-                "lo": "ເລືອກພະນักງານ (ກຸ່ມ)",
-                "km": "ជ្រើសរើសបុគ្គលិក (ជាក្រុម)",
-                "vi": "Chọn nhân viên (Hàng loạt)",
-                "my": "ဝန်ထမ်းများကိုရွေးချယ်ပါ (အုပ်စု)"
-            ],
-            "select_all": [
-                "en": "Select All",
-                "th": "เลือกทั้งหมด",
-                "lo": "ເລືອກທັງໝົດ",
-                "km": "ជ្រើសរើសទាំងអស់",
-                "vi": "Chọn tất cả",
-                "my": "အားလုံးရွေးပါ"
-            ],
-            "clear_all": [
-                "en": "Clear All",
-                "th": "ล้างทั้งหมด",
-                "lo": "ລຶບທັງໝົດ",
-                "km": "សម្អាតทั้งหมด",
-                "vi": "Xóa tất cả",
-                "my": "အားလုံးရှင်းလင်းပါ"
-            ],
-            "employee_header": [
-                "en": "Employee",
-                "th": "พนักงาน",
-                "lo": "ພະນັກງານ",
-                "km": "បុគ្គលិក",
-                "vi": "Nhân viên",
-                "my": "ဝန်ထမ်း"
-            ],
-            "time_date_header": [
-                "en": "Time & Date",
-                "th": "วันและเวลา",
-                "lo": "ວັນ ແລະ ເວລາ",
-                "km": "ថ្ងៃ និង ម៉ោង",
-                "vi": "Ngày & Giờ",
-                "my": "နေ့ရက်နှင့်အချိန်"
-            ],
-            "role_notes_header": [
-                "en": "Role & Notes",
-                "th": "ตำแหน่งและบันทึก",
-                "lo": "ຕຳແໜ່ງ ແລະ ບັນທຶກ",
-                "km": "តួនាទី និង កំណត់ចំណាំ",
-                "vi": "Vai trò & Ghi chú",
-                "my": "ရာထူးနှင့်မှတ်စု"
-            ],
-            "notes_field": [
-                "en": "Notes",
-                "th": "บันทึกเพิ่มเติม",
-                "lo": "ບັນທຶກເພີ່ມເຕີม",
-                "km": "កំណត់ចំណាំបន្ថែម",
-                "vi": "Ghi chú",
-                "my": "မှတ်စု"
-            ],
-            "role_field_placeholder": [
-                "en": "Role (e.g. Cashier, Cook)",
-                "th": "ตำแหน่ง (เช่น แคชเชียร์, กุ๊ก)",
-                "lo": "ຕຳແໜ່ງ (ເຊັ່ນ: ແຄັດເຊຍ, ກຸ໊ກ)",
-                "km": "តួនាទី (ឧទាហរណ៍៖ កាប៊ិន, ចុងភៅ)",
-                "vi": "Vai trò (Ví dụ: Thu ngân, Đầu bếp)",
-                "my": "ရာထူး (ဥပမာ - ငွေကိုင်၊ ထမင်းချက်)"
-            ],
-            "starts_field": [
-                "en": "Starts",
-                "th": "เริ่มต้น",
-                "lo": "ເລີ່ມຕົ້ນ",
-                "km": "ចាប់ផ្តើម",
-                "vi": "Bắt đầu",
-                "my": "စတင်သည်"
-            ],
-            "ends_field": [
-                "en": "Ends",
-                "th": "สิ้นสุด",
-                "lo": "สิ้นสุด",
-                "km": "បញ្ចប់",
-                "vi": "Kết thúc",
-                "my": "ပြီးဆုံးသည်"
-            ],
-            "delete_shift_btn": [
-                "en": "Delete Shift",
-                "th": "ลบกะทำงาน",
-                "lo": "ລຶບກະລາຍວັນ",
-                "km": "លុបវេនการងារ",
-                "vi": "Xóa ca làm việc",
-                "my": "ဂျူတီဖျက်သိမ်းရန်"
-            ],
-            "cancel_btn": [
-                "en": "Cancel",
-                "th": "ยกเลิก",
-                "lo": "ຍົກເລີກ",
-                "km": "បោះបង់",
-                "vi": "Hủy",
-                "my": "ပယ်ဖျက်ပါ"
-            ],
-            "save_btn": [
-                "en": "Save",
-                "th": "บันทึก",
-                "lo": "ບັນທຶກ",
-                "km": "រក្សាទុក",
-                "vi": "Lưu",
-                "my": "သိမ်းဆည်းပါ"
-            ]
-        ]
-        return dict[self]?[language] ?? dict[self]?["en"] ?? self
+        return self.t
     }
 }
 
@@ -785,7 +647,7 @@ struct ShiftReportView: View {
             // Header
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Weekly Shift Report")
+                    Text("weekly_shift_report_title".t)
                         .font(.title)
                         .fontWeight(.black)
                         .foregroundColor(.primary)

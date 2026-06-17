@@ -45,7 +45,7 @@ struct StockTransferSheet: View {
                         
                         // Source Branch Info
                         VStack(alignment: .leading, spacing: APSpacing.xs) {
-                            Text("FROM BRANCH (SOURCE)")
+                            Text("transfer_from_branch".t)
                                 .font(.caption2).fontWeight(.bold).foregroundColor(.textSecondary).tracking(0.5)
                             Text(sourceBranch.name)
                                 .font(.headline)
@@ -58,10 +58,10 @@ struct StockTransferSheet: View {
                         
                         // Destination Branch Selector
                         VStack(alignment: .leading, spacing: APSpacing.xs) {
-                            Text("TO BRANCH (DESTINATION)")
+                            Text("transfer_to_branch".t)
                                 .font(.caption2).fontWeight(.bold).foregroundColor(.appTeal).tracking(0.5)
                             Picker("Select Store", selection: $destinationBranch) {
-                                Text("Choose Destination Branch...").tag(nil as Branch?)
+                                Text("transfer_choose_branch_placeholder".t).tag(nil as Branch?)
                                 ForEach(filteredDestinations) { b in
                                     Text(b.name).tag(b as Branch?)
                                 }
@@ -75,10 +75,10 @@ struct StockTransferSheet: View {
                         
                         // Item Selector
                         VStack(alignment: .leading, spacing: APSpacing.xs) {
-                            Text("SELECT STOCK ITEM TO TRANSFER")
+                            Text("transfer_select_item".t)
                                 .font(.caption2).fontWeight(.bold).foregroundColor(.appTeal).tracking(0.5)
                             Picker("Select Item", selection: $selectedItem) {
-                                Text("Choose Stock Item...").tag(nil as InventoryItem?)
+                                Text("transfer_choose_item_placeholder".t).tag(nil as InventoryItem?)
                                 ForEach(sourceItems) { item in
                                     Text("\(item.name) (Stock: \(String(format: "%.2f", item.currentQuantity)) \(item.unit))")
                                         .tag(item as InventoryItem?)
@@ -113,7 +113,7 @@ struct StockTransferSheet: View {
                         
                         // Notes
                         VStack(alignment: .leading, spacing: APSpacing.xs) {
-                            Text("REASON / TRANSFER NOTES")
+                            Text("transfer_notes_label".t)
                                 .font(.caption2).fontWeight(.bold).foregroundColor(.textSecondary).tracking(0.5)
                             TextField("Optional audit note...", text: $notes)
                                 .padding(APSpacing.md)
@@ -125,18 +125,18 @@ struct StockTransferSheet: View {
                     .padding()
                 }
             }
-            .navigationTitle("Stock Transfer")
+            .navigationTitle("stock_transfer_title".t)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button(L.Common.cancel.t) {
                         dismiss()
                     }
                     .foregroundColor(.textPrimary)
                 }
                 
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Commit") {
+                    Button("commit_btn".t) {
                         performTransfer()
                     }
                     .fontWeight(.semibold)

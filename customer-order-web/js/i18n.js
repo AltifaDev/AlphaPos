@@ -112,10 +112,14 @@ export const translations = {
                 validationMin: "กรุณาเลือกอย่างน้อย {min} ตัวเลือกสำหรับ \"{group}\"",
                 
                 // Categories
+                category_foods: "อาหาร",
                 category_mains: "อาหารจานหลัก",
                 category_appetizers: "ของทานเล่น",
                 category_drinks: "เครื่องดื่ม",
                 category_desserts: "ของหวาน",
+                foodCategories: "หมวดหมู่อาหาร",
+                featuredMenu: "เมนูแนะนำ",
+                requestLabel: "เรียกบริการ",
                 
                 // Item names & descriptions
                 item_app1_name: "ปอเปี๊ยะทอดสีทอง",
@@ -294,10 +298,14 @@ export const translations = {
                 validationMin: "Please select at least {min} option(s) for \"{group}\".",
                 
                 // Categories
+                category_foods: "Foods",
                 category_mains: "Main Dishes",
                 category_appetizers: "Appetizers",
-                category_drinks: "Beverages",
+                category_drinks: "Drinks",
                 category_desserts: "Desserts",
+                foodCategories: "Food Categories",
+                featuredMenu: "Featured Menu",
+                requestLabel: "Request",
                 
                 // Item names & descriptions
                 item_app1_name: "Crispy Golden Spring Rolls",
@@ -473,10 +481,14 @@ export const translations = {
                 validationMin: "请在 \"{group}\" 中至少选择 {min} 个选项。",
                 
                 // Categories
+                category_foods: "食品",
                 category_mains: "主菜",
                 category_appetizers: "开胃菜",
                 category_drinks: "饮料",
                 category_desserts: "甜点",
+                foodCategories: "食品分类",
+                featuredMenu: "推荐菜单",
+                requestLabel: "呼叫",
                 
                 // Item names & descriptions
                 item_app1_name: "黄金脆皮春卷",

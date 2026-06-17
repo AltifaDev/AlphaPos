@@ -3576,3 +3576,513 @@ textarea:focus-visible,
         transition-duration: 0.001ms !important;
     }
 }
+
+/* ==========================================================================
+   REDESIGNED PRODUCT LAYOUT (Foods / Drinks / Desserts Redesign)
+   ========================================================================== */
+
+/* 1. Food Categories Header */
+.category-header-container {
+    padding: 16px 20px 8px 20px;
+}
+.category-header-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 24px;
+    font-weight: 700;
+    color: #1A3B32; /* Forest green */
+    margin: 0;
+    letter-spacing: -0.02em;
+}
+body.dark-theme .category-header-title {
+    color: #8EBAA9; /* Soft light forest green */
+}
+
+/* 2. Redesigned Category Tab Pills */
+.category-tabs-container {
+    padding: 8px 0 16px 0 !important;
+}
+
+.category-tabs {
+    gap: 12px !important;
+    padding: 0 20px !important;
+}
+
+.category-tab {
+    padding: 10px 24px !important;
+    border-radius: 30px !important;
+    background-color: #C5C7C6 !important; /* Lighter gray */
+    color: #FFFFFF !important; /* White text matching screenshot */
+    font-family: 'Outfit', sans-serif !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    border: none !important;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05) !important;
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+body.dark-theme .category-tab {
+    background-color: #3D4441 !important; /* Dark gray-green in dark mode */
+}
+
+.category-tab:hover {
+    background-color: #B3B5B4 !important;
+    transform: translateY(-1px);
+}
+
+body.dark-theme .category-tab:hover {
+    background-color: #4C5350 !important;
+}
+
+.category-tab.active {
+    background-color: #7A7C7B !important; /* Dark gray from screenshot */
+    color: #FFFFFF !important;
+    transform: scale(1.03) !important;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1) !important;
+}
+
+body.dark-theme .category-tab.active {
+    background-color: #9AA09D !important; /* Lighter gray-green in dark mode */
+    color: #121614 !important;
+}
+
+/* 3. Featured Menu Header & Grid */
+.featured-menu-section {
+    padding: 0 20px;
+    margin-top: 10px;
+}
+
+.section-title-vertical {
+    font-family: 'Outfit', sans-serif;
+    font-size: 22px;
+    font-weight: 700;
+    color: #1A3B32;
+    margin: 16px 0 20px 0;
+    letter-spacing: -0.01em;
+}
+
+body.dark-theme .section-title-vertical {
+    color: #8EBAA9;
+}
+
+.featured-menu-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 40px; /* Space for overlapping image */
+    margin-bottom: 24px;
+}
+
+/* 4. Featured Card Style */
+.featured-item-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 28px;
+    padding: 24px 16px 16px 16px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.04);
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    min-height: 250px;
+}
+
+.featured-item-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.08);
+    border-color: rgba(26, 59, 50, 0.15);
+}
+
+body.dark-theme .featured-item-card:hover {
+    border-color: rgba(142, 186, 169, 0.25);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
+}
+
+/* Overlapping Circular Image */
+.featured-item-img-container {
+    position: absolute;
+    top: -55px; /* Pull it up to overlap the card border */
+    left: 50%;
+    transform: translateX(-50%);
+    width: 110px;
+    height: 110px;
+    border-radius: 50%;
+    border: 5px solid var(--bg-surface);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+    overflow: hidden;
+    z-index: 5;
+    background: #e2e8f0;
+    transition: all 0.3s ease;
+}
+
+.featured-item-card:hover .featured-item-img-container {
+    transform: translateX(-50%) scale(1.05);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+}
+
+.featured-item-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* Featured Card Contents */
+.featured-item-content {
+    margin-top: 50px; /* Space below overlapping image */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    flex-grow: 1;
+}
+
+.featured-item-category {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #7A7C7B;
+    margin-bottom: 2px;
+    font-style: italic;
+    letter-spacing: 0.05em;
+}
+
+body.dark-theme .featured-item-category {
+    color: #8EBAA9;
+}
+
+.featured-item-rating {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.star-icon {
+    color: #FBBF24; /* Yellow gold */
+    font-size: 14px;
+}
+
+.badge-icon {
+    width: 14px;
+    height: 14px;
+    color: #10B981; /* Green check circle */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.featured-item-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    color: #1A3B32;
+    margin: 4px 0 8px 0;
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: 40px;
+}
+
+body.dark-theme .featured-item-title {
+    color: #e8ecf4;
+}
+
+.featured-item-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
+    margin-bottom: 16px;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: 46px;
+    padding: 0 4px;
+}
+
+/* Green Price & Add Button Pill */
+.price-add-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    background-color: #1E5340; /* Forest Green */
+    color: #FFFFFF;
+    border-radius: 30px;
+    padding: 4px 4px 4px 14px;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    min-width: 104px;
+    height: 32px;
+    box-shadow: 0 4px 10px rgba(30, 83, 64, 0.15);
+    border: none;
+}
+
+body.dark-theme .price-add-pill {
+    background-color: #2D6E57;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+.price-add-pill:hover {
+    background-color: #13382c;
+    transform: translateY(-1px) scale(1.02);
+}
+
+body.dark-theme .price-add-pill:hover {
+    background-color: #1e5340;
+}
+
+.price-add-pill:active {
+    transform: scale(0.96);
+}
+
+.pill-price {
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    margin-right: 6px;
+    letter-spacing: -0.01em;
+}
+
+.pill-add-btn {
+    width: 24px;
+    height: 24px;
+    background-color: #FFFFFF;
+    color: #1E5340;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    font-weight: 700;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+body.dark-theme .pill-add-btn {
+    color: #2D6E57;
+}
+
+/* Quantity Control Pill style */
+.quantity-control-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    background-color: #1E5340;
+    color: #FFFFFF;
+    border-radius: 30px;
+    padding: 4px 8px;
+    min-width: 104px;
+    height: 32px;
+    box-shadow: 0 4px 10px rgba(30, 83, 64, 0.15);
+    border: none;
+}
+
+body.dark-theme .quantity-control-pill {
+    background-color: #2D6E57;
+}
+
+.pill-qty-btn {
+    width: 24px;
+    height: 24px;
+    color: #FFFFFF;
+    border: none;
+    background: transparent;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.15s ease;
+}
+
+.pill-qty-btn:hover {
+    transform: scale(1.2);
+}
+
+.pill-qty-btn:active {
+    transform: scale(0.8);
+}
+
+.pill-qty-val {
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    min-width: 22px;
+    text-align: center;
+}
+
+/* Hide standard categories header if we use our redesign */
+.menu-section .section-title {
+    display: none !important;
+}
+
+/* 5. Main Dishes Vertical List Style */
+.menu-section {
+    padding: 0 20px !important;
+}
+
+.menu-grid {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0 !important; /* divider handles spacing */
+}
+
+/* Row-based Layout for standard items */
+.list-item-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    padding: 20px 0;
+    background: transparent !important;
+    border: none !important;
+    border-bottom: 1.5px solid rgba(229, 231, 235, 0.6) !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    transition: var(--transition-standard);
+}
+
+body.dark-theme .list-item-card {
+    border-bottom-color: rgba(229, 231, 235, 0.15) !important;
+}
+
+.list-item-card:hover {
+    transform: translateX(4px);
+}
+
+.list-item-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0; /* text truncate safety */
+}
+
+.list-item-category {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #7A7C7B;
+    font-style: italic;
+    letter-spacing: 0.05em;
+}
+
+body.dark-theme .list-item-category {
+    color: #8EBAA9;
+}
+
+.list-item-rating {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.list-item-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    color: #1A3B32;
+    margin: 2px 0;
+}
+
+body.dark-theme .list-item-title {
+    color: #e8ecf4;
+}
+
+.list-item-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-bottom: 8px;
+    max-width: 90%;
+}
+
+/* Circular Right Image */
+.list-item-img-container {
+    width: 100px;
+    height: 100px;
+    border-radius: 50%;
+    overflow: hidden;
+    flex-shrink: 0;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+    background: #e2e8f0;
+}
+
+.list-item-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* 6. Floating Request Button */
+.floating-request-btn {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 99;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(93, 161, 133, 0.88); /* Sage Green matching screenshot */
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-radius: 40px;
+    padding: 12px 22px;
+    color: #FFFFFF;
+    font-family: 'Outfit', sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    box-shadow: 0 8px 24px rgba(93, 161, 133, 0.25);
+    cursor: pointer;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body.dark-theme .floating-request-btn {
+    background: rgba(76, 161, 131, 0.85);
+    border-color: rgba(255, 255, 255, 0.15);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.floating-request-btn:hover {
+    background: #4CA183;
+    transform: translateY(-2px) scale(1.03);
+    box-shadow: 0 12px 30px rgba(93, 161, 133, 0.35);
+}
+
+body.dark-theme .floating-request-btn:hover {
+    background: #5db091;
+}
+
+.floating-request-btn:active {
+    transform: scale(0.96);
+}
+
+.request-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.request-icon svg {
+    stroke-width: 2;
+}
+
+/* Slide up request button when cart is showing */
+.floating-request-btn.cart-active {
+    bottom: 146px; /* Offset to clear the floating cart bar height */
+}
+
+/* Adjustments for general search empty state */
+.search-empty-state {
+    padding: 40px 20px;
+}

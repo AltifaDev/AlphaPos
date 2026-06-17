@@ -41,6 +41,7 @@ final class NetworkService {
     
     // Global lists
     var tables: [RestaurantTable] = []
+    var walls: [RestaurantWall] = []
     var menuItems: [MenuItem] = []
     var serviceRequests: [ServiceRequest] = []
     var orders: [Order] = []
@@ -48,16 +49,47 @@ final class NetworkService {
     // Status states
     var isFetching = false
     var connectionError = false
+    
+    /// Convenience computed property: true when connected to backend
+    var isOnline: Bool { !connectionError }
     var kitchenWorkflowRequired = true
     var promptPayNumber = ""
+    var isTableSystemEnabled = true
+    var isWebOrderingEnabled = true
     private var lastSyncTime: Date = Date(timeIntervalSince1970: 0)
     
     @ObservationIgnored
     private var notifiedRequestIds = Set<String>()
     @ObservationIgnored
+    private var notifiedRequestKeysHistory: [String] = []
+    @ObservationIgnored
     private var notifiedOrderIds = Set<String>()
     @ObservationIgnored
+    private var notifiedOrderKeysHistory: [String] = []
+    @ObservationIgnored
     private var notifiedTableStatuses: [String: String] = [:]
+    
+    private func markOrderAsNotified(key: String) {
+        if !self.notifiedOrderIds.contains(key) {
+            self.notifiedOrderIds.insert(key)
+            self.notifiedOrderKeysHistory.append(key)
+            if self.notifiedOrderKeysHistory.count > 300 {
+                let oldest = self.notifiedOrderKeysHistory.removeFirst()
+                self.notifiedOrderIds.remove(oldest)
+            }
+        }
+    }
+    
+    private func markRequestAsNotified(requestId: String) {
+        if !self.notifiedRequestIds.contains(requestId) {
+            self.notifiedRequestIds.insert(requestId)
+            self.notifiedRequestKeysHistory.append(requestId)
+            if self.notifiedRequestKeysHistory.count > 300 {
+                let oldest = self.notifiedRequestKeysHistory.removeFirst()
+                self.notifiedRequestIds.remove(oldest)
+            }
+        }
+    }
     
     @ObservationIgnored
     private var _isCurrentlySyncing = false
@@ -68,6 +100,30 @@ final class NetworkService {
     }
     
     private var isFirstSync = true
+    
+    private func writeDebugLog(_ message: String) {
+        guard let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let logURL = docsURL.appendingPathComponent("debug_sync.log")
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let timestamp = formatter.string(from: Date())
+        let line = "[\(timestamp)] \(message)\n"
+        
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logURL.path) {
+                if let fileHandle = try? FileHandle(forWritingTo: logURL) {
+                    fileHandle.seekToEndOfFile()
+                    fileHandle.write(data)
+                    fileHandle.closeFile()
+                }
+            } else {
+                try? line.write(to: logURL, atomically: true, encoding: .utf8)
+            }
+        }
+    }
+    
+    @ObservationIgnored
+    private var activeSyncTask: Task<Void, Never>?
     
     private var activeMerchantId: String {
         let raw = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.defaultMerchantId
@@ -100,14 +156,50 @@ final class NetworkService {
                 await self.refreshAll()
             }
         }
+        
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            #if DEBUG
+            print("NetworkService: App entered background. Stopping timers...")
+            #endif
+            self.heartbeatTimer?.invalidate()
+            self.heartbeatTimer = nil
+            self.pollingTimer?.invalidate()
+            self.pollingTimer = nil
+            self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
+            self.webSocketTask = nil
+        }
+        
+        // Observe JWT token refresh — reconnect WebSocket with the new token
+        NotificationCenter.default.addObserver(
+            forName: .merchantTokenDidRefresh,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            #if DEBUG
+            print("NetworkService: JWT token refreshed. Reconnecting WebSocket...")
+            #endif
+            self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
+            self.webSocketTask = nil
+            self.heartbeatTimer?.invalidate()
+            self.heartbeatTimer = nil
+            self.startRealtimeSync()
+        }
     }
     
     // Ping/Check connection to Supabase menu_items REST endpoint
     func checkConnection() async -> Bool {
         var req = URLRequest(url: baseURL.appendingPathComponent("menu_items"))
         req.httpMethod = "HEAD"
+        // Use merchant JWT if available, fall back to anon key
+        let token = MerchantAuthManager.shared.currentToken ?? anonKey
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
-        req.setValue("Bearer \(anonKey)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.timeoutInterval = 2.0
         do {
             let (_, response) = try await session.data(for: req)
@@ -132,13 +224,14 @@ final class NetworkService {
         
         var request = URLRequest(url: url)
         request.httpMethod = method
+        // Use merchant JWT if available — the JWT contains a `merchant_id` claim
+        // that PostgREST extracts via `current_setting('request.jwt.claims')`,
+        // enabling RLS policies to isolate data per merchant automatically.
+        let token = MerchantAuthManager.shared.currentToken ?? anonKey
         request.setValue(anonKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(anonKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        // Dynamic merchant scoping
-        let merchantId = self.activeMerchantId
-        request.setValue(merchantId, forHTTPHeaderField: "x-merchant-id")
+        // merchant_id is now embedded in the JWT claims — no x-merchant-id header needed
         
         request.timeoutInterval = 5.0
         
@@ -163,6 +256,38 @@ final class NetworkService {
     }
     
     func refreshAll() async {
+        // Auto-authenticate via JWT if not already authenticated in development
+        if !MerchantAuthManager.shared.isAuthenticated {
+            #if DEBUG
+            print("NetworkService: Not authenticated via JWT. Performing auto-authentication...")
+            #endif
+            let merchantId = activeMerchantId.isEmpty ? AppConfig.defaultMerchantId : activeMerchantId
+            do {
+                try await MerchantAuthManager.shared.authenticate(
+                    merchantId: merchantId,
+                    deviceSecret: AppConfig.defaultDeviceSecret
+                )
+            } catch {
+                #if DEBUG
+                print("NetworkService: Auto-authentication failed: \(error.localizedDescription)")
+                #endif
+            }
+        }
+
+        if let existingTask = activeSyncTask {
+            await existingTask.value
+            return
+        }
+        
+        let task = Task { @MainActor in
+            await performRefreshAll()
+        }
+        activeSyncTask = task
+        await task.value
+        activeSyncTask = nil
+    }
+    
+    private func performRefreshAll() async {
         // Prevent rapid consecutive syncs (debounce 5 seconds)
         let now = Date()
         if now.timeIntervalSince(lastSyncTime) < 3.0 {
@@ -196,26 +321,31 @@ final class NetworkService {
             async let fetchedRequests = fetchRequests()
             async let fetchedOrders = fetchAllActiveOrders()
             async let fetchedWorkflow = fetchMerchantSettings()
+            async let fetchedWalls = fetchWalls()
             
-            // ⚡ Priority-based fetch: Get orders FIRST (most critical for notifications)
+            // Await all concurrent fetches (orders first for notification priority)
             let ordersRes = try await fetchedOrders
-            
-            // Then get other data in parallel
-            async let fetchedTablesLazy = fetchTables()
-            async let fetchedRequestsLazy = fetchRequests()
-            
-            let (tablesRes, requestsRes) = try await (fetchedTablesLazy, fetchedRequestsLazy)
-            let settingsRes = (try? await fetchedWorkflow) ?? (true, "")
+            let (tablesRes, requestsRes, wallsRes) = try await (fetchedTables, fetchedRequests, fetchedWalls)
+            let settingsRes = (try? await fetchedWorkflow) ?? (true, "", true, true)
             
             await MainActor.run {
                 self.kitchenWorkflowRequired = settingsRes.0
                 self.promptPayNumber = settingsRes.1
+                self.isTableSystemEnabled = settingsRes.2
+                self.isWebOrderingEnabled = settingsRes.3
                 let oldTables = self.tables
                 let oldRequests = self.serviceRequests
                 let oldOrders = self.orders
                 
+                self.writeDebugLog("--- performRefreshAll sync block ---")
+                self.writeDebugLog("isFirstSync: \(self.isFirstSync)")
+                self.writeDebugLog("oldOrders count: \(oldOrders.count), ordersRes count: \(ordersRes.count)")
+                
                 if self.tables != tablesRes {
                     self.tables = tablesRes
+                }
+                if self.walls != wallsRes {
+                    self.walls = wallsRes
                 }
                 if self.serviceRequests != requestsRes {
                     self.serviceRequests = requestsRes
@@ -228,17 +358,17 @@ final class NetworkService {
                 // Diff-checking for notifications
                 if !self.isFirstSync {
                     let notificationsEnabled = UserDefaults.standard.object(forKey: "enable_notifications") as? Bool ?? true
+                    self.writeDebugLog("notificationsEnabled: \(notificationsEnabled)")
                     if notificationsEnabled {
                         // 1. Service Requests Diff
                         let oldPendingIds = Set(oldRequests.filter { $0.status == "pending" }.map { $0.id })
                         let newPendingRequests = requestsRes.filter { $0.status == "pending" }
                         for req in newPendingRequests {
                             if !oldPendingIds.contains(req.id) && !self.notifiedRequestIds.contains(req.id) {
-                                self.notifiedRequestIds.insert(req.id)
+                                self.markRequestAsNotified(requestId: req.id)
                                 let title = "🔔 Table \(req.tableNumber): \(req.requestType)"
                                 let body = "Customer requested assistance at \(self.formatISOStringTime(req.createdAt))"
-                                NotificationManager.shared.triggerNotification(title: title, body: body)
-                                EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .request)
+                                NotificationManager.shared.notify(title: title, body: body, type: .request, deduplicationKey: "req-\(req.id)")
                             }
                         }
                         
@@ -252,13 +382,11 @@ final class NetworkService {
                                         if table.status == "occupied" {
                                             let title = "🚪 Table \(table.tableNumber) Occupied"
                                             let body = "Session started for \(table.guestCount) guests"
-                                            NotificationManager.shared.triggerNotification(title: title, body: body)
-                                            EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .tableStatus)
+                                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(table.tableNumber)-occupied")
                                         } else if table.status == "vacant" && oldTable.status == "occupied" {
                                             let title = "💳 Table \(table.tableNumber) Vacant"
                                             let body = "Session ended / table cleared"
-                                            NotificationManager.shared.triggerNotification(title: title, body: body)
-                                            EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .tableStatus)
+                                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(table.tableNumber)-vacant")
                                         }
                                     }
                                 }
@@ -268,31 +396,35 @@ final class NetworkService {
                         // 3. Order Status Diff
                         for order in ordersRes {
                             let statusLower = order.status.lowercased()
+                            self.writeDebugLog("Diffing order \(order.orderNumber) with status \(statusLower)")
                             if let oldOrder = oldOrders.first(where: { $0.id == order.id }) {
+                                self.writeDebugLog("Found old order \(order.orderNumber), old status: \(oldOrder.status), new status: \(order.status)")
                                 if oldOrder.status != order.status {
                                     if statusLower == "ready" {
                                         let notificationKey = "\(order.id)-ready"
                                         if !self.notifiedOrderIds.contains(notificationKey) {
-                                            self.notifiedOrderIds.insert(notificationKey)
+                                            self.writeDebugLog("Triggering ready notification for order \(order.orderNumber)")
+                                            self.markOrderAsNotified(key: notificationKey)
                                             let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
                                             let title = "🍳 Order \(order.orderNumber) Ready!"
                                             let body = "Table \(order.tableNumber): \(itemsSummary)"
-                                            NotificationManager.shared.triggerNotification(title: title, body: body)
-                                            // Show alert dialog + sound + haptic for new orders
-                                            EnhancedNotificationManager.shared.showAlert(title: title, body: body, type: .order)
+                                            NotificationManager.shared.notify(title: title, body: body, type: .order, deduplicationKey: notificationKey)
                                         }
                                     }
                                 }
                             } else {
+                                self.writeDebugLog("Order \(order.orderNumber) is NEW (not in oldOrders)!")
                                 if statusLower == "preparing" || statusLower == "ready" {
                                     let notificationKey = "\(order.id)-\(statusLower)"
                                     if !self.notifiedOrderIds.contains(notificationKey) {
-                                        self.notifiedOrderIds.insert(notificationKey)
+                                        self.writeDebugLog("Triggering new/preparing notification for order \(order.orderNumber)")
+                                        self.markOrderAsNotified(key: notificationKey)
                                         let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
                                         let title = statusLower == "ready" ? "🍳 Order \(order.orderNumber) Ready!" : "📝 New Order \(order.orderNumber)"
-                                        let body = "Table \(order.tableNumber): \(itemsSummary) (Total: ฿\(Int(order.total)))"
-                                        NotificationManager.shared.triggerNotification(title: title, body: body)
-                                        EnhancedNotificationManager.shared.showAlert(title: title, body: body, type: .order)
+                                        let body = "Table \(order.tableNumber): \(itemsSummary)"
+                                        NotificationManager.shared.notify(title: title, body: body, type: .order, deduplicationKey: notificationKey)
+                                    } else {
+                                        self.writeDebugLog("Already notified order \(order.orderNumber) with key \(notificationKey)")
                                     }
                                 }
                             }
@@ -302,15 +434,7 @@ final class NetworkService {
                     self.isFirstSync = false
                 }
                 
-                // Clean up tracking sets to prevent memory leaking
-                self.notifiedRequestIds = self.notifiedRequestIds.intersection(Set(requestsRes.map { $0.id }))
-                var validOrderKeys = Set<String>()
-                for order in ordersRes {
-                    validOrderKeys.insert("\(order.id)-preparing")
-                    validOrderKeys.insert("\(order.id)-ready")
-                    validOrderKeys.insert("\(order.id)-served")
-                }
-                self.notifiedOrderIds = self.notifiedOrderIds.intersection(validOrderKeys)
+                // Tracked IDs are now safely managed using bounded FIFO histories. No need to clear them out on every sync loop.
                 
                 // Initialize WebSocket Realtime task
                 self.startRealtimeSync()
@@ -360,24 +484,18 @@ final class NetworkService {
         
         if dynamicTables.isEmpty {
             dynamicTables = [
-                // Floor 1: Synchronized with AlphaPos
-                ("1", 2, 1, 20.0, 20.0, "vacant", false, "Indoor"),
-                ("2", 2, 1, 150.0, 20.0, "vacant", false, "Indoor"),
-                ("3", 4, 1, 280.0, 20.0, "vacant", false, "Outdoor"),
-                ("4", 4, 1, 410.0, 20.0, "vacant", false, "Indoor"),
-                ("5", 4, 1, 20.0, 150.0, "vacant", false, "Outdoor"),
-                ("6", 6, 1, 150.0, 150.0, "vacant", false, "Indoor"),
-                ("7", 6, 1, 280.0, 150.0, "vacant", false, "Indoor"),
-                ("8", 8, 1, 410.0, 150.0, "vacant", false, "Indoor"),
-                ("VIP 1", 10, 1, 20.0, 280.0, "vacant", false, "Outdoor"),
-                ("VIP 2", 10, 1, 150.0, 280.0, "vacant", false, "Outdoor"),
-                ("BAR 1", 1, 1, 280.0, 280.0, "vacant", false, "Outdoor"),
-                ("BAR 2", 1, 1, 310.0, 280.0, "vacant", false, "Outdoor"),
-                ("BAR 3", 1, 1, 340.0, 280.0, "vacant", false, "Outdoor"),
-                // Floor 2 & 3: Placeholder
+                // Floor 1 Tables: Synchronized with AlphaPos (6 tables)
+                ("1", 2, 1, 40.0, 40.0, "vacant", false, "Indoor"),
+                ("2", 4, 1, 200.0, 40.0, "vacant", false, "Indoor"),
+                ("3", 4, 1, 380.0, 40.0, "vacant", false, "Indoor"),
+                ("4", 6, 1, 40.0, 200.0, "vacant", false, "Indoor"),
+                ("5", 8, 1, 320.0, 200.0, "vacant", false, "Indoor"),
+                ("VIP 1", 10, 1, 140.0, 360.0, "vacant", false, "Indoor"),
+                // Floor 2 Tables (3 tables)
                 ("201", 4, 2, 60.0, 60.0, "vacant", false, "Indoor"),
                 ("202", 4, 2, 240.0, 60.0, "vacant", false, "Indoor"),
                 ("203", 6, 2, 420.0, 60.0, "vacant", false, "Indoor"),
+                // Floor 3 Tables (1 table)
                 ("301 (ROOF)", 8, 3, 120.0, 120.0, "vacant", false, "Rooftop")
             ]
         }
@@ -422,7 +540,7 @@ final class NetworkService {
                 let guestCount = session["guest_count"] as? Int ?? 2
                 let token = session["session_token"] as? String
                 let total = tableTotals[num] ?? 0.0
-                let startedAt = session["started_at"] as? String
+                let startedAt = session["started_at"] as? String ?? session["created_at"] as? String
                 return RestaurantTable(
                     tableNumber: num,
                     capacity: cap,
@@ -456,17 +574,55 @@ final class NetworkService {
         }
     }
     
-    func fetchMerchantSettings() async throws -> (Bool, String) {
+    func fetchWalls() async throws -> [RestaurantWall] {
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "restaurant_walls", queryItems: [
+            URLQueryItem(name: "is_deleted", value: "eq.false")
+        ])
+        let json = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+        return json.compactMap { dict -> RestaurantWall? in
+            guard let id = dict["id"] as? String,
+                  let floor = dict["floor"] as? Int,
+                  let typeString = dict["type_string"] as? String,
+                  let startX = dict["start_x"] as? Double,
+                  let startY = dict["start_y"] as? Double,
+                  let endX = dict["end_x"] as? Double,
+                  let endY = dict["end_y"] as? Double else { return nil }
+            
+            let controlX = dict["control_x"] as? Double
+            let controlY = dict["control_y"] as? Double
+            let strokeWidth = dict["stroke_width"] as? Double ?? 10.0
+            let isDeleted = dict["is_deleted"] as? Bool ?? false
+            
+            return RestaurantWall(
+                id: id,
+                floor: floor,
+                typeString: typeString,
+                startX: startX,
+                startY: startY,
+                endX: endX,
+                endY: endY,
+                controlX: controlX,
+                controlY: controlY,
+                strokeWidth: strokeWidth,
+                isDeleted: isDeleted
+            )
+        }
+    }
+    
+    func fetchMerchantSettings() async throws -> (Bool, String, Bool, Bool) {
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "merchants", queryItems: [
-            URLQueryItem(name: "select", value: "kitchen_workflow_required,promptpay_number")
+            URLQueryItem(name: "select", value: "kitchen_workflow_required,promptpay_number,is_table_system_enabled,is_web_ordering_enabled"),
+            URLQueryItem(name: "id", value: "eq.\(activeMerchantId)")
         ])
         if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
            let firstMerchant = json.first {
             let workflow = firstMerchant["kitchen_workflow_required"] as? Bool ?? true
             let promptPay = firstMerchant["promptpay_number"] as? String ?? ""
-            return (workflow, promptPay)
+            let tableSystem = firstMerchant["is_table_system_enabled"] as? Bool ?? true
+            let webOrdering = firstMerchant["is_web_ordering_enabled"] as? Bool ?? true
+            return (workflow, promptPay, tableSystem, webOrdering)
         }
-        return (true, "")
+        return (true, "", true, true)
     }
     
     func fetchMenu() async throws -> [MenuItem] {
@@ -529,6 +685,22 @@ final class NetworkService {
         }
     }
 
+    func registerEmployeeFace(employeeId: String, faceEmbedding: String) async throws -> Bool {
+        let formatter = ISO8601DateFormatter()
+        let nowStr = formatter.string(from: Date())
+        let payload: [String: Any] = [
+            "face_embedding": faceEmbedding,
+            "face_registered_at": nowStr
+        ]
+        _ = try await sendSupabaseRequest(
+            method: "PATCH",
+            endpoint: "employees",
+            queryItems: [URLQueryItem(name: "id", value: "eq.\(employeeId)")],
+            payload: payload
+        )
+        return true
+    }
+
     private func constantTimeCompare(_ a: String, _ b: String) -> Bool {
         guard a.count == b.count else { return false }
         let aBytes = [UInt8](a.utf8)
@@ -550,7 +722,7 @@ final class NetworkService {
                 let inputData = Data(pinDigits.utf8)
                 let hashed = CryptoKit.SHA256.hash(data: inputData)
                 let pinHash = hashed.compactMap { String(format: "%02x", $0) }.joined()
-                return constantTimeCompare(pinHash, stored) || constantTimeCompare(pinDigits, stored)
+                return constantTimeCompare(pinHash, stored)
             }
         }
         
@@ -650,7 +822,8 @@ final class NetworkService {
                     quantity: itemDict["quantity"] as? Int ?? 1,
                     price: itemDict["price"] as? Double ?? 0.0,
                     status: itemDict["status"] as? String ?? "cooking",
-                    item_id: itemDict["item_id"] as? String
+                    item_id: itemDict["item_id"] as? String,
+                    notes: itemDict["notes"] as? String
                 )
             }
             return Order(
@@ -682,7 +855,8 @@ final class NetworkService {
                     quantity: itemDict["quantity"] as? Int ?? 1,
                     price: itemDict["price"] as? Double ?? 0.0,
                     status: itemDict["status"] as? String ?? "cooking",
-                    item_id: itemDict["item_id"] as? String
+                    item_id: itemDict["item_id"] as? String,
+                    notes: itemDict["notes"] as? String
                 )
             }
             return Order(
@@ -800,7 +974,22 @@ final class NetworkService {
         await refreshAll()
         return true
     }
-    
+
+    /// Patch quantity and/or notes for a single order item
+    func patchOrderItem(itemId: String, quantity: Int? = nil, notes: String?) async throws -> Bool {
+        var payload: [String: Any] = [:]
+        if let q = quantity { payload["quantity"] = q }
+        if let n = notes    { payload["notes"]    = n } else { payload["notes"] = NSNull() }
+        _ = try await sendSupabaseRequest(
+            method: "PATCH",
+            endpoint: "order_items",
+            queryItems: [URLQueryItem(name: "id", value: "eq.\(itemId)")],
+            payload: payload
+        )
+        await refreshAll()
+        return true
+    }
+
     func uploadOrder(orderId: String, orderNumber: String, tableNumber: String, total: Double, items: [[String: Any]], sessionToken: String? = nil, guestCount: Int = 2) async throws -> Bool {
         let merchantId = self.activeMerchantId
         var orderPayload: [String: Any] = [
@@ -906,16 +1095,26 @@ final class NetworkService {
     
     // Debounce: Prevent rapid-fire refreshAll from multiple Realtime events
     @ObservationIgnored
+    private var realtimeRefreshTask: Task<Void, Never>?
+    
+    @ObservationIgnored
     private var realtimeDebounceWorkItem: DispatchWorkItem?
     
     // Heartbeat: Store timer reference to prevent leak on reconnect
     @ObservationIgnored
     private var heartbeatTimer: Timer?
+    @ObservationIgnored
+    private var pollingTimer: Timer?
     
     func startRealtimeSync() {
         guard webSocketTask == nil else { return }
         
-        let wsURLString = "wss://sdmtkixrqkmwcpwoisrg.supabase.co/realtime/v1/websocket?apikey=\(anonKey)&vsn=1.0.0"
+        // Use merchant JWT if available for WebSocket auth, otherwise fall back to anon key
+        let wsToken = MerchantAuthManager.shared.currentToken ?? anonKey
+        let baseRealtimeURL = AppConfig.supabaseRealtimeURL.absoluteString
+            .replacingOccurrences(of: "https://", with: "wss://")
+            .replacingOccurrences(of: "http://", with: "ws://")
+        let wsURLString = "\(baseRealtimeURL)/websocket?apikey=\(wsToken)&vsn=1.0.0"
         guard let url = URL(string: wsURLString) else { return }
         
         let wsSession = URLSession(configuration: .default)
@@ -926,6 +1125,7 @@ final class NetworkService {
         listenToWebSocket()
         joinRealtimeTopic()
         startHeartbeat()
+        startPollingSync()
         
         // Reset reconnect counter on successful connection
         reconnectAttempt = 0
@@ -985,6 +1185,7 @@ final class NetworkService {
                         ["event": "*", "schema": "public", "table": "table_sessions", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "service_requests", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "restaurant_tables", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "restaurant_walls", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "merchants", "filter": "id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "employees", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "employee_shifts", "filter": "merchant_id=eq.\(merchantId)"],
@@ -1034,6 +1235,18 @@ final class NetworkService {
         }
     }
     
+    private func startPollingSync() {
+        pollingTimer?.invalidate()
+        pollingTimer = nil
+        
+        pollingTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            Task {
+                await self.refreshAll()
+            }
+        }
+    }
+    
     private func processInstantNotification(table: String, type: String, record: [String: Any]) {
         Task { @MainActor in
             let notificationsEnabled = UserDefaults.standard.object(forKey: "enable_notifications") as? Bool ?? true
@@ -1066,12 +1279,11 @@ final class NetworkService {
                     
                     if status == "pending" && notificationsEnabled {
                         guard !notifiedRequestIds.contains(id) else { return }
-                        notifiedRequestIds.insert(id)
+                        self.markRequestAsNotified(requestId: id)
                         
                         let title = "🔔 Table \(tableNumber): \(requestType)"
                         let body = "Customer requested assistance"
-                        NotificationManager.shared.triggerNotification(title: title, body: body)
-                        EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .request)
+                        NotificationManager.shared.notify(title: title, body: body, type: .request, deduplicationKey: "req-\(id)")
                     }
                 }
                 
@@ -1104,25 +1316,20 @@ final class NetworkService {
                         if type == "INSERT" {
                             if statusLower == "preparing" || statusLower == "ready" {
                                 if !notifiedOrderIds.contains(notificationKey) {
-                                    notifiedOrderIds.insert(notificationKey)
+                                    self.markOrderAsNotified(key: notificationKey)
                                     let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "📝 New Order \(orderNumber)"
                                     let body = "Table \(tableNumber)"
-                                    NotificationManager.shared.triggerNotification(title: title, body: body)
-                                    EnhancedNotificationManager.shared.showAlert(title: title, body: body, type: .order)
+                                    NotificationManager.shared.notify(title: title, body: body, type: .order, deduplicationKey: notificationKey)
                                 }
                             }
                         } else if type == "UPDATE" {
                             if statusLower == "ready" || statusLower == "served" {
                                 if !notifiedOrderIds.contains(notificationKey) {
-                                    notifiedOrderIds.insert(notificationKey)
+                                    self.markOrderAsNotified(key: notificationKey)
                                     let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "🍽️ Order \(orderNumber) Served"
                                     let body = statusLower == "ready" ? "Table \(tableNumber) is ready to be served" : "Table \(tableNumber) has been served"
-                                    NotificationManager.shared.triggerNotification(title: title, body: body)
-                                    if statusLower == "ready" {
-                                        EnhancedNotificationManager.shared.showAlert(title: title, body: body, type: .order)
-                                    } else {
-                                        EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .order)
-                                    }
+                                    let notifyType: NotificationType = statusLower == "ready" ? .order : .tableStatus
+                                    NotificationManager.shared.notify(title: title, body: body, type: notifyType, deduplicationKey: notificationKey)
                                 }
                             }
                         }
@@ -1168,32 +1375,49 @@ final class NetworkService {
                             let guestCount = record["guest_count"] as? Int ?? 0
                             let title = "🚪 Table \(tableNumber) Occupied"
                             let body = "Session started for \(guestCount) guests"
-                            NotificationManager.shared.triggerNotification(title: title, body: body)
-                            EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .tableStatus)
+                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(tableNumber)-occupied")
                         } else if status == "vacant" {
                             let title = "💳 Table \(tableNumber) Vacant"
                             let body = "Session ended / table cleared"
-                            NotificationManager.shared.triggerNotification(title: title, body: body)
-                            EnhancedNotificationManager.shared.showBanner(title: title, body: body, type: .tableStatus)
+                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(tableNumber)-vacant")
                         }
                     }
                 }
                 
             // 4. Table Sessions Mutation
             } else if table == "table_sessions" {
-                guard let tableNumber = record["table_number"] as? String,
-                      let isActive = record["is_active"] as? Int else { return }
+                guard let tableNumber = record["table_number"] as? String else { return }
+                
+                // Handle is_active as both Bool (from AlphaPos) and Int (from customer-order-web)
+                let isActive: Bool
+                if let boolVal = record["is_active"] as? Bool {
+                    isActive = boolVal
+                } else if let intVal = record["is_active"] as? Int {
+                    isActive = intVal != 0
+                } else {
+                    return
+                }
                 
                 if let idx = self.tables.firstIndex(where: { $0.tableNumber == tableNumber }) {
-                    if isActive == 1 {
+                    if isActive {
                         self.tables[idx].sessionToken = record["session_token"] as? String
                         self.tables[idx].guestCount = record["guest_count"] as? Int ?? 0
                         self.tables[idx].status = "occupied"
+                        self.tables[idx].sessionStartedAt = record["started_at"] as? String ?? record["created_at"] as? String
                     } else {
                         self.tables[idx].sessionToken = nil
                         self.tables[idx].guestCount = 0
                         self.tables[idx].status = "vacant"
                         self.tables[idx].currentTotal = 0.0
+                        self.tables[idx].sessionStartedAt = nil
+                    }
+                }
+            } else if table == "restaurant_walls" {
+                Task {
+                    if let fetchedWalls = try? await self.fetchWalls() {
+                        await MainActor.run {
+                            self.walls = fetchedWalls
+                        }
                     }
                 }
             }
@@ -1241,6 +1465,22 @@ final class NetworkService {
             
             // Process instant notification immediately
             processInstantNotification(table: table, type: type, record: record)
+            
+            // Debounced full refresh: cancel pending task and schedule a new one after 1.5s.
+            // This ensures the in-memory model stays fully consistent after rapid-fire events.
+            realtimeRefreshTask?.cancel()
+            realtimeRefreshTask = Task { [weak self] in
+                guard let self = self else { return }
+                do {
+                    try await Task.sleep(nanoseconds: 1_500_000_000)
+                } catch {
+                    return // Task was cancelled — do nothing
+                }
+                #if DEBUG
+                print("NetworkService [Realtime]: Performing debounced refreshAll...")
+                #endif
+                await self.refreshAll()
+            }
         }
     }
     

@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import Combine
 
 @main
 struct AlphaPosApp: App {
@@ -33,8 +34,21 @@ struct AlphaPosApp: App {
             PurchaseOrder.self,
             PurchaseOrderItem.self,
             Promotion.self,
+            PromotionBundleItem.self,
             Printer.self,
-            PrintRoutingRule.self
+            PrintRoutingRule.self,
+            AuditLog.self,
+            Customer.self,
+            OrderDiscount.self,
+            OrderTaxLine.self,
+            Tip.self,
+            RefundTransaction.self,
+            CashMovement.self,
+            LoyaltyTransaction.self,
+            GiftCard.self,
+            MerchantDevice.self,
+            StaffSessionRecord.self,
+            SecurityPolicy.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         
@@ -61,7 +75,9 @@ struct AlphaPosApp: App {
         }
     }()
 
-    @AppStorage("is_logged_in") private var isLoggedIn = false
+    // ── LocalizationManager: inject ทั่วทั้ง app ──────────────────────────
+    // ใช้ @StateObject เพื่อให้ app-level re-render เมื่อภาษาเปลี่ยน
+    @StateObject private var lm = LocalizationManager.shared
 
     init() {
         _ = SyncEngine.shared
@@ -69,13 +85,9 @@ struct AlphaPosApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if isLoggedIn {
-                MainDashboardView()
-                    .modelContainer(sharedModelContainer)
-            } else {
-                MerchantAuthView()
-                    .modelContainer(sharedModelContainer)
-            }
+            AppRootView()
+                .modelContainer(sharedModelContainer)
+                .environmentObject(lm)
         }
     }
 }

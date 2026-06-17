@@ -564,3 +564,74 @@ struct APHaptic {
         #endif
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - UIImage Extensions for QR Code Customisation
+// ─────────────────────────────────────────────────────────────────────────────
+
+#if canImport(UIKit)
+import UIKit
+
+extension UIImage {
+    /// Tints the black pixels of the image with a target color
+    func tinted(with color: UIColor) -> UIImage? {
+        UIGraphicsBeginImageContextWithOptions(size, false, scale)
+        defer { UIGraphicsEndImageContext() }
+        guard let context = UIGraphicsGetCurrentContext(), let cgImage = cgImage else { return nil }
+        
+        context.translateBy(x: 0, y: size.height)
+        context.scaleBy(x: 1.0, y: -1.0)
+        
+        let rect = CGRect(origin: .zero, size: size)
+        context.setBlendMode(.normal)
+        context.draw(cgImage, in: rect)
+        
+        context.setBlendMode(.sourceIn)
+        color.setFill()
+        context.fill(rect)
+        
+        return UIGraphicsGetImageFromCurrentImageContext()
+    }
+    
+    /// Overlays a system icon in a white bordered card in the center of the image
+    func overlayLogo(systemIconName: String, tintColor: UIColor) -> UIImage {
+        let size = self.size
+        UIGraphicsBeginImageContextWithOptions(size, false, self.scale)
+        defer { UIGraphicsEndImageContext() }
+        
+        self.draw(in: CGRect(origin: .zero, size: size))
+        
+        let centerSize = size.width * 0.22
+        let centerRect = CGRect(
+            x: (size.width - centerSize) / 2,
+            y: (size.height - centerSize) / 2,
+            width: centerSize,
+            height: centerSize
+        )
+        
+        let path = UIBezierPath(roundedRect: centerRect, cornerRadius: centerSize * 0.25)
+        UIColor.white.setFill()
+        path.fill()
+        
+        tintColor.setStroke()
+        path.lineWidth = size.width * 0.012
+        path.stroke()
+        
+        let iconSize = centerSize * 0.65
+        let iconRect = CGRect(
+            x: (size.width - iconSize) / 2,
+            y: (size.height - iconSize) / 2,
+            width: iconSize,
+            height: iconSize
+        )
+        
+        if let iconImage = UIImage(systemName: systemIconName)?
+            .withTintColor(tintColor, renderingMode: .alwaysOriginal) {
+            iconImage.draw(in: iconRect)
+        }
+        
+        return UIGraphicsGetImageFromCurrentImageContext() ?? self
+    }
+}
+#endif
+

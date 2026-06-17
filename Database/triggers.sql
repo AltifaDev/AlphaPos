@@ -3,74 +3,127 @@
 -- TRIGGER 1: Auto-Deduct Inventory on Cooking / Serving of Order Items
 -- =========================================================================
 
-CREATE OR REPLACE FUNCTION deduct_stock_on_order_item_event()
-RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION public.deduct_stock_on_order_item_event()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
 DECLARE
     r_recipe RECORD;
     r_modifier RECORD;
+    v_branch_id UUID;
+    v_transaction_exists BOOLEAN;
 BEGIN
-    IF (NEW.status = 'cooking' OR NEW.status = 'served') AND (OLD.status IS NULL OR OLD.status = 'pending') THEN
-        
-        -- 1. Deduct base menu item recipe ingredients
-        FOR r_recipe IN 
-            SELECT inventory_item_id, quantity_required 
-            FROM recipes 
-            WHERE menu_item_id::text = NEW.item_id
-        LOOP
-            UPDATE inventory_items
+    IF NOT (
+        NEW.status IN ('cooking', 'served')
+        AND (TG_OP = 'INSERT' OR OLD.status IS NULL OR OLD.status = 'pending')
+    ) THEN
+        RETURN NEW;
+    END IF;
+
+    v_branch_id := NEW.branch_id;
+    IF v_branch_id IS NULL THEN
+        SELECT o.branch_id
+        INTO v_branch_id
+        FROM public.orders o
+        WHERE o.id = NEW.order_id;
+    END IF;
+
+    -- 1. Deduct base menu item recipe ingredients.
+    FOR r_recipe IN
+        SELECT r.inventory_item_id, r.quantity_required
+        FROM public.recipes r
+        JOIN public.inventory_items ii ON ii.id = r.inventory_item_id
+        WHERE r.menu_item_id::text = NEW.item_id
+          AND COALESCE(r.is_deleted, FALSE) = FALSE
+          AND ii.merchant_id = NEW.merchant_id
+          AND COALESCE(ii.is_deleted, FALSE) = FALSE
+          AND (v_branch_id IS NULL OR ii.branch_id = v_branch_id)
+    LOOP
+        SELECT EXISTS (
+            SELECT 1
+            FROM public.inventory_transactions it
+            WHERE it.merchant_id = NEW.merchant_id
+              AND it.transaction_type = 'sell'
+              AND it.reference_id = NEW.id
+              AND it.item_id = r_recipe.inventory_item_id
+              AND COALESCE(it.is_deleted, FALSE) = FALSE
+        ) INTO v_transaction_exists;
+
+        IF NOT v_transaction_exists THEN
+            UPDATE public.inventory_items
             SET current_quantity = current_quantity - (r_recipe.quantity_required * NEW.quantity),
                 updated_at = CURRENT_TIMESTAMP,
                 is_synced = FALSE
             WHERE id = r_recipe.inventory_item_id;
-            
-            INSERT INTO inventory_transactions (
-                item_id, transaction_type, quantity, reference_id, notes, is_synced
-            ) VALUES (
-                r_recipe.inventory_item_id,
-                'sell',
-                -(r_recipe.quantity_required * NEW.quantity),
-                NEW.id,
-                'Auto-deducted base recipe for Order Item ID: ' || NEW.id,
-                FALSE
-            );
-        END LOOP;
-        
-        -- 2. Deduct custom modifier ingredients
-        FOR r_modifier IN 
-            SELECT m.inventory_item_id, m.quantity_required, m.name as modifier_name, oim.id as oim_id
-            FROM order_item_modifiers oim
-            JOIN modifiers m ON oim.modifier_id = m.id
-            WHERE oim.order_item_id = NEW.id
-              AND m.inventory_item_id IS NOT NULL
-        LOOP
-            UPDATE inventory_items
+
+            INSERT INTO public.inventory_transactions (
+                id, merchant_id, item_id, item_name, transaction_type, type,
+                quantity, reference_id, notes, branch_id, is_synced, is_deleted, updated_at, created_at
+            )
+            SELECT
+                uuid_generate_v4(), NEW.merchant_id, r_recipe.inventory_item_id, COALESCE(ii.name, NEW.item_name),
+                'sell', 'sell', -(r_recipe.quantity_required * NEW.quantity),
+                NEW.id, 'Auto-deducted base recipe for Order Item ID: ' || NEW.id,
+                v_branch_id, FALSE, FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            FROM public.inventory_items ii
+            WHERE ii.id = r_recipe.inventory_item_id;
+        END IF;
+    END LOOP;
+
+    -- 2. Deduct selected modifier ingredients.
+    FOR r_modifier IN
+        SELECT m.inventory_item_id, m.quantity_required, m.name AS modifier_name, oim.id AS oim_id
+        FROM public.order_item_modifiers oim
+        JOIN public.modifiers m ON oim.modifier_id = m.id
+        JOIN public.inventory_items ii ON ii.id = m.inventory_item_id
+        WHERE oim.order_item_id = NEW.id
+          AND m.inventory_item_id IS NOT NULL
+          AND COALESCE(oim.is_deleted, FALSE) = FALSE
+          AND COALESCE(m.is_deleted, FALSE) = FALSE
+          AND ii.merchant_id = NEW.merchant_id
+          AND COALESCE(ii.is_deleted, FALSE) = FALSE
+          AND (v_branch_id IS NULL OR ii.branch_id = v_branch_id)
+    LOOP
+        SELECT EXISTS (
+            SELECT 1
+            FROM public.inventory_transactions it
+            WHERE it.merchant_id = NEW.merchant_id
+              AND it.transaction_type = 'sell'
+              AND it.reference_id = r_modifier.oim_id
+              AND it.item_id = r_modifier.inventory_item_id
+              AND COALESCE(it.is_deleted, FALSE) = FALSE
+        ) INTO v_transaction_exists;
+
+        IF NOT v_transaction_exists THEN
+            UPDATE public.inventory_items
             SET current_quantity = current_quantity - (r_modifier.quantity_required * NEW.quantity),
                 updated_at = CURRENT_TIMESTAMP,
                 is_synced = FALSE
             WHERE id = r_modifier.inventory_item_id;
-            
-            INSERT INTO inventory_transactions (
-                item_id, transaction_type, quantity, reference_id, notes, is_synced
-            ) VALUES (
-                r_modifier.inventory_item_id,
-                'sell',
-                -(r_modifier.quantity_required * NEW.quantity),
-                r_modifier.oim_id,
-                'Auto-deducted modifier (' || r_modifier.modifier_name || ')',
-                FALSE
-            );
-        END LOOP;
 
-    END IF;
+            INSERT INTO public.inventory_transactions (
+                id, merchant_id, item_id, item_name, transaction_type, type,
+                quantity, reference_id, notes, branch_id, is_synced, is_deleted, updated_at, created_at
+            )
+            SELECT
+                uuid_generate_v4(), NEW.merchant_id, r_modifier.inventory_item_id, COALESCE(ii.name, NEW.item_name),
+                'sell', 'sell', -(r_modifier.quantity_required * NEW.quantity),
+                r_modifier.oim_id, 'Auto-deducted modifier (' || r_modifier.modifier_name || ')',
+                v_branch_id, FALSE, FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            FROM public.inventory_items ii
+            WHERE ii.id = r_modifier.inventory_item_id;
+        END IF;
+    END LOOP;
+
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
-DROP TRIGGER IF EXISTS trg_deduct_stock_on_order_item ON order_items;
+DROP TRIGGER IF EXISTS trg_deduct_stock_on_order_item ON public.order_items;
 CREATE TRIGGER trg_deduct_stock_on_order_item
-AFTER INSERT OR UPDATE OF status ON order_items
+AFTER INSERT OR UPDATE OF status ON public.order_items
 FOR EACH ROW
-EXECUTE FUNCTION deduct_stock_on_order_item_event();
+EXECUTE FUNCTION public.deduct_stock_on_order_item_event();
 
 -- =========================================================================
 -- TRIGGER 2: Auto-Onboard Merchant on Auth Sign-Up

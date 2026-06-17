@@ -4,10 +4,6 @@ import SwiftUI
 enum AppLanguage: String, CaseIterable, Identifiable {
     case english = "en"
     case thai = "th"
-    case lao = "lo"
-    case khmer = "km"
-    case vietnamese = "vi"
-    case burmese = "my"
     
     var id: String { self.rawValue }
     
@@ -15,10 +11,6 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         switch self {
         case .english: return "English"
         case .thai: return "ไทย"
-        case .lao: return "ລາວ"
-        case .khmer: return "ភាសាខ្មែរ"
-        case .vietnamese: return "Tiếng Việt"
-        case .burmese: return "မြန်မာဘာသာ"
         }
     }
     
@@ -26,10 +18,6 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         switch self {
         case .english: return "🇺🇸"
         case .thai: return "🇹🇭"
-        case .lao: return "🇱🇦"
-        case .khmer: return "🇰🇭"
-        case .vietnamese: return "🇻🇳"
-        case .burmese: return "🇲🇲"
         }
     }
 }
@@ -38,6 +26,110 @@ final class LanguageManager {
     static let shared = LanguageManager()
     
     private let translations: [String: [String: String]] = [
+        "all_items_served_before_checkout": [
+            "en": "All items must be served before checkout.",
+            "th": "ต้องเสิร์ฟรายการทั้งหมดก่อนชำระเงิน"
+        ],
+        "biometric_verified": [
+            "en": "Biometric verified",
+            "th": "ยืนยันชีวภาพสำเร็จ"
+        ],
+        "completed": [
+            "en": "Completed",
+            "th": "เสร็จสิ้น"
+        ],
+        "delete_item_confirm": [
+            "en": "Delete this item from the order?",
+            "th": "ลบรายการนี้ออกจากออเดอร์หรือไม่?"
+        ],
+        "table_details": [
+            "en": "Table Details",
+            "th": "รายละเอียดโต๊ะ"
+        ],
+        "diagnostics_system_status": [
+            "en": "Diagnostics & System Status",
+            "th": "การวินิจฉัยและสถานะระบบ"
+        ],
+        "connection_status": [
+            "en": "Connection Status",
+            "th": "สถานะการเชื่อมต่อ"
+        ],
+        "offline_status": [
+            "en": "Offline",
+            "th": "ออฟไลน์"
+        ],
+        "online_status": [
+            "en": "Online",
+            "th": "ออนไลน์"
+        ],
+        "merchant_uuid_label": [
+            "en": "Store ID (Merchant UUID)",
+            "th": "รหัสร้านค้า (Merchant UUID)"
+        ],
+        "not_paired_status": [
+            "en": "None (Not Paired)",
+            "th": "ไม่มี (ยังไม่ได้จับคู่)"
+        ],
+        "clear_cache": [
+            "en": "Clear Cache",
+            "th": "ล้างแคช"
+        ],
+        "reset_server_data": [
+            "en": "Reset Server Data",
+            "th": "รีเซ็ตข้อมูลเซิร์ฟเวอร์"
+        ],
+        "cache_cleared_success": [
+            "en": "Cache cleared and data re-synced successfully.",
+            "th": "ล้างแคชและซิงค์ข้อมูลใหม่สำเร็จ"
+        ],
+        "wipe_transactions_title": [
+            "en": "Wipe Transactions & Sessions?",
+            "th": "ลบธุรกรรมและเซสชันทั้งหมดหรือไม่?"
+        ],
+        "yes_wipe": [
+            "en": "Yes, Wipe",
+            "th": "ยืนยันลบ"
+        ],
+        "wipe_transactions_body": [
+            "en": "This will delete all active sessions, orders, and service requests on the server. Menu items and staff profiles will remain untouched.",
+            "th": "การดำเนินการนี้จะลบเซสชัน ออเดอร์ และคำขอบริการที่กำลังใช้งานบนเซิร์ฟเวอร์ โดยไม่กระทบเมนูและโปรไฟล์พนักงาน"
+        ],
+        "wipe_success": [
+            "en": "All active sessions and orders wiped from Supabase. Tables reset to vacant.",
+            "th": "ลบเซสชันและออเดอร์ที่กำลังใช้งานแล้ว โต๊ะถูกรีเซ็ตเป็นว่าง"
+        ],
+        "wipe_failed_prefix": [
+            "en": "Wipe failed:",
+            "th": "ลบข้อมูลไม่สำเร็จ:"
+        ],
+        "system_notification": [
+            "en": "System Notification",
+            "th": "การแจ้งเตือนระบบ"
+        ],
+        "ok": [
+            "en": "OK",
+            "th": "ตกลง"
+        ],
+        "sign_out_confirm_body": [
+            "en": "Are you sure you want to sign out? You will need to log in again to access your account.",
+            "th": "ยืนยันออกจากระบบหรือไม่? คุณจะต้องเข้าสู่ระบบอีกครั้งเพื่อใช้งานบัญชีนี้"
+        ],
+        "table_system_disabled_title": [
+            "en": "Table System Disabled",
+            "th": "ระบบโต๊ะอาหารปิดใช้งานอยู่",
+            "lo": "ລະບົບໂຕະອາຫານປິດໃຊ້ງານຢູ່",
+            "km": "ប្រព័ន្ធតុអាហារត្រូវបានបិទ",
+            "vi": "Hệ thống bàn ăn đã tắt",
+            "my": "စားပွဲတင်စနစ် ပိတ်ထားသည်"
+        ],
+        "table_system_disabled_desc": [
+            "en": "The dining table system has been disabled by the store owner in iPad settings. Please contact management or turn it on to access tables.",
+            "th": "ระบบโต๊ะอาหารถูกปิดการใช้งานจากเครื่องตั้งค่าหลัก (iPad) กรุณาเปิดระบบโต๊ะอาหารในตั้งค่าระบบก่อนเข้าใช้งาน",
+            "lo": "ລະບົບໂຕະອາຫານຖືກປິດການໃຊ້ງານຈາກເຄື່ອງຕັ້ງຄ່າຫຼັກ (iPad) ກະລຸນາເປີດລະບົບໂຕະອາຫານໃນຕັ້ງຄ່າລະບົບກ່ອນເຂົ້າໃຊ້ງານ",
+            "km": "ប្រព័ន្ធតុអាហារត្រូវបានបិទដោយម្ចាស់ហាងនៅក្នុងการកំណត់ iPad ។ សូមបើកវាเพื่อចូលប្រើតុ។",
+            "vi": "Hệ thống bàn ăn đã bị vô hiệu hóa bởi chủ cửa hàng trong cài đặt iPad. Vui lòng bật nó để truy cập bàn.",
+            "my": "iPad ဆက်တင်များတွင် ဆိုင်ပိုင်ရှင်က စားပွဲတင်စနစ်ကို ပိတ်ထားသည်။ စားပွဲများဝင်ရောက်ရန် ၎င်းကိုဖွင့်ပါ။"
+        ],
         "link_store_title": [
             "en": "Link AlphaPos Store",
             "th": "เชื่อมต่อร้านค้า AlphaPos",
@@ -253,6 +345,30 @@ final class LanguageManager {
             "km": "មានភ្ញៀវ",
             "vi": "Có khách",
             "my": "လူရှိသည်"
+        ],
+        "reserved": [
+            "en": "Reserved",
+            "th": "จองแล้ว",
+            "lo": "ຈອງແລ້ວ",
+            "km": "កក់ទុក",
+            "vi": "Đã đặt trước",
+            "my": "ကြိုတင်မှာယူထားသည်"
+        ],
+        "cleaning": [
+            "en": "Cleaning",
+            "th": "ทำความสะอาด",
+            "lo": "ເຮັດຄວາມສະອາດ",
+            "km": "សម្អាត",
+            "vi": "Đang dọn dẹp",
+            "my": "သန့်ရှင်းရေးလုပ်နေသည်"
+        ],
+        "seats_count": [
+            "en": "%d Seats",
+            "th": "%d ที่นั่ง",
+            "lo": "%d ທີ່ນັ່ງ",
+            "km": "%d កៅអី",
+            "vi": "%d Chỗ ngồi",
+            "my": "%d ခုံ"
         ],
         "guests": [
             "en": "Guests",
@@ -1449,11 +1565,40 @@ final class LanguageManager {
         "order_completed": [
             "en": "Completed",
             "th": "เสร็จสิ้น"
+        ],
+        "served_items_locked": [
+            "en": "Served items are locked",
+            "th": "รายการที่เสิร์ฟแล้วถูกล็อก"
+        ],
+        "shift_required_title": [
+            "en": "Clock In Required",
+            "th": "ต้องเข้ากะก่อน"
+        ],
+        "shift_required_subtitle": [
+            "en": "You must clock in before placing orders. Please go to Clock In/Out to start your shift.",
+            "th": "คุณต้องลงเวลาเข้างานก่อนจึงจะสั่งอาหารได้ กรุณาไปที่หน้าลงเวลาเข้างาน"
+        ],
+        "shift_guard_nav_title": [
+            "en": "Shift Verification",
+            "th": "ตรวจสอบกะทำงาน"
+        ],
+        "shift_guard_info_text": [
+            "en": "For security and payroll accuracy, all staff must have an active shift before performing POS operations.",
+            "th": "เพื่อความปลอดภัยและความถูกต้องของค่าแรง พนักงานทุกคนต้องเข้ากะก่อนใช้งานระบบ POS"
+        ],
+        "go_to_clock_in_btn": [
+            "en": "Go to Clock In",
+            "th": "ไปลงเวลาเข้างาน"
+        ],
+        "go_back_btn": [
+            "en": "Go Back",
+            "th": "กลับ"
         ]
     ]
     
     func translate(_ key: String, lang: String) -> String {
-        return translations[key]?[lang] ?? translations[key]?["en"] ?? key
+        let activeLanguage = AppLanguage(rawValue: lang)?.rawValue ?? "en"
+        return translations[key]?[activeLanguage] ?? translations[key]?["en"] ?? key
     }
 }
 

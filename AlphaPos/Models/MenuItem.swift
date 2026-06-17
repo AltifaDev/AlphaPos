@@ -23,6 +23,64 @@ final class MenuItem {
     var isBestseller: Bool?
     var colorHex: String?
     
+    // Localization Fields
+    var nameTranslationsJson: String? = "{}"
+    var descriptionTranslationsJson: String? = "{}"
+    
+    var nameTranslations: [String: String] {
+        get {
+            guard let jsonStr = nameTranslationsJson,
+                  let data = jsonStr.data(using: .utf8),
+                  let dict = try? JSONDecoder().decode([String: String].self, from: data) else {
+                return [:]
+            }
+            return dict
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue),
+               let jsonStr = String(data: data, encoding: .utf8) {
+                nameTranslationsJson = jsonStr
+            } else {
+                nameTranslationsJson = "{}"
+            }
+        }
+    }
+    
+    var descriptionTranslations: [String: String] {
+        get {
+            guard let jsonStr = descriptionTranslationsJson,
+                  let data = jsonStr.data(using: .utf8),
+                  let dict = try? JSONDecoder().decode([String: String].self, from: data) else {
+                return [:]
+            }
+            return dict
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue),
+               let jsonStr = String(data: data, encoding: .utf8) {
+                descriptionTranslationsJson = jsonStr
+            } else {
+                descriptionTranslationsJson = "{}"
+            }
+        }
+    }
+    
+    var localizedName: String {
+        let langCode = LocalizationManager.shared.languageCode
+        if let translated = nameTranslations[langCode], !translated.isEmpty {
+            return translated
+        }
+        return name
+    }
+    
+    var localizedDescription: String? {
+        let langCode = LocalizationManager.shared.languageCode
+        if let translated = descriptionTranslations[langCode], !translated.isEmpty {
+            return translated
+        }
+        return itemDescription
+    }
+    
     @Relationship(deleteRule: .cascade, inverse: \Recipe.menuItem)
     var recipes: [Recipe] = []
     
@@ -54,6 +112,8 @@ final class MenuItem {
         isFavorite: Bool? = false,
         isBestseller: Bool? = false,
         colorHex: String? = nil,
+        nameTranslationsJson: String? = "{}",
+        descriptionTranslationsJson: String? = "{}",
         isSynced: Bool = false,
         isDeleted: Bool = false,
         updatedAt: Date = Date()
@@ -73,6 +133,8 @@ final class MenuItem {
         self.isFavorite = isFavorite
         self.isBestseller = isBestseller
         self.colorHex = colorHex
+        self.nameTranslationsJson = nameTranslationsJson
+        self.descriptionTranslationsJson = descriptionTranslationsJson
         self.isSynced = isSynced
         self.isDeleted = isDeleted
         self.updatedAt = updatedAt

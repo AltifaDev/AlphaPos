@@ -22,12 +22,12 @@
 | merchants | (UserDefaults) | ✅ syncMerchant | 001 | ✅ |
 | merchant_users | (auth.users) | - | 001 | ✅ |
 | branches | Branch | ❌ No sync | 001 | ✅ |
-| categories | Category | ❌ No sync | (existed) | ✅ |
+| categories | Category | ✅ syncCategories | (existed) | ✅ |
 | restaurant_tables | RestaurantTable | ✅ syncTables | 001 | ✅ |
 | menu_items | MenuItem | ✅ syncMenuItems | 001 | ✅ |
-| menu_item_modifier_groups | MenuItemModifierGroup | ❌ No sync | (existed) | ✅ |
-| modifier_groups | ModifierGroup | ❌ No sync | (existed) | ✅ |
-| modifiers | Modifier | ❌ No sync | (existed) | ✅ |
+| menu_item_modifier_groups | MenuItemModifierGroup | ✅ syncMenuItemModifierGroups | (existed) | ✅ |
+| modifier_groups | ModifierGroup | ✅ syncModifierGroups | (existed) | ✅ |
+| modifiers | Modifier | ✅ syncModifiers | (existed) | ✅ |
 | table_sessions | TableSession | ✅ syncTableSessions | 001 | ✅ |
 | orders | Order | ✅ syncOrders | 001 + 002 | ✅ |
 | order_items | OrderItem | ✅ (via pull) | 001 + 002 | ✅ |
@@ -38,7 +38,7 @@
 | employee_shifts | EmployeeShift | ✅ syncEmployeeShifts | (existed) + 008 | ✅ |
 | timecards | Timecard | ✅ syncTimecards | 001 + 002 | ✅ |
 | promotions | Promotion | ✅ syncPromotions | (prev session) | ✅ |
-| inventory_items | InventoryItem | ❌ No sync | (existed) + 002 | ✅ |
+| inventory_items | InventoryItem | ✅ syncInventoryItems | (existed) + 002 | ✅ |
 | inventory_transactions | InventoryTransaction | ✅ syncInventoryTransactions | 001 + 002 | ✅ |
 | recipes | Recipe | ❌ No sync | (existed) | ✅ |
 | suppliers | Supplier | ❌ No sync | (existed) | ✅ |
@@ -51,6 +51,19 @@
 | payroll_periods | (N/A) | - | (Supabase only) | ✅ |
 | payroll_slips | (N/A) | - | (Supabase only) | ✅ |
 | user_sessions | (N/A) | - | (Supabase only) | ✅ |
+| printers | Printer | ✅ syncPrinters | 004 | ✅ |
+| print_routing_rules | PrintRoutingRule | ✅ syncPrintRoutingRules | 004 | ✅ |
+| audit_logs | AuditLog | ✅ syncAuditLogs | 011 | ✅ |
+| register_sessions | RegisterSession | ✅ syncRegisterSessions | 012 | ✅ |
+| customers | Customer | ✅ syncCustomers | 009 | ✅ |
+| order_discounts | OrderDiscount | ✅ syncOrderDiscounts | 009 | ✅ |
+| order_tax_lines | OrderTaxLine | ✅ syncOrderTaxLines | 009 | ✅ |
+| tips | Tip | ✅ syncTips | 009 | ✅ |
+| refund_transactions | RefundTransaction | ✅ syncRefundTransactions | 009 | ✅ |
+| cash_movements | CashMovement | ✅ syncCashMovements | 009 | ✅ |
+| loyalty_transactions | LoyaltyTransaction | ✅ syncLoyaltyTransactions | 009 | ✅ |
+| gift_cards | GiftCard | ✅ syncGiftCards | 009 | ✅ |
+| restaurant_walls | RestaurantWall | ✅ syncWalls | 009_restaurant_walls | ✅ |
 
 ---
 
@@ -156,8 +169,22 @@ WHERE schemaname = 'public' AND rowsecurity = false;
 | `001_initial_schema.sql` | 2026-06-09 | Schema เริ่มต้นของระบบ | ✅ Applied |
 | `002_extended_columns.sql` | 2026-06-09 | คอลัมน์ที่ขาดหายใน 7 ตาราง | ✅ Applied |
 | `003_missing_tables.sql` | 2026-06-09 | purchase_orders, purchase_order_items, delivery_prices | ✅ Applied |
+| `004_printer_routing.sql` | 2026-06-10 | ระบบเครื่องพิมพ์และการส่งพิมพ์ออเดอร์ | ✅ Applied |
+| `005_table_sessions_sync.sql` | 2026-06-10 | คอลัมน์สำหรับซิงก์ข้อมูล table sessions | ✅ Applied |
+| `006_table_session_elapsed_time.sql` | 2026-06-11 | เก็บเวลาที่เริ่มและสิ้นสุดเพื่อคำนวณเวลาที่ใช้ | ✅ Applied |
+| `007_merchant_promptpay.sql` | 2026-06-11 | การตั้งค่า PromptPay สำหรับ Merchant | ✅ Applied |
 | `008_employee_face_embedding.sql` | 2026-06-12 | face_embedding, employee_shifts sync cols, RLS | ✅ Applied |
+| `009_enterprise_compliance.sql` | 2026-06-14 | ระบบภาษี ส่วนลด สมาชิก ความสอดคล้องทางการเงิน | ✅ Applied |
+| `009_merchant_device_secret.sql` | 2026-06-14 | ระบบยืนยันตัวตนเครื่อง POS ประจำสาขา | ✅ Applied |
+| `009_restaurant_walls.sql` | 2026-06-14 | วาดแผนผังกำแพงในร้านอาหาร | ✅ Applied |
+| `010_restore_header_fallback.sql` | 2026-06-14 | แก้ปัญหาความเข้ากันได้ย้อนหลังของ Header | ✅ Applied |
+| `011_audit_logging.sql` | 2026-06-14 | บันทึกประวัติการกระทำสำคัญของระบบ (Audit) | ✅ Applied |
+| `012_register_sessions_sync.sql` | 2026-06-14 | การซิงก์ข้อมูลกะเปิด-ปิดเก๊ะเงินพนักงาน | ✅ Applied |
+| `013_merchant_table_system_settings.sql` | 2026-06-15 | เพิ่มการตั้งค่าระบบโต๊ะและการสั่งอาหารผ่านเว็บ | ✅ Applied |
+| `014_sync_schema_alignment.sql` | 2026-06-15 | ปรับปรุงโครงสร้างคอลัมน์ Supabase สำหรับ Sync | ✅ Applied |
+| `015_secure_multi_tenant_policies.sql` | 2026-06-15 | ปิดช่องโหว่และลบนโยบาย RLS ที่ซ้ำซ้อนใน orders และ table_sessions | ✅ Applied |
+| `016_data_archiving.sql` | 2026-06-15 | สร้างตาราง Archive สำหรับ orders, order_items, audit_logs และ SP | ✅ Applied |
 
 ---
 
-*อัพเดตล่าสุด: 2026-06-09 | Project: sdmtkixrqkmwcpwoisrg*
+*อัพเดตล่าสุด: 2026-06-15 | Project: your-project-ref*

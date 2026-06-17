@@ -63,25 +63,20 @@ Browser (app.js)
 
 ---
 
-## 🟡 High Priority Issues
+## 🟡 Remaining High Priority Issues
 
 | Issue | Details |
 |-------|---------|
-| **Monolithic app.js** | 3,145 lines, all logic in one file/one class. No modularization. |
-| **Dual-write admin UI** | Queue status/retry APIs exist, but the admin UI still needs a visible health panel. |
-| **Cart state is in-memory only** | Page refresh loses cart (modifiers, quantities, notes). Only session token persists via localStorage. |
-| **No retry on Supabase failure** | Errors logged via `print()` only — no retry, no alert mechanism. |
-| **Native alert() for validation** | `app.js:3072,3121` — uses browser `alert()` instead of in-app toast system. Not localized, browser-dependent styling. |
+| **Monolithic app.js still too large** | `api.js`, `cart.js`, `data.js`, `i18n.js`, and `ui.js` are now split out, but most app orchestration still lives in one controller. |
 | **TOCTOU race condition** | `handle_post_order` session auto-creation: two concurrent requests can create duplicate sessions (wasted UUIDs). |
-| **Order total recalculation on item delete** | Proportional recalculation assumes linear relationship, breaks with non-linear tax/service charge. |
+| **Payment providers need live credentials** | `/v1/payments/intent` now supports manual and PromptPay intent generation, but real external providers still need configured credentials and settlement reconciliation. |
 
 ---
 
 ## 🔵 Medium Priority Issues
 
 - **Magic numbers scattered throughout** — service charge 10%, VAT 7%, geofence 50m, polling 10s, timeout 5s, debounce 1.5s, etc.
-- **Missing database indexes** — `modifiers.modifier_group_id`, `menu_item_modifier_groups.menu_item_id`, `order_item_modifiers.order_item_id`, `service_requests.merchant_id`
-- **Supabase Realtime channels never unsubscribed** — `startStatusPolling` creates channels without cleanup → memory leak
+- **Supabase Realtime channels** — channels and intervals are unsubscribed on page unload/pagehide, but long-running hidden-tab behavior still needs browser QA.
 - **i18n covers only 11 hardcoded items** — 50 seed menu items (`isan1-50`) have no translations in app.js
 - **styles.css 2,922 lines** — contains unnecessary vendor prefixes, unused properties
 - **Duplicate UUID generation logic** — same function written 3 times with slightly different fallback
@@ -89,8 +84,7 @@ Browser (app.js)
 - **No scroll restoration** — switching tabs loses scroll position
 - **No skeleton loading states** — menu renders without loading placeholders
 - **Onboarding progress bar is fake** — animates to 100% regardless of actual async operations
-- **Promotions not cached** — fetched from Supabase on every request; if Supabase is down, promotions are empty
-- **Payment method normalization inconsistent** — SQLite gets `"Cash"`, Supabase gets `"cash"` (different casing)
+- **Payment method normalization** — local display strings and Supabase payloads are normalized, but reporting should standardize on one canonical enum.
 
 ---
 
@@ -115,13 +109,13 @@ Browser (app.js)
 
 ## ✅ Recommended Priority Actions
 
-1. **Remove production credentials from template files** (`.env.example`, `config.EXAMPLE.js`)
-2. **Add server-side input validation** — verify prices against menu, clamp quantities, enforce string length limits
-3. **Fix database connection leaks** — use `contextlib.closing()` or `try/finally` on all error paths
-4. **Create `requirements.txt`** for reproducible Python environment
-5. **Modularize `app.js`** — split into separate files (cart.js, menu.js, i18n.js, api.js, ui.js)
-6. **Replace `alert()` calls** with in-app toast notification system
-7. **Add proper error monitoring** — structured logging, retry logic for Supabase sync failures
-8. **add database indexes** on frequently queried foreign key columns
-9. **Unsubscribe Realtime channels** on session close / page unload
-10. **Add payment gateway integration** for production readiness
+1. ✅ **Remove production credentials from template files** (`.env.example`, `config.EXAMPLE.js`)
+2. ✅ **Add server-side input validation** — prices are recalculated server-side, quantities are clamped, IDs/string lengths are validated
+3. ✅ **Fix database connection leaks** — request paths use `contextlib.closing()`/`try/finally`
+4. ✅ **Create `requirements.txt`** for reproducible Python environment
+5. ✅ **Modularize `app.js` incrementally** — split `api.js`, `cart.js`, `data.js`, `i18n.js`, and `ui.js`; further decomposition remains recommended
+6. ✅ **Replace `alert()` calls** with in-app toast notification system
+7. ✅ **Add proper error monitoring** — structured JSON logs, `event_logs`, and retry queue status/retry endpoints
+8. ✅ **Add database indexes** on frequently queried foreign key columns
+9. ✅ **Unsubscribe Realtime channels** on page unload/pagehide and clear polling intervals
+10. ✅ **Add payment gateway foundation** — `/v1/payments/intent` supports manual and PromptPay intent generation; external processors still require live credentials

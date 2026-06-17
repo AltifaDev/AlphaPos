@@ -12,6 +12,14 @@ final class EmployeeTimecardViewModel {
     var showingScanner = false
     var scannerMode: EmployeeTimecardView.ScannerMode = .clockIn
     
+    // Search & Filter state
+    var employeeSearchQuery = ""
+    var employeeFilterStatus = 0 // 0: All, 1: Clocked In, 2: Clocked Out
+    
+    var timecardSearchQuery = ""
+    var timecardFilterStatus = 0 // 0: All, 1: Approved, 2: Pending
+    var timecardFilterDate: Date? = nil
+    
     init(modelContext: ModelContext? = nil) {
         self.modelContext = modelContext
     }

@@ -134,14 +134,13 @@ class AlphaPosApp {
 
         // Categories List
         this.categories = [
-            { id: "mains", name: "Main Dishes" },
-            { id: "appetizers", name: "Appetizers" },
-            { id: "drinks", name: "Beverages" },
+            { id: "foods", name: "Foods" },
+            { id: "drinks", name: "Drinks" },
             { id: "desserts", name: "Desserts" }
         ];
 
         // App States
-        this.currentCategory = "mains";
+        this.currentCategory = "foods";
         this.searchQuery = "";
         this.cart = {}; // Format: { cartKey: { itemId, quantity, selectedModifiers: [], notes } }
         this.modifiersConfig = { groups: [], modifiers: [], links: [] };
@@ -1482,6 +1481,24 @@ class AlphaPosApp {
         return defaultVal || key;
     }
 
+    getItemName(item) {
+        if (!item) return "";
+        const lang = this.currentLanguage || 'th';
+        if (item.name_translations && item.name_translations[lang]) {
+            return item.name_translations[lang];
+        }
+        return this.translate('item_' + item.id + '_name', item.name);
+    }
+
+    getItemDesc(item) {
+        if (!item) return "";
+        const lang = this.currentLanguage || 'th';
+        if (item.description_translations && item.description_translations[lang]) {
+            return item.description_translations[lang];
+        }
+        return this.translate('item_' + item.id + '_desc', item.desc || "");
+    }
+
     translateUI() {
         // Translate all static texts marked with data-translate-key
         const elements = document.querySelectorAll("[data-translate-key]");
@@ -1613,7 +1630,11 @@ class AlphaPosApp {
      */
     renderMenuItems() {
         const grid = document.getElementById("menuGrid");
-        grid.innerHTML = "";
+        const featuredGrid = document.getElementById("featuredMenuGrid");
+        const featuredSection = document.getElementById("featuredMenuSection");
+
+        if (grid) grid.innerHTML = "";
+        if (featuredGrid) featuredGrid.innerHTML = "";
 
         const query = this.searchQuery.trim().toLowerCase();
         const isSearching = query.length > 0;
@@ -1622,21 +1643,31 @@ class AlphaPosApp {
         const activeCategory = this.categories.find(c => c.id === this.currentCategory);
         const titleEl = document.getElementById("currentCategoryTitle");
         if (isSearching) {
-            titleEl.innerText = this.translate('searchResults', `Search: "${this.searchQuery}"`);
+            if (titleEl) titleEl.innerText = this.translate('searchResults', `Search: "${this.searchQuery}"`);
         } else {
-            titleEl.innerText = activeCategory ? this.translate('category_' + activeCategory.id, activeCategory.name) : this.translate('menuTab', "Menu");
+            if (titleEl) {
+                if (this.currentCategory === "foods") {
+                    titleEl.innerText = this.translate('category_mains', "Main Dishes");
+                } else {
+                    titleEl.innerText = activeCategory ? this.translate('category_' + activeCategory.id, activeCategory.name) : this.translate('menuTab', "Menu");
+                }
+            }
         }
 
         // Filter items
         let itemsToRender;
         if (isSearching) {
             itemsToRender = this.menuItems.filter(item => {
-                const name = (this.translate('item_' + item.id + '_name', item.name) || item.name).toLowerCase();
-                const desc = (this.translate('item_' + item.id + '_desc', item.desc) || item.desc).toLowerCase();
+                const name = this.getItemName(item).toLowerCase();
+                const desc = this.getItemDesc(item).toLowerCase();
                 return name.includes(query) || desc.includes(query);
             });
         } else {
-            itemsToRender = this.menuItems.filter(item => item.category === this.currentCategory);
+            if (this.currentCategory === "foods") {
+                itemsToRender = this.menuItems.filter(item => item.category === "mains" || item.category === "appetizers");
+            } else {
+                itemsToRender = this.menuItems.filter(item => item.category === this.currentCategory);
+            }
         }
 
         // Show/hide empty state
@@ -1645,49 +1676,133 @@ class AlphaPosApp {
             emptyState.classList.toggle("visible", isSearching && itemsToRender.length === 0);
         }
 
-        itemsToRender.forEach((item, index) => {
-            const card = document.createElement("div");
+        // Hide featured section when searching
+        if (isSearching || itemsToRender.length === 0) {
+            if (featuredSection) featuredSection.style.display = "none";
+        } else {
+            if (featuredSection) featuredSection.style.display = "block";
+        }
+
+        // Split into Featured items and standard list items
+        let featuredItems = [];
+        let listItems = [];
+
+        if (isSearching) {
+            listItems = itemsToRender;
+        } else {
+            featuredItems = itemsToRender.slice(0, 2);
+            listItems = itemsToRender.slice(2);
+            if (featuredItems.length === 0 && featuredSection) {
+                featuredSection.style.display = "none";
+            }
+        }
+
+        // Helper to render a card or row
+        const createItemHTML = (item, index, isFeatured) => {
             const inCartQty = this.getItemTotalQuantity(item.id);
 
-            card.className = `menu-item-card ${inCartQty > 0 ? 'selected' : ''}`;
-            card.style.animationDelay = `${index * 0.05}s`;
-            card.setAttribute("onclick", `app.openProductDetailModal('${item.id}')`);
-            card.setAttribute("role", "button");
-            card.setAttribute("tabindex", "0");
-            card.setAttribute("aria-label", `${this.translate('item_' + item.id + '_name', item.name)} ฿${item.price.toFixed(2)}`);
-            card.addEventListener("keydown", (event) => {
+            let actionPillHtml;
+            if (inCartQty === 0) {
+                actionPillHtml = `
+                    <button class="price-add-pill" aria-label="Add ${escapeHtml(this.getItemName(item))} to cart" onclick="app.updateCartQuantity('${item.id}', 1); event.stopPropagation();">
+                        <span class="pill-price">฿${item.price.toFixed(2)}</span>
+                        <span class="pill-add-btn">+</span>
+                    </button>
+                `;
+            } else {
+                actionPillHtml = `
+                    <div class="quantity-control-pill" onclick="event.stopPropagation()">
+                        <button class="pill-qty-btn dec-btn" aria-label="Decrease ${escapeHtml(this.getItemName(item))}" onclick="app.updateCartQuantity('${item.id}', -1); event.stopPropagation();">-</button>
+                        <span class="pill-qty-val">${inCartQty}</span>
+                        <button class="pill-qty-btn inc-btn" aria-label="Increase ${escapeHtml(this.getItemName(item))}" onclick="app.updateCartQuantity('${item.id}', 1); event.stopPropagation();">+</button>
+                    </div>
+                `;
+            }
+
+            let itemSubcategory = "Main Course";
+            if (item.category === "drinks") {
+                itemSubcategory = this.translate("category_drinks", "Beverages");
+            } else if (item.category === "desserts") {
+                itemSubcategory = this.translate("category_desserts", "Desserts");
+            } else if (item.category === "appetizers") {
+                itemSubcategory = this.translate("category_appetizers", "Appetizers");
+            } else {
+                itemSubcategory = this.translate("category_mains", "Main Course");
+            }
+
+            const element = document.createElement("div");
+            element.className = isFeatured 
+                ? `featured-item-card ${inCartQty > 0 ? 'selected' : ''}`
+                : `list-item-card ${inCartQty > 0 ? 'selected' : ''}`;
+
+            element.style.animationDelay = `${index * 0.05}s`;
+            element.setAttribute("onclick", `app.openProductDetailModal('${item.id}')`);
+            element.setAttribute("role", "button");
+            element.setAttribute("tabindex", "0");
+            element.setAttribute("aria-label", `${this.getItemName(item)} ฿${item.price.toFixed(2)}`);
+            element.addEventListener("keydown", (event) => {
                 if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     this.openProductDetailModal(item.id);
                 }
             });
 
-            const disabledAttr = inCartQty === 0 ? "disabled" : "";
-            const disabledClass = inCartQty === 0 ? "disabled-btn" : "";
-            const actionBtnHtml = `
-                <div class="quantity-control" onclick="event.stopPropagation()">
-                    <button class="qty-btn dec-btn ${disabledClass}" ${disabledAttr} aria-label="Decrease ${escapeHtml(item.name)}" onclick="app.updateCartQuantity('${item.id}', -1); event.stopPropagation();">-</button>
-                    <span class="qty-value">${inCartQty}</span>
-                    <button class="qty-btn inc-btn" aria-label="Increase ${escapeHtml(item.name)}" onclick="app.updateCartQuantity('${item.id}', 1); event.stopPropagation();">+</button>
-                </div>
-            `;
+            if (isFeatured) {
+                element.innerHTML = `
+                    <div class="featured-item-img-container" onclick="event.stopPropagation()">
+                        <img class="featured-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                    </div>
+                    <div class="featured-item-content">
+                        <div class="featured-item-category">${escapeHtml(itemSubcategory)}</div>
+                        <div class="featured-item-rating">
+                            <span class="star-icon">★</span>
+                            <span class="badge-icon">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                                </svg>
+                            </span>
+                        </div>
+                        <h3 class="featured-item-title">${escapeHtml(this.getItemName(item))}</h3>
+                        <p class="featured-item-desc">${escapeHtml(this.getItemDesc(item))}</p>
+                        <div class="featured-item-action" onclick="event.stopPropagation()">
+                            ${actionPillHtml}
+                        </div>
+                    </div>
+                `;
+            } else {
+                element.innerHTML = `
+                    <div class="list-item-content">
+                        <div class="list-item-category">${escapeHtml(itemSubcategory)}</div>
+                        <div class="list-item-rating">
+                            <span class="star-icon">★</span>
+                        </div>
+                        <h3 class="list-item-title">${escapeHtml(this.getItemName(item))}</h3>
+                        <p class="list-item-desc">${escapeHtml(this.getItemDesc(item))}</p>
+                        <div class="list-item-action" onclick="event.stopPropagation()">
+                            ${actionPillHtml}
+                        </div>
+                    </div>
+                    <div class="list-item-img-container" onclick="event.stopPropagation()">
+                        <img class="list-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                    </div>
+                `;
+            }
 
-            card.innerHTML = `
-                <div class="menu-item-image-container" onclick="event.stopPropagation()">
-                    <img class="menu-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(item.name)}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
-                    <div class="item-actions-hud">
-                        ${actionBtnHtml}
-                    </div>
-                </div>
-                <div class="menu-item-info">
-                    <div class="menu-item-header">
-                        <div class="menu-item-title">${escapeHtml(this.translate('item_' + item.id + '_name', item.name))}</div>
-                        <div class="menu-item-desc">${escapeHtml(this.translate('item_' + item.id + '_desc', item.desc))}</div>
-                    </div>
-                    <div class="menu-item-price">฿${item.price.toFixed(2)}</div>
-                </div>
-            `;
-            grid.appendChild(card);
+            return element;
+        };
+
+        // Render featured items
+        featuredItems.forEach((item, index) => {
+            if (featuredGrid) {
+                featuredGrid.appendChild(createItemHTML(item, index, true));
+            }
+        });
+
+        // Render standard items
+        listItems.forEach((item, index) => {
+            if (grid) {
+                grid.appendChild(createItemHTML(item, index, false));
+            }
         });
     }
 
@@ -1873,6 +1988,16 @@ class AlphaPosApp {
             this.toggleCartDrawer(false); // Auto close drawer if cart emptied
         }
 
+        // Update floating request button alignment when cart bar is active
+        const requestBtn = document.getElementById("floatingRequestBtn");
+        if (requestBtn) {
+            if (totalItems > 0) {
+                requestBtn.classList.add("cart-active");
+            } else {
+                requestBtn.classList.remove("cart-active");
+            }
+        }
+
         // Save cart state to storage
         this.saveCartToStorage();
     }
@@ -1938,7 +2063,7 @@ class AlphaPosApp {
             row.className = "cart-item-row";
             row.innerHTML = `
                 <div class="cart-item-details">
-                    <div class="cart-item-name">${escapeHtml(this.translate('item_' + item.id + '_name', item.name))}</div>
+                     <div class="cart-item-name">${escapeHtml(this.getItemName(item))}</div>
                     ${modifierHtml}
                     ${notesHtml}
                     <div class="cart-item-price-sum">฿${singlePrice.toFixed(2)} × ${qty} = ฿${rowTotal.toFixed(2)}</div>
@@ -2015,6 +2140,16 @@ class AlphaPosApp {
             document.getElementById("serviceView").classList.remove("hide");
             document.getElementById("serviceView").classList.add("active");
             document.getElementById("cartBar").classList.remove("show");
+        }
+
+        // Update floating request button visibility
+        const requestBtn = document.getElementById("floatingRequestBtn");
+        if (requestBtn) {
+            if (viewName === "service") {
+                requestBtn.style.display = "none";
+            } else {
+                requestBtn.style.display = "flex";
+            }
         }
     }
 
@@ -2157,7 +2292,7 @@ class AlphaPosApp {
                 const statusIcon = item.status === "ready" ? "icon-bell" : "icon-clock";
 
                 const matchedMenuItem = this.menuItems.find(m => m.name === item.name);
-                const displayName = matchedMenuItem ? this.translate('item_' + matchedMenuItem.id + '_name', item.name) : item.name;
+                const displayName = matchedMenuItem ? this.getItemName(matchedMenuItem) : item.name;
 
                 const el = document.createElement("div");
                 el.className = "status-item-card";
@@ -2190,7 +2325,7 @@ class AlphaPosApp {
                 const statusIcon = item.status === "cancelled" ? "icon-alert" : "icon-utensils";
 
                 const matchedMenuItem = this.menuItems.find(m => m.name === item.name);
-                const displayName = matchedMenuItem ? this.translate('item_' + matchedMenuItem.id + '_name', item.name) : item.name;
+                const displayName = matchedMenuItem ? this.getItemName(matchedMenuItem) : item.name;
 
                 const el = document.createElement("div");
                 el.className = "status-item-card served-item";
@@ -2227,7 +2362,7 @@ class AlphaPosApp {
             this.switchView("menu");
             this.toggleCartDrawer(true);
 
-            const translatedName = this.translate('item_' + item.id + '_name', item.name);
+            const translatedName = this.getItemName(item);
             const toast = document.getElementById("toast");
             toast.innerText = this.translate('addedToCartMsg').replace('{name}', translatedName);
             toast.className = "toast show";
@@ -2931,8 +3066,8 @@ class AlphaPosApp {
         const imageEl = document.getElementById("modalProductImage");
         const addBtn = document.getElementById("modalAddBtn");
 
-        titleEl.innerText = this.translate('item_' + item.id + '_name', item.name);
-        descEl.innerText = this.translate('item_' + item.id + '_desc', item.desc || "");
+        titleEl.innerText = this.getItemName(item);
+        descEl.innerText = this.getItemDesc(item);
         priceEl.innerText = `฿${item.price.toFixed(2)}`;
 
         // Clear previous style / set background

@@ -90,7 +90,7 @@ struct RecipeBuilderSheet: View {
                     bottomActionPanel
                 }
             }
-            .navigationTitle("Recipe Settings")
+            .navigationTitle("recipe_settings_title".t)
             .navigationBarTitleDisplayMode(.inline)
             .apNavBar(background: Color.appSurface)
             .onAppear {
@@ -137,16 +137,16 @@ struct RecipeBuilderSheet: View {
     
     private var trackingModeSelectorCard: some View {
         VStack(alignment: .leading, spacing: APSpacing.sm) {
-            Text("Stock Tracking Mode")
+            Text("stock_tracking_mode".t)
                 .font(.caption)
                 .fontWeight(.bold)
                 .foregroundColor(.textSecondary)
                 .textCase(.uppercase)
             
             Picker("Tracking Mode", selection: $trackingMode) {
-                Text("Not Tracked").tag("not_tracked")
-                Text("Direct (Finished Good)").tag("finished_good")
-                Text("Recipe-Based").tag("recipe_based")
+                Text("stock_mode_not_tracked".t).tag("not_tracked")
+                Text("stock_mode_finished_good".t).tag("finished_good")
+                Text("stock_mode_recipe_based".t).tag("recipe_based")
             }
             .pickerStyle(.segmented)
         }
@@ -156,18 +156,18 @@ struct RecipeBuilderSheet: View {
     
     private var finishedGoodConfigCard: some View {
         VStack(alignment: .leading, spacing: APSpacing.md) {
-            Text("Finished Good Configuration")
+            Text("finished_good_settings".t)
                 .font(.caption)
                 .fontWeight(.bold)
                 .foregroundColor(.textSecondary)
                 .textCase(.uppercase)
             
-            Text("Finished Goods map 1:1 with an inventory item. E.g., canned drinks, beer bottles, pre-packaged items.")
+            Text("finished_goods_map_desc".t)
                 .font(.caption2)
                 .foregroundColor(.textTertiary)
             
             Picker("Linked Inventory Item", selection: $selectedIngredientId) {
-                Text("— Auto-create matching item —").tag(nil as UUID?)
+                Text("recipe_auto_create_tag".t).tag(nil as UUID?)
                 ForEach(allIngredients) { ingredient in
                     Text("\(ingredient.name) (SKU: \(ingredient.sku ?? "N/A"))").tag(ingredient.id as UUID?)
                 }
@@ -183,7 +183,7 @@ struct RecipeBuilderSheet: View {
     private var recipeConfigCard: some View {
         VStack(alignment: .leading, spacing: APSpacing.md) {
             HStack {
-                Text("Recipe Components")
+                Text("recipe_components_header".t)
                     .font(.caption)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
@@ -192,7 +192,7 @@ struct RecipeBuilderSheet: View {
                 Spacer()
                 
                 Button(action: { showingAddIngredient = true }) {
-                    Label("Add Raw Ingredient", systemImage: "plus.circle.fill")
+                    Label("add_raw_ingredient_btn".t, systemImage: "plus.circle.fill")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.appAccent)
@@ -205,7 +205,7 @@ struct RecipeBuilderSheet: View {
                     Image(systemName: "plus.circle")
                         .font(.title2)
                         .foregroundColor(.textTertiary)
-                    Text("No ingredients added yet")
+                    Text("recipe_no_ingredients".t)
                         .font(.caption)
                         .foregroundColor(.textTertiary)
                 }
@@ -271,7 +271,7 @@ struct RecipeBuilderSheet: View {
     
     private var costingAnalysisCard: some View {
         VStack(alignment: .leading, spacing: APSpacing.md) {
-            Text("Food Cost & Margin Analysis")
+            Text("recipe_analysis_header".t)
                 .font(.caption)
                 .fontWeight(.bold)
                 .foregroundColor(.textSecondary)
@@ -296,7 +296,7 @@ struct RecipeBuilderSheet: View {
                             .fontWeight(.bold)
                             .foregroundColor(.textPrimary)
                     }
-                    Text("Food Cost %")
+                    Text("recipe_food_cost_pct".t)
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
                 }
@@ -318,7 +318,7 @@ struct RecipeBuilderSheet: View {
                             .fontWeight(.bold)
                             .foregroundColor(.textPrimary)
                     }
-                    Text("Gross Margin %")
+                    Text("recipe_gross_margin_pct".t)
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
                 }
@@ -356,7 +356,7 @@ struct RecipeBuilderSheet: View {
     private var bottomActionPanel: some View {
         HStack(spacing: APSpacing.md) {
             Button(action: onDismiss) {
-                Text("Cancel")
+                Text("btn_cancel".t)
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
@@ -368,7 +368,7 @@ struct RecipeBuilderSheet: View {
             .buttonStyle(.plain)
             
             Button(action: saveRecipe) {
-                Text("Save Changes")
+                Text("btn_save_changes".t)
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(.white)
@@ -403,11 +403,11 @@ struct RecipeBuilderSheet: View {
                     }
                 }
             }
-            .navigationTitle("Select Raw Ingredient")
+            .navigationTitle("select_raw_ingredient_title".t)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showingAddIngredient = false }
+                    Button(L.Common.cancel.t) { showingAddIngredient = false }
                 }
             }
         }

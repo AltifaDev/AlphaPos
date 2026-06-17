@@ -25,6 +25,12 @@ struct ProductEditSheet: View {
     @State private var isAvailable = true
     @State private var showingDeleteAlert = false
     
+    // Translations
+    @State private var nameEn = ""
+    @State private var nameZh = ""
+    @State private var descEn = ""
+    @State private var descZh = ""
+    
     // New Standard POS States
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var imageData: Data? = nil
@@ -113,9 +119,9 @@ struct ProductEditSheet: View {
                     // Header tabs (Visible only if editing)
                     if isEditing {
                         Picker("Editor Segment", selection: $activeTab) {
-                            Text("Details").tag(0)
-                            Text("Recipe").tag(1)
-                            Text("Extras").tag(2)
+                            Text("product_tab_details".t).tag(0)
+                            Text("product_tab_recipe".t).tag(1)
+                            Text("product_tab_extras".t).tag(2)
                         }
                         .pickerStyle(.segmented)
                         .padding(.horizontal, APSpacing.md)
@@ -163,7 +169,7 @@ struct ProductEditSheet: View {
                     onDismiss()
                 }
             } message: {
-                Text("Are you sure you want to delete this product? This will also delete its recipes and extra relationships.")
+                Text("delete_product_confirm_msg".t)
             }
         }
         .apColorScheme()
@@ -175,7 +181,7 @@ struct ProductEditSheet: View {
         VStack(spacing: APSpacing.md) {
             // 1. Image Picker Section
             VStack(alignment: .leading, spacing: APSpacing.sm) {
-                Text("Product Image")
+                Text("product_image_title".t)
                     .font(.caption)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
@@ -206,7 +212,7 @@ struct ProductEditSheet: View {
                     
                     VStack(alignment: .leading, spacing: APSpacing.xs) {
                         PhotosPicker(selection: $selectedPhotoItem, matching: .images, photoLibrary: .shared()) {
-                            Label("Choose Photo", systemImage: "photo.badge.plus")
+                            Label("choose_photo_btn".t, systemImage: "photo.badge.plus")
                                 .font(.caption)
                                 .fontWeight(.semibold)
                                 .foregroundColor(.white)
@@ -228,7 +234,7 @@ struct ProductEditSheet: View {
                                 imageData = nil
                                 selectedPhotoItem = nil
                             } label: {
-                                Text("Remove Photo")
+                                Text("remove_photo_btn".t)
                                     .font(.caption2)
                                     .foregroundColor(.appRose)
                             }
@@ -242,25 +248,30 @@ struct ProductEditSheet: View {
 
             // 2. Product Details & Fields
             VStack(alignment: .leading, spacing: APSpacing.sm) {
-                Text("Product Details")
+                Text("product_details_section".t)
                     .font(.caption)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
                     .textCase(.uppercase)
                 
                 inputFieldRow(label: "Product Name", placeholder: "e.g., Iced Cappuccino, Gyoza", text: $name)
+                inputFieldRow(label: "Product Name (English)", placeholder: "e.g., Iced Cappuccino, Gyoza", text: $nameEn)
+                inputFieldRow(label: "Product Name (Chinese)", placeholder: "e.g., 冰卡布奇诺, 饺子", text: $nameZh)
+                
                 inputFieldRow(label: "Selling Price (฿)", placeholder: "0.00", text: $priceString)
                     .keyboardType(.decimalPad)
                 
                 inputFieldRow(label: "Description (Optional)", placeholder: "e.g., Double espresso shot with textured milk over ice", text: $description)
+                inputFieldRow(label: "Description (English)", placeholder: "e.g., Double espresso shot with textured milk over ice", text: $descEn)
+                inputFieldRow(label: "Description (Chinese)", placeholder: "e.g., 双份浓缩咖啡配打发牛奶", text: $descZh)
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Category")
+                    Text("product_category_label".t)
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
                     
                     Picker("Category Picker", selection: $selectedCategoryId) {
-                        Text("— Uncategorized —").tag(nil as UUID?)
+                        Text("uncategorized_label".t).tag(nil as UUID?)
                         ForEach(categories) { cat in
                             Text(cat.name).tag(cat.id as UUID?)
                         }
@@ -274,7 +285,7 @@ struct ProductEditSheet: View {
                 
                 // Color Tag Picker
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Card Color (Fallback)")
+                    Text("card_color_fallback".t)
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
                     
@@ -303,7 +314,7 @@ struct ProductEditSheet: View {
                     .padding(.vertical, 4)
                 
                 Toggle(isOn: $isFavorite) {
-                    Label("Pin to Favorites", systemImage: "star.fill")
+                    Label("pin_to_favorites".t, systemImage: "star.fill")
                 }
                 .toggleStyle(SwitchToggleStyle(tint: .appAccent))
                 .font(.subheadline)
@@ -327,12 +338,12 @@ struct ProductEditSheet: View {
             VStack(alignment: .leading, spacing: APSpacing.sm) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Delivery Pricing")
+                        Text("delivery_pricing_title".t)
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.textSecondary)
                             .textCase(.uppercase)
-                        Text("Set custom prices for delivery platforms")
+                        Text("delivery_pricing_desc".t)
                             .font(.caption2)
                             .foregroundColor(.textTertiary)
                     }
@@ -352,7 +363,7 @@ struct ProductEditSheet: View {
                                 }
                             }
                         } label: {
-                            Label("Add Brand", systemImage: "plus.circle.fill")
+                            Label("add_delivery_brand_btn".t, systemImage: "plus.circle.fill")
                                 .font(.caption)
                                 .fontWeight(.semibold)
                                 .foregroundColor(.appAccent)
@@ -361,7 +372,7 @@ struct ProductEditSheet: View {
                 }
                 
                 if deliveryPriceInputs.isEmpty {
-                    Text("No custom delivery prices added yet. Tap '+' to configure.")
+                    Text("no_delivery_prices_desc".t)
                         .font(.caption2)
                         .foregroundColor(.textTertiary)
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
@@ -420,18 +431,18 @@ struct ProductEditSheet: View {
     
     private var deleteSectionCard: some View {
         VStack(alignment: .leading, spacing: APSpacing.sm) {
-            Text("Danger Zone")
+            Text("danger_zone_title".t)
                 .font(.caption)
                 .fontWeight(.bold)
                 .foregroundColor(.appRose)
                 .textCase(.uppercase)
             
-            Text("Deleting this product will permanently remove it from the menu catalog. This cannot be undone.")
+            Text("delete_product_danger_desc".t)
                 .font(.caption2)
                 .foregroundColor(.textSecondary)
             
             Button(action: { showingDeleteAlert = true }) {
-                Text("Delete Product")
+                Text("prod_delete_btn".t)
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(.white)
@@ -451,16 +462,16 @@ struct ProductEditSheet: View {
     private var recipeTabContent: some View {
         VStack(spacing: APSpacing.md) {
             VStack(alignment: .leading, spacing: APSpacing.sm) {
-                Text("Stock Tracking Mode")
+                Text("stock_tracking_mode".t)
                     .font(.caption)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
                     .textCase(.uppercase)
                 
                 Picker("Tracking Mode", selection: $trackingMode) {
-                    Text("Not Tracked").tag("not_tracked")
-                    Text("Direct (Finished Good)").tag("finished_good")
-                    Text("Recipe-Based").tag("recipe_based")
+                    Text("stock_mode_not_tracked".t).tag("not_tracked")
+                    Text("stock_mode_finished_good".t).tag("finished_good")
+                    Text("stock_mode_recipe_based".t).tag("recipe_based")
                 }
                 .pickerStyle(.segmented)
             }
@@ -469,18 +480,18 @@ struct ProductEditSheet: View {
             
             if trackingMode == "finished_good" {
                 VStack(alignment: .leading, spacing: APSpacing.md) {
-                    Text("Finished Good Settings")
+                    Text("finished_good_settings".t)
                         .font(.caption)
                         .fontWeight(.bold)
                         .foregroundColor(.textSecondary)
                         .textCase(.uppercase)
                     
-                    Text("Finished goods maps 1:1 directly to inventory. E.g. canned cola, beers.")
+                    Text("finished_good_settings_desc".t)
                         .font(.caption2)
                         .foregroundColor(.textTertiary)
                     
                     Picker("Linked Inventory Item", selection: $selectedIngredientId) {
-                        Text("— Auto-create matching item —").tag(nil as UUID?)
+                        Text("auto_create_matching_item".t).tag(nil as UUID?)
                         ForEach(allIngredients) { ingredient in
                             Text("\(ingredient.name) (SKU: \(ingredient.sku ?? "N/A"))").tag(ingredient.id as UUID?)
                         }
@@ -493,14 +504,14 @@ struct ProductEditSheet: View {
             } else if trackingMode == "recipe_based" {
                 VStack(alignment: .leading, spacing: APSpacing.md) {
                     HStack {
-                        Text("Recipe Parts")
+                        Text("recipe_parts_section".t)
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.textSecondary)
                             .textCase(.uppercase)
                         Spacer()
                         Button(action: { showingAddIngredient = true }) {
-                            Label("Add Raw Material", systemImage: "plus.circle.fill")
+                            Label("add_raw_material_btn".t, systemImage: "plus.circle.fill")
                                 .font(.caption)
                                 .fontWeight(.semibold)
                                 .foregroundColor(.appAccent)
@@ -509,7 +520,7 @@ struct ProductEditSheet: View {
                     }
                     
                     if recipeLines.isEmpty {
-                        Text("No ingredients linked to recipe.")
+                        Text("no_ingredients_linked".t)
                             .font(.caption2)
                             .foregroundColor(.textTertiary)
                             .frame(maxWidth: .infinity, minHeight: 60, alignment: .center)
@@ -566,7 +577,7 @@ struct ProductEditSheet: View {
     
     private var costingAnalysisCard: some View {
         VStack(alignment: .leading, spacing: APSpacing.md) {
-            Text("Margins Analysis")
+            Text("margins_analysis_title".t)
                 .font(.caption)
                 .fontWeight(.bold)
                 .foregroundColor(.textSecondary)
@@ -581,7 +592,7 @@ struct ProductEditSheet: View {
                             .frame(width: 54, height: 54).rotationEffect(.degrees(-90))
                         Text(String(format: "%.0f%%", foodCostPercent)).font(.caption).bold()
                     }
-                    Text("Food Cost %").font(.system(size: 8)).foregroundColor(.textSecondary)
+                    Text("food_cost_pct".t).font(.system(size: 8)).foregroundColor(.textSecondary)
                 }
                 VStack(spacing: 4) {
                     ZStack {
@@ -591,7 +602,7 @@ struct ProductEditSheet: View {
                             .frame(width: 54, height: 54).rotationEffect(.degrees(-90))
                         Text(String(format: "%.0f%%", grossMarginPercent)).font(.caption).bold()
                     }
-                    Text("Margin %").font(.system(size: 8)).foregroundColor(.textSecondary)
+                    Text("margin_pct".t).font(.system(size: 8)).foregroundColor(.textSecondary)
                 }
                 
                 VStack(alignment: .leading, spacing: 4) {
@@ -634,10 +645,10 @@ struct ProductEditSheet: View {
                     }
                 }
             }
-            .navigationTitle("Add Ingredient")
+            .navigationTitle("add_ingredient_title".t)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showingAddIngredient = false }
+                    Button(L.Common.cancel.t) { showingAddIngredient = false }
                 }
             }
         }
@@ -648,18 +659,18 @@ struct ProductEditSheet: View {
     
     private var extrasTabContent: some View {
         VStack(alignment: .leading, spacing: APSpacing.md) {
-            Text("Link Customization Options")
+            Text("link_customization_options".t)
                 .font(.caption)
                 .fontWeight(.bold)
                 .foregroundColor(.textSecondary)
                 .textCase(.uppercase)
             
-            Text("Select the modifier options/toppings groups that apply to this menu item.")
+            Text("link_customization_desc".t)
                 .font(.caption2)
                 .foregroundColor(.textSecondary)
             
             if allModifierGroups.isEmpty {
-                Text("No custom options created yet. Add groups under Extras tab in Catalog Manager.")
+                Text("no_custom_options_desc".t)
                     .font(.caption)
                     .foregroundColor(.textTertiary)
             } else {
@@ -702,7 +713,7 @@ struct ProductEditSheet: View {
     private var bottomActionPanel: some View {
         HStack(spacing: APSpacing.md) {
             Button(action: onDismiss) {
-                Text("Cancel")
+                Text("cancel_btn_label".t)
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
@@ -768,6 +779,14 @@ struct ProductEditSheet: View {
             imageData = item.imageData
             taxRateString = String(format: "%.1f", item.taxRate)
             
+            // Load translations
+            let nameTrans = item.nameTranslations
+            let descTrans = item.descriptionTranslations
+            nameEn = nameTrans["en"] ?? ""
+            nameZh = nameTrans["zh"] ?? ""
+            descEn = descTrans["en"] ?? ""
+            descZh = descTrans["zh"] ?? ""
+            
             // Load delivery prices
             deliveryPriceInputs = item.deliveryPrices.map { dp in
                 DeliveryPriceInput(
@@ -812,6 +831,19 @@ struct ProductEditSheet: View {
             return (brandName: input.brandName, price: pr)
         }
         
+        var nameTrans: [String: String] = [:]
+        var descTrans: [String: String] = [:]
+        
+        let nEn = nameEn.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nZh = nameZh.trimmingCharacters(in: .whitespacesAndNewlines)
+        let dEn = descEn.trimmingCharacters(in: .whitespacesAndNewlines)
+        let dZh = descZh.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if !nEn.isEmpty { nameTrans["en"] = nEn }
+        if !nZh.isEmpty { nameTrans["zh"] = nZh }
+        if !dEn.isEmpty { descTrans["en"] = dEn }
+        if !dZh.isEmpty { descTrans["zh"] = dZh }
+        
         if let item = menuItem {
             // Update details
             viewModel.updateProduct(
@@ -828,7 +860,9 @@ struct ProductEditSheet: View {
                 colorHex: selectedColorHex,
                 imageData: imageData,
                 taxRate: taxRate,
-                deliveryPrices: deliveryPricesList
+                deliveryPrices: deliveryPricesList,
+                nameTranslations: nameTrans,
+                descriptionTranslations: descTrans
             )
             
             // Update recipes
@@ -858,7 +892,9 @@ struct ProductEditSheet: View {
                 colorHex: selectedColorHex,
                 imageData: imageData,
                 taxRate: taxRate,
-                deliveryPrices: deliveryPricesList
+                deliveryPrices: deliveryPricesList,
+                nameTranslations: nameTrans,
+                descriptionTranslations: descTrans
             )
         }
         

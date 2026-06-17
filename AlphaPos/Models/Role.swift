@@ -6,6 +6,7 @@ final class Role {
     @Attribute(.unique) var id: UUID
     var name: String
     var roleDescription: String?
+    var permissionKeys: String = ""
     
     @Relationship(deleteRule: .nullify, inverse: \User.role)
     var users: [User]?
@@ -15,10 +16,11 @@ final class Role {
     var isDeleted: Bool
     var updatedAt: Date
     
-    init(id: UUID = UUID(), name: String, roleDescription: String? = nil, isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
+    init(id: UUID = UUID(), name: String, roleDescription: String? = nil, permissionKeys: String = "", isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
         self.id = id
         self.name = name
         self.roleDescription = roleDescription
+        self.permissionKeys = permissionKeys
         self.isSynced = isSynced
         self.isDeleted = isDeleted
         self.updatedAt = updatedAt

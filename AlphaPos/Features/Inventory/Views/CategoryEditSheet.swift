@@ -26,7 +26,7 @@ struct CategoryEditSheet: View {
                     ScrollView {
                         VStack(spacing: APSpacing.md) {
                             VStack(alignment: .leading, spacing: APSpacing.sm) {
-                                Text("Category Information")
+                                Text("category_info_title".t)
                                     .font(.caption)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textSecondary)
@@ -66,7 +66,7 @@ struct CategoryEditSheet: View {
                     onDismiss()
                 }
             } message: {
-                Text("Are you sure you want to delete this category? Products in this category will become Uncategorized.")
+                Text("delete_category_confirm_msg".t)
             }
         }
         .apColorScheme()
@@ -76,18 +76,18 @@ struct CategoryEditSheet: View {
     
     private var deleteSectionCard: some View {
         VStack(alignment: .leading, spacing: APSpacing.sm) {
-            Text("Danger Zone")
+            Text("danger_zone_title".t)
                 .font(.caption)
                 .fontWeight(.bold)
                 .foregroundColor(.appRose)
                 .textCase(.uppercase)
             
-            Text("Deleting this category will unlink all its products, making them uncategorized. This action cannot be undone.")
+            Text("delete_category_danger_desc".t)
                 .font(.caption2)
                 .foregroundColor(.textSecondary)
             
             Button(action: { showingDeleteAlert = true }) {
-                Text("Delete Category")
+                Text("delete_category_btn".t)
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(.white)
@@ -105,7 +105,7 @@ struct CategoryEditSheet: View {
     private var bottomActionPanel: some View {
         HStack(spacing: APSpacing.md) {
             Button(action: onDismiss) {
-                Text("Cancel")
+                Text("cancel_btn_label".t)
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)

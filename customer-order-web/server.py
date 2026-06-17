@@ -142,8 +142,14 @@ def sync_menu_from_supabase(conn):
         # Wipe existing menu items and replace with Supabase data
         cursor.execute("-- UPSERT used instead")
         for item in data:
+            name_trans = json.dumps(item.get("name_translations", {}))
+            desc_trans = json.dumps(item.get("description_translations", {}))
             cursor.execute(
-                "INSERT OR REPLACE INTO menu_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT OR REPLACE INTO menu_items (
+                    id, name, description, price, category, emoji, img_class, image_url, name_translations, description_translations
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
                     item.get("id", str(uuid.uuid4())),
                     item.get("name", ""),
@@ -152,7 +158,9 @@ def sync_menu_from_supabase(conn):
                     item.get("category", "mains"),
                     item.get("emoji", "🍽️"),
                     item.get("img_class", "img-main"),
-                    item.get("image_url", "")
+                    item.get("image_url", ""),
+                    name_trans,
+                    desc_trans
                 )
             )
         conn.commit()
@@ -599,15 +607,21 @@ def _init_db_helper(conn):
             category TEXT NOT NULL,
             emoji TEXT,
             img_class TEXT,
-            image_url TEXT
+            image_url TEXT,
+            name_translations TEXT DEFAULT '{}',
+            description_translations TEXT DEFAULT '{}'
         )
     ''')
     
-    # Ensure image_url column exists in menu_items
+    # Ensure image_url, name_translations, and description_translations exist in menu_items
     cursor.execute("PRAGMA table_info(menu_items)")
     columns = [col[1] for col in cursor.fetchall()]
     if 'image_url' not in columns:
         cursor.execute("ALTER TABLE menu_items ADD COLUMN image_url TEXT")
+    if 'name_translations' not in columns:
+        cursor.execute("ALTER TABLE menu_items ADD COLUMN name_translations TEXT DEFAULT '{}'")
+    if 'description_translations' not in columns:
+        cursor.execute("ALTER TABLE menu_items ADD COLUMN description_translations TEXT DEFAULT '{}'")
 
     # 4. Table Sessions table
     cursor.execute('''
@@ -931,7 +945,14 @@ def _init_db_helper(conn):
     cursor.execute("SELECT COUNT(*) FROM menu_items")
     if cursor.fetchone()[0] == 0:
         default_menu = DEFAULT_MENU
-        cursor.executemany("INSERT INTO menu_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)", default_menu)
+        cursor.executemany(
+            """
+            INSERT INTO menu_items (
+                id, name, description, price, category, emoji, img_class, image_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            default_menu
+        )
         conn.commit()
         print("Database initialized and Isan menu (50 items) seeded successfully.")
     
@@ -1244,6 +1265,21 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 
                 menu = []
                 for row in rows:
+                    row_keys = row.keys()
+                    
+                    name_trans_raw = row["name_translations"] if "name_translations" in row_keys else "{}"
+                    desc_trans_raw = row["description_translations"] if "description_translations" in row_keys else "{}"
+                    
+                    try:
+                        name_trans = json.loads(name_trans_raw) if name_trans_raw else {}
+                    except Exception:
+                        name_trans = {}
+                        
+                    try:
+                        desc_trans = json.loads(desc_trans_raw) if desc_trans_raw else {}
+                    except Exception:
+                        desc_trans = {}
+                        
                     menu.append({
                         "id": row["id"],
                         "name": row["name"],
@@ -1252,7 +1288,9 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "category": row["category"],
                         "emoji": row["emoji"],
                         "imgClass": row["img_class"],
-                        "image_url": row["image_url"] if "image_url" in row.keys() else ""
+                        "image_url": row["image_url"] if "image_url" in row_keys else "",
+                        "name_translations": name_trans,
+                        "description_translations": desc_trans
                     })
                 
                 response_data = json.dumps(menu).encode("utf-8")

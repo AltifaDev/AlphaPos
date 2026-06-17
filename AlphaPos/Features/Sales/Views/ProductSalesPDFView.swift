@@ -13,10 +13,10 @@ struct ProductSalesPDFView: View {
             // Header
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("ALPHAPOS RETAIL AND INVENTORY")
+                    Text("report_brand_header".t)
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.gray)
-                    Text("Product Sales Detailed Report")
+                    Text("product_sales_report_title".t)
                         .font(.system(size: 22, weight: .black))
                         .foregroundColor(.black)
                     Text("\(title) • \(subtitle)")
@@ -37,11 +37,11 @@ struct ProductSalesPDFView: View {
             
             // Meta info
             HStack {
-                Text("Report Generated: \(generatedAt)")
+                Text(LocalizationManager.shared.t("report_generated_at", generatedAt))
                     .font(.system(size: 9, weight: .medium))
                     .foregroundColor(.gray)
                 Spacer()
-                Text("Total Unique Products: \(products.count)")
+                Text(LocalizationManager.shared.t("report_total_unique", products.count))
                     .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.black)
             }
@@ -50,15 +50,15 @@ struct ProductSalesPDFView: View {
             VStack(spacing: 0) {
                 // Table Header
                 HStack(spacing: 0) {
-                    Text("Item Name")
+                    Text("item_name_header".t)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Category")
+                    Text("category_header".t)
                         .frame(width: 120, alignment: .leading)
-                    Text("Qty Sold")
+                    Text("qty_sold_header".t)
                         .frame(width: 80, alignment: .trailing)
-                    Text("Unit Price")
+                    Text("unit_price_header".t)
                         .frame(width: 100, alignment: .trailing)
-                    Text("Total Revenue")
+                    Text("total_revenue_header".t)
                         .frame(width: 120, alignment: .trailing)
                 }
                 .font(.system(size: 9, weight: .bold))
@@ -70,7 +70,7 @@ struct ProductSalesPDFView: View {
                 Divider()
                 
                 if products.isEmpty {
-                    Text("No products sold in the selected time range.")
+                    Text("no_products_sold_pdf".t)
                         .font(.system(size: 11))
                         .foregroundColor(.gray)
                         .padding(.vertical, 40)
@@ -113,12 +113,12 @@ struct ProductSalesPDFView: View {
             
             // Footer audit disclaimer
             HStack {
-                Text("This report lists all inventory items ordered and served through the AlphaPos system. All values are subject to internal stock audit validations.")
+                Text("report_disclaimer".t)
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundColor(.gray)
                     .multilineTextAlignment(.leading)
                 Spacer()
-                Text("Page 1 of 1")
+                Text(LocalizationManager.shared.t("page_template", 1, 1))
                     .font(.system(size: 8))
                     .foregroundColor(.gray)
             }

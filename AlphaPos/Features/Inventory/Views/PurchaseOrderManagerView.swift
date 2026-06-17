@@ -39,11 +39,11 @@ struct PurchaseOrderManagerView: View {
                                 .foregroundColor(.appAmber)
                                 .font(.title3)
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("No Suppliers Registered")
+                                Text("po_no_suppliers_title".t)
                                     .font(.subheadline)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textPrimary)
-                                Text("Please add a supplier under the Suppliers tab first to enable Purchase Orders.")
+                                Text("po_no_suppliers_desc".t)
                                     .font(.caption)
                                     .foregroundColor(.textSecondary)
                             }
@@ -65,10 +65,10 @@ struct PurchaseOrderManagerView: View {
                             Image(systemName: "doc.text.magnifyingglass")
                                 .font(.system(size: 64))
                                 .foregroundColor(.textSecondary.opacity(0.5))
-                            Text("No Purchase Orders Found")
+                            Text("po_no_orders_title".t)
                                 .font(.headline)
                                 .foregroundColor(.textSecondary)
-                            Text("Create drafts to order ingredients from your suppliers.")
+                            Text("po_no_orders_desc".t)
                                 .font(.caption)
                                 .foregroundColor(.textSecondary.opacity(0.8))
                             Spacer()
@@ -88,7 +88,7 @@ struct PurchaseOrderManagerView: View {
             .navigationTitle("Purchase Orders — \(activeBranch.name)")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") {
+                    Button("close_btn_label".t) {
                         dismiss()
                     }
                     .foregroundColor(.textPrimary)
@@ -102,7 +102,7 @@ struct PurchaseOrderManagerView: View {
                             showingCreateSheet = true
                         }
                     }) {
-                        Label("New PO", systemImage: "plus")
+                        Label("add_new_po_btn".t, systemImage: "plus")
                             .foregroundColor(.appTeal)
                     }
                 }
@@ -116,7 +116,7 @@ struct PurchaseOrderManagerView: View {
             .alert("No Suppliers Found", isPresented: $showingNoSupplierAlert) {
                 Button("OK", role: .cancel) { }
             } message: {
-                Text("You must register at least one supplier in the Supplier Management tab first before creating a Purchase Order.")
+                Text("po_must_register_supplier_desc".t)
             }
         }
         .apColorScheme()
@@ -159,7 +159,7 @@ struct PurchaseOrderManagerView: View {
                         .font(.subheadline)
                         .foregroundColor(.textSecondary)
                     
-                    Text("Ordered: \(po.orderDate.formatted(date: .abbreviated, time: .omitted))")
+                    Text(String(format: "po_ordered_lbl_template".t, po.orderDate.formatted(date: .abbreviated, time: .omitted)))
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
                 }
@@ -167,7 +167,7 @@ struct PurchaseOrderManagerView: View {
                 Spacer()
                 
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text("\(po.items.count) items")
+                    Text(String(format: "po_items_count_template".t, po.items.count))
                         .font(.subheadline)
                         .foregroundColor(.textPrimary)
                     
@@ -246,7 +246,7 @@ struct CreatePurchaseOrderSheet: View {
                         VStack(spacing: APSpacing.md) {
                             HStack(spacing: APSpacing.md) {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("PO NUMBER")
+                                    Text("po_number_label".t)
                                         .font(.caption2).fontWeight(.bold).foregroundColor(.appTeal)
                                     TextField("e.g. PO-2026-0001", text: $poNumber)
                                         .padding(APSpacing.sm)
@@ -255,10 +255,10 @@ struct CreatePurchaseOrderSheet: View {
                                 }
                                 
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("SUPPLIER")
+                                    Text("po_supplier_label".t)
                                         .font(.caption2).fontWeight(.bold).foregroundColor(.appTeal)
                                     Picker("Supplier", selection: $selectedSupplier) {
-                                        Text("Select Supplier...").tag(nil as Supplier?)
+                                        Text("po_select_supplier_placeholder".t).tag(nil as Supplier?)
                                         ForEach(suppliers) { sup in
                                             Text(sup.name).tag(sup as Supplier?)
                                         }
@@ -269,7 +269,7 @@ struct CreatePurchaseOrderSheet: View {
                             }
                             
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("PO NOTES")
+                                Text("po_notes_label".t)
                                     .font(.caption2).fontWeight(.bold).foregroundColor(.textSecondary)
                                 TextField("Add special orders, delivery terms...", text: $notes)
                                     .padding(APSpacing.sm)
@@ -283,13 +283,13 @@ struct CreatePurchaseOrderSheet: View {
                         .overlay(RoundedRectangle(cornerRadius: APRadius.md).stroke(Color.appBorderSubtle, lineWidth: 1))
                         
                         // Line items section
-                        Text("ORDER DETAILS")
+                        Text("po_details_header".t)
                             .font(.caption).fontWeight(.bold).foregroundColor(.textSecondary).tracking(1.0)
                         
                         VStack(spacing: APSpacing.md) {
                             // Line items list
                             if lineItems.isEmpty {
-                                Text("No items added yet.")
+                                Text("po_no_items_added".t)
                                     .font(.caption)
                                     .foregroundColor(.textSecondary)
                                     .padding()
@@ -325,7 +325,7 @@ struct CreatePurchaseOrderSheet: View {
                             // Add item form
                             VStack(spacing: APSpacing.sm) {
                                 Picker("Item", selection: $selectedItem) {
-                                    Text("Choose ingredient...").tag(nil as InventoryItem?)
+                                    Text("po_choose_ingredient_placeholder".t).tag(nil as InventoryItem?)
                                     ForEach(branchItems) { item in
                                         Text(item.name).tag(item as InventoryItem?)
                                     }
@@ -351,7 +351,7 @@ struct CreatePurchaseOrderSheet: View {
                                         .background(Color.appBackground)
                                         .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
                                     
-                                    Button("Add") {
+                                    Button("add_btn_label".t) {
                                         addLineItem()
                                     }
                                     .fontWeight(.bold)
@@ -375,14 +375,14 @@ struct CreatePurchaseOrderSheet: View {
                     .padding()
                 }
             }
-            .navigationTitle("New PO Draft")
+            .navigationTitle("new_po_draft_title".t)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }.foregroundColor(.textPrimary)
+                    Button(L.Common.cancel.t) { dismiss() }.foregroundColor(.textPrimary)
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Save Draft") {
+                    Button("save_draft_btn".t) {
                         saveDraft()
                     }
                     .fontWeight(.semibold)
@@ -447,14 +447,14 @@ struct PurchaseOrderDetailView: View {
                             Divider().background(Color.appDivider)
                             
                             VStack(alignment: .leading, spacing: APSpacing.xs) {
-                                Text("Supplier: **\(po.supplier?.name ?? "Unknown")**")
-                                Text("Branch: **\(po.branch?.name ?? "Unknown")**")
-                                Text("Ordered Date: **\(po.orderDate.formatted(date: .abbreviated, time: .shortened))**")
+                                Text("po_detail_supplier_template".t) + Text(" ") + Text(po.supplier?.name ?? "Unknown").bold()
+                                Text("po_detail_branch_template".t) + Text(" ") + Text(po.branch?.name ?? "Unknown").bold()
+                                Text("po_detail_ordered_template".t) + Text(" ") + Text(po.orderDate.formatted(date: .abbreviated, time: .shortened)).bold()
                                 if let del = po.deliveryDate {
-                                    Text("Delivery Date: **\(del.formatted(date: .abbreviated, time: .shortened))**")
+                                    Text("po_detail_delivery_template".t) + Text(" ") + Text(del.formatted(date: .abbreviated, time: .shortened)).bold()
                                 }
                                 if let note = po.notes, !note.isEmpty {
-                                    Text("Notes: \(note)")
+                                    Text(String(format: "po_detail_notes_template".t, note))
                                         .font(.caption)
                                         .foregroundColor(.textSecondary)
                                         .padding(.top, 4)
@@ -471,7 +471,7 @@ struct PurchaseOrderDetailView: View {
                         // Action panel
                         if po.status == "draft" {
                             Button(action: sendPO) {
-                                Label("Send Purchase Order to Supplier", systemImage: "paperplane")
+                                Label("send_po_to_supplier".t, systemImage: "paperplane")
                                     .fontWeight(.semibold)
                                     .foregroundColor(.black)
                                     .frame(maxWidth: .infinity)
@@ -481,7 +481,7 @@ struct PurchaseOrderDetailView: View {
                             }
                         } else if po.status == "sent" || po.status == "partially_received" {
                             Button(action: { showingReceiveSheet = true }) {
-                                Label("Receive Order Deliveries", systemImage: "shippingbox")
+                                Label("receive_order_deliveries".t, systemImage: "shippingbox")
                                     .fontWeight(.semibold)
                                     .foregroundColor(.black)
                                     .frame(maxWidth: .infinity)
@@ -492,7 +492,7 @@ struct PurchaseOrderDetailView: View {
                         }
                         
                         // PO Items List
-                        Text("ORDERED PRODUCTS")
+                        Text("po_ordered_products_header".t)
                             .font(.caption).fontWeight(.bold).foregroundColor(.textSecondary).tracking(1.0)
                         
                         VStack(spacing: APSpacing.md) {
@@ -534,7 +534,7 @@ struct PurchaseOrderDetailView: View {
                         // Cancel Button (Draft / Sent / Partially Received)
                         if po.status == "draft" || po.status == "sent" || po.status == "partially_received" {
                             Button(action: cancelPO) {
-                                Label("Cancel Purchase Order", systemImage: "xmark.circle")
+                                Label("cancel_purchase_order".t, systemImage: "xmark.circle")
                                     .foregroundColor(.textPrimary)
                                     .frame(maxWidth: .infinity)
                                     .padding()
@@ -547,7 +547,7 @@ struct PurchaseOrderDetailView: View {
                         // Delete Button (Draft / Sent only)
                         if po.status != "received" && po.status != "cancelled" {
                             Button(role: .destructive, action: deletePO) {
-                                Label("Delete Purchase Order", systemImage: "trash")
+                                Label("delete_purchase_order".t, systemImage: "trash")
                                     .foregroundColor(.appRose)
                                     .frame(maxWidth: .infinity)
                                     .padding()
@@ -559,11 +559,11 @@ struct PurchaseOrderDetailView: View {
                     .padding()
                 }
             }
-            .navigationTitle("Purchase Order Info")
+            .navigationTitle("po_info_title".t)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }.foregroundColor(.textPrimary)
+                    Button("close_btn_label".t) { dismiss() }.foregroundColor(.textPrimary)
                 }
             }
             .sheet(isPresented: $showingReceiveSheet) {
@@ -634,9 +634,9 @@ struct ReceivePurchaseOrderSheet: View {
                         
                         // Alert Box
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Delivery Verification")
+                            Text("po_delivery_verification_title".t)
                                 .font(.headline).foregroundColor(.textPrimary)
-                            Text("Count incoming stock items, verify actual costs, and scan barcodes to speed up audits.")
+                            Text("po_delivery_verification_desc".t)
                                 .font(.caption).foregroundColor(.textSecondary)
                         }
                         .padding(APSpacing.md)
@@ -647,7 +647,7 @@ struct ReceivePurchaseOrderSheet: View {
                         // Receive Controls
                         HStack {
                             Button(action: receiveAllItems) {
-                                Label("Receive All Items", systemImage: "checkmark.circle")
+                                Label("receive_all_items_btn".t, systemImage: "checkmark.circle")
                                     .font(.subheadline)
                                     .foregroundColor(.black)
                                     .padding(.horizontal, APSpacing.md)
@@ -659,7 +659,7 @@ struct ReceivePurchaseOrderSheet: View {
                             Spacer()
                             
                             Button(action: { showingScanner = true }) {
-                                Label("Scan Barcode", systemImage: "barcode.viewfinder")
+                                Label("scan_barcode_btn".t, systemImage: "barcode.viewfinder")
                                     .font(.subheadline)
                                     .foregroundColor(.appTeal)
                                     .padding(.horizontal, APSpacing.md)
@@ -683,7 +683,7 @@ struct ReceivePurchaseOrderSheet: View {
                                                 .font(.headline)
                                                 .foregroundColor(.textPrimary)
                                             if let barcode = item.inventoryItem?.barcode {
-                                                Text("Barcode: \(barcode)")
+                                                Text(String(format: "po_verify_barcode_template".t, barcode))
                                                     .font(.system(size: 10, design: .monospaced))
                                                     .foregroundColor(.appTeal)
                                             }
@@ -698,7 +698,7 @@ struct ReceivePurchaseOrderSheet: View {
                                     HStack(spacing: APSpacing.md) {
                                         // Qty Input
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text("QTY RECEIVED")
+                                            Text("po_verify_qty_received".t)
                                                 .font(.system(size: 9, weight: .semibold)).foregroundColor(.textSecondary)
                                             HStack {
                                                 TextField("0.0", value: Binding(
@@ -720,7 +720,7 @@ struct ReceivePurchaseOrderSheet: View {
                                         
                                         // Cost Input
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text("UNIT COST (฿)")
+                                            Text("po_verify_unit_cost".t)
                                                 .font(.system(size: 9, weight: .semibold)).foregroundColor(.textSecondary)
                                             TextField("0.0", value: Binding(
                                                 get: { data.cost },
@@ -745,7 +745,7 @@ struct ReceivePurchaseOrderSheet: View {
                         
                         // Invoice notes
                         VStack(alignment: .leading, spacing: APSpacing.xs) {
-                            Text("INVOICE / RECEIVE NOTES")
+                            Text("po_verify_notes_label".t)
                                 .font(.caption2).fontWeight(.bold).foregroundColor(.textSecondary)
                             TextField("Enter invoice reference, discrepancies...", text: $notes)
                                 .padding(APSpacing.md)
@@ -756,15 +756,15 @@ struct ReceivePurchaseOrderSheet: View {
                     .padding()
                 }
             }
-            .navigationTitle("Receive Delivery")
+            .navigationTitle("receive_delivery_title".t)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }.foregroundColor(.textPrimary)
+                    Button(L.Common.cancel.t) { dismiss() }.foregroundColor(.textPrimary)
                 }
                 
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Commit") {
+                    Button("commit_btn".t) {
                         commitReceive()
                     }
                     .fontWeight(.semibold)

@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import Combine
+import AudioToolbox
 
 enum KDSStation: String, CaseIterable, Codable {
     case kitchen
@@ -8,8 +9,8 @@ enum KDSStation: String, CaseIterable, Codable {
     
     var displayName: String {
         switch self {
-        case .kitchen: return "Kitchen"
-        case .bar: return "Drink Bar"
+        case .kitchen: return "kds_station_kitchen".t
+        case .bar: return "kds_station_bar".t
         }
     }
 }
@@ -29,6 +30,7 @@ struct KDSTicket: Identifiable, Equatable {
 
 struct KitchenDisplayView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
     @Query(filter: #Predicate<Order> { order in
         order.status == "preparing" || order.status == "ready"
     }, sort: \Order.createdAt) private var activeOrders: [Order]
@@ -46,6 +48,7 @@ struct KitchenDisplayView: View {
     @State private var showingSettingsPopover = false
     @State private var showingHistoryDrawer = false
     @State private var isWide = true
+    @State private var isViewAppeared = false
     
     // Search and filter states
     @State private var searchText = ""
@@ -53,9 +56,12 @@ struct KitchenDisplayView: View {
     @AppStorage("kds_view_style") private var kdsViewStyle = "columns"
     @AppStorage("kds_show_kitchen") private var kdsShowKitchen = true
     @AppStorage("kds_show_bar") private var kdsShowBar = true
+    @AppStorage("kds_auto_complete_enabled") private var kdsAutoCompleteEnabled = false
+    @AppStorage("kds_sound_enabled") private var kdsSoundEnabled = true
     
     // Timer for refreshing delayed status every second
     @State private var currentSecond = Date()
+    @State private var previousActiveOrderCount = 0
     private let secondTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
     var filteredTickets: [KDSTicket] {
@@ -229,6 +235,8 @@ struct KitchenDisplayView: View {
                             .background(Color.appRose)
                             .cornerRadius(8)
                             .padding([.horizontal, .top])
+                            .offset(y: isViewAppeared ? 0 : -30)
+                            .opacity(isViewAppeared ? 1 : 0)
                             .transition(.move(edge: .top).combined(with: .opacity))
                         }
                         
@@ -238,7 +246,7 @@ struct KitchenDisplayView: View {
                                 Image(systemName: "magnifyingglass")
                                     .foregroundColor(.textSecondary)
                                     .font(.system(size: 14))
-                                TextField("Search Table, Order #, or Item...", text: $searchText)
+                                TextField("kds_search_placeholder".t, text: $searchText)
                                     .font(.system(size: 13))
                                     .textFieldStyle(.plain)
                                 if !searchText.isEmpty {
@@ -255,17 +263,21 @@ struct KitchenDisplayView: View {
                             .background(Color.appSurfaceHigh.opacity(0.8))
                             .cornerRadius(10)
                             .frame(width: isWide ? 260 : 180)
+                            .offset(x: isViewAppeared ? 0 : -40)
+                            .opacity(isViewAppeared ? 1 : 0)
                             
                             Spacer()
                             
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
-                                    filterPill(title: "All", tag: "all", count: countForFilter("all"))
-                                    filterPill(title: "Dine-In", tag: "dine_in", count: countForFilter("dine_in"))
-                                    filterPill(title: "Take-Out", tag: "take_out", count: countForFilter("take_out"))
-                                    filterPill(title: "Delayed (>10m)", tag: "delayed", count: countForFilter("delayed"), isDestructive: true)
+                                    filterPill(title: "pos_category_all".t, tag: "all", count: countForFilter("all"))
+                                    filterPill(title: "pos_dine_in".t, tag: "dine_in", count: countForFilter("dine_in"))
+                                    filterPill(title: "pos_take_out".t, tag: "take_out", count: countForFilter("take_out"))
+                                    filterPill(title: "kds_delayed_pill".t, tag: "delayed", count: countForFilter("delayed"), isDestructive: true)
                                 }
                             }
+                            .offset(x: isViewAppeared ? 0 : 40)
+                            .opacity(isViewAppeared ? 1 : 0)
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
@@ -283,11 +295,13 @@ struct KitchenDisplayView: View {
                                 Image(systemName: "flame.fill")
                                     .font(.system(size: 60))
                                     .foregroundColor(.textTertiary)
-                                Text("No active tickets found.")
+                                Text("kds_no_active_tickets".t)
                                     .font(.title3)
                                     .foregroundColor(.textSecondary)
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .offset(y: isViewAppeared ? 0 : 50)
+                            .opacity(isViewAppeared ? 1 : 0)
                         } else {
                             ScrollView(kdsViewStyle == "columns" ? .horizontal : .vertical, showsIndicators: true) {
                                 if kdsViewStyle == "columns" {
@@ -316,6 +330,8 @@ struct KitchenDisplayView: View {
                                     .padding()
                                 }
                             }
+                            .offset(y: isViewAppeared ? 0 : 50)
+                            .opacity(isViewAppeared ? 1 : 0)
                         }
                     }
                     .background(
@@ -347,18 +363,24 @@ struct KitchenDisplayView: View {
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         HStack(spacing: 8) {
-                            Text(isWide ? "Kitchen Display Queue" : "Kitchen Queue")
+                            Text(isWide ? "kds_queue_wide".t : "kds_queue_narrow".t)
                                 .font(.system(size: 16, weight: .bold, design: .rounded))
                                 .foregroundColor(.textPrimary)
+                                .layoutPriority(1)
+                                .fixedSize(horizontal: true, vertical: false)
                             
                             Text("\(filteredTickets.count)")
                                 .font(.system(size: 11, weight: .bold))
+                                .frame(minWidth: 18)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Color.appAccent.opacity(0.15))
                                 .foregroundColor(.appAccent)
                                 .clipShape(Capsule())
+                                .layoutPriority(1)
+                                .fixedSize(horizontal: true, vertical: false)
                         }
+                        .fixedSize(horizontal: true, vertical: false)
                     }
                     
                     ToolbarItem(placement: .topBarTrailing) {
@@ -371,7 +393,7 @@ struct KitchenDisplayView: View {
                                 HStack(spacing: 4) {
                                     Image(systemName: "questionmark.circle")
                                     if isWide {
-                                        Text("วิธีใช้งาน")
+                                        Text("kds_help_button".t)
                                     }
                                 }
                                 .font(.system(size: 12, weight: .bold))
@@ -388,7 +410,7 @@ struct KitchenDisplayView: View {
                                 HStack(spacing: 4) {
                                     Image(systemName: "arrow.uturn.backward")
                                     if isWide {
-                                        Text("Recall")
+                                        Text("pos_recall".t)
                                     }
                                 }
                                 .font(.system(size: 12, weight: .bold))
@@ -406,7 +428,7 @@ struct KitchenDisplayView: View {
                                 HStack(spacing: 4) {
                                     Image(systemName: "clock.arrow.circlepath")
                                     if isWide {
-                                        Text("History")
+                                        Text("loyalty_history".t)
                                     }
                                 }
                                 .font(.system(size: 12, weight: .bold))
@@ -428,7 +450,7 @@ struct KitchenDisplayView: View {
                                 HStack(spacing: 4) {
                                     Image(systemName: kdsViewStyle == "columns" ? "rectangle.split.3x1" : "square.grid.2x2")
                                     if isWide {
-                                        Text(kdsViewStyle == "columns" ? "New View" : "Original View")
+                                        Text(kdsViewStyle == "columns" ? "kds_new_view".t : "kds_original_view".t)
                                     }
                                 }
                                 .font(.system(size: 12, weight: .bold))
@@ -446,6 +468,7 @@ struct KitchenDisplayView: View {
                                     .foregroundColor(.textSecondary)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("kds_station_selector_acc".t)
                             .popover(isPresented: $showingSettingsPopover) {
                                 KDSSettingsPopoverView(showKitchen: $kdsShowKitchen, showBar: $kdsShowBar)
                                     .presentationCompactAdaptation(.popover)
@@ -455,6 +478,29 @@ struct KitchenDisplayView: View {
                 }
         .onReceive(secondTimer) { date in
             currentSecond = date
+            
+            // KDS Auto-Complete: automatically mark orders as "served" when all items are done
+            if kdsAutoCompleteEnabled {
+                performAutoCompleteCheck()
+            }
+            
+            // KDS Sound Alert: play notification sound when a new order arrives
+            if kdsSoundEnabled {
+                let currentCount = activeOrders.count
+                if currentCount > previousActiveOrderCount && previousActiveOrderCount > 0 {
+                    APHaptic.trigger()
+                    AudioServicesPlaySystemSound(1007)
+                }
+                previousActiveOrderCount = currentCount
+            }
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.65, dampingFraction: 0.75)) {
+                isViewAppeared = true
+            }
+        }
+        .onDisappear {
+            isViewAppeared = false
         }
     }
     
@@ -475,7 +521,7 @@ struct KitchenDisplayView: View {
                     Image(systemName: "clock.arrow.circlepath")
                         .foregroundColor(.appTeal)
                         .font(.system(size: 16, weight: .bold))
-                    Text("Recently Served")
+                    Text("kds_recently_served".t)
                         .font(.system(size: 15, weight: .bold))
                         .foregroundColor(.textPrimary)
                     Spacer()
@@ -512,7 +558,7 @@ struct KitchenDisplayView: View {
                                     .font(.system(size: 40))
                                     .foregroundColor(.textTertiary)
                                     .padding(.top, 40)
-                                Text("No recently served orders.")
+                                Text("kds_no_recently_served".t)
                                     .font(.system(size: 13, weight: .medium))
                                     .foregroundColor(.textSecondary)
                             }
@@ -522,7 +568,7 @@ struct KitchenDisplayView: View {
                                 VStack(alignment: .leading, spacing: 10) {
                                     HStack(alignment: .top) {
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text("Table \(order.tableSession?.table?.tableNumber ?? "1")")
+                                            Text(LocalizationManager.shared.t("table_number_template", order.tableSession?.table?.tableNumber ?? "1"))
                                                 .font(.system(size: 13, weight: .bold))
                                                 .foregroundColor(.textPrimary)
                                             Text("#\(order.orderNumber.suffix(4))")
@@ -537,7 +583,7 @@ struct KitchenDisplayView: View {
                                             HStack(spacing: 4) {
                                                 Image(systemName: "arrow.uturn.backward")
                                                     .font(.system(size: 9, weight: .black))
-                                                Text("Recall")
+                                                Text("pos_recall".t)
                                                     .font(.system(size: 10, weight: .bold))
                                             }
                                             .padding(.horizontal, 8)
@@ -575,7 +621,7 @@ struct KitchenDisplayView: View {
                                                 }
                                                 Spacer()
                                                 if item.status == "cancelled" {
-                                                    Text("Cancelled")
+                                                    Text("kds_cancelled".t)
                                                         .font(.system(size: 9, weight: .bold))
                                                         .foregroundColor(.appRose)
                                                 }
@@ -585,7 +631,7 @@ struct KitchenDisplayView: View {
                                     
                                     HStack {
                                         Spacer()
-                                        Text("Served: \(formattedTime(order.updatedAt))")
+                                        Text(LocalizationManager.shared.t("kds_served_at_template", formattedTime(order.updatedAt)))
                                             .font(.system(size: 9, weight: .medium))
                                             .foregroundColor(.textTertiary)
                                     }
@@ -656,10 +702,45 @@ struct KitchenDisplayView: View {
             for item in lastOrder.items {
                 if item.status == "served" {
                     item.status = "cooking"
+                    item.isSynced = false
+                    item.updatedAt = Date()
                 }
             }
             lastOrder.updatedAt = Date()
             lastOrder.isSynced = false
+            try? modelContext.save()
+            APHaptic.trigger()
+        }
+    }
+    
+    /// KDS Auto-Complete: When enabled, automatically transitions orders from "ready" to "served"
+    /// when ALL items in the order have a terminal status (served or cancelled).
+    private func performAutoCompleteCheck() {
+        var didAutoComplete = false
+        
+        for order in activeOrders {
+            // Only auto-complete orders that are currently "ready" (all items cooked, awaiting delivery confirmation)
+            guard order.status == "ready" else { continue }
+            
+            // Skip ghost tickets belonging to inactive table sessions
+            if let session = order.tableSession, !session.isActive {
+                continue
+            }
+            
+            // Check if ALL items in the order are in a terminal state (served or cancelled)
+            let allItemsDone = order.items.allSatisfy { item in
+                item.status == "served" || item.status == "cancelled"
+            }
+            
+            if allItemsDone {
+                order.status = "served"
+                order.updatedAt = Date()
+                order.isSynced = false
+                didAutoComplete = true
+            }
+        }
+        
+        if didAutoComplete {
             try? modelContext.save()
             APHaptic.trigger()
         }
@@ -670,6 +751,7 @@ struct KitchenDisplayView: View {
 
 struct KitchenPremiumTicketCard: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
     var ticket: KDSTicket
     var onSelect: () -> Void
     
@@ -703,7 +785,7 @@ struct KitchenPremiumTicketCard: View {
                 HStack {
                     HStack(spacing: 4) {
                         Image(systemName: station == .kitchen ? "flame.fill" : "wineglass.fill")
-                        Text(station == .kitchen ? "KITCHEN" : "BAR")
+                        Text(station == .kitchen ? "kds_station_kitchen_upper".t : "kds_station_bar_upper".t)
                     }
                     .font(.system(size: 9, weight: .black))
                     .padding(.horizontal, 6)
@@ -718,7 +800,7 @@ struct KitchenPremiumTicketCard: View {
                 
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Table \(order.tableSession?.table?.tableNumber ?? "1")")
+                        Text(LocalizationManager.shared.t("table_number_template", order.tableSession?.table?.tableNumber ?? "1"))
                             .font(.system(size: 13, weight: .bold))
                             .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .textSecondary)
                         Text("#\(order.orderNumber.suffix(4))")
@@ -754,7 +836,7 @@ struct KitchenPremiumTicketCard: View {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.title2)
                                 .foregroundColor(.appTeal)
-                            Text("All Done")
+                            Text("kds_all_done".t)
                                 .font(.caption)
                                 .foregroundColor(.appTeal)
                                 .italic()
@@ -812,7 +894,7 @@ struct KitchenPremiumTicketCard: View {
             // Footer Action Panel
             HStack {
                 Button(action: alertWaiter) {
-                    Text("Request Waiter")
+                    Text("kds_request_waiter".t)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.appTeal)
                 }
@@ -821,7 +903,7 @@ struct KitchenPremiumTicketCard: View {
                 Spacer()
                 
                 Button(action: serveEntireTicket) {
-                    Text("Serve")
+                    Text("kds_serve".t)
                         .font(.system(size: 11, weight: .bold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 4)
@@ -834,6 +916,8 @@ struct KitchenPremiumTicketCard: View {
                         )
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Mark order as ready")
+                .accessibilityHint("Double-tap to mark all items as ready")
             }
             .padding(10)
             .background(Color.appSurfaceHigh.opacity(0.5))
@@ -847,6 +931,8 @@ struct KitchenPremiumTicketCard: View {
         )
         .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
         .onTapGesture(perform: onSelect)
+        .accessibilityLabel("Order \(order.orderNumber), \(order.items.count) items")
+        .accessibilityHint("Double-tap to view order details")
         .onAppear(perform: updateElapsedTime)
         .onReceive(timer) { _ in
             updateElapsedTime()
@@ -901,21 +987,26 @@ struct KitchenPremiumTicketCard: View {
     
     private func serveEntireTicket() {
         withAnimation {
+            var didChange = false
             for item in order.items {
                 let matchStation = (station == .kitchen) ? !item.isBeverage : item.isBeverage
                 if (item.status == "cooking" || item.status == "alert") && matchStation {
                     item.status = "served"
                     item.updatedAt = Date()
                     item.isSynced = false
+                    didChange = true
                 }
             }
-            let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
-            if !hasActiveItems {
-                order.status = "ready"
-                order.updatedAt = Date()
+            if didChange {
                 order.isSynced = false
+                order.updatedAt = Date()
+                
+                let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
+                if !hasActiveItems {
+                    order.status = "ready"
+                }
+                try? modelContext.save()
             }
-            try? modelContext.save()
         }
         APHaptic.trigger()
     }
@@ -925,6 +1016,7 @@ struct KitchenPremiumTicketCard: View {
 
 struct KitchenTicketView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
     var ticket: KDSTicket
     var onSelect: () -> Void
     
@@ -942,7 +1034,7 @@ struct KitchenTicketView: View {
                 HStack {
                     HStack(spacing: 3) {
                         Image(systemName: station == .kitchen ? "flame.fill" : "wineglass.fill")
-                        Text(station == .kitchen ? "KITCHEN" : "BAR")
+                        Text(station == .kitchen ? "kds_station_kitchen_upper".t : "kds_station_bar_upper".t)
                     }
                     .font(.system(size: 8, weight: .black))
                     .padding(.horizontal, 4)
@@ -957,7 +1049,7 @@ struct KitchenTicketView: View {
                 
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Table \(order.tableSession?.table?.tableNumber ?? "1")")
+                        Text(LocalizationManager.shared.t("table_number_template", order.tableSession?.table?.tableNumber ?? "1"))
                             .font(.system(size: 10, weight: .bold))
                             .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .textSecondary)
                         Text("#\(order.orderNumber.suffix(4))")
@@ -1006,7 +1098,7 @@ struct KitchenTicketView: View {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.system(size: 18))
                                 .foregroundColor(.appTeal)
-                            Text("All completed")
+                            Text("kds_all_completed".t)
                                 .font(.system(size: 10))
                                 .foregroundColor(.appTeal)
                                 .italic()
@@ -1075,7 +1167,7 @@ struct KitchenTicketView: View {
             // Footer Action: unified two-button layout matching the premium tickets
             HStack {
                 Button(action: alertWaiter) {
-                    Text("Request Waiter")
+                    Text("kds_request_waiter".t)
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.appTeal)
                 }
@@ -1089,7 +1181,7 @@ struct KitchenTicketView: View {
                 })
                 if hasActiveItemsForStation {
                     Button(action: serveEntireTicket) {
-                        Text("Serve")
+                        Text("kds_serve".t)
                             .font(.system(size: 10, weight: .bold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 3)
@@ -1104,7 +1196,7 @@ struct KitchenTicketView: View {
                     .buttonStyle(.plain)
                 } else {
                     Button(action: completeTicket) {
-                        Text("Clear")
+                        Text("pos_clear".t)
                             .font(.system(size: 10, weight: .bold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 3)
@@ -1169,11 +1261,12 @@ struct KitchenTicketView: View {
             item.updatedAt = Date()
             item.isSynced = false
             
+            order.isSynced = false
+            order.updatedAt = Date()
+            
             let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
             if activeItems.isEmpty {
                 order.status = "ready"
-                order.updatedAt = Date()
-                order.isSynced = false
             }
             try? modelContext.save()
         }
@@ -1184,6 +1277,9 @@ struct KitchenTicketView: View {
             item.status = "alert"
             item.updatedAt = Date()
             item.isSynced = false
+            
+            order.isSynced = false
+            order.updatedAt = Date()
             try? modelContext.save()
         }
         
@@ -1210,42 +1306,52 @@ struct KitchenTicketView: View {
     
     private func serveEntireTicket() {
         withAnimation {
+            var didChange = false
             for item in order.items {
                 let matchStation = (station == .kitchen) ? !item.isBeverage : item.isBeverage
                 if (item.status == "cooking" || item.status == "alert") && matchStation {
                     item.status = "served"
                     item.updatedAt = Date()
                     item.isSynced = false
+                    didChange = true
                 }
             }
-            let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
-            if !hasActiveItems {
-                order.status = "ready"
-                order.updatedAt = Date()
+            if didChange {
                 order.isSynced = false
+                order.updatedAt = Date()
+                
+                let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
+                if !hasActiveItems {
+                    order.status = "ready"
+                }
+                try? modelContext.save()
             }
-            try? modelContext.save()
         }
         APHaptic.trigger()
     }
     
     private func completeTicket() {
         withAnimation {
+            var didChange = false
             for item in order.items {
                 let matchStation = (station == .kitchen) ? !item.isBeverage : item.isBeverage
                 if (item.status == "cooking" || item.status == "alert") && matchStation {
                     item.status = "served"
                     item.updatedAt = Date()
                     item.isSynced = false
+                    didChange = true
                 }
             }
-            let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
-            if !hasActiveItems {
-                order.status = "served"
-                order.updatedAt = Date()
+            if didChange {
                 order.isSynced = false
+                order.updatedAt = Date()
+                
+                let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
+                if !hasActiveItems {
+                    order.status = "served"
+                }
+                try? modelContext.save()
             }
-            try? modelContext.save()
         }
         APHaptic.trigger()
     }
@@ -1255,6 +1361,7 @@ struct KitchenTicketView: View {
 struct KitchenOrderDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var lm: LocalizationManager
     var ticket: KDSTicket
     
     var order: Order { ticket.order }
@@ -1265,9 +1372,9 @@ struct KitchenOrderDetailView: View {
     
     private var footerActionTitle: String {
         if station == .kitchen {
-            return "Mark Kitchen Items Ready"
+            return "kds_mark_kitchen_ready".t
         } else {
-            return "Mark Bar Items Ready"
+            return "kds_mark_bar_ready".t
         }
     }
     
@@ -1278,14 +1385,14 @@ struct KitchenOrderDetailView: View {
                 HStack(spacing: 20) {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 12) {
-                            Text("Table \(order.tableSession?.table?.tableNumber ?? "1")")
+                            Text(LocalizationManager.shared.t("table_number_template", order.tableSession?.table?.tableNumber ?? "1"))
                                 .font(.system(size: 32, weight: .black, design: .rounded))
                                 .foregroundColor(.textPrimary)
                             
                             // Station badge
                             HStack(spacing: 4) {
                                 Image(systemName: station == .kitchen ? "flame.fill" : "wineglass.fill")
-                                Text(station == .kitchen ? "KITCHEN" : "BAR")
+                                Text(station == .kitchen ? "kds_station_kitchen_upper".t : "kds_station_bar_upper".t)
                             }
                             .font(.system(size: 11, weight: .black))
                             .padding(.horizontal, 8)
@@ -1321,7 +1428,7 @@ struct KitchenOrderDetailView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "timer")
                             .font(.system(size: 13, weight: .bold))
-                        Text("\(elapsedTime)m Active")
+                        Text(LocalizationManager.shared.t("kds_active_timer_template", elapsedTime))
                             .font(.system(size: 13, weight: .bold))
                     }
                     .padding(.horizontal, 14)
@@ -1377,11 +1484,11 @@ struct KitchenOrderDetailView: View {
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 70))
                                     .foregroundColor(.appTeal)
-                                Text("All station items completed!")
+                                Text("kds_all_station_completed".t)
                                     .font(.title2)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textPrimary)
-                                Text("You can now dismiss this ticket.")
+                                Text("kds_dismiss_ticket_hint".t)
                                     .font(.subheadline)
                                     .foregroundColor(.textSecondary)
                                 Spacer()
@@ -1418,7 +1525,7 @@ struct KitchenOrderDetailView: View {
                                             HStack(spacing: 4) {
                                                 Image(systemName: "exclamationmark.triangle.fill")
                                                     .font(.caption2)
-                                                Text("Staff Alerted / Waiter Called")
+                                                Text("kds_staff_alerted".t)
                                                     .font(.system(size: 11, weight: .bold))
                                             }
                                             .foregroundColor(.appAmber)
@@ -1434,7 +1541,7 @@ struct KitchenOrderDetailView: View {
                                         Button(action: { alertItem(item) }) {
                                             HStack(spacing: 4) {
                                                 Image(systemName: "exclamationmark.triangle")
-                                                Text("Alert Staff")
+                                                Text("kds_alert_staff".t)
                                             }
                                             .font(.system(size: 12, weight: .bold))
                                             .padding(.horizontal, 14)
@@ -1454,7 +1561,7 @@ struct KitchenOrderDetailView: View {
                                         Button(action: { rejectItem(item) }) {
                                             HStack(spacing: 4) {
                                                 Image(systemName: "xmark.circle")
-                                                Text("Cancel")
+                                                Text("cancel".t)
                                             }
                                             .font(.system(size: 12, weight: .bold))
                                             .padding(.horizontal, 14)
@@ -1473,7 +1580,7 @@ struct KitchenOrderDetailView: View {
                                         Button(action: { serveItem(item) }) {
                                             HStack(spacing: 4) {
                                                 Image(systemName: "checkmark.circle")
-                                                Text("Serve")
+                                                Text("kds_serve".t)
                                             }
                                             .font(.system(size: 12, weight: .bold))
                                             .padding(.horizontal, 16)
@@ -1524,6 +1631,8 @@ struct KitchenOrderDetailView: View {
                                 .shadow(color: Color.appTeal.opacity(0.2), radius: 8, x: 0, y: 4)
                         }
                         .buttonStyle(PlainButtonStyle())
+                        .accessibilityLabel("Mark order as ready")
+                        .accessibilityHint("Double-tap to mark all items as ready")
                         .padding(.horizontal, 32)
                         .padding(.vertical, 20)
                     } else {
@@ -1534,7 +1643,7 @@ struct KitchenOrderDetailView: View {
                             HStack(spacing: 6) {
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 16, weight: .bold))
-                                Text("Clear / Food Delivered")
+                                Text("kds_clear_delivered".t)
                             }
                             .font(.system(size: 18, weight: .bold))
                             .foregroundColor(.white)
@@ -1583,11 +1692,12 @@ struct KitchenOrderDetailView: View {
             item.updatedAt = Date()
             item.isSynced = false
             
+            order.isSynced = false
+            order.updatedAt = Date()
+            
             let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
             if activeItems.isEmpty {
                 order.status = "ready"
-                order.updatedAt = Date()
-                order.isSynced = false
             }
             try? modelContext.save()
             
@@ -1604,6 +1714,9 @@ struct KitchenOrderDetailView: View {
             item.status = "alert"
             item.updatedAt = Date()
             item.isSynced = false
+            
+            order.isSynced = false
+            order.updatedAt = Date()
             try? modelContext.save()
         }
         
@@ -1623,11 +1736,12 @@ struct KitchenOrderDetailView: View {
             item.updatedAt = Date()
             item.isSynced = false
             
+            order.isSynced = false
+            order.updatedAt = Date()
+            
             let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
             if activeItems.isEmpty {
                 order.status = "ready"
-                order.updatedAt = Date()
-                order.isSynced = false
             }
             try? modelContext.save()
             
@@ -1640,40 +1754,50 @@ struct KitchenOrderDetailView: View {
     }
     
     private func serveEntireTicket() {
+        var didChange = false
         for item in order.items {
             let matchStation = (station == .kitchen) ? !item.isBeverage : item.isBeverage
             if (item.status == "cooking" || item.status == "alert") && matchStation {
                 item.status = "served"
                 item.updatedAt = Date()
                 item.isSynced = false
+                didChange = true
             }
         }
-        let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
-        if !hasActiveItems {
-            order.status = "ready"
-            order.updatedAt = Date()
+        if didChange {
             order.isSynced = false
+            order.updatedAt = Date()
+            
+            let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
+            if !hasActiveItems {
+                order.status = "ready"
+            }
+            try? modelContext.save()
         }
-        try? modelContext.save()
     }
     
     private func completeTicket() {
         // Serve all items for this station (just in case)
+        var didChange = false
         for item in order.items {
             let matchStation = (station == .kitchen) ? !item.isBeverage : item.isBeverage
             if (item.status == "cooking" || item.status == "alert") && matchStation {
                 item.status = "served"
                 item.updatedAt = Date()
                 item.isSynced = false
+                didChange = true
             }
         }
-        let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
-        if !hasActiveItems {
-            order.status = "served"
-            order.updatedAt = Date()
+        if didChange {
             order.isSynced = false
+            order.updatedAt = Date()
+            
+            let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
+            if !hasActiveItems {
+                order.status = "served"
+            }
+            try? modelContext.save()
         }
-        try? modelContext.save()
     }
 }
 
@@ -1701,6 +1825,7 @@ extension OrderItem {
 // MARK: - KDS Help Tutorial View
 struct KDSHelpView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var lm: LocalizationManager
     
     var body: some View {
         NavigationStack {
@@ -1712,10 +1837,10 @@ struct KDSHelpView: View {
                             .font(.system(size: 32))
                             .foregroundColor(.appTeal)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("คู่มือการใช้งานระบบ KDS")
+                            Text("kds_help_title".t)
                                 .font(.system(size: 20, weight: .bold))
                                 .foregroundColor(.textPrimary)
-                            Text("คำแนะนำและเคล็ดลับเพื่อการจัดการออเดอร์ในครัวอย่างรวดเร็ว")
+                            Text("kds_help_subtitle".t)
                                 .font(.system(size: 12))
                                 .foregroundColor(.textSecondary)
                         }
@@ -1726,64 +1851,64 @@ struct KDSHelpView: View {
                     
                     // Tip 1: Splitting Cards
                     helpSection(
-                        title: "1. การแยกการ์ด ครัว & บาร์น้ำ",
+                        title: "kds_help_sec1_title".t,
                         icon: "square.split.2x1.fill",
                         iconColor: .appTeal,
-                        description: "ออเดอร์ที่มีทั้งอาหารและเครื่องดื่มจะถูกแยกเป็น 2 การ์ดโดยอัตโนมัติ เพื่อให้ผู้จัดเตรียมอาหารและเครื่องดื่มทำงานแยกกันได้ชัดเจน:",
+                        description: "kds_help_sec1_desc".t,
                         bulletPoints: [
-                            "การ์ดที่มีแถบสีส้มและป้าย 🔥 KITCHEN คือรายการอาหารของห้องครัว",
-                            "การ์ดที่มีแถบสีเขียวอมฟ้าและป้าย 🍹 BAR คือรายการเครื่องดื่มของบาร์น้ำ"
+                            "kds_help_sec1_bullet1".t,
+                            "kds_help_sec1_bullet2".t
                         ]
                     )
                     
                     // Tip 2: Color Coding
                     helpSection(
-                        title: "2. สีขอบและสีหัวการ์ดบอกความล่าช้า",
+                        title: "kds_help_sec2_title".t,
                         icon: "paintpalette.fill",
                         iconColor: .appAmber,
-                        description: "สีขอบและการแสดงผลของการ์ดจะเปลี่ยนไปตามเวลาที่รอนับจากสั่งเสร็จ:",
+                        description: "kds_help_sec2_desc".t,
                         bulletPoints: [
-                            "สีปกติ (ขอบเทา/แถบปกติ): เพิ่งสั่งเข้ามาไม่เกิน 5 นาที",
-                            "สีเหลือง (แถบเหลือง): ออเดอร์รอเกิน 5 นาที เริ่มล่าช้า",
-                            "สีแดง (แถบแดง): ออเดอร์รอเกิน 10 นาที ล่าช้ามากเป็นพิเศษ ควรเร่งทำด่วน!"
+                            "kds_help_sec2_bullet1".t,
+                            "kds_help_sec2_bullet2".t,
+                            "kds_help_sec2_bullet3".t
                         ]
                     )
                     
                     // Tip 3: Controls and Actions
                     helpSection(
-                        title: "3. ปุ่มควบคุมและการทำงาน",
+                        title: "kds_help_sec3_title".t,
                         icon: "hand.tap.fill",
                         iconColor: .appAccent,
-                        description: "คุณสามารถทำงานกับออเดอร์ได้อย่างรวดเร็วผ่านการกดปุ่มบนการ์ด:",
+                        description: "kds_help_sec3_desc".t,
                         bulletPoints: [
-                            "ปุ่ม Serve (มุมขวาล่าง): กดเพื่อเสิร์ฟอาหาร/เครื่องดื่มทั้งหมดในการ์ดใบนี้",
-                            "กดที่ตัวการ์ด (Card Tap): เพื่อเปิดดูรายละเอียด และเลือกเสิร์ฟทีละรายการ หรือยกเลิกออเดอร์",
-                            "ปุ่ม Recall (ด้านบนขวา): กดเพื่อดึงออเดอร์ล่าสุดที่เพิ่งกดเสิร์ฟผิดพลาด กลับมาเข้าระบบใหม่",
-                            "ปุ่ม History (ด้านบนขวา): ดึงแถบประวัติออเดอร์ที่เสิร์ฟไปแล้วออกมาตรวจสอบ และเลือกกด Recall รายการใดรายการหนึ่งกลับมาทำใหม่ได้"
+                            "kds_help_sec3_bullet1".t,
+                            "kds_help_sec3_bullet2".t,
+                            "kds_help_sec3_bullet3".t,
+                            "kds_help_sec3_bullet4".t
                         ]
                     )
                     
                     // Tip 4: Settings Toggles
                     helpSection(
-                        title: "4. การกรองออเดอร์ตามสถานี",
+                        title: "kds_help_sec4_title".t,
                         icon: "gearshape.2.fill",
                         iconColor: .textSecondary,
-                        description: "คุณสามารถเปิดปิดการแสดงผลของสถานีครัวหรือบาร์น้ำเฉพาะเครื่องนี้ได้โดยกดที่ไอคอนฟันเฟือง ⚙️ ด้านบนขวา:",
+                        description: "kds_help_sec4_desc".t,
                         bulletPoints: [
-                            "เลือกเปิดเฉพาะครัวเมื่อต้องการใช้แท็บเล็ตนี้ที่ห้องครัว",
-                            "เลือกเปิดเฉพาะบาร์เมื่อต้องการใช้แท็บเล็ตนี้ที่บาร์น้ำ",
-                            "เปิดทั้งสองระบบสำหรับจุดควบคุมส่วนกลางที่ต้องการเห็นออเดอร์ทั้งหมด"
+                            "kds_help_sec4_bullet1".t,
+                            "kds_help_sec4_bullet2".t,
+                            "kds_help_sec4_bullet3".t
                         ]
                     )
                 }
                 .padding(24)
             }
             .background(Color.appBackground)
-            .navigationTitle("คำแนะนำการใช้งาน KDS")
+            .navigationTitle("kds_help_nav_title".t)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("ปิด") {
+                    Button("close_btn".t) {
                         dismiss()
                     }
                     .font(.system(size: 14, weight: .bold))
@@ -1838,12 +1963,13 @@ struct KDSHelpView: View {
 
 // MARK: - KDS Quick Settings Popover View
 struct KDSSettingsPopoverView: View {
+    @EnvironmentObject private var lm: LocalizationManager
     @Binding var showKitchen: Bool
     @Binding var showBar: Bool
     
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("ตั้งค่าสถานี KDS")
+            Text("kds_settings_title".t)
                 .font(.system(size: 14, weight: .bold))
                 .foregroundColor(.textPrimary)
                 .padding(.bottom, 4)
@@ -1852,7 +1978,7 @@ struct KDSSettingsPopoverView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "flame.fill")
                         .foregroundColor(.appRose)
-                    Text("แสดงรายการจากครัว (Kitchen)")
+                    Text("kds_show_kitchen_toggle".t)
                         .font(.system(size: 12, weight: .medium))
                 }
             }
@@ -1862,7 +1988,7 @@ struct KDSSettingsPopoverView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "wineglass.fill")
                         .foregroundColor(.appTeal)
-                    Text("แสดงรายการจากบาร์ (Drink Bar)")
+                    Text("kds_show_bar_toggle".t)
                         .font(.system(size: 12, weight: .medium))
                 }
             }

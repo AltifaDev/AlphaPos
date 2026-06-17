@@ -467,121 +467,215 @@ struct LoginView: View {
     }
     
     // MARK: - Subviews: Employee Selection
-    
+
+    @State private var headerAppeared = false
+    @State private var cardsAppeared = false
+    @State private var pressedEmployeeId: String? = nil
+    @State private var selectedGlowId: String? = nil
+
     private var employeeSelectionView: some View {
         ZStack {
-            // Theme toggle button top right & Link Shop button top left & Language menu
+            // Layer 0: Aurora flowing background
+            AuroraBackground()
+
+            // Layer 0.5: Star field particles
+            FloatingStarField()
+
+            // Layer 1: Top control bar (glass morphism row)
             VStack {
-                HStack {
+                HStack(spacing: 12) {
                     unlinkButton
-                        .padding(.leading, APSpacing.md)
-                        .padding(.top, APSpacing.md)
-                    
                     Spacer()
-                    
                     languageMenu
-                        .padding(.top, APSpacing.md)
-                    
                     themeToggleButton
-                        .padding(.trailing, APSpacing.md)
-                        .padding(.top, APSpacing.md)
                 }
+                .padding(.horizontal, APSpacing.md)
+                .padding(.top, APSpacing.sm)
                 Spacer()
             }
-            
-            VStack(spacing: APSpacing.xl) {
-                // Header
-                VStack(spacing: APSpacing.xs) {
+            .opacity(headerAppeared ? 1 : 0)
+
+            // Layer 2: Main content
+            VStack(spacing: 0) {
+                // Premium Animated Header
+                VStack(spacing: APSpacing.md) {
+                    // Grid icon with glow
                     Image(systemName: "square.grid.3x3.topline.filled")
-                        .font(.system(size: 44))
-                        .foregroundStyle(APGradient.accent)
-                    
-                    Text("AlphaPos Staff")
-                        .font(.title).fontWeight(.black)
-                        .foregroundColor(.textPrimary)
-                    
-                    Text("store".localized(for: appLanguage) + ": \(activeMerchantId)")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.textSecondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.appSurfaceHigh)
-                        .cornerRadius(4)
-                        .padding(.top, 2)
-                    
+                        .font(.system(size: 36, weight: .semibold))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.18, green: 0.44, blue: 0.97),
+                                    Color(red: 0.36, green: 0.64, blue: 1.0)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .shadow(color: Color(red: 0.18, green: 0.44, blue: 0.97).opacity(0.4), radius: 12)
+                        .opacity(headerAppeared ? 1 : 0)
+                        .scaleEffect(headerAppeared ? 1 : 0.5)
+
+                    // Gradient shimmer title
+                    GradientTitleText(text: "AlphaPos Staff")
+                        .opacity(headerAppeared ? 1 : 0)
+                        .offset(y: headerAppeared ? 0 : -20)
+
+                    // Glass pill store ID
+                    GlassPillBadge(icon: "storefront", text: activeMerchantId)
+                        .opacity(headerAppeared ? 1 : 0)
+                        .offset(y: headerAppeared ? 0 : 10)
+
+                    // Subtitle
                     Text("select_profile_title".localized(for: appLanguage))
                         .font(.subheadline)
-                        .foregroundColor(.textSecondary)
+                        .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
+                        .opacity(headerAppeared ? 0.8 : 0)
                 }
-                .padding(.top, APSpacing.xl)
-                
+                .padding(.top, 50)
+
+                Spacer().frame(height: 30)
+
+                // Content area
                 if isLoading {
-                    ProgressView()
-                        .tint(.appAccent)
-                        .frame(maxHeight: .infinity)
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .tint(Color(red: 0.18, green: 0.44, blue: 0.97))
+                        Text("Loading profiles...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxHeight: .infinity)
                 } else if let err = errorMessage {
                     VStack(spacing: APSpacing.md) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.title)
+                            .foregroundColor(Color(red: 0.99, green: 0.27, blue: 0.29))
                         Text(err)
-                            .foregroundColor(.appRose)
                             .font(.subheadline)
+                            .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
-                        
-                        Button("retry".localized(for: appLanguage)) {
-                            loadEmployees()
+
+                        Button(action: { loadEmployees() }) {
+                            Label("retry".localized(for: appLanguage), systemImage: "arrow.clockwise")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .frame(maxWidth: 200)
+                                .padding(.vertical, 14)
+                                .background(
+                                    Capsule(style: .continuous)
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [
+                                                    Color(red: 0.18, green: 0.44, blue: 0.97),
+                                                    Color(red: 0.36, green: 0.64, blue: 1.0)
+                                                ],
+                                                startPoint: .leading,
+                                                endPoint: .trailing
+                                            )
+                                        )
+                                )
                         }
-                        .apGradientButton(gradient: APGradient.accent)
-                        .frame(maxWidth: 200)
                     }
                     .frame(maxHeight: .infinity)
                 } else if employees.isEmpty {
                     emptyEmployeesView
                         .frame(maxHeight: .infinity)
                 } else {
-                    // Employee Grid
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: APSpacing.md) {
-                            ForEach(employees) { emp in
-                                Button(action: {
-                                    APHaptic.trigger()
-                                    pinDigits = ""
-                                    pinSheetMode = .pin
-                                    selectedEmployee = emp
-                                }) {
-                                    VStack(spacing: APSpacing.sm) {
-                                        // Avatar circle
-                                        ZStack {
-                                            Circle()
-                                                .fill(APGradient.accent)
-                                                .frame(width: 60, height: 60)
-                                            
-                                            Text(String(emp.firstName.prefix(1)) + String(emp.lastName.prefix(1)))
-                                                .font(.title3).fontWeight(.bold)
-                                                .foregroundColor(.white)
-                                        }
-                                        
-                                        Text("\(emp.firstName) \(emp.lastName)")
-                                            .font(.headline)
-                                            .foregroundColor(.textPrimary)
-                                        
-                                        Text(emp.role)
-                                            .font(.caption)
-                                            .foregroundColor(.textSecondary)
-                                    }
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, APSpacing.md)
-                                    .apCard()
-                                }
-                                .buttonStyle(.plain)
+                    // Premium Employee Cards
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 24) {
+                            ForEach(Array(employees.enumerated()), id: \.element.id) { index, emp in
+                                premiumEmployeeCard(emp: emp, index: index)
                             }
                         }
-                        .padding(.horizontal, APSpacing.md)
+                        .padding(.horizontal, 40)
+                        .padding(.vertical, 8)
                     }
+                    .offset(y: cardsAppeared ? 0 : 40)
+                    .opacity(cardsAppeared ? 1 : 0)
                 }
-                
+
                 Spacer()
             }
         }
+        .onAppear {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.05)) {
+                headerAppeared = true
+            }
+            withAnimation(.spring(response: 0.7, dampingFraction: 0.65).delay(0.35)) {
+                cardsAppeared = true
+            }
+        }
+    }
+
+    private func premiumEmployeeCard(emp: Employee, index: Int) -> some View {
+        let initials = String(emp.firstName.prefix(1)) + String(emp.lastName.prefix(1))
+        let isPressed = pressedEmployeeId == emp.id
+        let isSelected = selectedGlowId == emp.id
+
+        return Button(action: {
+            APHaptic.trigger()
+            // Press animation
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.45)) {
+                pressedEmployeeId = emp.id
+                selectedGlowId = emp.id
+            }
+            // Release + open PIN after bounce
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                    pressedEmployeeId = nil
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    withAnimation {
+                        selectedGlowId = nil
+                        pinDigits = ""
+                        pinSheetMode = .pin
+                        selectedEmployee = emp
+                    }
+                }
+            }
+        }) {
+            GlassCard(cornerRadius: 32) {
+                VStack(spacing: 16) {
+                    PremiumEmployeeAvatar(
+                        initials: initials,
+                        index: index,
+                        size: 100,
+                        isPressed: isPressed
+                    )
+
+                    VStack(spacing: 4) {
+                        Text("\(emp.firstName) \(emp.lastName)")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+
+                        Text(emp.role)
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    .opacity(headerAppeared ? 1 : 0)
+                    .offset(y: headerAppeared ? 0 : 6)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 24)
+                .frame(width: 160)
+            }
+            .scaleEffect(isPressed ? 0.95 : 1.0)
+            .shadow(
+                color: isSelected
+                    ? Color(red: 0.18, green: 0.44, blue: 0.97).opacity(0.25)
+                    : Color.black.opacity(0.06),
+                radius: isSelected ? 24 : 8,
+                x: 0,
+                y: isSelected ? 8 : 4
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private var emptyEmployeesView: some View {
@@ -864,6 +958,11 @@ struct LoginView: View {
     }
     
     private func startBiometricScan(for employee: Employee) {
+        guard let embedding = employee.faceEmbedding, !embedding.isEmpty else {
+            bioScannerMessage = "No face registered. Log in with PIN first and register your face in the Timecard tab."
+            return
+        }
+        
         let context = LAContext()
         var error: NSError?
         

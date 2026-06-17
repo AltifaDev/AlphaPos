@@ -4,74 +4,78 @@ struct AppConfig {
     let supabaseURL: URL
     let supabaseAnonKey: String
     let defaultMerchantId: String
+    let defaultDeviceSecret: String
     let localServerURL: String
     let isProduction: Bool
 
     var supabaseRestURL: URL { URL(string: supabaseURL.absoluteString + "/rest/v1")! }
     var supabaseRealtimeURL: URL { URL(string: supabaseURL.absoluteString + "/realtime/v1")! }
+    var edgeFunctionURL: URL { URL(string: supabaseURL.absoluteString + "/functions/v1")! }
 
     static let shared: AppConfig = {
-        let defaultKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNkbXRraXhycWttd2Nwd29pc3JnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NDIxNjAsImV4cCI6MjA5NjQxODE2MH0.rjLwVE0ShXIFoT0k982XO_lVCQMsA4uTKMW1Su-NUws"
-        let defaultMerchant = "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
-        
-        let envURL = ProcessInfo.processInfo.environment["SUPABASE_URL"]
-        let finalEnvURL = (envURL == nil || envURL!.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            ? "https://sdmtkixrqkmwcpwoisrg.supabase.co"
-            : envURL!
-            
-        let envKey = ProcessInfo.processInfo.environment["SUPABASE_ANON_KEY"]
-        let finalEnvKey = (envKey == nil || envKey!.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            ? defaultKey
-            : envKey!
-            
-        let envMerchant = ProcessInfo.processInfo.environment["DEFAULT_MERCHANT_ID"]
-        let finalEnvMerchant = (envMerchant == nil || envMerchant!.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            ? defaultMerchant
-            : envMerchant!
-            
-        let envLocalURL = ProcessInfo.processInfo.environment["LOCAL_SERVER_URL"]
-        let finalEnvLocalURL = (envLocalURL == nil || envLocalURL!.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            ? "http://127.0.0.1:8080"
-            : envLocalURL!
+        let env = ProcessInfo.processInfo.environment
+        let plist = loadConfigPlist()
+        let isProduction = plistValue("ALPHAPOS_ENV", in: plist) == "production"
+            || env["ALPHAPOS_ENV"] == "production"
 
-        guard let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
-              let dict = NSDictionary(contentsOfFile: path) as? [String: Any]
-        else {
-            return AppConfig(
-                supabaseURL: URL(string: finalEnvURL)!,
-                supabaseAnonKey: finalEnvKey,
-                defaultMerchantId: finalEnvMerchant,
-                localServerURL: finalEnvLocalURL,
-                isProduction: ProcessInfo.processInfo.environment["ALPHAPOS_ENV"] == "production"
-            )
-        }
-        
-        let plistURL = dict["SUPABASE_URL"] as? String
-        let finalPlistURL = (plistURL == nil || plistURL!.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            ? "https://sdmtkixrqkmwcpwoisrg.supabase.co"
-            : plistURL!
-            
-        let plistKey = dict["SUPABASE_ANON_KEY"] as? String
-        let finalPlistKey = (plistKey == nil || plistKey!.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            ? defaultKey
-            : plistKey!
-            
-        let plistMerchant = dict["DEFAULT_MERCHANT_ID"] as? String
-        let finalPlistMerchant = (plistMerchant == nil || plistMerchant!.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            ? defaultMerchant
-            : plistMerchant!
-            
-        let plistLocalURL = dict["LOCAL_SERVER_URL"] as? String
-        let finalPlistLocalURL = (plistLocalURL == nil || plistLocalURL!.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            ? "http://127.0.0.1:8080"
-            : plistLocalURL!
+        let supabaseURLString = requiredConfigValue(
+            plistValue("SUPABASE_URL", in: plist) ?? env["SUPABASE_URL"],
+            name: "SUPABASE_URL"
+        )
 
         return AppConfig(
-            supabaseURL: URL(string: finalPlistURL)!,
-            supabaseAnonKey: finalPlistKey,
-            defaultMerchantId: finalPlistMerchant,
-            localServerURL: finalPlistLocalURL,
-            isProduction: dict["ALPHAPOS_ENV"] as? String == "production"
+            supabaseURL: requiredURL(supabaseURLString, name: "SUPABASE_URL"),
+            supabaseAnonKey: requiredConfigValue(
+                plistValue("SUPABASE_ANON_KEY", in: plist) ?? env["SUPABASE_ANON_KEY"],
+                name: "SUPABASE_ANON_KEY"
+            ),
+            defaultMerchantId: requiredConfigValue(
+                plistValue("DEFAULT_MERCHANT_ID", in: plist) ?? env["DEFAULT_MERCHANT_ID"],
+                name: "DEFAULT_MERCHANT_ID"
+            ),
+            defaultDeviceSecret: requiredConfigValue(
+                plistValue("DEFAULT_DEVICE_SECRET", in: plist) ?? env["DEFAULT_DEVICE_SECRET"],
+                name: "DEFAULT_DEVICE_SECRET"
+            ),
+            localServerURL: plistValue("LOCAL_SERVER_URL", in: plist)
+                ?? nonEmpty(env["LOCAL_SERVER_URL"])
+                ?? "http://127.0.0.1:8080",
+            isProduction: isProduction
         )
     }()
+
+    private static func loadConfigPlist() -> [String: Any] {
+        guard let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
+              let dict = NSDictionary(contentsOfFile: path) as? [String: Any] else {
+            return [:]
+        }
+        return dict
+    }
+
+    private static func plistValue(_ key: String, in plist: [String: Any]) -> String? {
+        nonEmpty(plist[key] as? String)
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty,
+              !trimmed.contains("your-") else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func requiredConfigValue(_ value: String?, name: String) -> String {
+        guard let value = nonEmpty(value) else {
+            fatalError("Missing required AlphaPos configuration value: \(name). Add it to Config.plist or the app environment.")
+        }
+        return value
+    }
+
+    private static func requiredURL(_ value: String, name: String) -> URL {
+        guard let url = URL(string: value) else {
+            fatalError("Invalid AlphaPos configuration URL for \(name): \(value)")
+        }
+        return url
+    }
 }

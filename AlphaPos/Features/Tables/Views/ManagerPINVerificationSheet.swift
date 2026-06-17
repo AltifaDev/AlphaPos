@@ -3,11 +3,13 @@ import SwiftData
 
 struct ManagerPINVerificationSheet: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
     @Query private var users: [User]
     
     @Binding var isPresented: Bool
     var onSuccess: () -> Void
     var onDismiss: (() -> Void)? = nil
+    @AppStorage("developer_mode_enabled") private var developerModeEnabled = false
     
     @State private var enteredPin = ""
     @State private var errorMessage = ""
@@ -40,12 +42,12 @@ struct ManagerPINVerificationSheet: View {
                     }
                     
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Manager Authorization")
+                        Text("manager_auth_title".t)
                             .font(.headline)
                             .fontWeight(.black)
                             .foregroundColor(.textPrimary)
                         
-                        Text("Enter manager or owner PIN to continue.")
+                        Text("manager_auth_desc".t)
                             .font(.caption)
                             .foregroundColor(.textSecondary)
                     }
@@ -186,19 +188,15 @@ struct ManagerPINVerificationSheet: View {
         let hashedEntered = SecurityHelper.sha256(enteredPin)
         
         let matches = users.filter { user in
-            guard let roleName = user.role?.name.lowercased() else { return false }
-            let isManagerOrOwner = roleName.contains("owner") || roleName.contains("manager") || roleName.contains("admin")
-            
-            guard isManagerOrOwner else { return false }
+            guard PermissionService.can(.managerOverride, role: user.role) else { return false }
             
             if let dbPin = user.pinCodeHash {
-                // Support both plain text PIN and SHA256 hashed PIN checks
-                return dbPin == enteredPin || dbPin == hashedEntered
+                return SecurityHelper.verifyPIN(enteredPin, against: dbPin) || SecurityHelper.constantTimeCompare(dbPin, hashedEntered)
             }
             return false
         }
         
-        let isFallback = enteredPin == "1234" || enteredPin == "8888"
+        let isFallback = developerModeEnabled && (enteredPin == "1234" || enteredPin == "8888")
         
         if !matches.isEmpty || isFallback {
             isPresented = false
@@ -208,7 +206,7 @@ struct ManagerPINVerificationSheet: View {
             enteredPin = ""
             withAnimation(.default) {
                 attempts += 1
-                errorMessage = "Invalid Manager PIN. Please try again."
+                errorMessage = "manager_auth_error_invalid".t
             }
         }
     }

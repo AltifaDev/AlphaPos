@@ -6,6 +6,7 @@ import SwiftData
 
 struct RecipeCatalogView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \MenuItem.name) private var menuItems: [MenuItem]
     
@@ -64,7 +65,7 @@ struct RecipeCatalogView: View {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.textSecondary)
                         .font(.footnote)
-                    TextField("Search menu items...", text: $searchText)
+                    TextField("search_menu_items".t, text: $searchText)
                         .font(.subheadline)
                         .foregroundColor(.textPrimary)
                         .tint(.appAccent)
@@ -88,7 +89,7 @@ struct RecipeCatalogView: View {
             // Category capsules
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: APSpacing.xs) {
-                    categoryButton(title: "All", id: nil)
+                    categoryButton(title: "filter_all".t, id: nil)
                     ForEach(categories) { cat in
                         categoryButton(title: cat.name, id: cat.id)
                     }
@@ -161,7 +162,7 @@ struct RecipeCatalogView: View {
                         .foregroundColor(.textPrimary)
                     
                     // Badge for tracking mode
-                    Text(trackingMode)
+                    Text(trackingMode == "Not Tracked" ? "catalog_not_tracked".t : (trackingMode == "Finished Good" ? "catalog_finished_good".t : "catalog_recipe_based".t))
                         .font(.system(size: 9, weight: .bold))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -177,11 +178,11 @@ struct RecipeCatalogView: View {
                 }
                 
                 if !recipes.isEmpty {
-                    Text("\(recipes.count) raw ingredient\(recipes.count > 1 ? "s" : "") linked")
+                    Text(LocalizationManager.shared.t("ingredients_linked_template", recipes.count))
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
                 } else {
-                    Text("No stock connection setup")
+                    Text("no_stock_setup".t)
                         .font(.caption2)
                         .foregroundColor(.textTertiary)
                 }
@@ -192,11 +193,11 @@ struct RecipeCatalogView: View {
             // Financial Costing indicators
             HStack(spacing: APSpacing.md) {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("Price: ฿\(String(format: "%.2f", item.price))")
+                    Text(LocalizationManager.shared.t("price_template", item.price))
                         .font(.caption)
                         .foregroundColor(.textPrimary)
                     if !recipes.isEmpty {
-                        Text("Cost: ฿\(String(format: "%.2f", costPrice))")
+                        Text(LocalizationManager.shared.t("cost_template", costPrice))
                             .font(.caption2)
                             .foregroundColor(.textSecondary)
                     }
@@ -204,11 +205,11 @@ struct RecipeCatalogView: View {
                 
                 if !recipes.isEmpty {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text("Margin: \(String(format: "%.0f%%", marginPercent))")
+                        Text(LocalizationManager.shared.t("margin_template", Int(marginPercent)))
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(marginPercent >= 60 ? .appTeal : (marginPercent >= 30 ? .appAmber : .appRose))
-                        Text("Food Cost: \(String(format: "%.0f%%", foodCostPercent))")
+                        Text(LocalizationManager.shared.t("food_cost_template", Int(foodCostPercent)))
                             .font(.system(size: 9))
                             .foregroundColor(.textTertiary)
                     }
@@ -231,7 +232,7 @@ struct RecipeCatalogView: View {
             Image(systemName: "fork.knife.circle.fill")
                 .font(.system(size: 48))
                 .foregroundColor(.textTertiary)
-            Text("No Menu Items Found")
+            Text("no_menu_items_found".t)
                 .font(.headline)
                 .foregroundColor(.textSecondary)
         }

@@ -111,6 +111,14 @@ final class SalesViewModel {
         "July", "August", "September", "October", "November", "December"
     ]
 
+    var selectedMonthName: String {
+        let index = selectedMonth - 1
+        guard index >= 0 && index < monthsList.count else {
+            return "Month \(selectedMonth)"
+        }
+        return monthsList[index]
+    }
+
     init() {}
 
     // ─────────────────────────────────────────────────
@@ -411,7 +419,12 @@ final class SalesViewModel {
         var platformMap: [String: DeliveryPlatformPoint] = [:]
 
         for order in deliveryOrders {
-            let brand = order.deliveryBrand?.isEmpty == false ? order.deliveryBrand! : "Other"
+            let brand: String
+            if let deliveryBrand = order.deliveryBrand, !deliveryBrand.isEmpty {
+                brand = deliveryBrand
+            } else {
+                brand = "Other"
+            }
             let gpFee = order.total * (order.deliveryGP / 100.0)
             let adFee = order.deliveryAdFeeIsPct
                 ? order.total * (order.deliveryAdFee / 100.0)

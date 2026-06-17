@@ -27,6 +27,7 @@ struct TablesView: View {
     @State private var selectedZone = "All"
     @State private var viewMode: ViewMode = .canvas
     @State private var isAnimatedIn = false
+    @State private var offlinePulse = false
     
     // Zoom & Pan gesture states for canvas mode (iPad-like interaction)
     @State private var zoomScale: CGFloat = 0.45
@@ -50,12 +51,20 @@ struct TablesView: View {
         return ["All"] + Array(uniqueZones).sorted()
     }
     
+    private var floorWalls: [RestaurantWall] {
+        networkService.walls.filter { $0.floor == selectedFloor && !$0.isDeleted }
+    }
+    
     private var filteredTables: [RestaurantTable] {
         let floorTables = tables.filter { $0.floor == selectedFloor }
+        let baseTables: [RestaurantTable]
         if selectedZone == "All" {
-            return floorTables
+            baseTables = floorTables
         } else {
-            return floorTables.filter { $0.zone == selectedZone }
+            baseTables = floorTables.filter { $0.zone == selectedZone }
+        }
+        return baseTables.sorted {
+            $0.tableNumber.localizedStandardCompare($1.tableNumber) == .orderedAscending
         }
     }
 
@@ -64,7 +73,35 @@ struct TablesView: View {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
                 
-                VStack(spacing: 0) {
+                if !networkService.isTableSystemEnabled {
+                    VStack(spacing: APSpacing.lg) {
+                        Spacer()
+                        Image(systemName: "table.furniture")
+                            .font(.system(size: 70))
+                            .foregroundStyle(APGradient.accent)
+                            .shadow(color: Color.appAccent.opacity(0.3), radius: 10)
+                            .padding(.bottom, APSpacing.md)
+                        
+                        Text("table_system_disabled_title".localized(for: appLanguage))
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .foregroundColor(.textPrimary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                        
+                        Text("table_system_disabled_desc".localized(for: appLanguage))
+                            .font(.subheadline)
+                            .foregroundColor(.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, APSpacing.xl)
+                            .lineSpacing(4)
+                        Spacer()
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.appBackground.ignoresSafeArea())
+                } else {
+                    VStack(spacing: 0) {
                     if isCompactHeight {
                         // ── Landscape iPhone: single compact toolbar row ──
                         HStack(spacing: APSpacing.sm) {
@@ -78,28 +115,75 @@ struct TablesView: View {
                             
                             Divider().frame(height: 20)
                             
-                            // Floor picker (inline style, smaller)
+                            // Floor dropdown
                             if !floors.isEmpty {
-                                Picker("Floor", selection: $selectedFloor) {
+                                Menu {
                                     ForEach(floors, id: \.self) { floorNum in
-                                        Text(floorName(floorNum)).tag(floorNum)
+                                        Button {
+                                            selectedFloor = floorNum
+                                            selectedZone = "All"
+                                            APHaptic.trigger()
+                                        } label: {
+                                            if selectedFloor == floorNum {
+                                                Label(floorName(floorNum), systemImage: "checkmark")
+                                            } else {
+                                                Text(floorName(floorNum))
+                                            }
+                                        }
                                     }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Text(floorName(selectedFloor))
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(.textPrimary)
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.textSecondary)
+                                    }
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(Color.appSurfaceHigh)
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.appBorderSubtle, lineWidth: 1))
                                 }
-                                .pickerStyle(.segmented)
-                                .frame(maxWidth: 200)
+                                .buttonStyle(.plain)
                             }
                             
-                            // Zone picker (inline style, smaller)
+                            // Zone dropdown
                             if zones.count > 1 {
                                 Divider().frame(height: 20)
                                 
-                                Picker("Zone", selection: $selectedZone) {
+                                Menu {
                                     ForEach(zones, id: \.self) { zone in
-                                        Text(zone.localized(for: appLanguage)).tag(zone)
+                                        Button {
+                                            selectedZone = zone
+                                            APHaptic.trigger()
+                                        } label: {
+                                            if selectedZone == zone {
+                                                Label(zone.localized(for: appLanguage), systemImage: "checkmark")
+                                            } else {
+                                                Text(zone.localized(for: appLanguage))
+                                            }
+                                        }
                                     }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Text(selectedZone.localized(for: appLanguage))
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(.textPrimary)
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.textSecondary)
+                                    }
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(Color.appSurfaceHigh)
+                                    .cornerRadius(8)
+                                    .overlay(RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.appBorderSubtle, lineWidth: 1))
                                 }
-                                .pickerStyle(.segmented)
-                                .frame(maxWidth: 180)
+                                .buttonStyle(.plain)
                             }
                             
                             Divider().frame(height: 20)
@@ -159,6 +243,20 @@ struct TablesView: View {
                                 .fontWeight(.bold)
                                 .foregroundColor(.textPrimary)
 
+                            // Online/Offline status indicator
+                            Circle()
+                                .fill(networkService.isOnline ? Color.appTeal : Color.orange)
+                                .frame(width: 8, height: 8)
+                                .scaleEffect(networkService.isOnline ? 1.0 : (offlinePulse ? 1.4 : 0.8))
+                                .opacity(networkService.isOnline ? 1.0 : (offlinePulse ? 0.4 : 1.0))
+                                .animation(
+                                    networkService.isOnline
+                                        ? .default
+                                        : .easeInOut(duration: 1.0).repeatForever(autoreverses: true),
+                                    value: offlinePulse
+                                )
+                                .onAppear { offlinePulse = true }
+
                             Spacer()
 
                             // Stat badges inline in header
@@ -166,6 +264,18 @@ struct TablesView: View {
                             let occupied = filteredTables.filter { $0.status == "occupied" }.count
                             headerStatBadge(count: vacant,   color: .appTeal, icon: "circle.fill")
                             headerStatBadge(count: occupied, color: .appRose, icon: "circle.fill")
+
+                            // Quick Sales Summary chip
+                            let todayRevenue = networkService.tables.reduce(0.0) { $0 + $1.currentTotal }
+                            if todayRevenue > 0 {
+                                Text("\u{0E3F}\(Int(todayRevenue).formatted())")
+                                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                                    .foregroundColor(Color(hex: "2D71F8"))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color(hex: "2D71F8").opacity(0.10))
+                                    .cornerRadius(6)
+                            }
 
                             Divider().frame(height: 18)
 
@@ -202,40 +312,92 @@ struct TablesView: View {
                         .offset(y: isAnimatedIn ? 0 : -50)
                         .opacity(isAnimatedIn ? 1 : 0)
 
-                        // ── Row 2: Pickers — horizontal scroll, fixedSize prevents clipping ──
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                if !floors.isEmpty {
-                                    Picker("Floor", selection: $selectedFloor) {
-                                        ForEach(floors, id: \.self) { floorNum in
-                                            Text(floorName(floorNum)).tag(floorNum)
+                        // ── Row 2: Floor & Zone Dropdown + View mode segmented ──
+                        HStack(spacing: 8) {
+                            // Floor dropdown
+                            if !floors.isEmpty {
+                                Menu {
+                                    ForEach(floors, id: \.self) { floorNum in
+                                        Button {
+                                            selectedFloor = floorNum
+                                            selectedZone = "All"
+                                            APHaptic.trigger()
+                                        } label: {
+                                            if selectedFloor == floorNum {
+                                                Label(floorName(floorNum), systemImage: "checkmark")
+                                            } else {
+                                                Text(floorName(floorNum))
+                                            }
                                         }
                                     }
-                                    .pickerStyle(.segmented)
-                                    .fixedSize()
-                                }
-                                if zones.count > 1 {
-                                    Picker("Zone", selection: $selectedZone) {
-                                        ForEach(zones, id: \.self) { zone in
-                                            Text(zone.localized(for: appLanguage)).tag(zone)
-                                        }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Text(floorName(selectedFloor))
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(.textPrimary)
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.textSecondary)
                                     }
-                                    .pickerStyle(.segmented)
-                                    .fixedSize()
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(Color.appSurfaceHigh)
+                                    .cornerRadius(9)
+                                    .overlay(RoundedRectangle(cornerRadius: 9)
+                                        .stroke(Color.appBorderSubtle, lineWidth: 1))
                                 }
-                                Picker("View", selection: $viewMode) {
-                                    ForEach(ViewMode.allCases, id: \.self) { mode in
-                                        Text(mode == .grid ? "Grid" : "Canvas").tag(mode)
-                                    }
-                                }
-                                .pickerStyle(.segmented)
-                                .fixedSize()
+                                .buttonStyle(.plain)
                             }
-                            .padding(.horizontal, APSpacing.md)
-                            .padding(.vertical, 1)
+                            
+                            // Zone dropdown
+                            if zones.count > 1 {
+                                Menu {
+                                    ForEach(zones, id: \.self) { zone in
+                                        Button {
+                                            selectedZone = zone
+                                            APHaptic.trigger()
+                                        } label: {
+                                            if selectedZone == zone {
+                                                Label(zone.localized(for: appLanguage), systemImage: "checkmark")
+                                            } else {
+                                                Text(zone.localized(for: appLanguage))
+                                            }
+                                        }
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Text(selectedZone.localized(for: appLanguage))
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(.textPrimary)
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.textSecondary)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(Color.appSurfaceHigh)
+                                    .cornerRadius(9)
+                                    .overlay(RoundedRectangle(cornerRadius: 9)
+                                        .stroke(Color.appBorderSubtle, lineWidth: 1))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            
+                            Spacer()
+                            
+                            // View mode — segmented เล็กๆ
+                            Picker("View", selection: $viewMode) {
+                                ForEach(ViewMode.allCases, id: \.self) { mode in
+                                    Text(mode == .grid ? "Grid" : "Canvas").tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 130)
                         }
-                        .padding(.vertical, 6)
+                        .padding(.horizontal, APSpacing.md)
+                        .padding(.vertical, 8)
                         .background(Color.appSurface)
+                        .overlay(alignment: .bottom) { Divider() }
                         .opacity(isAnimatedIn ? 1 : 0)
                     }
                     
@@ -269,10 +431,14 @@ struct TablesView: View {
                                                 .buttonStyle(.plain)
                                             }
                                         }
-                                        .offset(x: isAnimatedIn ? 0 : directionOffset, y: isAnimatedIn ? 0 : 60)
+                                        .offset(x: isAnimatedIn ? 0 : directionOffset, y: isAnimatedIn ? 0 : 40)
                                         .opacity(isAnimatedIn ? 1 : 0)
-                                        .animation(.spring(response: 0.5, dampingFraction: 0.8).delay(Double(index) * 0.03), value: filteredTables)
-                                        .animation(.spring(response: 0.65, dampingFraction: 0.75).delay(Double(index) * 0.04), value: isAnimatedIn)
+                                        .transition(.asymmetric(
+                                            insertion: .opacity.combined(with: .scale(scale: 0.92)).combined(with: .offset(y: 20)),
+                                            removal: .opacity.combined(with: .scale(scale: 0.92))
+                                        ))
+                                        .animation(.spring(response: 0.45, dampingFraction: 0.82).delay(Double(index % 6) * 0.035), value: isAnimatedIn)
+                                        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: filteredTables)
                                     }
                                 }
                                 .padding(.horizontal, APSpacing.md)
@@ -289,6 +455,22 @@ struct TablesView: View {
                                         CanvasBackgroundGrid()
                                             .frame(width: 1500, height: 1200)
                                             .allowsHitTesting(false)
+
+                                        // Render partition walls (CAD wall style)
+                                        ForEach(floorWalls) { wall in
+                                            Path { path in
+                                                path.move(to: CGPoint(x: wall.startX, y: wall.startY))
+                                                if wall.typeString == "curved", let cx = wall.controlX, let cy = wall.controlY {
+                                                    path.addQuadCurve(to: CGPoint(x: wall.endX, y: wall.endY), control: CGPoint(x: cx, y: cy))
+                                                } else {
+                                                    path.addLine(to: CGPoint(x: wall.endX, y: wall.endY))
+                                                }
+                                            }
+                                            .stroke(
+                                                Color.appDivider.opacity(0.6),
+                                                style: StrokeStyle(lineWidth: wall.strokeWidth, lineCap: .round, lineJoin: .round)
+                                            )
+                                        }
 
                                         
                                         ForEach(Array(canvasTables.enumerated()), id: \.element.id) { index, table in
@@ -374,7 +556,8 @@ struct TablesView: View {
                     }
                 }
             }
-            .navigationBarHidden(true)
+        }
+        .navigationBarHidden(true)
         }
         .onAppear {
             Task {
@@ -398,10 +581,10 @@ struct TablesView: View {
             }
             // Update canvas snapshot only when status actually changes (not on every sync tick)
             let newFiltered = newTables.filter { $0.floor == selectedFloor }
-            let currentStatuses = canvasTables.map { ($0.tableNumber, $0.status, $0.currentTotal) }
-            let newStatuses     = newFiltered.map   { ($0.tableNumber, $0.status, $0.currentTotal) }
+            let currentStatuses = canvasTables.map { ($0.tableNumber, $0.status, $0.currentTotal, $0.sessionStartedAt) }
+            let newStatuses     = newFiltered.map   { ($0.tableNumber, $0.status, $0.currentTotal, $0.sessionStartedAt) }
             let changed = zip(currentStatuses, newStatuses).contains { a, b in
-                a.0 != b.0 || a.1 != b.1 || a.2 != b.2
+                a.0 != b.0 || a.1 != b.1 || a.2 != b.2 || a.3 != b.3
             } || currentStatuses.count != newStatuses.count
             if changed {
                 canvasTables = newFiltered
@@ -487,77 +670,183 @@ struct TablesView: View {
     // MARK: - Table Card Component
     
     private func tableCard(table: RestaurantTable) -> some View {
-        let isOccupied = table.status == "occupied"
-        let statusColor = isOccupied ? Color.appRose : Color.appTeal
+        let status = table.status.lowercased()
         
-        let estWidth: CGFloat = {
-            if table.isRound {
-                let effectiveCount = max(table.capacity, 1)
-                let tableDiam = max(82, CGFloat(effectiveCount) * 18 + 30)
-                let chairGap: CGFloat = 6
-                let chairHeight: CGFloat = 13
-                let chairRadius = tableDiam / 2 + chairHeight / 2 + chairGap
-                return (chairRadius + chairHeight) * 2
-            } else {
-                let leftCount = table.capacity >= 3 ? 1 : 0
-                let rightCount = table.capacity >= 4 ? 1 : 0
-                let remaining = table.capacity - leftCount - rightCount
-                let topCount = (remaining + 1) / 2
-                let bottomCount = remaining / 2
-                let maxRow = max(topCount, bottomCount)
-                let tableWidth = max(76, CGFloat(maxRow) * 40 + 20)
-                let chairGap: CGFloat = 6
-                let chairHeight: CGFloat = 13
-                let totalChairsWidth = (leftCount > 0 ? chairHeight + chairGap : 0) + (rightCount > 0 ? chairHeight + chairGap : 0)
-                return tableWidth + totalChairsWidth + 10
+        let (statusText, statusColor, strokeColor, shadowColor): (String, Color, Color, Color) = {
+            switch status {
+            case "occupied":
+                return (
+                    "occupied".localized(for: appLanguage),
+                    Color.appRose,
+                    Color.appRose.opacity(0.5),
+                    Color.appRose.opacity(0.12)
+                )
+            case "reserved":
+                return (
+                    "reserved".localized(for: appLanguage),
+                    Color.appAmber,
+                    Color.appAmber.opacity(0.5),
+                    Color.appAmber.opacity(0.12)
+                )
+            case "cleaning":
+                return (
+                    "cleaning".localized(for: appLanguage),
+                    Color.appAccent,
+                    Color.appAccent.opacity(0.5),
+                    Color.appAccent.opacity(0.12)
+                )
+            default: // vacant
+                return (
+                    "vacant".localized(for: appLanguage),
+                    Color.appTeal,
+                    Color.appDivider,
+                    Color.black.opacity(0.04)
+                )
             }
         }()
-
-        return GeometryReader { cardGeo in
-            VStack(spacing: APSpacing.sm) {
-                HStack {
+        
+        return VStack(alignment: .leading, spacing: 0) {
+            // ── Top Row: Table Title & Status Badge ──
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(String(format: "table_label".localized(for: appLanguage), table.tableNumber))
-                        .font(.headline).fontWeight(.black)
+                        .font(.system(size: 13, weight: .bold))
                         .foregroundColor(.textPrimary)
-
-                    Spacer()
-
-                    APBadge(
-                        text: isOccupied ? "occupied".localized(for: appLanguage) : "vacant".localized(for: appLanguage),
-                        color: statusColor
-                    )
-                }
-
-                // ── Elapsed time badge (same as canvas view) ──
-                if isOccupied {
-                    HStack {
-                        ElapsedTimeBadge(startedAt: table.sessionStartedAt)
-                        Spacer()
+                    
+                    if let zone = table.zone, !zone.isEmpty {
+                        Text(zone)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.textTertiary)
                     }
                 }
                 
                 Spacer()
                 
-                let targetWidth = cardGeo.size.width - 32
-                let scale = min(0.9, targetWidth / estWidth)
-                
-                CompactTableLayoutView(table: table, statusColor: statusColor)
-                    .scaleEffect(scale)
-                    .frame(height: 65)
+                // Status Badge
+                Text(statusText)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(statusColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(statusColor.opacity(0.12))
+                    .cornerRadius(6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(statusColor.opacity(0.25), lineWidth: 0.5)
+                    )
+            }
+            
+            Spacer(minLength: 4)
+            
+            // ── Middle Section: POS Core details ──
+            VStack(alignment: .leading, spacing: 4) {
+                if status == "occupied" {
+                    // Active Bill Amount (Large, bold, rounded)
+                    let formattedTotal = table.currentTotal.formatted(.number.precision(.fractionLength(0...2)))
+                    Text("฿\(formattedTotal)")
+                        .font(.system(size: 21, weight: .black, design: .rounded))
+                        .foregroundColor(.textPrimary)
+                        .transition(.scale.combined(with: .opacity))
+                    
+                    // Occupancy Ratio (actual guests / capacity)
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.2.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.textSecondary)
+                        Text("\(table.guestCount) / \(table.capacity)")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.textSecondary)
+                    }
+                } else if status == "reserved" {
+                    Text("reserved".localized(for: appLanguage).uppercased())
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundColor(Color.appAmber)
+                        .padding(.vertical, 2)
+                    
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.2")
+                            .font(.system(size: 10))
+                            .foregroundColor(.textSecondary)
+                        Text(String(format: "seats_count".localized(for: appLanguage), table.capacity))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.textSecondary)
+                    }
+                } else if status == "cleaning" {
+                    HStack(spacing: 5) {
+                        Image(systemName: "bubbles.and.sparkles")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.appAccent)
+                        Text("cleaning".localized(for: appLanguage))
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.textPrimary)
+                    }
+                    .padding(.vertical, 2)
+                    
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.2")
+                            .font(.system(size: 10))
+                            .foregroundColor(.textSecondary)
+                        Text(String(format: "seats_count".localized(for: appLanguage), table.capacity))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.textSecondary)
+                    }
+                } else { // vacant
+                    // Clean capacity seats count
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.2")
+                            .font(.system(size: 11))
+                            .foregroundColor(.textSecondary)
+                        Text(String(format: "seats_count".localized(for: appLanguage), table.capacity))
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.textSecondary)
+                    }
+                    .padding(.vertical, 2)
+                    
+                    // Tap to Open subtle action invitation
+                    Text("open_table".localized(for: appLanguage))
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(Color.appTeal)
+                        .padding(.vertical, 3)
+                        .padding(.horizontal, 6)
+                        .background(Color.appTeal.opacity(0.08))
+                        .cornerRadius(6)
+                }
+            }
+            
+            Spacer(minLength: 4)
+            
+            // ── Bottom Section: Clock, time elapsed, etc. ──
+            HStack {
+                if status == "occupied" {
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 9))
+                            .foregroundColor(.textSecondary)
+                        ElapsedTimeBadge(startedAt: table.sessionStartedAt)
+                    }
+                } else {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 6, height: 6)
+                        Text(statusText)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(statusColor)
+                    }
+                }
                 
                 Spacer()
             }
-            .padding(APSpacing.md)
-            .frame(width: cardGeo.size.width, height: cardGeo.size.height)
-            .background(Color.appSurface)
-            .clipShape(RoundedRectangle(cornerRadius: APRadius.lg))
-            .overlay(
-                RoundedRectangle(cornerRadius: APRadius.lg)
-                    .stroke(isOccupied ? Color.appRose.opacity(0.4) : Color.appDivider, lineWidth: 1.5)
-            )
-            .shadow(color: isOccupied ? Color.appRose.opacity(0.1) : Color.black.opacity(0.05), radius: 8, x: 0, y: 4)
         }
-        .frame(height: 140)
+        .padding(APSpacing.md)
+        .frame(height: 138)
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: APRadius.lg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: APRadius.lg, style: .continuous)
+                .stroke(strokeColor, lineWidth: status == "vacant" ? 1.0 : 1.5)
+        )
+        .shadow(color: shadowColor, radius: 8, x: 0, y: 4)
     }
     
     /// Compact inline badge used in landscape iPhone header

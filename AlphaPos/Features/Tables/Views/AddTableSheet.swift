@@ -3,6 +3,7 @@ import SwiftData
 
 struct AddTableSheet: View {
     @Binding var isPresented: Bool
+    @EnvironmentObject private var lm: LocalizationManager
     let modelContext: ModelContext
     
     @State private var tableNumber: String = ""
@@ -32,7 +33,7 @@ struct AddTableSheet: View {
                 VStack(spacing: 0) {
                     // Header
                     HStack {
-                        Text("Add New Table")
+                        Text("table_add_new_title".t)
                             .font(.title2)
                             .fontWeight(.bold)
                             .foregroundColor(.textPrimary)
@@ -52,12 +53,12 @@ struct AddTableSheet: View {
                         VStack(alignment: .leading, spacing: 24) {
                             // Table Number Section
                             VStack(alignment: .leading, spacing: 8) {
-                                Label("Table Number/Name", systemImage: "tablecells")
+                                Label("table_number_name_lbl".t, systemImage: "tablecells")
                                     .font(.subheadline)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textPrimary)
                                 
-                                TextField("e.g., 1, A, VIP-1", text: $tableNumber)
+                                TextField("table_number_name_placeholder".t, text: $tableNumber)
                                     .font(.subheadline)
                                     .foregroundColor(.textPrimary)
                                     .tint(.appAccent)
@@ -70,52 +71,52 @@ struct AddTableSheet: View {
                                             .stroke(Color.appBorderSubtle, lineWidth: 1)
                                     )
                                 
-                                Text("Give this table a unique identifier (number or label)")
+                                Text("table_number_name_hint".t)
                                     .font(.caption)
                                     .foregroundColor(.textTertiary)
                             }
                             
                             // Floor Section
                             VStack(alignment: .leading, spacing: 8) {
-                                Label("Floor Level", systemImage: "layers")
+                                Label("table_floor_level_lbl".t, systemImage: "layers")
                                     .font(.subheadline)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textPrimary)
                                 
                                 Picker("Floor", selection: $selectedFloor) {
-                                    Text("1st Floor").tag(1)
-                                    Text("2nd Floor").tag(2)
-                                    Text("3rd Floor").tag(3)
+                                    Text("table_floor_1".t).tag(1)
+                                    Text("table_floor_2".t).tag(2)
+                                    Text("table_floor_3".t).tag(3)
                                 }
                                 .pickerStyle(.segmented)
                                 
-                                Text("Assign which floor this table is located on")
+                                Text("table_floor_level_hint".t)
                                     .font(.caption)
                                     .foregroundColor(.textTertiary)
                             }
                             
                             // Zone Section
                             VStack(alignment: .leading, spacing: 8) {
-                                Label("Zone", systemImage: "rectangle.3.group")
+                                Label("table_zone_lbl".t, systemImage: "rectangle.3.group")
                                     .font(.subheadline)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textPrimary)
                                 
                                 Picker("Zone", selection: $selectedZone) {
-                                    Text("Indoor").tag("Indoor")
-                                    Text("Outdoor").tag("Outdoor")
-                                    Text("Rooftop").tag("Rooftop")
+                                    Text("table_zone_indoor".t).tag("Indoor")
+                                    Text("table_zone_outdoor".t).tag("Outdoor")
+                                    Text("table_zone_rooftop".t).tag("Rooftop")
                                 }
                                 .pickerStyle(.segmented)
                                 
-                                Text("Assign which zone this table belongs to")
+                                Text("table_zone_hint".t)
                                     .font(.caption)
                                     .foregroundColor(.textTertiary)
                             }
 
                             // ✨ Table Shape Section
                             VStack(alignment: .leading, spacing: 8) {
-                                Label("Table Shape", systemImage: "square.on.circle")
+                                Label("table_shape_lbl".t, systemImage: "square.on.circle")
                                     .font(.subheadline)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textPrimary)
@@ -126,7 +127,7 @@ struct AddTableSheet: View {
                                             HStack(spacing: 8) {
                                                 Image(systemName: round ? "circle" : "rectangle")
                                                     .font(.system(size: 18))
-                                                Text(round ? "Round" : "Rectangle")
+                                                Text(round ? "table_shape_round".t : "table_shape_rectangle".t)
                                                     .font(.subheadline).fontWeight(.semibold)
                                             }
                                             .foregroundColor(isRoundTable == round ? .white : .textSecondary)
@@ -144,14 +145,14 @@ struct AddTableSheet: View {
 
                             // Capacity Section with Stepper
                             VStack(alignment: .leading, spacing: 16) {
-                                Label("Number of Seats", systemImage: "chair.lounge.fill")
+                                Label("table_seats_lbl".t, systemImage: "chair.lounge.fill")
                                     .font(.subheadline)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textPrimary)
                                 
                                 HStack(spacing: 16) {
                                     VStack(alignment: .leading, spacing: 8) {
-                                        Text("Seats")
+                                        Text("table_seats_sub".t)
                                             .font(.caption)
                                             .foregroundColor(.textSecondary)
                                         
@@ -186,7 +187,7 @@ struct AddTableSheet: View {
                                     }
                                     
                                     VStack(alignment: .leading, spacing: 8) {
-                                        Text("Chair Layout")
+                                        Text("table_chair_layout_lbl".t)
                                             .font(.caption)
                                             .foregroundColor(.textSecondary)
                                         
@@ -197,7 +198,7 @@ struct AddTableSheet: View {
                             
                             // Status Section
                             VStack(alignment: .leading, spacing: 8) {
-                                Label("Initial Status", systemImage: "tag.fill")
+                                Label("table_initial_status_lbl".t, systemImage: "tag.fill")
                                     .font(.subheadline)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textPrimary)
@@ -205,7 +206,7 @@ struct AddTableSheet: View {
                                 HStack(spacing: 8) {
                                     ForEach(["vacant", "reserved", "cleaning"], id: \.self) { status in
                                         Button(action: { selectedStatus = status }) {
-                                            Text(status.uppercased())
+                                            Text("table_status_\(status.lowercased())".t.uppercased())
                                                 .font(.caption2)
                                                 .fontWeight(.bold)
                                                 .foregroundColor(selectedStatus == status ? .white : .textSecondary)
@@ -226,7 +227,7 @@ struct AddTableSheet: View {
                             
                             // Summary Card
                             VStack(spacing: 12) {
-                                Text("PREVIEW")
+                                Text("table_preview_lbl".t)
                                     .font(.caption)
                                     .fontWeight(.bold)
                                     .foregroundColor(.appAccent)
@@ -257,7 +258,7 @@ struct AddTableSheet: View {
                     // Action Buttons
                     VStack(spacing: 12) {
                         Button(action: addTable) {
-                            Text("Create Table")
+                            Text("table_create_btn".t)
                                 .font(.headline)
                                 .foregroundColor(.white)
                                 .frame(maxWidth: .infinity)
@@ -267,7 +268,7 @@ struct AddTableSheet: View {
                         }
                         
                         Button(action: { isPresented = false }) {
-                            Text("Cancel")
+                            Text("cancel".t)
                                 .font(.headline)
                                 .foregroundColor(.textPrimary)
                                 .frame(maxWidth: .infinity)
@@ -283,8 +284,8 @@ struct AddTableSheet: View {
                     .padding()
                 }
             }
-            .alert("Error", isPresented: $showingError) {
-                Button("OK", role: .cancel) { }
+            .alert("error".t, isPresented: $showingError) {
+                Button("ok_btn".t, role: .cancel) { }
             } message: {
                 Text(errorMessage)
             }
@@ -380,13 +381,13 @@ struct AddTableSheet: View {
     private func addTable() {
         // Validation
         if tableNumber.trimmingCharacters(in: .whitespaces).isEmpty {
-            errorMessage = "Please enter a table number or name"
+            errorMessage = "table_error_empty_number".t
             showingError = true
             return
         }
         
         if capacity < 1 || capacity > 20 {
-            errorMessage = "Capacity must be between 1 and 20 seats"
+            errorMessage = "table_error_invalid_capacity".t
             showingError = true
             return
         }

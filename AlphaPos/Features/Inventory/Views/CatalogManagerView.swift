@@ -6,6 +6,7 @@ import SwiftData
 
 struct CatalogManagerView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
     @Query(sort: \MenuItem.name) private var products: [MenuItem]
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \ModifierGroup.name) private var modifierGroups: [ModifierGroup]
@@ -28,9 +29,9 @@ struct CatalogManagerView: View {
             VStack(spacing: APSpacing.sm) {
                 HStack(spacing: APSpacing.md) {
                     Picker("Catalog Options", selection: $subTab) {
-                        Text("Products").tag(0)
-                        Text("Categories").tag(1)
-                        Text("Extras (Modifiers)").tag(2)
+                        Text("inventory_products".t).tag(0)
+                        Text("catalog_categories".t).tag(1)
+                        Text("catalog_extras".t).tag(2)
                     }
                     .pickerStyle(.segmented)
                     
@@ -115,10 +116,10 @@ struct CatalogManagerView: View {
     
     private var searchPlaceholder: String {
         switch subTab {
-        case 0: return "Search products..."
-        case 1: return "Search categories..."
-        case 2: return "Search modifiers..."
-        default: return "Search..."
+        case 0: return "search_products".t
+        case 1: return "search_categories".t
+        case 2: return "search_modifiers".t
+        default: return "search_placeholder".t
         }
     }
     
@@ -132,11 +133,11 @@ struct CatalogManagerView: View {
     private var productsList: some View {
         VStack(spacing: APSpacing.sm) {
             if filteredProducts.isEmpty {
-                emptyListView(message: "No products matched search")
+                emptyListView(message: "no_products_matched_search".t)
             } else {
                 ForEach(filteredProducts) { item in
                     let recipes = item.recipes
-                    let trackingText = recipes.isEmpty ? "Not Tracked" : (recipes.count == 1 && recipes.first?.quantityRequired == 1.0 ? "Finished Good" : "Recipe-Based")
+                    let trackingText = recipes.isEmpty ? "catalog_not_tracked".t : (recipes.count == 1 && recipes.first?.quantityRequired == 1.0 ? "catalog_finished_good".t : "catalog_recipe_based".t)
                     let cost = recipes.reduce(0.0) { $0 + ($1.inventoryItem?.costPrice ?? 0.0) * $1.quantityRequired }
                     let fcPercent = item.price > 0 ? (cost / item.price) * 100.0 : 0.0
                     
@@ -176,10 +177,10 @@ struct CatalogManagerView: View {
                         HStack(spacing: APSpacing.md) {
                             if !recipes.isEmpty {
                                 VStack(alignment: .trailing, spacing: 2) {
-                                    Text("Food Cost: \(String(format: "%.0f%%", fcPercent))")
+                                    Text(LocalizationManager.shared.t("food_cost_template", Int(fcPercent)))
                                         .font(.system(size: 9))
                                         .foregroundColor(.textTertiary)
-                                    Text("Profit: \(String(format: "%.0f%%", 100.0 - fcPercent))")
+                                    Text(LocalizationManager.shared.t("profit_template", Int(100.0 - fcPercent)))
                                         .font(.caption)
                                         .bold()
                                         .foregroundColor(100.0 - fcPercent >= 60 ? .appTeal : .appRose)
@@ -217,7 +218,7 @@ struct CatalogManagerView: View {
     private var categoriesList: some View {
         VStack(spacing: APSpacing.sm) {
             if filteredCategories.isEmpty {
-                emptyListView(message: "No categories matched search")
+                emptyListView(message: "no_categories_matched_search".t)
             } else {
                 ForEach(filteredCategories) { cat in
                     HStack {
@@ -235,7 +236,7 @@ struct CatalogManagerView: View {
                         
                         Spacer()
                         
-                        Text("\(cat.menuItems.count) products")
+                        Text(LocalizationManager.shared.t("products_count_template", cat.menuItems.count))
                             .font(.caption)
                             .foregroundColor(.textSecondary)
                             .padding(.horizontal, 10)
@@ -264,7 +265,7 @@ struct CatalogManagerView: View {
     private var extrasList: some View {
         VStack(spacing: APSpacing.sm) {
             if filteredModifierGroups.isEmpty {
-                emptyListView(message: "No modifier groups matched search")
+                emptyListView(message: "no_modifiers_matched_search".t)
             } else {
                 ForEach(filteredModifierGroups) { group in
                     HStack {
@@ -273,14 +274,14 @@ struct CatalogManagerView: View {
                                 .font(.subheadline)
                                 .fontWeight(.bold)
                                 .foregroundColor(.textPrimary)
-                            Text("Selections: Min \(group.minSelection) · Max \(group.maxSelection)")
+                            Text(LocalizationManager.shared.t("selections_range_template", group.minSelection, group.maxSelection))
                                 .font(.caption2)
                                 .foregroundColor(.textSecondary)
                         }
                         
                         Spacer()
                         
-                        Text("\(group.modifiers.count) options")
+                        Text(LocalizationManager.shared.t("options_count_template", group.modifiers.count))
                             .font(.caption)
                             .foregroundColor(.textSecondary)
                             .padding(.horizontal, 10)

@@ -5,6 +5,8 @@ import SwiftUI
 import SwiftData
 
 struct MerchantAuthView: View {
+    var onAuthenticated: (() -> Void)? = nil
+
     @Environment(\.modelContext) private var modelContext
     @AppStorage("is_logged_in") private var isLoggedIn = false
     @AppStorage("active_merchant_id") private var activeMerchantId = "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
@@ -75,7 +77,7 @@ struct MerchantAuthView: View {
                             Text("AlphaPos")
                                 .font(.system(size: 24, weight: .black, design: .rounded))
                                 .foregroundColor(Color(hex: "111827")) // Slate 900
-                            Text("Restaurant Management SaaS")
+                            Text("auth_brand_sub".t)
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundColor(Color(hex: "6B7280")) // Slate 500
                         }
@@ -117,10 +119,10 @@ struct MerchantAuthView: View {
                     
                     // Footer Credits
                     VStack(spacing: 4) {
-                        Text("System Online • Secure SSL Session")
+                        Text(L.Auth.sysOnlineSsl.t)
                             .font(.system(size: 10, weight: .bold))
                             .foregroundColor(Color(hex: "9CA3AF"))
-                        Text("AlphaPos Cloud Engine v2.0 • ISO 27001 Certified")
+                        Text(L.Auth.cloudEngineVer.t)
                             .font(.system(size: 9))
                             .foregroundColor(Color(hex: "D1D5DB"))
                     }
@@ -138,10 +140,10 @@ struct MerchantAuthView: View {
     private var loginForm: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Sign In to Store")
+                Text(L.Auth.signInTitle.t)
                     .font(.system(size: 22, weight: .black, design: .rounded))
                     .foregroundColor(Color(hex: "111827"))
-                Text("Enter your credentials to manage your store.")
+                Text(L.Auth.signInDesc.t)
                     .font(.system(size: 13))
                     .foregroundColor(Color(hex: "6B7280"))
             }
@@ -153,7 +155,7 @@ struct MerchantAuthView: View {
             
             // Email Input
             VStack(alignment: .leading, spacing: 6) {
-                Text("Email Address")
+                Text(L.Auth.emailLbl.t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Color(hex: "4B5563"))
                 
@@ -181,7 +183,7 @@ struct MerchantAuthView: View {
             
             // Password Input
             VStack(alignment: .leading, spacing: 6) {
-                Text("Password")
+                Text(L.Auth.passwordLbl.t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Color(hex: "4B5563"))
                 
@@ -228,7 +230,7 @@ struct MerchantAuthView: View {
                 Button(action: {
                     showingForgotPasswordSheet = true
                 }) {
-                    Text("Forgot Password?")
+                    Text(L.Auth.forgotPassword.t)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(Color.appAccent)
                 }
@@ -240,7 +242,7 @@ struct MerchantAuthView: View {
             HStack {
                 Image(systemName: "checkmark.square.fill")
                     .foregroundColor(Color.appAccent)
-                Text("Remember my store on this device")
+                Text(L.Auth.rememberStore.t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Color(hex: "4B5563"))
             }
@@ -254,7 +256,7 @@ struct MerchantAuthView: View {
                             .progressViewStyle(CircularProgressViewStyle(tint: .white))
                             .padding(.trailing, 8)
                     }
-                    Text("Sign In")
+                    Text(L.Auth.signInBtn.t)
                         .font(.system(size: 15, weight: .bold))
                 }
                 .frame(maxWidth: .infinity)
@@ -270,14 +272,14 @@ struct MerchantAuthView: View {
             // Mode switcher
             HStack {
                 Spacer()
-                Text("Don't have a merchant account?")
+                Text(L.Auth.noAccount.t)
                     .font(.system(size: 12))
                     .foregroundColor(Color(hex: "6B7280"))
                 Button(action: {
                     errorMessage = ""
                     withAnimation { authMode = "signup" }
                 }) {
-                    Text("Register Store")
+                    Text(L.Auth.registerBtn.t)
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(Color.appAccent)
                 }
@@ -293,7 +295,7 @@ struct MerchantAuthView: View {
             // Wizard step indicator
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Create Merchant Account")
+                    Text(L.Auth.createTitle.t)
                         .font(.system(size: 20, weight: .black, design: .rounded))
                         .foregroundColor(Color(hex: "111827"))
                     Text(signupStep == 1 ? "Step 1: Admin Account Setup" : "Step 2: Restaurant Details")
@@ -333,7 +335,7 @@ struct MerchantAuthView: View {
             // First Name & Last Name in row
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("First Name")
+                    Text(L.Auth.firstName.t)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(Color(hex: "4B5563"))
                     TextField("Somchai", text: $firstName)
@@ -350,7 +352,7 @@ struct MerchantAuthView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Last Name")
+                    Text(L.Auth.lastName.t)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(Color(hex: "4B5563"))
                     TextField("Lertwit", text: $lastName)
@@ -369,7 +371,7 @@ struct MerchantAuthView: View {
             
             // Email Input
             VStack(alignment: .leading, spacing: 6) {
-                Text("Email Address")
+                Text(L.Auth.emailLbl.t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Color(hex: "4B5563"))
                 TextField("email@example.com", text: $email)
@@ -390,7 +392,7 @@ struct MerchantAuthView: View {
             
             // Password Input
             VStack(alignment: .leading, spacing: 6) {
-                Text("Password")
+                Text(L.Auth.passwordLbl.t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Color(hex: "4B5563"))
                 SecureField("Min 8 characters", text: $password)
@@ -408,7 +410,7 @@ struct MerchantAuthView: View {
             
             // Password Confirmation Input
             VStack(alignment: .leading, spacing: 6) {
-                Text("Confirm Password")
+                Text(L.Auth.confirmPassword.t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Color(hex: "4B5563"))
                 SecureField("Re-enter password", text: $confirmPassword)
@@ -426,7 +428,7 @@ struct MerchantAuthView: View {
             
             // CTA Button to Step 2
             Button(action: validateAndGoToStep2) {
-                Text("Continue to Store Details")
+                Text(L.Auth.continueStore.t)
                     .font(.system(size: 14, weight: .bold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
@@ -444,10 +446,10 @@ struct MerchantAuthView: View {
             }) {
                 HStack {
                     Spacer()
-                    Text("Already have a store?")
+                    Text(L.Auth.alreadyHaveStore.t)
                         .font(.system(size: 12))
                         .foregroundColor(Color(hex: "6B7280"))
-                    Text("Sign In")
+                    Text(L.Auth.signInBtn.t)
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(Color.appAccent)
                     Spacer()
@@ -462,7 +464,7 @@ struct MerchantAuthView: View {
         VStack(spacing: 16) {
             // Store Name
             VStack(alignment: .leading, spacing: 6) {
-                Text("Store Name")
+                Text(L.Auth.storeName.t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Color(hex: "4B5563"))
                 TextField("Cafe Amazon", text: $shopName)
@@ -481,14 +483,14 @@ struct MerchantAuthView: View {
             // Business Type & Currency
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Business Type")
+                    Text(L.Auth.businessType.t)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(Color(hex: "4B5563"))
                     
                     Picker("Business Type", selection: $businessType) {
-                        Text("Restaurant").tag("Restaurant")
-                        Text("Cafe").tag("Cafe")
-                        Text("Bar").tag("Bar")
+                        Text("business_type_restaurant".t).tag("Restaurant")
+                        Text("business_type_cafe".t).tag("Cafe")
+                        Text("business_type_bar".t).tag("Bar")
                     }
                     .pickerStyle(.menu)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -503,7 +505,7 @@ struct MerchantAuthView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Currency")
+                    Text(L.Auth.currency.t)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(Color(hex: "4B5563"))
                     
@@ -527,7 +529,7 @@ struct MerchantAuthView: View {
             
             // Tax ID / Business Reg No
             VStack(alignment: .leading, spacing: 6) {
-                Text("Tax ID / Registration Number")
+                Text(L.Auth.taxId.t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Color(hex: "4B5563"))
                 TextField("13 digits ID", text: $taxId)
@@ -546,7 +548,7 @@ struct MerchantAuthView: View {
             
             // Contact Phone
             VStack(alignment: .leading, spacing: 6) {
-                Text("Store Contact Phone")
+                Text(L.Auth.contactPhone.t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Color(hex: "4B5563"))
                 TextField("02-XXX-XXXX", text: $shopPhone)
@@ -582,7 +584,7 @@ struct MerchantAuthView: View {
                                 .progressViewStyle(CircularProgressViewStyle(tint: .white))
                                 .padding(.trailing, 8)
                         }
-                        Text("Create My Restaurant")
+                        Text(L.Auth.createStoreBtn.t)
                             .font(.system(size: 14, weight: .bold))
                     }
                     .frame(maxWidth: .infinity)
@@ -631,11 +633,12 @@ struct MerchantAuthView: View {
                     loggedInName = session.user.fullName ?? "Store Owner"
                     seedNewMerchantData(merchantId: mId)
                     withAnimation { isLoggedIn = true }
+                    onAuthenticated?()
                 }
             } catch {
                 await MainActor.run {
                     isLoading = false
-                    errorMessage = "Invalid email or password. Please try again."
+                    errorMessage = "auth_error_invalid_credentials".t
                 }
             }
         }
@@ -644,15 +647,15 @@ struct MerchantAuthView: View {
     private func validateAndGoToStep2() {
         errorMessage = ""
         if !email.contains("@") {
-            errorMessage = "Please enter a valid email address."
+            errorMessage = "auth_error_invalid_email".t
             return
         }
         if password.count < 8 {
-            errorMessage = "Password must be at least 8 characters long."
+            errorMessage = "auth_error_short_password".t
             return
         }
         if password != confirmPassword {
-            errorMessage = "Passwords do not match."
+            errorMessage = "auth_error_mismatched_passwords".t
             return
         }
         
@@ -680,11 +683,12 @@ struct MerchantAuthView: View {
                     loggedInEmail = email
                     loggedInName = "\(firstName) \(lastName)"
                     withAnimation { isLoggedIn = true }
+                    onAuthenticated?()
                 }
             } catch {
                 await MainActor.run {
                     isLoading = false
-                    errorMessage = "Sign up failed. Please try again."
+                    errorMessage = "auth_error_signup_failed".t
                 }
             }
         }
@@ -722,8 +726,24 @@ struct MerchantAuthView: View {
         modelContext.insert(item2)
         
         // Seed default Roles
-        let roleManager = Role(id: UUID(), name: "Store Manager", roleDescription: "All administrative privileges", isSynced: false, isDeleted: false, updatedAt: Date())
-        let roleStaff = Role(id: UUID(), name: "Staff", roleDescription: "Standard staff privileges", isSynced: false, isDeleted: false, updatedAt: Date())
+        let roleManager = Role(
+            id: UUID(),
+            name: "Store Manager",
+            roleDescription: "All administrative privileges",
+            permissionKeys: PermissionService.permissionCSV(for: PermissionService.permissions(forRoleName: "Store Manager")),
+            isSynced: false,
+            isDeleted: false,
+            updatedAt: Date()
+        )
+        let roleStaff = Role(
+            id: UUID(),
+            name: "Staff",
+            roleDescription: "Standard staff privileges",
+            permissionKeys: PermissionService.permissionCSV(for: PermissionService.permissions(forRoleName: "Staff")),
+            isSynced: false,
+            isDeleted: false,
+            updatedAt: Date()
+        )
         modelContext.insert(roleManager)
         modelContext.insert(roleStaff)
         
@@ -837,11 +857,11 @@ extension MerchantAuthView {
                     .font(.system(size: 44))
                     .foregroundStyle(APGradient.accent)
                 
-                Text("Reset Password")
+                Text(L.Auth.resetTitle.t)
                     .font(.system(size: 20, weight: .black, design: .rounded))
                     .foregroundColor(Color(hex: "111827"))
                 
-                Text("Enter your store email address to receive a secure password reset link.")
+                Text(L.Auth.resetDesc.t)
                     .font(.system(size: 13))
                     .foregroundColor(Color(hex: "6B7280"))
                     .multilineTextAlignment(.center)
@@ -864,7 +884,7 @@ extension MerchantAuthView {
                 .cornerRadius(12)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Email Address")
+                    Text(L.Auth.emailLbl.t)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(Color(hex: "4B5563"))
                     
@@ -897,7 +917,7 @@ extension MerchantAuthView {
                             .background(APGradient.accent)
                             .cornerRadius(12)
                     } else {
-                        Text("Send Reset Link")
+                        Text(L.Auth.sendResetBtn.t)
                             .font(.system(size: 14, weight: .bold))
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
@@ -925,12 +945,12 @@ extension MerchantAuthView {
                 try await AuthService.shared.resetPassword(email: cleanResetEmail)
                 await MainActor.run {
                     isSendingReset = false
-                    resetSuccessMessage = "We've sent a password reset link to \(cleanResetEmail). Please check your inbox."
+                    resetSuccessMessage = String(format: "auth_reset_success_template".t, cleanResetEmail)
                 }
             } catch {
                 await MainActor.run {
                     isSendingReset = false
-                    resetSuccessMessage = "Failed to send reset email. Please try again later."
+                    resetSuccessMessage = "auth_reset_failed".t
                 }
             }
         }

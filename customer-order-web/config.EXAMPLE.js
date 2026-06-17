@@ -3,8 +3,13 @@
 // IMPORTANT: config.js is in .gitignore and should NEVER be committed.
 
 window.ALPHAPOS_CONFIG = {
-    supabaseUrl: 'https://your-supabase-project.supabase.co',
-    supabaseKey: 'your-anon-key',
-    merchantId: 'your-merchant-uuid',
+    supabaseUrl: '',
+    supabaseKey: '',
+    merchantId: '',
+    apiAuthToken: '',
+    paymentProviders: {
+        promptpay: false,
+        external: false
+    },
     isProduction: false
 };

@@ -18,10 +18,25 @@ final class Order {
     @Relationship(deleteRule: .cascade, inverse: \OrderItem.order)
     var items: [OrderItem] = []
     
-    @Relationship(deleteRule: .cascade, inverse: \Payment.order)
+    @Relationship(deleteRule: .nullify, inverse: \Payment.order)
     var payments: [Payment] = []
     
     var branch: Branch?
+    var customer: Customer?
+    var heldAt: Date?
+    var receiptNumber: String?
+    
+    @Relationship(deleteRule: .cascade, inverse: \OrderDiscount.order)
+    var discounts: [OrderDiscount] = []
+    
+    @Relationship(deleteRule: .cascade, inverse: \OrderTaxLine.order)
+    var taxLines: [OrderTaxLine] = []
+    
+    @Relationship(deleteRule: .cascade, inverse: \Tip.order)
+    var tips: [Tip] = []
+    
+    @Relationship(deleteRule: .cascade, inverse: \RefundTransaction.order)
+    var refunds: [RefundTransaction] = []
     
     // Offline-First Sync Metadata
     var isSynced: Bool
@@ -51,6 +66,9 @@ final class Order {
         total: Double = 0.0,
         createdAt: Date = Date(),
         branch: Branch? = nil,
+        customer: Customer? = nil,
+        heldAt: Date? = nil,
+        receiptNumber: String? = nil,
         guestCount: Int = 2,
         cashierName: String = "Alex M.",
         queueNumber: String? = nil,
@@ -75,6 +93,9 @@ final class Order {
         self.total = total
         self.createdAt = createdAt
         self.branch = branch
+        self.customer = customer
+        self.heldAt = heldAt
+        self.receiptNumber = receiptNumber
         self.guestCount = guestCount
         self.cashierName = cashierName
         self.queueNumber = queueNumber

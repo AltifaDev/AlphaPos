@@ -2,8 +2,13 @@ import SwiftUI
 import SwiftData
 
 struct BatchQRCodePrintView: View {
+    @EnvironmentObject private var lm: LocalizationManager
     let tables: [RestaurantTable]
     @AppStorage("active_merchant_id") private var activeMerchantId = "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
+    @AppStorage("qr_custom_store_name") private var qrCustomStoreName = "AlphaPos Restaurant"
+    @AppStorage("qr_custom_header") private var qrCustomHeader = "Scan to Order"
+    @AppStorage("qr_custom_color") private var qrCustomColor = "#111115"
+    
     @Environment(\.dismiss) private var dismiss
     
     // QR Code Image Cache to prevent main-thread lag during renders
@@ -24,7 +29,7 @@ struct BatchQRCodePrintView: View {
             NavigationStack {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("A4 Grid Layout Preview (3 Columns) - Tap any QR Code to zoom")
+                        Text("table_qr_grid_preview_hint".t)
                             .font(.caption)
                             .foregroundColor(.textSecondary)
                             .padding(.horizontal)
@@ -50,11 +55,11 @@ struct BatchQRCodePrintView: View {
                     }
                 }
                 .background(Color.appBackground)
-                .navigationTitle("All Table QR Codes")
+                .navigationTitle("table_qr_all_codes_title".t)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
-                        Button("Close") {
+                        Button("close_btn".t) {
                             dismiss()
                         }
                     }
@@ -63,7 +68,7 @@ struct BatchQRCodePrintView: View {
                         Button(action: {
                             exportToPDF()
                         }) {
-                            Label("Export PDF", systemImage: "doc.plaintext.fill")
+                            Label("table_qr_export_pdf_btn".t, systemImage: "doc.plaintext.fill")
                                 .foregroundColor(.appAccent)
                         }
                     }
@@ -107,17 +112,30 @@ struct BatchQRCodePrintView: View {
     
     /// Synchronous QR Code Generator helper (runs inside background queue)
     private func generateQRCodeSync(from string: String) -> UIImage? {
-        if let filter = CIFilter(name: "CIQRCodeGenerator") {
-            filter.setValue(string.data(using: .utf8), forKey: "inputMessage")
-            let transform = CGAffineTransform(scaleX: 10, y: 10)
-            if let output = filter.outputImage?.transformed(by: transform) {
-                let context = CIContext()
-                if let cgImage = context.createCGImage(output, from: output.extent) {
-                    return UIImage(cgImage: cgImage)
-                }
-            }
+        let showLogo = UserDefaults.standard.object(forKey: "qr_custom_show_logo") as? Bool ?? true
+        let logoPreset = UserDefaults.standard.string(forKey: "qr_custom_logo_preset") ?? "bolt.fill"
+        let colorHex = UserDefaults.standard.string(forKey: "qr_custom_color") ?? "#111115"
+        
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(string.data(using: .utf8), forKey: "inputMessage")
+        filter.setValue("H", forKey: "inputCorrectionLevel")
+        
+        let transform = CGAffineTransform(scaleX: 10, y: 10)
+        guard let output = filter.outputImage?.transformed(by: transform) else { return nil }
+        
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(output, from: output.extent) else { return nil }
+        
+        let qrImage = UIImage(cgImage: cgImage)
+        let tintColor = UIColor(hex: colorHex)
+        
+        guard let tintedImage = qrImage.tinted(with: tintColor) else { return qrImage }
+        
+        if showLogo && !logoPreset.isEmpty {
+            return tintedImage.overlayLogo(systemIconName: logoPreset, tintColor: tintColor)
         }
-        return nil
+        
+        return tintedImage
     }
     
     /// Zoomed Single Table QR Code Overlay
@@ -146,10 +164,15 @@ struct BatchQRCodePrintView: View {
                     .buttonStyle(.plain)
                 }
                 
-                Text("Table \(table.tableNumber)")
+                Text(qrCustomStoreName)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.textSecondary)
+                
+                Text(LocalizationManager.shared.t("table_number_template", table.tableNumber))
                     .font(.title2)
                     .fontWeight(.bold)
-                    .foregroundColor(.textPrimary)
+                    .foregroundColor(Color(hex: qrCustomColor))
                 
                 let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
                 
@@ -169,7 +192,7 @@ struct BatchQRCodePrintView: View {
                 }
                 
                 VStack(spacing: 8) {
-                    Text("Self-Ordering URL:")
+                    Text(qrCustomHeader)
                         .font(.caption)
                         .foregroundColor(.textSecondary)
                     
@@ -186,7 +209,7 @@ struct BatchQRCodePrintView: View {
                     }) {
                         HStack(spacing: 4) {
                             Image(systemName: "doc.on.doc")
-                            Text("Copy Link")
+                            Text("table_qr_copy_link_btn".t)
                         }
                         .font(.subheadline)
                         .fontWeight(.bold)
@@ -226,7 +249,7 @@ struct BatchQRCodePrintView: View {
                 for pageIndex in 0..<totalPages {
                     context.beginPage()
                     
-                    let title = "AlphaPos - Table Self-Ordering QR Codes"
+                    let title = "AlphaPos - " + "table_qr_all_codes_title".t
                     let font = UIFont.boldSystemFont(ofSize: 16)
                     let attributes: [NSAttributedString.Key: Any] = [
                         .font: font,
@@ -268,22 +291,32 @@ struct BatchQRCodePrintView: View {
                         let path = UIBezierPath(roundedRect: cardRect, cornerRadius: 8)
                         path.stroke()
                         
-                        let tableName = "Table \(table.tableNumber)"
+                        let storeName = UserDefaults.standard.string(forKey: "qr_custom_store_name") ?? "AlphaPos Restaurant"
+                        let headerText = UserDefaults.standard.string(forKey: "qr_custom_header") ?? "Scan to Order"
+                        let colorHex = UserDefaults.standard.string(forKey: "qr_custom_color") ?? "#111115"
+                        let themeColor = UIColor(hex: colorHex)
+                        
+                        // Draw Store Name
+                        let storeFont = UIFont.boldSystemFont(ofSize: 9)
+                        storeName.draw(at: CGPoint(x: x + 20, y: y + 14), withAttributes: [.font: storeFont, .foregroundColor: UIColor.darkGray])
+                        
+                        // Draw Table Number
+                        let tableName = LocalizationManager.shared.t("table_number_template", table.tableNumber)
                         let nameFont = UIFont.boldSystemFont(ofSize: 13)
-                        tableName.draw(at: CGPoint(x: x + 20, y: y + 20), withAttributes: [.font: nameFont, .foregroundColor: UIColor.black])
+                        tableName.draw(at: CGPoint(x: x + 20, y: y + 26), withAttributes: [.font: nameFont, .foregroundColor: themeColor])
                         
                         let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
                         if let qrImage = generateQRCodeSync(from: qrUrl) {
                             qrImage.draw(in: CGRect(x: x + (colWidth - 100) / 2, y: y + 45, width: 100, height: 100))
                         }
                         
-                        let linkText = "Scan to Order"
-                        let linkFont = UIFont.systemFont(ofSize: 9)
+                        // Draw Header/Footer text
+                        let linkFont = UIFont.systemFont(ofSize: 8)
                         let linkAttributes: [NSAttributedString.Key: Any] = [
                             .font: linkFont,
-                            .foregroundColor: UIColor.darkGray
+                            .foregroundColor: UIColor.gray
                         ]
-                        linkText.draw(at: CGPoint(x: x + (colWidth - linkText.size(withAttributes: linkAttributes).width) / 2, y: y + 155), withAttributes: linkAttributes)
+                        headerText.draw(at: CGPoint(x: x + (colWidth - headerText.size(withAttributes: linkAttributes).width) / 2, y: y + 152), withAttributes: linkAttributes)
                     }
                     
                     let footerText = "Page \(pageIndex + 1) of \(totalPages)"
@@ -324,6 +357,10 @@ struct TableQRCard: View {
     let isZoomed: Bool
     let action: () -> Void
     
+    @AppStorage("qr_custom_store_name") private var qrCustomStoreName = "AlphaPos Restaurant"
+    @AppStorage("qr_custom_header") private var qrCustomHeader = "Scan to Order"
+    @AppStorage("qr_custom_color") private var qrCustomColor = "#111115"
+    
     @State private var isPressed = false
     
     // Explicit initializer since we have custom defaults
@@ -347,10 +384,15 @@ struct TableQRCard: View {
     
     var body: some View {
         VStack(spacing: 8) {
-            Text("Table \(table.tableNumber)")
+            Text(qrCustomStoreName)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(.textSecondary)
+                .lineLimit(1)
+            
+            Text(LocalizationManager.shared.t("table_number_template", table.tableNumber))
                 .font(.headline)
                 .fontWeight(.bold)
-                .foregroundColor(.textPrimary)
+                .foregroundColor(Color(hex: qrCustomColor))
             
             if let qrImage = qrImage {
                 Image(uiImage: qrImage)
@@ -367,11 +409,11 @@ struct TableQRCard: View {
                     .frame(width: 156, height: 156)
             }
             
-            Text("table=\(table.tableNumber)")
-                .font(.system(.caption2, design: .monospaced))
+            Text(qrCustomHeader)
+                .font(.caption2)
+                .fontWeight(.semibold)
                 .foregroundColor(.textSecondary)
                 .lineLimit(1)
-                .padding(.top, 2)
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 10)

@@ -5,9 +5,13 @@ import SwiftUI
 import SwiftData
 
 struct POSView: View {
+    @EnvironmentObject private var sessionManager: AppSessionManager
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \MenuItem.name) private var menuItems: [MenuItem]
+    @Query(filter: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted })
+    private var activeRegisterSessions: [RegisterSession]
 
     @Binding var activeSession: TableSession?
     @Binding var selectedTab: MainDashboardView.DashboardTab
@@ -16,6 +20,10 @@ struct POSView: View {
     @AppStorage("enable_table_system") private var enableTableSystem = true
 
     @State private var viewModel = POSViewModel()
+    @State private var showNoActiveShiftAlert = false
+    @State private var showStartShiftSheet = false
+    @State private var showStaleShiftCloseSheet = false
+    @State private var staleSessionToClose: RegisterSession? = nil
     @State private var searchQuery = ""
     @State private var showFavoritesOnly = false
     @State private var animateItems = false
@@ -30,7 +38,7 @@ struct POSView: View {
         case cash
         case qrCode
         case creditCard
-        
+
         var id: Int {
             switch self {
             case .cash: return 1
@@ -39,11 +47,20 @@ struct POSView: View {
             }
         }
     }
-    
+
     @State private var activePayment: ActivePaymentMethod? = nil
+    @State private var completedOrderForReceipt: Order? = nil
+    @State private var showCustomerPicker = false
+    @State private var showHeldOrders = false
+    @State private var showRefund = false
+    @State private var showSplitPayment = false
+    // MARK: - Error Handling
+    @State private var errorMessage: String? = nil
+    @State private var showingErrorBanner = false
+
 
     // MARK: - Grouped Ordered Items
-    
+
     struct GroupedOrderedItem: Identifiable {
         let id: String
         let menuItem: MenuItem
@@ -60,7 +77,7 @@ struct POSView: View {
             .filter { !$0.isDeleted }
             .flatMap { $0.items }
             .filter { !$0.isDeleted }
-        
+
         var groups: [String: (item: MenuItem, qty: Int, status: String, price: Double, mods: [Modifier], notes: String)] = [:]
         for item in rawItems {
             guard let menuItem = item.menuItem else { continue }
@@ -68,14 +85,14 @@ struct POSView: View {
             let modKey = mods.map { $0.id.uuidString }.sorted().joined(separator: "-")
             let itemNotes = item.notes ?? ""
             let key = "\(menuItem.id)-\(item.status)-\(modKey)-\(itemNotes)"
-            
+
             if let existing = groups[key] {
                 groups[key] = (menuItem, existing.qty + item.quantity, item.status, existing.price + item.subtotal, existing.mods, itemNotes)
             } else {
                 groups[key] = (menuItem, item.quantity, item.status, item.subtotal, mods, itemNotes)
             }
         }
-        
+
         return groups.map { GroupedOrderedItem(id: $0.key, menuItem: $0.value.item, quantity: $0.value.qty, status: $0.value.status, totalPrice: $0.value.price, selectedModifiers: $0.value.mods, notes: $0.value.notes) }
             .sorted(by: {
                 if $0.menuItem.name != $1.menuItem.name {
@@ -93,7 +110,7 @@ struct POSView: View {
         guard !items.isEmpty else { return false }
         return items.allSatisfy { $0.status == "served" || $0.status == "cancelled" }
     }
-    
+
     private var sessionOrderedSubtotal: Double {
         guard let session = activeSession else { return 0.0 }
         let rawItems = session.orders.filter { !$0.isDeleted }.flatMap { $0.items }.filter { !$0.isDeleted }
@@ -102,7 +119,7 @@ struct POSView: View {
             return sum + (item.unitPrice + modifierCost) * Double(item.quantity)
         }
     }
-    
+
     private var sessionOrderedTax: Double {
         guard let session = activeSession else { return 0.0 }
         let rawItems = session.orders.filter { !$0.isDeleted }.flatMap { $0.items }.filter { !$0.isDeleted }
@@ -120,11 +137,16 @@ struct POSView: View {
         }
         return totalTax
     }
-    
+
     private var sessionOrderedServiceCharge: Double {
         sessionOrderedSubtotal * 0.10
     }
-    
+
+    private var sessionOrderedDiscount: Double {
+        guard let session = activeSession else { return 0.0 }
+        return session.orders.filter { !$0.isDeleted }.reduce(0.0) { $0 + $1.discount }
+    }
+
     private var sessionOrderedTotal: Double {
         guard let session = activeSession else { return 0.0 }
         let rawItems = session.orders.filter { !$0.isDeleted }.flatMap { $0.items }.filter { !$0.isDeleted }
@@ -140,59 +162,123 @@ struct POSView: View {
                 totalAmount += lineTotal * (1.0 + taxRate / 100)
             }
         }
-        return totalAmount + sessionOrderedServiceCharge
+        return max(0, totalAmount + sessionOrderedServiceCharge - sessionOrderedDiscount)
     }
-    
+
     private var displaySubtotal: Double {
         viewModel.cartSubtotal + sessionOrderedSubtotal
     }
-    
+
     private var displayTax: Double {
         viewModel.cartTax + sessionOrderedTax
     }
-    
+
     private var displayServiceCharge: Double {
         viewModel.cartServiceCharge + sessionOrderedServiceCharge
     }
-    
+
+    private var displayDiscount: Double {
+        viewModel.cartDiscount + sessionOrderedDiscount
+    }
+
     private var displayTotal: Double {
         viewModel.cartTotal + sessionOrderedTotal
     }
 
     private func completeCheckout(methodName: String) {
         guard let session = activeSession else { return }
-        
+
+        var ordersToPay: [Order] = []
         // 1. Create payment records for any unpaid orders in the session
         for order in session.orders {
             if order.payments.isEmpty {
                 let payment = Payment(paymentMethod: methodName, amount: order.total)
                 payment.order = order
                 modelContext.insert(payment)
+                ordersToPay.append(order)
             }
         }
-        
+
         // 2. Notify backend to close table session asynchronously
         let tableNum = session.table?.tableNumber ?? ""
         Task {
-            _ = try? await NetworkManager.shared.closeTableSession(tableNumber: tableNum)
-            await SyncEngine.shared.syncAll(modelContext: modelContext)
+            do {
+                try await NetworkManager.shared.closeTableSession(tableNumber: tableNum)
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
+            } catch {
+                await MainActor.run {
+                    showError(L.Errors.syncError.t)
+                }
+            }
         }
-        
+
         // 3. Mark session inactive and set table status to cleaning
         session.isActive = false
         session.endedAt = Date()
         session.isSynced = false
         session.updatedAt = Date()
-        
+
         if let table = session.table {
             table.status = "cleaning"
             table.isSynced = false
             table.updatedAt = Date()
         }
-        
+
         try? modelContext.save()
-        
+
+        if let firstOrder = ordersToPay.first {
+            completedOrderForReceipt = firstOrder
+        }
+
         // 4. Return to Table view by clearing activeSession
+        activeSession = nil
+        selectedTab = .tables
+        APHaptic.trigger()
+    }
+
+    private func completeSplitCheckout(entries: [SplitPaymentEntry]) {
+        guard let session = activeSession else { return }
+
+        let unpaidOrders = session.orders.filter { $0.payments.isEmpty }
+        guard !unpaidOrders.isEmpty else { return }
+
+        if let primaryOrder = unpaidOrders.first {
+            for entry in entries {
+                let payment = Payment(paymentMethod: entry.method, amount: entry.amount)
+                payment.order = primaryOrder
+                modelContext.insert(payment)
+            }
+        }
+
+        let tableNum = session.table?.tableNumber ?? ""
+        Task {
+            do {
+                try await NetworkManager.shared.closeTableSession(tableNumber: tableNum)
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
+            } catch {
+                await MainActor.run {
+                    showError(L.Errors.syncError.t)
+                }
+            }
+        }
+
+        session.isActive = false
+        session.endedAt = Date()
+        session.isSynced = false
+        session.updatedAt = Date()
+
+        if let table = session.table {
+            table.status = "cleaning"
+            table.isSynced = false
+            table.updatedAt = Date()
+        }
+
+        try? modelContext.save()
+
+        if let firstOrder = unpaidOrders.first {
+            completedOrderForReceipt = firstOrder
+        }
+
         activeSession = nil
         selectedTab = .tables
         APHaptic.trigger()
@@ -249,6 +335,19 @@ struct POSView: View {
         APHaptic.trigger()
     }
 
+
+    // MARK: - Error Handling Helper
+
+    private func showError(_ message: String) {
+        withAnimation {
+            errorMessage = message
+            showingErrorBanner = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            withAnimation { showingErrorBanner = false }
+        }
+    }
+
     var body: some View {
         ZStack {
             Color.appBackground.ignoresSafeArea()
@@ -263,6 +362,32 @@ struct POSView: View {
                     cartPanel
                 }
             }
+
+            // MARK: - Error Banner Overlay
+            VStack {
+                if showingErrorBanner, let msg = errorMessage {
+                    HStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.white)
+                        Text(msg)
+                            .font(.subheadline).fontWeight(.semibold).foregroundColor(.white)
+                        Spacer()
+                        Button { withAnimation { showingErrorBanner = false } } label: {
+                            Image(systemName: "xmark").foregroundColor(.white.opacity(0.8))
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                    .background(Color.appRose)
+                    .cornerRadius(12)
+                    .shadow(color: Color.appRose.opacity(0.3), radius: 8, y: 4)
+                    .padding(.horizontal, 16).padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                Spacer()
+            }
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: showingErrorBanner)
+            .zIndex(100)
+
         }
         .navigationBarHidden(true)
         .sheet(item: $viewModel.selectedItemForCustomization) { item in
@@ -295,7 +420,7 @@ struct POSView: View {
                 itemToEditNote = nil
                 editingNoteForOrderedItem = nil
             }
-            Button("Save") {
+            Button("save_btn_label".t) {
                 if let itemId = itemToEditNote {
                     if let idx = viewModel.cart.firstIndex(where: { $0.id == itemId }) {
                         viewModel.cart[idx].notes = noteText
@@ -318,7 +443,15 @@ struct POSView: View {
                 APHaptic.trigger()
             }
         } message: {
-            Text("Add special instructions for this item.")
+            Text("pos_instructions_hint".t)
+        }
+        .alert("Cash Drawer is Locked", isPresented: $showNoActiveShiftAlert) {
+            Button("go_to_cash_drawer".t) {
+                selectedTab = .cashDrawer
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("pos_shift_required_hint".t)
         }
         .sheet(item: $activePayment) { paymentMethod in
             switch paymentMethod {
@@ -336,11 +469,55 @@ struct POSView: View {
                 }
             }
         }
+        .sheet(item: $completedOrderForReceipt) { order in
+            ReceiptView(order: order)
+        }
+        .sheet(isPresented: $showCustomerPicker) {
+            CustomerPickerView { customer in
+                viewModel.selectedCustomer = customer
+            }
+        }
+        .sheet(isPresented: $showHeldOrders) {
+            HeldOrdersView { order in
+                viewModel.recallHeldOrder(order)
+            }
+        }
+        .sheet(isPresented: $showRefund) {
+            RefundView()
+        }
+        .fullScreenCover(isPresented: $showStartShiftSheet) {
+            StartShiftRegisterSheet()
+        }
+        .sheet(item: $staleSessionToClose) { session in
+            ForceCloseStaleShiftSheet(session: session) {
+                staleSessionToClose = nil
+                showStartShiftSheet = true
+            }
+        }
+        .sheet(isPresented: $showSplitPayment) {
+            SplitPaymentView(totalAmount: displayTotal) { entries in
+                completeSplitCheckout(entries: entries)
+            }
+        }
         .onAppear {
             viewModel.modelContext = modelContext
             viewModel.syncFromSession(activeSession)
             withAnimation(.spring(response: 0.6, dampingFraction: 0.75, blendDuration: 0)) {
                 animateItems = true
+            }
+            
+            // Check for stale/overnight shift first
+            if let activeShift = activeRegisterSessions.first {
+                let hoursOpen = Calendar.current.dateComponents([.hour], from: activeShift.openedAt, to: Date()).hour ?? 0
+                let isDifferentDay = !Calendar.current.isDate(activeShift.openedAt, inSameDayAs: Date())
+                
+                if isDifferentDay || hoursOpen >= 16 {
+                    staleSessionToClose = activeShift
+                    showStaleShiftCloseSheet = true
+                }
+            } else {
+                // No active shift, prompt to start a new one
+                showStartShiftSheet = true
             }
         }
         .onDisappear {
@@ -369,17 +546,17 @@ struct POSView: View {
                     .font(.system(size: 44))
                     .foregroundStyle(APGradient.accent)
             }
-            Text("No Menu Items Yet")
+            Text("pos_no_menu_items_title".t)
                 .font(.title2).fontWeight(.bold)
                 .foregroundColor(.textPrimary)
-            Text("Seed the database with sample menu items to get started.")
+            Text("pos_no_menu_items_subtitle".t)
                 .font(.subheadline)
                 .foregroundColor(.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 320)
 
             Button(action: { viewModel.seedSampleMenu() }) {
-                Label("Seed Mock Menu & Ingredients", systemImage: "plus.square.fill")
+                Label("seed_mock_menu_btn".t, systemImage: "plus.square.fill")
                     .apGradientButton()
             }
             .frame(maxWidth: 300)
@@ -397,10 +574,10 @@ struct POSView: View {
                     .font(.system(size: 44))
                     .foregroundStyle(APGradient.accent)
             }
-            Text("Select a Table to Begin")
+            Text("pos_select_table_title".t)
                 .font(.title2).fontWeight(.bold)
                 .foregroundColor(.textPrimary)
-            Text("The Dining Table System is active. You must select an active table session to place an order.")
+            Text("pos_select_table_subtitle".t)
                 .font(.subheadline)
                 .foregroundColor(.textSecondary)
                 .multilineTextAlignment(.center)
@@ -409,7 +586,7 @@ struct POSView: View {
             Button(action: {
                 selectedTab = .tables
             }) {
-                Label("Go to Table Layout", systemImage: "arrow.right")
+                Label("go_to_table_layout".t, systemImage: "arrow.right")
                     .apGradientButton()
             }
             .frame(maxWidth: 240)
@@ -443,7 +620,7 @@ struct POSView: View {
                             Image(systemName: enableTableSystem ? "chevron.left" : "sidebar.left")
                                 .font(.system(size: 16, weight: .bold))
                             if enableTableSystem {
-                                Text("Tables")
+                                Text("tab_tables".t)
                                     .font(.system(size: 13, weight: .semibold))
                             }
                         }
@@ -457,7 +634,33 @@ struct POSView: View {
                                 .stroke(Color.appBorderSubtle, lineWidth: 1)
                         )
                     }
-                    
+
+                    // Refunds Button
+                    Button(action: {
+                        if sessionManager.can(.refundCreate) {
+                            showRefund = true
+                        }
+                        APHaptic.trigger()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 14, weight: .bold))
+                            Text("pos_refund".t)
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundColor(.appAccent)
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 12)
+                        .background(Color.appSurfaceHigh)
+                        .cornerRadius(APRadius.md)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: APRadius.md)
+                                .stroke(sessionManager.can(.refundCreate) ? Color.appBorderSubtle : Color.appRose.opacity(0.35), lineWidth: 1)
+                        )
+                    }
+                    .disabled(!sessionManager.can(.refundCreate))
+                    .opacity(sessionManager.can(.refundCreate) ? 1 : 0.45)
+
                     // Search Bar container
                     HStack(spacing: APSpacing.sm) {
                         Image(systemName: "magnifyingglass")
@@ -505,10 +708,10 @@ struct POSView: View {
                                 viewModel.selectedCategory = nil
                             }
                         }) {
-                            Text("All Items")
+                            Text("pos_all_items".t)
                                 .apChip(selected: !showFavoritesOnly && viewModel.selectedCategory == nil)
                         }
-                        
+
                         Button(action: {
                             withAnimation {
                                 showFavoritesOnly = true
@@ -518,11 +721,11 @@ struct POSView: View {
                             HStack(spacing: 4) {
                                 Image(systemName: "star.fill")
                                     .foregroundColor(.appAmber)
-                                Text("Favorites")
+                                Text("pos_favorites".t)
                             }
                             .apChip(selected: showFavoritesOnly)
                         }
-                        
+
                         ForEach(categories) { cat in
                             Button(action: {
                                 withAnimation {
@@ -549,13 +752,13 @@ struct POSView: View {
             let filtered = menuItems.filter { item in
                 let matchesCategory = viewModel.selectedCategory == nil || item.category?.id == viewModel.selectedCategory?.id
                 let matchesFavorite = !showFavoritesOnly || (item.isFavorite ?? false)
-                
+
                 let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
                 let matchesSearch = query.isEmpty ||
                     item.name.localizedCaseInsensitiveContains(query) ||
                     (item.sku ?? "").localizedCaseInsensitiveContains(query) ||
                     (item.barcode ?? "").localizedCaseInsensitiveContains(query)
-                
+
                 return matchesCategory && matchesFavorite && matchesSearch
             }
             ScrollView {
@@ -585,24 +788,24 @@ struct POSView: View {
                 // Header (Compact & Combined)
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Current Cart")
+                        Text("pos_current_cart".t)
                             .font(.system(size: 16, weight: .bold))
                             .foregroundColor(.textPrimary)
                         if !viewModel.cart.isEmpty {
-                            Text("\(viewModel.cart.count) items")
+                            Text(LocalizationManager.shared.t("items_count_template", viewModel.cart.count))
                                 .font(.system(size: 11))
                                 .foregroundColor(.textSecondary)
                         }
                     }
-                    
+
                     Spacer()
-                    
+
                     // Order Type Selector (Compact)
                     HStack(spacing: 2) {
                         Button(action: {
                             withAnimation { viewModel.updateOrderType("dine_in") }
                         }) {
-                            Text("Dine-In")
+                            Text("pos_dine_in".t)
                                 .font(.system(size: 9, weight: .bold))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 3)
@@ -613,7 +816,7 @@ struct POSView: View {
                         Button(action: {
                             withAnimation { viewModel.updateOrderType("take_out") }
                         }) {
-                            Text("Take-Out")
+                            Text("pos_take_out".t)
                                 .font(.system(size: 9, weight: .bold))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 3)
@@ -629,7 +832,7 @@ struct POSView: View {
                                 }
                             }
                         }) {
-                            Text("Delivery")
+                            Text("pos_delivery".t)
                                 .font(.system(size: 9, weight: .bold))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 3)
@@ -641,23 +844,47 @@ struct POSView: View {
                     .padding(1)
                     .background(Color.appSurfaceHigh)
                     .cornerRadius(4)
-                    
+
                     if !viewModel.cart.isEmpty {
+                        HStack(spacing: 8) {
+                            Button(action: {
+                                viewModel.holdCurrentCart()
+                            }) {
+                                Text("pos_hold".t)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.appTeal)
+                                    .padding(.leading, 8)
+                            }
+
+                            Button(action: {
+                                withAnimation { viewModel.cart.removeAll() }
+                                APHaptic.trigger()
+                            }) {
+                                Text("pos_clear".t)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.appRose)
+                                    .padding(.leading, 8)
+                            }
+                        }
+                    } else {
                         Button(action: {
-                            withAnimation { viewModel.cart.removeAll() }
+                            showHeldOrders = true
                             APHaptic.trigger()
                         }) {
-                            Text("Clear")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.appRose)
-                                .padding(.leading, 8)
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.uturn.backward.circle")
+                                    .font(.system(size: 11))
+                                Text("pos_recall".t)
+                                    .font(.system(size: 11, weight: .bold))
+                            }
+                            .foregroundColor(.appAccent)
                         }
                     }
                 }
                 .padding(.horizontal, APSpacing.md)
                 .padding(.vertical, 10)
                 .background(Color.appSurface)
-                
+
                 if viewModel.selectedOrderType == "delivery" {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
@@ -673,7 +900,7 @@ struct POSView: View {
                                     default: return Color.appAccent
                                     }
                                 }()
-                                
+
                                 Button(action: {
                                     withAnimation {
                                         viewModel.deliveryBrand = brand
@@ -702,7 +929,7 @@ struct POSView: View {
                         .padding(.vertical, 6)
                     }
                     .background(Color.appSurface)
-                    
+
                     // Button to edit settings (GP, Fees)
                     HStack {
                         Spacer()
@@ -713,7 +940,7 @@ struct POSView: View {
                             HStack(spacing: 4) {
                                 Image(systemName: "slider.horizontal.3")
                                     .font(.system(size: 10))
-                                Text("Configure \(viewModel.deliveryBrand ?? "Platform") Fees")
+                                Text(LocalizationManager.shared.t("configure_fees_template", viewModel.deliveryBrand ?? "Platform"))
                                     .font(.system(size: 10, weight: .semibold))
                             }
                             .foregroundColor(.appAccent)
@@ -722,7 +949,7 @@ struct POSView: View {
                     .padding(.horizontal, APSpacing.md)
                     .padding(.bottom, 6)
                     .background(Color.appSurface)
-                    
+
                     Divider().background(Color.appDivider)
                 }
 
@@ -732,7 +959,7 @@ struct POSView: View {
                     HStack(alignment: .center) {
                         // Column 1: Bill & Queue
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("BILL NO")
+                            Text("pos_bill_no".t)
                                 .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(.textTertiary)
                             Text(viewModel.currentBillNumber)
@@ -742,14 +969,14 @@ struct POSView: View {
                                 .font(.system(size: 9, weight: .bold))
                                 .foregroundColor(.appTeal)
                         }
-                        
+
                         Spacer()
-                        
+
                         // Column 2: Table & Guests (Pax)
                         VStack(alignment: .center, spacing: 2) {
                             if enableTableSystem, let session = activeSession {
                                 HStack(spacing: 3) {
-                                    Text("Table \(session.table?.tableNumber ?? "N/A")")
+                                    Text(LocalizationManager.shared.t("table_number_template", session.table?.tableNumber ?? "N/A"))
                                         .font(.system(size: 11, weight: .bold))
                                         .foregroundColor(.textPrimary)
                                     Button(action: {
@@ -769,7 +996,7 @@ struct POSView: View {
                                 .tint(.textPrimary)
                                 .font(.system(size: 11, weight: .bold))
                             }
-                            
+
                             // Stepper
                             HStack(spacing: 4) {
                                 Button(action: {
@@ -781,7 +1008,7 @@ struct POSView: View {
                                         .font(.system(size: 12))
                                         .foregroundColor(.textSecondary)
                                 }
-                                Text("\(viewModel.guestCount) Pax")
+                                Text(LocalizationManager.shared.t("pax_count_template", viewModel.guestCount))
                                     .font(.system(size: 10, weight: .bold))
                                     .foregroundColor(.textPrimary)
                                 Button(action: {
@@ -793,12 +1020,12 @@ struct POSView: View {
                                 }
                             }
                         }
-                        
+
                         Spacer()
-                        
+
                         // Column 3: Cashier
                         VStack(alignment: .trailing, spacing: 2) {
-                            Text("CASHIER")
+                            Text("pos_cashier".t)
                                 .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(.textTertiary)
                             Text(viewModel.cashierName)
@@ -806,9 +1033,9 @@ struct POSView: View {
                                 .foregroundColor(.textPrimary)
                         }
                     }
-                    
+
                     Divider().background(Color.appDivider)
-                    
+
                     // Row 2: Date & Time
                     HStack {
                         Text(viewModel.currentOrderDateString)
@@ -816,6 +1043,46 @@ struct POSView: View {
                             .foregroundColor(.textSecondary)
                         Spacer()
                     }
+
+                    Divider().background(Color.appDivider)
+
+                    // Row 3: Customer Selector
+                    HStack {
+                        if let customer = viewModel.selectedCustomer {
+                            HStack(spacing: 6) {
+                                Image(systemName: "person.crop.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.appAccent)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(customer.name)
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundColor(.textPrimary)
+                                    Text(LocalizationManager.shared.t("customer_membership_points_template", customer.membershipTier.uppercased(), customer.loyaltyPoints))
+                                        .font(.system(size: 9))
+                                        .foregroundColor(.textSecondary)
+                                }
+                            }
+                            Spacer()
+                            Button(action: {
+                                viewModel.selectedCustomer = nil
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.textSecondary)
+                            }
+                        } else {
+                            Button(action: {
+                                showCustomerPicker = true
+                                APHaptic.trigger()
+                            }) {
+                                Label("add_customer_btn".t, systemImage: "person.badge.plus")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(.appAccent)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .padding(.top, 2)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -836,7 +1103,7 @@ struct POSView: View {
                     HStack(spacing: APSpacing.xs) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.appTeal)
-                        Text("เสิร์ฟครบแล้ว พร้อมชำระเงิน (Ready for Payment)")
+                        Text("pos_ready_for_payment".t)
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.appTeal)
                         Spacer()
@@ -855,7 +1122,7 @@ struct POSView: View {
                         Image(systemName: "cart.badge.questionmark")
                             .font(.system(size: 40))
                             .foregroundColor(.textTertiary)
-                        Text("Cart is empty")
+                        Text("pos_cart_empty".t)
                             .font(.subheadline)
                             .foregroundColor(.textSecondary)
                     }
@@ -876,20 +1143,20 @@ struct POSView: View {
                                             Button(role: .destructive) {
                                                 deleteOrderedItem(orderedItem)
                                             } label: {
-                                                Label("Delete", systemImage: "trash")
+                                                Label("delete_btn_label".t, systemImage: "trash")
                                             }
                                             .tint(.red)
-                                            
+
                                             Button {
                                                 editNoteForOrderedItemAction(orderedItem)
                                             } label: {
-                                                Label("Note", systemImage: "square.and.pencil")
+                                                Label("note_btn_label".t, systemImage: "square.and.pencil")
                                             }
                                             .tint(.orange)
                                         }
                                 }
                             }
-                            
+
                             // 2. New Draft Items
                             if !viewModel.cart.isEmpty {
                                 ForEach(viewModel.cart) { cartItem in
@@ -908,21 +1175,21 @@ struct POSView: View {
                                             Button(role: .destructive) {
                                                 deleteCartItem(cartItem)
                                             } label: {
-                                                Label("Delete", systemImage: "trash")
+                                                Label("delete_btn_label".t, systemImage: "trash")
                                             }
                                             .tint(.red)
-                                            
+
                                             Button {
                                                 editCartItem(cartItem)
                                             } label: {
-                                                Label("Edit", systemImage: "pencil")
+                                                Label("edit_btn_label".t, systemImage: "pencil")
                                             }
                                             .tint(.blue)
-                                            
+
                                             Button {
                                                 editNoteForCartItemAction(cartItem)
                                             } label: {
-                                                Label("Note", systemImage: "square.and.pencil")
+                                                Label("note_btn_label".t, systemImage: "square.and.pencil")
                                             }
                                             .tint(.orange)
                                         }
@@ -948,14 +1215,17 @@ struct POSView: View {
             VStack(spacing: 0) {
                 // Financial breakdown
                 VStack(spacing: 4) {
-                    financeRow(label: "Subtotal", value: displaySubtotal)
-                    financeRow(label: "VAT 7%", value: displayTax)
-                    financeRow(label: "Service 10%", value: displayServiceCharge)
+                    financeRow(label: "pos_subtotal".t, value: displaySubtotal)
+                    financeRow(label: "pos_vat".t + " 7%", value: displayTax)
+                    financeRow(label: "pos_service_charge".t + " 10%", value: displayServiceCharge)
+                    if displayDiscount > 0 {
+                        financeRow(label: "pos_discount".t, value: -displayDiscount)
+                    }
 
                     Divider().background(Color.appDivider).padding(.vertical, 2)
 
                     HStack {
-                        Text("Total")
+                        Text("pos_total".t)
                             .font(.subheadline).fontWeight(.bold)
                             .foregroundColor(.textPrimary)
                         Spacer()
@@ -970,56 +1240,79 @@ struct POSView: View {
 
                 // Checkout / Payment CTAs
                 if enableTableSystem && activeSession != nil && viewModel.cart.isEmpty && isAllServed {
-                    HStack(spacing: 8) {
-                        // 1. Cash Button
-                        Button(action: { activePayment = .cash }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "banknote.fill")
-                                    .font(.system(size: 13))
-                                Text("Cash")
-                                    .font(.system(size: 13, weight: .bold))
+                    VStack(spacing: 8) {
+                        HStack(spacing: 8) {
+                            // 1. Cash Button
+                            Button(action: { verifyShiftAndExecute { activePayment = .cash } }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "banknote.fill")
+                                        .font(.system(size: 13))
+                                    Text("pos_cash".t)
+                                        .font(.system(size: 13, weight: .bold))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(Color.appSurfaceHigh)
+                                .foregroundColor(.textPrimary)
+                                .cornerRadius(APRadius.md)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: APRadius.md)
+                                        .stroke(Color.appBorderSubtle, lineWidth: 1)
+                                )
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(Color.appSurfaceHigh)
-                            .foregroundColor(.textPrimary)
-                            .cornerRadius(APRadius.md)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: APRadius.md)
-                                    .stroke(Color.appBorderSubtle, lineWidth: 1)
-                            )
+
+                            // 2. QR Code Button
+                            Button(action: { verifyShiftAndExecute { activePayment = .qrCode } }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "qrcode")
+                                        .font(.system(size: 13))
+                                    Text("pos_qr_code".t)
+                                        .font(.system(size: 13, weight: .bold))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(Color.appTeal)
+                                .foregroundColor(.white)
+                                .cornerRadius(APRadius.md)
+                                .shadow(color: Color.appTeal.opacity(0.3), radius: 8, x: 0, y: 0)
+                            }
                         }
-                        
-                        // 2. QR Code Button
-                        Button(action: { activePayment = .qrCode }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "qrcode")
-                                    .font(.system(size: 13))
-                                Text("QR Code")
-                                    .font(.system(size: 13, weight: .bold))
+
+                        HStack(spacing: 8) {
+                            // 3. Credit Card Button
+                            Button(action: { verifyShiftAndExecute { activePayment = .creditCard } }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "creditcard.fill")
+                                        .font(.system(size: 13))
+                                    Text("pos_card".t)
+                                        .font(.system(size: 13, weight: .bold))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(Color.appSurfaceHigh)
+                                .foregroundColor(.textPrimary)
+                                .cornerRadius(APRadius.md)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: APRadius.md)
+                                        .stroke(Color.appBorderSubtle, lineWidth: 1)
+                                )
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(Color.appTeal)
-                            .foregroundColor(.white)
-                            .cornerRadius(APRadius.md)
-                            .shadow(color: Color.appTeal.opacity(0.3), radius: 8, x: 0, y: 0)
-                        }
-                        
-                        // 3. Credit Card Button
-                        Button(action: { activePayment = .creditCard }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "creditcard.fill")
-                                    .font(.system(size: 13))
-                                Text("Card")
-                                    .font(.system(size: 13, weight: .bold))
+
+                            // 4. Split Pay Button
+                            Button(action: { verifyShiftAndExecute { showSplitPayment = true } }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "square.split.2x2.fill")
+                                        .font(.system(size: 13))
+                                    Text("pos_split_pay".t)
+                                        .font(.system(size: 13, weight: .bold))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(APGradient.accent)
+                                .foregroundColor(.white)
+                                .cornerRadius(APRadius.md)
+                                .shadow(color: Color.appAccent.opacity(0.3), radius: 8, x: 0, y: 0)
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(APGradient.accent)
-                            .foregroundColor(.white)
-                            .cornerRadius(APRadius.md)
-                            .shadow(color: Color.appAccent.opacity(0.3), radius: 8, x: 0, y: 0)
                         }
                     }
                     .padding(.horizontal, APSpacing.md)
@@ -1027,9 +1320,16 @@ struct POSView: View {
                     .padding(.top, APSpacing.xs)
                     .background(Color.appSurface)
                 } else {
-                    Button(action: { viewModel.processCheckout(tableSession: enableTableSystem ? activeSession : nil) }) {
-                        let btnLabel = viewModel.cart.isEmpty ? "Send to Kitchen" : "Send to Kitchen (฿\(String(format: "%.2f", viewModel.cartTotal)))"
-                        Label(btnLabel, systemImage: "flame.fill")
+                    Button(action: {
+                        verifyShiftAndExecute {
+                            let order = viewModel.processCheckout(tableSession: enableTableSystem ? activeSession : nil)
+                            if !enableTableSystem, let order {
+                                completedOrderForReceipt = order
+                            }
+                        }
+                    }) {
+                        let btnLabel = viewModel.cart.isEmpty ? (enableTableSystem ? "Send to Kitchen" : "Checkout") : (enableTableSystem ? "Send to Kitchen (฿\(String(format: "%.2f", viewModel.cartTotal)))" : "Checkout & Pay (฿\(String(format: "%.2f", viewModel.cartTotal)))")
+                        Label(btnLabel, systemImage: enableTableSystem ? "flame.fill" : "creditcard.fill")
                             .apGradientButton(
                                 gradient: viewModel.cart.isEmpty ? LinearGradient(colors: [Color.appSurface], startPoint: .leading, endPoint: .trailing) : APGradient.accent,
                                 shadow: APShadow.glow,
@@ -1067,6 +1367,15 @@ struct POSView: View {
                 .foregroundColor(.textPrimary)
         }
     }
+
+    private func verifyShiftAndExecute(_ action: @escaping () -> Void) {
+        if activeRegisterSessions.isEmpty {
+            showStartShiftSheet = true
+            APHaptic.trigger()
+        } else {
+            action()
+        }
+    }
 }
 
 // MARK: - Menu Item Card Button Style
@@ -1086,13 +1395,14 @@ private struct MenuItemCard: View {
     let countInCart: Int
     let onSelect: () -> Void
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
     @State private var isGlowActive = false
 
     var body: some View {
         Button(action: {
             if item.isAvailable {
                 onSelect()
-                
+
                 // Trigger tactile green flash shadow animation
                 withAnimation(.easeOut(duration: 0.12)) {
                     isGlowActive = true
@@ -1112,7 +1422,7 @@ private struct MenuItemCard: View {
                 let fallbackIcon = isDrink ? "wineglass.fill" : "fork.knife"
                 let hexColor = item.colorHex ?? "1E1B4B"
                 let fallbackColor = Color(hex: hexColor)
-                
+
                 ZStack(alignment: .topLeading) {
                     RemoteImageView(
                         imageUrl: item.imageUrl,
@@ -1123,7 +1433,7 @@ private struct MenuItemCard: View {
                     .frame(height: 95)
                     .frame(maxWidth: .infinity)
                     .clipped()
-                    
+
                     // Badges overlay
                     HStack(spacing: 4) {
                         // Bestseller Badge
@@ -1136,9 +1446,9 @@ private struct MenuItemCard: View {
                                 .clipShape(Circle())
                                 .shadow(color: .black.opacity(0.3), radius: 1.5)
                         }
-                        
+
                         Spacer()
-                        
+
                         // Favorite Badge
                         if item.isFavorite ?? false {
                             Image(systemName: "star.fill")
@@ -1156,7 +1466,7 @@ private struct MenuItemCard: View {
                 .contentShape(Rectangle())
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(item.name)
+                    Text(item.localizedName)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.textPrimary)
                         .lineLimit(2)
@@ -1189,7 +1499,7 @@ private struct MenuItemCard: View {
                     if !item.isAvailable {
                         Color.black.opacity(0.15)
                             .overlay(
-                                Text("ของหมด")
+                                Text("pos_out_of_stock".t)
                                     .font(.caption)
                                     .fontWeight(.bold)
                                     .foregroundColor(.white)
@@ -1234,7 +1544,7 @@ private struct MenuItemCard: View {
             } label: {
                 Label(item.isAvailable ? "ทำเครื่องหมาย: ของหมด" : "ทำเครื่องหมาย: พร้อมขาย", systemImage: item.isAvailable ? "slash.circle" : "checkmark.circle")
             }
-            
+
             Button {
                 item.isFavorite = !(item.isFavorite ?? false)
                 item.updatedAt = Date()
@@ -1242,7 +1552,7 @@ private struct MenuItemCard: View {
             } label: {
                 Label((item.isFavorite ?? false) ? "เอาออกจากรายการโปรด" : "เพิ่มเป็นรายการโปรด", systemImage: (item.isFavorite ?? false) ? "star.slash" : "star.fill")
             }
-            
+
             Button {
                 item.isBestseller = !(item.isBestseller ?? false)
                 item.updatedAt = Date()
@@ -1265,16 +1575,16 @@ private struct CartItemRow: View {
         VStack(alignment: .leading, spacing: 6) {
             // Row 1: Name and Draft Badge
             HStack(alignment: .top) {
-                Text(cartItem.item.name)
+                Text(cartItem.item.localizedName)
                     .font(.footnote)
                     .fontWeight(.semibold)
                     .foregroundColor(.textPrimary)
                     .lineLimit(nil)
                     .multilineTextAlignment(.leading)
-                
+
                 Spacer(minLength: 12)
-                
-                Text("รอยืนยัน")
+
+                Text("pos_pending_confirmation".t)
                     .font(.system(size: 8, weight: .bold))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
@@ -1282,16 +1592,16 @@ private struct CartItemRow: View {
                     .foregroundColor(.appAccent)
                     .cornerRadius(3)
             }
-            
+
             // Row 2: Modifiers (if present)
             if !cartItem.selectedModifiers.isEmpty {
                 Text(cartItem.selectedModifiers.map { $0.name }.joined(separator: " · "))
                     .font(.caption)
                     .foregroundColor(.textSecondary)
             }
-            
+
             if !cartItem.notes.isEmpty {
-                Text("Note: \(cartItem.notes)")
+                Text(LocalizationManager.shared.t("note_label_template", cartItem.notes))
                     .font(.caption2)
                     .foregroundColor(.appAmber)
                     .padding(.horizontal, 6)
@@ -1299,15 +1609,15 @@ private struct CartItemRow: View {
                     .background(Color.appAmber.opacity(0.12))
                     .cornerRadius(4)
             }
-            
+
             // Row 3: Price and Stepper
             HStack(alignment: .center) {
                 Text(String(format: "฿%.0f", cartItem.totalPrice))
                     .font(.subheadline).fontWeight(.bold)
                     .foregroundColor(.textPrimary)
-                
+
                 Spacer()
-                
+
                 HStack(spacing: APSpacing.sm) {
                     Button(action: onDecrease) {
                         Image(systemName: "minus.circle.fill")
@@ -1342,33 +1652,33 @@ private struct CartItemRow: View {
 
 private struct OrderedItemRow: View {
     let groupedItem: POSView.GroupedOrderedItem
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             // Row 1: Name and Badge
             HStack(alignment: .top) {
-                Text(groupedItem.menuItem.name)
+                Text(groupedItem.menuItem.localizedName)
                     .font(.footnote)
                     .fontWeight(.semibold)
                     .foregroundColor(groupedItem.status == "cancelled" ? .textTertiary : .textPrimary)
                     .strikethrough(groupedItem.status == "cancelled")
                     .lineLimit(nil)
                     .multilineTextAlignment(.leading)
-                
+
                 Spacer(minLength: 12)
-                
+
                 statusBadge(status: groupedItem.status)
             }
-            
+
             // Row 2: Modifiers (if present)
             if !groupedItem.selectedModifiers.isEmpty {
                 Text(groupedItem.selectedModifiers.map { $0.name }.joined(separator: " · "))
                     .font(.caption)
                     .foregroundColor(.textSecondary)
             }
-            
+
             if !groupedItem.notes.isEmpty {
-                Text("Note: \(groupedItem.notes)")
+                Text(LocalizationManager.shared.t("note_label_template", groupedItem.notes))
                     .font(.caption2)
                     .foregroundColor(.appAmber)
                     .padding(.horizontal, 6)
@@ -1376,15 +1686,15 @@ private struct OrderedItemRow: View {
                     .background(Color.appAmber.opacity(0.12))
                     .cornerRadius(4)
             }
-            
+
             // Row 3: Price and Quantity
             HStack(alignment: .center) {
                 Text(String(format: "฿%.0f", groupedItem.totalPrice))
                     .font(.subheadline).fontWeight(.bold)
                     .foregroundColor(groupedItem.status == "cancelled" ? .textTertiary : .textPrimary)
-                
+
                 Spacer()
-                
+
                 Text("× \(groupedItem.quantity)")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.textSecondary)
@@ -1404,12 +1714,12 @@ private struct OrderedItemRow: View {
         )
         .opacity(groupedItem.status == "cancelled" ? 0.5 : 0.85)
     }
-    
+
     private func statusBadge(status: String) -> some View {
         let text: String
         let icon: String
         let color: Color
-        
+
         switch status.lowercased() {
         case "cooking", "preparing":
             text = "กำลังปรุง"
@@ -1426,7 +1736,7 @@ private struct OrderedItemRow: View {
             return HStack(spacing: 3) {
                 Text("🍽️")
                     .font(.system(size: 10))
-                Text("เสิร์ฟแล้ว")
+                Text("pos_served".t)
                     .font(.system(size: 9, weight: .bold))
             }
             .padding(.horizontal, 6)
@@ -1447,7 +1757,7 @@ private struct OrderedItemRow: View {
             icon = "⏳"
             color = .appAmber
         }
-        
+
         return HStack(spacing: 3) {
             Text(icon)
                 .font(.system(size: 10))
@@ -1542,18 +1852,18 @@ struct ModifierCustomizerView: View {
                         onConfirm(Array(selections.values))
                         dismiss()
                     }) {
-                        Label("Add to Cart", systemImage: "cart.badge.plus")
+                        Label("add_to_cart_btn".t, systemImage: "cart.badge.plus")
                             .apGradientButton()
                     }
                     .padding(APSpacing.md)
                     .background(Color.appSurface)
                 }
             }
-            .navigationTitle("Customize: \(item.name)")
+            .navigationTitle("\("customize_title_prefix".t)\(item.localizedName)")
             .apNavBar(background: Color.appSurface)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(L.Common.cancel.t) { dismiss() }
                         .foregroundColor(.textSecondary)
                 }
             }
@@ -1568,24 +1878,24 @@ struct CashPaymentModalView: View {
     let totalAmount: Double
     let onConfirm: (Double) -> Void
     @Environment(\.dismiss) private var dismiss
-    
+
     @State private var cashReceivedText = ""
     @State private var showSuccessOverlay = false
     @State private var delayRemaining = 3.0
     @State private var isProcessing = false
-    
+
     private var cashReceived: Double {
         Double(cashReceivedText) ?? 0.0
     }
-    
+
     private var changeDue: Double {
         cashReceived - totalAmount
     }
-    
+
     private var isAmountSufficient: Bool {
         cashReceived >= totalAmount
     }
-    
+
     private func handleKeypadInput(_ input: String) {
         withAnimation(.spring(response: 0.15, dampingFraction: 0.6)) {
             if input == "⌫" {
@@ -1611,7 +1921,7 @@ struct CashPaymentModalView: View {
             }
         }
     }
-    
+
     private func formatAmountNoCent(_ amount: Double) -> String {
         if amount.truncatingRemainder(dividingBy: 1) == 0 {
             return String(format: "%.0f", amount)
@@ -1619,16 +1929,16 @@ struct CashPaymentModalView: View {
             return String(format: "%.2f", amount)
         }
     }
-    
+
     private func startCheckoutDelay() {
         isProcessing = true
         APHaptic.trigger()
-        
+
         // Show success screen
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
             showSuccessOverlay = true
         }
-        
+
         // Dynamic countdown using Swift Concurrency
         Task {
             for _ in 0..<3 {
@@ -1647,12 +1957,12 @@ struct CashPaymentModalView: View {
             }
         }
     }
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 if showSuccessOverlay {
                     successOverlayView
                         .transition(.asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.95)), removal: .opacity))
@@ -1661,11 +1971,11 @@ struct CashPaymentModalView: View {
                         .transition(.opacity)
                 }
             }
-            .navigationTitle("Cash Payment")
+            .navigationTitle("cash_payment_title".t)
             .apNavBar(background: Color.appSurface)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(L.Common.cancel.t) { dismiss() }
                         .foregroundColor(.textSecondary)
                         .disabled(isProcessing)
                 }
@@ -1673,7 +1983,7 @@ struct CashPaymentModalView: View {
         }
         .apColorScheme()
     }
-    
+
     private var mainContentView: some View {
         VStack(spacing: 14) {
             HStack(alignment: .top, spacing: 14) {
@@ -1681,11 +1991,11 @@ struct CashPaymentModalView: View {
                 VStack(spacing: 10) {
                     // Total Due Card
                     VStack(spacing: 4) {
-                        Text("Total Amount")
+                        Text("pos_total_amount".t)
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.textSecondary)
-                        
+
                         Text(String(format: "฿%.2f", totalAmount))
                             .font(.system(size: 26, weight: .black))
                             .foregroundStyle(APGradient.accent)
@@ -1699,14 +2009,14 @@ struct CashPaymentModalView: View {
                         RoundedRectangle(cornerRadius: APRadius.md)
                             .stroke(Color.appBorderSubtle, lineWidth: 1)
                     )
-                    
+
                     // Quick Cash Shortcuts
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Quick Cash")
+                        Text("pos_quick_cash".t)
                             .font(.system(size: 9, weight: .bold))
                             .foregroundColor(.textSecondary)
                             .textCase(.uppercase)
-                        
+
                         VStack(spacing: 6) {
                             HStack(spacing: 6) {
                                 quickCashButton(label: "Exact", amountValue: totalAmount)
@@ -1718,15 +2028,15 @@ struct CashPaymentModalView: View {
                             }
                         }
                     }
-                    
+
                     // Change Due Card
                     VStack(spacing: 4) {
                         if isAmountSufficient {
-                            Text("Change Due")
+                            Text("pos_change_due".t)
                                 .font(.caption)
                                 .fontWeight(.bold)
                                 .foregroundColor(.textSecondary)
-                            
+
                             Text(String(format: "฿%.2f", changeDue))
                                 .font(.system(size: 24, weight: .black))
                                 .foregroundColor(.appTeal)
@@ -1735,11 +2045,11 @@ struct CashPaymentModalView: View {
                                 .animation(.spring(response: 0.3, dampingFraction: 0.6), value: changeDue)
                         } else {
                             let missingAmount = totalAmount - cashReceived
-                            Text("Amount Missing")
+                            Text("pos_amount_missing".t)
                                 .font(.caption)
                                 .fontWeight(.bold)
                                 .foregroundColor(.textSecondary)
-                            
+
                             Text(String(format: "฿%.2f", missingAmount))
                                 .font(.system(size: 20, weight: .bold))
                                 .foregroundColor(.appRose)
@@ -1758,7 +2068,7 @@ struct CashPaymentModalView: View {
                     )
                 }
                 .frame(width: 220)
-                
+
                 // Right Column: Cash Received display and Calculator Keypad
                 VStack(spacing: 10) {
                     // Input display field
@@ -1766,16 +2076,16 @@ struct CashPaymentModalView: View {
                         Text("฿")
                             .font(.title3).fontWeight(.black)
                             .foregroundColor(.textPrimary)
-                        
+
                         Spacer()
-                        
+
                         Text(cashReceivedText.isEmpty ? "0" : cashReceivedText)
                             .font(.system(size: 28, weight: .bold))
                             .foregroundColor(cashReceivedText.isEmpty ? .textTertiary : .textPrimary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.5)
                             .contentTransition(.numericText())
-                        
+
                         if !cashReceivedText.isEmpty {
                             Button(action: {
                                 withAnimation(.spring(response: 0.15, dampingFraction: 0.6)) {
@@ -1798,16 +2108,16 @@ struct CashPaymentModalView: View {
                         RoundedRectangle(cornerRadius: APRadius.md)
                             .stroke(Color.appBorderSubtle, lineWidth: 1)
                     )
-                    
+
                     // Keypad grid
                     keypadGrid
                 }
                 .frame(maxWidth: .infinity)
             }
-            
+
             // Confirm CTA (Spans full-width at the bottom)
             Button(action: startCheckoutDelay) {
-                Label("Confirm Payment", systemImage: "checkmark.circle.fill")
+                Label("confirm_payment_btn".t, systemImage: "checkmark.circle.fill")
                     .apGradientButton(
                         gradient: isAmountSufficient ? APGradient.positive : LinearGradient(colors: [Color.appSurface], startPoint: .leading, endPoint: .trailing),
                         shadow: APShadow.positiveGlow,
@@ -1819,7 +2129,7 @@ struct CashPaymentModalView: View {
         }
         .padding(14)
     }
-    
+
     private func quickCashButton(label: String, amountValue: Double) -> some View {
         Button(action: {
             withAnimation(.spring(response: 0.2, dampingFraction: 0.6)) {
@@ -1845,7 +2155,7 @@ struct CashPaymentModalView: View {
         }
         .buttonStyle(KeypadButtonStyle())
     }
-    
+
     private var keypadGrid: some View {
         VStack(spacing: 6) {
             let keys = [
@@ -1854,7 +2164,7 @@ struct CashPaymentModalView: View {
                 ["1", "2", "3"],
                 [".", "0", "⌫"]
             ]
-            
+
             ForEach(keys, id: \.self) { row in
                 HStack(spacing: 6) {
                     ForEach(row, id: \.self) { key in
@@ -1887,47 +2197,47 @@ struct CashPaymentModalView: View {
             }
         }
     }
-    
+
     private var successOverlayView: some View {
         VStack(spacing: APSpacing.lg) {
             Spacer()
-            
+
             // Checkmark Animation
             ZStack {
                 Circle()
                     .fill(Color.appTeal.opacity(0.15))
                     .frame(width: 90, height: 90)
-                
+
                 Circle()
                     .stroke(Color.appTeal, lineWidth: 3)
                     .frame(width: 90, height: 90)
                     .scaleEffect(isProcessing ? 1.05 : 1.0)
                     .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: isProcessing)
-                
+
                 Image(systemName: "checkmark")
                     .font(.system(size: 36, weight: .bold))
                     .foregroundColor(.appTeal)
             }
-            
+
             VStack(spacing: APSpacing.xs) {
-                Text("Payment Successful")
+                Text("pos_payment_successful".t)
                     .font(.title2)
                     .fontWeight(.bold)
                     .foregroundColor(.textPrimary)
-                
-                Text("Received Cash: ฿\(String(format: "%.2f", cashReceived))")
+
+                Text(LocalizationManager.shared.t("received_cash_template", cashReceived))
                     .font(.subheadline)
                     .foregroundColor(.textSecondary)
             }
-            
+
             // Large Change Due Box
             if changeDue > 0 {
                 VStack(spacing: 6) {
-                    Text("Change Due")
+                    Text("pos_change_due".t)
                         .font(.subheadline)
                         .fontWeight(.semibold)
                         .foregroundColor(.textSecondary)
-                    
+
                     Text(String(format: "฿%.2f", changeDue))
                         .font(.system(size: 40, weight: .black))
                         .foregroundColor(.appTeal)
@@ -1944,16 +2254,16 @@ struct CashPaymentModalView: View {
                         .stroke(Color.appTeal.opacity(0.3), lineWidth: 1)
                 )
             } else {
-                Text("No Change Due")
+                Text("pos_no_change_due".t)
                     .font(.headline)
                     .foregroundColor(.appTeal)
                     .padding()
                     .background(Color.appTeal.opacity(0.08))
                     .cornerRadius(APRadius.md)
             }
-            
+
             Spacer()
-            
+
             // Loading/Countdown indicator
             HStack(spacing: 8) {
                 ProgressView()
@@ -1984,15 +2294,15 @@ struct QRPaymentModalView: View {
     let totalAmount: Double
     let onConfirm: () -> Void
     @Environment(\.dismiss) private var dismiss
-    
+
     @AppStorage("promptpay_number") private var promptPayNumber = ""
     @State private var progressStatus = "waiting" // "waiting", "success"
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 VStack(spacing: APSpacing.lg) {
                     if promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         // Warning: PromptPay not configured
@@ -2001,12 +2311,12 @@ struct QRPaymentModalView: View {
                                 .font(.system(size: 64))
                                 .foregroundColor(.appAmber)
                                 .padding()
-                            
-                            Text("PromptPay Not Configured")
+
+                            Text("promptpay_not_configured_title".t)
                                 .font(.headline)
                                 .foregroundColor(.textPrimary)
-                            
-                            Text("Please specify your PromptPay number in Store Settings sidebar to accept QR payments.")
+
+                            Text("promptpay_not_configured_desc".t)
                                 .font(.subheadline)
                                 .foregroundColor(.textSecondary)
                                 .multilineTextAlignment(.center)
@@ -2038,18 +2348,18 @@ struct QRPaymentModalView: View {
                                     .cornerRadius(APRadius.md)
                                     .shadow(color: .black.opacity(0.1), radius: 8)
                             }
-                            
+
                             VStack(spacing: 4) {
-                                Text("Scan PromptPay QR Code to pay")
+                                Text("scan_promptpay_qr_desc".t)
                                     .font(.subheadline)
                                     .foregroundColor(.textSecondary)
-                                
-                                Text("PromptPay ID: \(promptPayNumber)")
+
+                                Text("\("promptpay_id_prefix".t)\(promptPayNumber)")
                                     .font(.caption)
                                     .foregroundColor(.textSecondary)
                                     .fontWeight(.bold)
                             }
-                            
+
                             Text(String(format: "฿%.2f", totalAmount))
                                 .font(.title).fontWeight(.black)
                                 .foregroundStyle(APGradient.accent)
@@ -2059,18 +2369,18 @@ struct QRPaymentModalView: View {
                         .background(Color.appSurface)
                         .cornerRadius(APRadius.md)
                     }
-                    
+
                     // Status Bar
                     HStack(spacing: APSpacing.sm) {
                         if progressStatus == "waiting" {
                             if promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                Text("Awaiting configuration...")
+                                Text("awaiting_configuration".t)
                                     .font(.footnote)
                                     .foregroundColor(.appAmber)
                             } else {
                                 ProgressView()
                                     .tint(.appAmber)
-                                Text("Waiting for scan...")
+                                Text("waiting_for_scan".t)
                                     .font(.footnote)
                                     .foregroundColor(.appAmber)
                             }
@@ -2078,7 +2388,7 @@ struct QRPaymentModalView: View {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.title2)
                                 .foregroundColor(.appTeal)
-                            Text("Payment confirmed successfully!")
+                            Text("payment_confirmed_success".t)
                                 .font(.footnote).fontWeight(.bold)
                                 .foregroundColor(.appTeal)
                         }
@@ -2087,9 +2397,9 @@ struct QRPaymentModalView: View {
                     .frame(maxWidth: .infinity)
                     .background(progressStatus == "waiting" ? Color.appAmber.opacity(0.08) : Color.appTeal.opacity(0.08))
                     .cornerRadius(APRadius.md)
-                    
+
                     Spacer()
-                    
+
                     // CTA Button
                     Button(action: {
                         onConfirm()
@@ -2106,11 +2416,11 @@ struct QRPaymentModalView: View {
                 }
                 .padding(APSpacing.md)
             }
-            .navigationTitle("PromptPay QR Code")
+            .navigationTitle("promptpay_qr_code_title".t)
             .apNavBar(background: Color.appSurface)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(L.Common.cancel.t) { dismiss() }
                         .foregroundColor(.textSecondary)
                 }
             }
@@ -2127,15 +2437,15 @@ struct QRPaymentModalView: View {
         }
         .apColorScheme()
     }
-    
+
     // MARK: - PromptPay QR Code Generation Helpers
-    
+
     private func generatePromptPayPayload(target: String, amount: Double) -> String {
         let sanitized = target.replacingOccurrences(of: " ", with: "")
                               .replacingOccurrences(of: "-", with: "")
-        
+
         var accountInfo = "0016A000000677010111"
-        
+
         if sanitized.count == 13 {
             // National ID or Tax ID
             accountInfo += "0213\(sanitized)"
@@ -2148,28 +2458,28 @@ struct QRPaymentModalView: View {
             let phoneFormatted = "0066" + phone
             accountInfo += "0113\(phoneFormatted)"
         }
-        
+
         var payload = "000201010212" // Dynamic QR (locks amount)
         payload += String(format: "29%02d%@", accountInfo.count, accountInfo)
         payload += "5303764" // THB Currency
-        
+
         let amtStr = String(format: "%.2f", amount)
         payload += String(format: "54%02d%@", amtStr.count, amtStr)
-        
+
         payload += "5802TH"
         payload += "6304"
-        
+
         let crc = crc16(payload)
         payload += String(format: "%04X", crc)
-        
+
         return payload
     }
-    
+
     private func crc16(_ dataString: String) -> UInt16 {
         let bytes = Array(dataString.utf8)
         var crc: UInt16 = 0xFFFF
         let polynomial: UInt16 = 0x1021
-        
+
         for byte in bytes {
             for i in 0..<8 {
                 let bit = ((byte >> (7 - i)) & 1) == 1
@@ -2182,22 +2492,22 @@ struct QRPaymentModalView: View {
         }
         return crc
     }
-    
+
     private func generateQRCode(from string: String) -> UIImage? {
         guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
         let data = string.data(using: .utf8)
         filter.setValue(data, forKey: "inputMessage")
         filter.setValue("Q", forKey: "inputCorrectionLevel")
-        
+
         guard let ciImage = filter.outputImage else { return nil }
-        
+
         let scale = 10.0
         let transform = CGAffineTransform(scaleX: scale, y: scale)
         let scaledCIImage = ciImage.transformed(by: transform)
-        
+
         let context = CIContext()
         guard let cgImage = context.createCGImage(scaledCIImage, from: scaledCIImage.extent) else { return nil }
-        
+
         return UIImage(cgImage: cgImage)
     }
 }
@@ -2208,18 +2518,18 @@ struct CreditCardPaymentModalView: View {
     let totalAmount: Double
     let onConfirm: () -> Void
     @Environment(\.dismiss) private var dismiss
-    
+
     @State private var step = 1 // 1: Connecting, 2: Insert Card, 3: Processing, 4: Authorized
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 VStack(spacing: APSpacing.lg) {
                     // Info Card
                     VStack(spacing: 8) {
-                        Text("Card Total")
+                        Text("card_total_label".t)
                             .font(.subheadline)
                             .foregroundColor(.textSecondary)
                         Text(String(format: "฿%.2f", totalAmount))
@@ -2230,50 +2540,50 @@ struct CreditCardPaymentModalView: View {
                     .frame(maxWidth: .infinity)
                     .background(Color.appSurface)
                     .cornerRadius(APRadius.md)
-                    
+
                     // Terminal Simulator Screen
                     VStack(spacing: APSpacing.md) {
                         Image(systemName: "creditcard.and.123")
                             .font(.system(size: 64))
                             .foregroundColor(step == 4 ? .appTeal : .appAccent)
-                        
+
                         VStack(spacing: 4) {
                             switch step {
                             case 1:
                                 ProgressView()
                                     .tint(.appAccent)
                                     .padding(.bottom, 4)
-                                Text("Connecting to Payment Terminal...")
+                                Text("connecting_to_terminal".t)
                                     .font(.headline)
                                     .foregroundColor(.textPrimary)
-                                Text("Please wait while establishing connection")
+                                Text("connecting_to_terminal_desc".t)
                                     .font(.caption)
                                     .foregroundColor(.textSecondary)
                             case 2:
-                                Text("Please Tap, Insert, or Swipe Card")
+                                Text("please_swipe_card".t)
                                     .font(.headline)
                                     .foregroundColor(.textPrimary)
-                                Text("EDC Terminal is ready")
+                                Text("edc_terminal_ready".t)
                                     .font(.caption)
                                     .foregroundColor(.textSecondary)
                             case 3:
                                 ProgressView()
                                     .tint(.appAccent)
                                     .padding(.bottom, 4)
-                                Text("Authorizing Transaction...")
+                                Text("authorizing_transaction".t)
                                     .font(.headline)
                                     .foregroundColor(.textPrimary)
-                                Text("Processing payment request")
+                                Text("processing_payment_desc".t)
                                     .font(.caption)
                                     .foregroundColor(.textSecondary)
                             default:
                                 Image(systemName: "checkmark.seal.fill")
                                     .font(.title)
                                     .foregroundColor(.appTeal)
-                                Text("Transaction Approved (AUTHORIZED)")
+                                Text("transaction_approved_status".t)
                                     .font(.headline).fontWeight(.bold)
                                     .foregroundColor(.appTeal)
-                                Text("Payment completed successfully")
+                                Text("payment_completed_desc".t)
                                     .font(.caption)
                                     .foregroundColor(.textSecondary)
                             }
@@ -2288,9 +2598,9 @@ struct CreditCardPaymentModalView: View {
                         RoundedRectangle(cornerRadius: APRadius.md)
                             .stroke(Color.appBorderSubtle, lineWidth: 1)
                     )
-                    
+
                     Spacer()
-                    
+
                     // Complete Button
                     Button(action: {
                         onConfirm()
@@ -2305,11 +2615,11 @@ struct CreditCardPaymentModalView: View {
                 }
                 .padding(APSpacing.md)
             }
-            .navigationTitle("Card Checkout")
+            .navigationTitle("card_checkout_title".t)
             .apNavBar(background: Color.appSurface)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(L.Common.cancel.t) { dismiss() }
                         .foregroundColor(.textSecondary)
                 }
             }

@@ -20,6 +20,32 @@ struct AlphaPosStaffApp: App {
                         .transition(.opacity)
                 }
             }
+            .onAppear {
+                #if DEBUG
+                if loggedInEmployee == nil {
+                    loggedInEmployee = Employee(
+                        id: "11111111-1111-1111-1111-111111111111",
+                        firstName: "Somchai",
+                        lastName: "Suksabai",
+                        phone: "081-234-5678",
+                        nationalId: "1234567890123",
+                        employmentType: "monthly",
+                        payRate: 25000.0,
+                        username: "somchai",
+                        role: "Manager",
+                        pinCode: "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
+                        faceEmbedding: nil,
+                        faceRegisteredAt: nil
+                    )
+                }
+                #endif
+                
+                if let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                    let testURL = docsURL.appendingPathComponent("app_onappear.log")
+                    let text = "App onAppear: loggedInEmployee = \(String(describing: loggedInEmployee))\n"
+                    try? text.write(to: testURL, atomically: true, encoding: .utf8)
+                }
+            }
             .overlay(alignment: .top) {
                 EnhancedNotificationContainer()
             }

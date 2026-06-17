@@ -3,10 +3,16 @@
 <plist version="1.0">
 <dict>
     <key>SUPABASE_URL</key>
-    <string>https://sdmtkixrqkmwcpwoisrg.supabase.co</string>
+    <string>https://your-supabase-project.supabase.co</string>
     <key>SUPABASE_ANON_KEY</key>
-    <string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNkbXRraXhycWttd2Nwd29pc3JnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NDIxNjAsImV4cCI6MjA5NjQxODE2MH0.rjLwVE0ShXIFoT0k982XO_lVCQMsA4uTKMW1Su-NUws</string>
+    <string>your-anon-key</string>
     <key>DEFAULT_MERCHANT_ID</key>
-    <string></string>
+    <string>your-merchant-uuid</string>
+    <key>DEFAULT_DEVICE_SECRET</key>
+    <string>your-device-secret</string>
+    <key>LOCAL_SERVER_URL</key>
+    <string>http://127.0.0.1:8080</string>
+    <key>ALPHAPOS_ENV</key>
+    <string>development</string>
 </dict>
 </plist>

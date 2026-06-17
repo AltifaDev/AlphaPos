@@ -4,7 +4,7 @@
 -- Description: Base tables for AlphaPos multi-tenant POS system.
 --              Covers customer web app, restaurant tables, orders, payments,
 --              employees, timecards, promotions, and inventory transactions.
--- Status: APPLIED to Supabase (sdmtkixrqkmwcpwoisrg)
+-- Status: APPLIED to Supabase (your-project-ref)
 -- =========================================================================
 
 -- Enable UUID extension
