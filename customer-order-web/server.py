@@ -6,6 +6,7 @@ import json
 import sqlite3
 import urllib.parse
 import urllib.request
+import urllib.error
 import re
 import time
 import hmac
@@ -49,6 +50,72 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "")
 
 # Production mode disables dev features (simulator panel, etc.)
 IS_PRODUCTION = os.getenv("ALPHAPOS_ENV") == "production"
+SERVICE_CHARGE_RATE = float(os.getenv("SERVICE_CHARGE_RATE", "0.10"))
+VAT_RATE = float(os.getenv("VAT_RATE", "0.07"))
+PROMPTPAY_ID = os.getenv("PROMPTPAY_ID", "")
+
+
+def log_event(level, event, message="", **fields):
+    created_at = get_utc_now_iso() if "get_utc_now_iso" in globals() else datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    record = {
+        "ts": created_at,
+        "level": level,
+        "event": event,
+        "message": message,
+        **fields,
+    }
+    print(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+    try:
+        if os.path.exists(DB_FILE):
+            with sqlite3.connect(DB_FILE) as conn:
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='event_logs'"
+                ).fetchone()
+                if exists:
+                    conn.execute(
+                        "INSERT INTO event_logs (id, level, event, message, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            str(uuid.uuid4()),
+                            level,
+                            event,
+                            str(message)[:500],
+                            json.dumps(fields, ensure_ascii=False, separators=(",", ":"))[:2000],
+                            created_at,
+                        )
+                    )
+    except Exception:
+        pass
+
+
+def clean_string(value, name, max_length, required=False, pattern=None):
+    if value is None:
+        if required:
+            raise ValueError(f"{name} is required.")
+        return ""
+    cleaned = str(value).strip()
+    if required and not cleaned:
+        raise ValueError(f"{name} is required.")
+    if len(cleaned) > max_length:
+        raise ValueError(f"{name} must be {max_length} characters or fewer.")
+    if pattern and cleaned and not re.fullmatch(pattern, cleaned):
+        raise ValueError(f"{name} contains invalid characters.")
+    return cleaned
+
+
+def parse_positive_float(value, name, max_value=1_000_000.0):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number.")
+    if parsed <= 0 or parsed > max_value:
+        raise ValueError(f"{name} must be greater than zero and no more than {max_value}.")
+    return parsed
+
+
+def calculate_order_total(subtotal):
+    service_charge = subtotal * SERVICE_CHARGE_RATE
+    vat = (subtotal + service_charge) * VAT_RATE
+    return subtotal + service_charge + vat
 
 def sync_menu_from_supabase(conn):
     """
@@ -126,12 +193,13 @@ def sync_promotions_from_supabase(conn):
                 is_deleted = 1 if is_deleted else 0
                 
             cursor.execute(
-                "INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, is_active, is_deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, media_type, is_active, is_deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     item.get("id"),
                     item.get("title", ""),
                     item.get("promo_description", ""),
                     item.get("image_data", ""),
+                    item.get("media_type", "image"),
                     is_active,
                     is_deleted,
                     item.get("updated_at", "")
@@ -436,9 +504,12 @@ def supabase_post(endpoint, payload, queue_on_fail=True):
         req.add_header("x-merchant-id", MERCHANT_ID)
         req.add_header("Prefer", "resolution=merge-duplicates")
         with urllib.request.urlopen(req, timeout=3) as resp:
-            return resp.getcode() in (200, 201, 204)
+            success = resp.getcode() in (200, 201, 204)
+            if success:
+                log_event("info", "supabase.post.ok", endpoint=endpoint)
+            return success
     except Exception as e:
-        print(f"[Supabase Proxy] POST {endpoint} failed: {e}")
+        log_event("warning", "supabase.post.failed", str(e), endpoint=endpoint)
         if queue_on_fail:
             enqueue_supabase_write(endpoint, payload, str(e))
         return False
@@ -460,6 +531,7 @@ def flush_pending_supabase_writes(limit=50):
                     success = supabase_post(row["endpoint"], payload, queue_on_fail=False)
                     if success:
                         conn.execute("DELETE FROM pending_supabase_writes WHERE id = ?", (row["id"],))
+                        log_event("info", "supabase.queue.flushed", endpoint=row["endpoint"], id=row["id"])
                     else:
                         conn.execute('''
                             UPDATE pending_supabase_writes
@@ -468,9 +540,9 @@ def flush_pending_supabase_writes(limit=50):
                             WHERE id = ?
                         ''', (get_utc_now_iso(), row["id"]))
                 if rows:
-                    print(f"[Supabase Queue] Processed {len(rows)} pending write(s).")
+                    log_event("info", "supabase.queue.processed", count=len(rows))
     except Exception as e:
-        print(f"[Supabase Queue] Flush failed: {e}")
+        log_event("error", "supabase.queue.flush_failed", str(e))
 
 # ==========================================
 # Database Setup & Seeding
@@ -629,6 +701,7 @@ def _init_db_helper(conn):
             title TEXT NOT NULL,
             promo_description TEXT,
             image_data TEXT,
+            media_type TEXT DEFAULT 'image',
             is_active INTEGER DEFAULT 1,
             is_deleted INTEGER DEFAULT 0,
             updated_at TEXT NOT NULL
@@ -736,6 +809,17 @@ def _init_db_helper(conn):
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS event_logs (
+            id TEXT PRIMARY KEY,
+            level TEXT NOT NULL,
+            event TEXT NOT NULL,
+            message TEXT,
+            payload TEXT,
+            created_at TEXT NOT NULL
+        )
+    ''')
+
     cursor.execute("SELECT COUNT(*) FROM restaurant_tables")
     if cursor.fetchone()[0] == 0:
         default_tables = get_default_tables(MERCHANT_ID)
@@ -754,12 +838,12 @@ def _init_db_helper(conn):
         ("timecards", "merchant_id", "TEXT"),
         ("restaurant_tables", "zone", "TEXT"),
         ("merchants", "is_table_system_enabled", "BOOLEAN"),
-        ("merchants", "is_web_ordering_enabled", "BOOLEAN"),
         ("merchants", "branch_code", "TEXT"),
+        ("promotions", "media_type", "TEXT"),
     ]:
         allowed_tables = {"orders", "order_items", "payments", "table_sessions", "service_requests", "timecards", "employees", "menu_items", "promotions", "restaurant_tables", "merchants"}
         allowed_col_types = {"TEXT", "INTEGER", "REAL", "BOOLEAN"}
-        allowed_cols = {"merchant_id", "updated_at", "zone", "is_table_system_enabled", "is_web_ordering_enabled", "branch_code"}
+        allowed_cols = {"merchant_id", "updated_at", "zone", "is_table_system_enabled", "is_web_ordering_enabled", "branch_code", "media_type"}
         if table not in allowed_tables:
             print(f"Database migration: Skipped unknown table '{table}'")
             continue
@@ -792,7 +876,11 @@ def _init_db_helper(conn):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_item_modifiers_item ON menu_item_modifier_groups (menu_item_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_order_item_modifiers_item ON order_item_modifiers (order_item_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_merchant ON orders (merchant_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_order_items_merchant ON order_items (merchant_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_merchant ON payments (merchant_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_table_sessions_merchant_active ON table_sessions (merchant_id, is_active);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_service_requests_merchant ON service_requests (merchant_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_event_logs_created ON event_logs (created_at);")
     
     conn.commit()
 
@@ -891,7 +979,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         return False
 
     def _is_public_customer_post(self, path):
-        return path in {"/v1/sessions/open", "/v1/orders", "/v1/requests"}
+        return path in {"/v1/sessions/open", "/v1/orders", "/v1/requests", "/v1/payments/intent"}
     
     def end_headers(self):
         allowed = self._get_allowed_origin()
@@ -1027,6 +1115,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         # 2. API Endpoint: POST /v1/payments (Simulates uploading POS payments)
         if path == "/v1/payments":
             self.handle_post_payment()
+            return
+
+        if path == "/v1/payments/intent":
+            self.handle_create_payment_intent()
             return
 
         # 2b. API Endpoint: POST /v1/timecards (Clock-in / Clock-out)
@@ -1258,23 +1350,37 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 return
             
             # Extract and sanitize fields
-            table_number = str(order_data.get("tableNumber") or order_data.get("table_number") or "1")[:10]
-            total_client = float(order_data.get("total", 0.0))
+            table_number = clean_string(
+                order_data.get("tableNumber") or order_data.get("table_number") or "1",
+                "table_number",
+                10,
+                required=True,
+                pattern=r"[A-Za-z0-9_-]+",
+            )
+            total_client = parse_positive_float(order_data.get("total", 0.0), "total", max_value=1_000_000.0)
             items = order_data.get("items", [])
-            order_id = str(order_data.get("id") or str(uuid.uuid4()))[:50]
-            status = str(order_data.get("status") or "preparing")[:20]
-            allowed_order_statuses = {"preparing", "ready", "served", "cancelled"}
+            if len(items) > 100:
+                raise ValueError("Order item limit exceeded.")
+            order_id = clean_string(order_data.get("id") or str(uuid.uuid4()), "id", 50, required=True, pattern=r"[A-Za-z0-9_-]+")
+            status = clean_string(order_data.get("status") or "preparing", "status", 20, required=True)
+            allowed_order_statuses = {"preparing", "ready", "served", "completed", "cancelled"}
             if status not in allowed_order_statuses:
                 raise ValueError(f"Invalid order status '{status}'.")
             session_token = order_data.get("sessionToken") or order_data.get("session_token")
-            session_token = str(session_token)[:50] if session_token else None
+            session_token = clean_string(session_token, "session_token", 80, pattern=r"[A-Za-z0-9_-]+") or None
             guest_count = int(order_data.get("guestCount") or order_data.get("guest_count") or 2)
             guest_count = max(1, min(guest_count, 100))
             if not isinstance(items, list) or not items:
                 raise ValueError("Order must contain at least one item.")
             
             # Generate clean invoice number (e.g. ORD-6401)
-            order_number = str(order_data.get("orderNumber") or order_data.get("order_number") or f"ORD-{str(uuid.uuid4().int)[:4]}")[:20]
+            order_number = clean_string(
+                order_data.get("orderNumber") or order_data.get("order_number") or f"ORD-{str(uuid.uuid4().int)[:4]}",
+                "order_number",
+                20,
+                required=True,
+                pattern=r"[A-Za-z0-9_-]+",
+            )
             created_at_str = get_utc_now_iso()
             
             with closing(get_db_connection()) as conn:
@@ -1286,54 +1392,60 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     verified_items = []
                     
                     for item in items:
+                        if not isinstance(item, dict):
+                            raise ValueError("Each order item must be an object.")
                         menu_item_id = item.get("item_id") or item.get("id")
-                        menu_item_id = str(menu_item_id)[:50] if menu_item_id else None
+                        menu_item_id = clean_string(menu_item_id, "item_id", 50, required=True, pattern=r"[A-Za-z0-9_-]+")
                         
-                        qty = int(item.get("quantity") or item.get("qty", 1))
+                        try:
+                            qty = int(item.get("quantity") or item.get("qty", 1))
+                        except (TypeError, ValueError):
+                            raise ValueError("quantity must be an integer.")
                         qty = max(1, min(qty, 99))  # Clamp quantity
                         
                         # Fetch menu data from local DB strictly
                         base_price = 0.0
                         menu_item_name = "Unknown Dish"
-                        if menu_item_id:
-                            cursor.execute("SELECT name, price FROM menu_items WHERE id = ?", (menu_item_id,))
-                            row = cursor.fetchone()
-                            if row:
-                                menu_item_name = str(row[0])
-                                base_price = float(row[1])
-                            else:
-                                raise ValueError(f"Menu item '{menu_item_id}' not found in database.")
+                        cursor.execute("SELECT name, price FROM menu_items WHERE id = ?", (menu_item_id,))
+                        row = cursor.fetchone()
+                        if row:
+                            menu_item_name = clean_string(row[0], "menu_item_name", 100, required=True)
+                            base_price = float(row[1])
                         else:
-                            raise ValueError("item_id is required for all ordered items.")
+                            raise ValueError(f"Menu item '{menu_item_id}' not found in database.")
                         
                         # Fetch modifiers prices
                         item_modifiers = item.get("modifiers", [])
+                        if not isinstance(item_modifiers, list) or len(item_modifiers) > 30:
+                            raise ValueError("Invalid modifier list.")
                         verified_modifiers = []
                         modifier_price_sum = 0.0
                         
                         for mod in item_modifiers:
+                            if not isinstance(mod, dict):
+                                raise ValueError("Each modifier must be an object.")
                             mod_id = mod.get("modifier_id") or mod.get("id")
-                            mod_id = str(mod_id)[:50] if mod_id else None
+                            mod_id = clean_string(mod_id, "modifier_id", 50, required=True, pattern=r"[A-Za-z0-9_-]+")
                             
                             mod_price = 0.0
-                            if mod_id:
-                                cursor.execute("SELECT extra_price FROM modifiers WHERE id = ? AND is_available = 1", (mod_id,))
-                                mod_row = cursor.fetchone()
-                                if mod_row:
-                                    mod_price = float(mod_row[0])
-                                else:
-                                    cursor.execute("SELECT extra_price FROM modifiers WHERE (name = ? OR id = ?) AND is_available = 1", (mod.get("name", ""), mod_id))
-                                    mod_row2 = cursor.fetchone()
-                                    if mod_row2:
-                                        mod_price = float(mod_row2[0])
-                                    else:
-                                        raise ValueError(f"Modifier '{mod_id}' not found or unavailable in database.")
+                            cursor.execute("SELECT extra_price FROM modifiers WHERE id = ? AND is_available = 1", (mod_id,))
+                            mod_row = cursor.fetchone()
+                            if mod_row:
+                                mod_price = float(mod_row[0])
                             else:
-                                raise ValueError("modifier_id is required for all selected modifiers.")
+                                cursor.execute(
+                                    "SELECT extra_price FROM modifiers WHERE (name = ? OR id = ?) AND is_available = 1",
+                                    (clean_string(mod.get("name"), "modifier_name", 100), mod_id)
+                                )
+                                mod_row2 = cursor.fetchone()
+                                if mod_row2:
+                                    mod_price = float(mod_row2[0])
+                                else:
+                                    raise ValueError(f"Modifier '{mod_id}' not found or unavailable in database.")
                             
                             modifier_price_sum += mod_price
                             verified_modifiers.append({
-                                "id": str(mod.get("id") or str(uuid.uuid4()))[:50],
+                                "id": clean_string(mod.get("id") or str(uuid.uuid4()), "modifier_row_id", 50, required=True, pattern=r"[A-Za-z0-9_-]+"),
                                 "modifier_id": mod_id,
                                 "price": mod_price
                             })
@@ -1342,19 +1454,17 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         computed_subtotal += computed_item_price * qty
                         
                         verified_items.append({
-                            "id": str(item.get("id") or str(uuid.uuid4()))[:50],
+                            "id": clean_string(item.get("id") or str(uuid.uuid4()), "order_item_id", 50, required=True, pattern=r"[A-Za-z0-9_-]+"),
                             "item_id": menu_item_id,
-                            "name": menu_item_name[:100],
+                            "name": menu_item_name,
                             "quantity": qty,
                             "price": computed_item_price,
-                            "status": str(item.get("status") or "cooking")[:20],
+                            "status": clean_string(item.get("status") or "cooking", "item_status", 20, required=True),
                             "modifiers": verified_modifiers
                         })
                     
                     # Recalculate totals
-                    computed_service_charge = computed_subtotal * 0.10
-                    computed_tax = (computed_subtotal + computed_service_charge) * 0.07
-                    computed_total = computed_subtotal + computed_service_charge + computed_tax
+                    computed_total = calculate_order_total(computed_subtotal)
                     if abs(total_client - computed_total) > 0.05:
                         raise ValueError(
                             f"Order total mismatch. Client sent {total_client:.2f}, server calculated {computed_total:.2f}."
@@ -1535,9 +1645,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(response).encode("utf-8"))
-            print(f"Server API [Order]: Saved/Updated {order_number} for Table {table_number} (Total: ฿{total}, Status: {status})")
+            log_event("info", "order.saved", order_number=order_number, table_number=table_number, total=round(total, 2), status=status)
             
         except Exception as e:
+            log_event("warning", "order.rejected", str(e))
             self._send_error_json(400, f"Invalid order payload: {str(e)}")
 
     def handle_post_payment(self):
@@ -1545,10 +1656,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         post_data = self.rfile.read(content_length)
         try:
             pay_data = json.loads(post_data.decode("utf-8"))
-            pay_id = pay_data.get("id") or str(uuid.uuid4())
-            order_id = pay_data.get("order_id")
-            amount = float(pay_data.get("amount", 0.0))
-            method = pay_data.get("payment_method") or pay_data.get("method") or "Cash"
+            pay_id = clean_string(pay_data.get("id") or str(uuid.uuid4()), "id", 50, required=True, pattern=r"[A-Za-z0-9_-]+")
+            order_id = clean_string(pay_data.get("order_id"), "order_id", 50, required=True, pattern=r"[A-Za-z0-9_-]+")
+            amount = parse_positive_float(pay_data.get("amount", 0.0), "amount", max_value=1_000_000.0)
+            method = clean_string(pay_data.get("payment_method") or pay_data.get("method") or "Cash", "payment_method", 40, required=True)
             created_at = get_utc_now_iso()
             
             # Normalise method to match iPad display strings
@@ -1559,16 +1670,15 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             elif method.lower() in ("card", "credit card", "credit_card"):
                 method = "Credit Card"
                 
-            if not order_id:
-                raise ValueError("order_id is required.")
-            if amount <= 0:
-                raise ValueError("Payment amount must be greater than zero.")
-
             with closing(get_db_connection()) as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT id FROM orders WHERE id = ?", (order_id,))
-                if not cursor.fetchone():
+                cursor.execute("SELECT total FROM orders WHERE id = ?", (order_id,))
+                order_row = cursor.fetchone()
+                if not order_row:
                     raise ValueError(f"Order '{order_id}' not found.")
+                order_total = float(order_row[0])
+                if amount - order_total > 0.05:
+                    raise ValueError("Payment amount exceeds order total.")
 
                 cursor.execute('''
                     INSERT OR REPLACE INTO payments (id, order_id, amount, payment_method, created_at, merchant_id)
@@ -1587,13 +1697,68 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 "merchant_id": MERCHANT_ID
             })
             
-            print(f"Server API [Payment]: Confirmed and saved payment of ฿{amount} via {method} for Order ID: {order_id}")
+            log_event("info", "payment.saved", order_id=order_id, amount=amount, method=method)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True}).encode("utf-8"))
         except Exception as e:
             self.send_error(400, f"Error saving payment: {str(e)}")
+
+    def handle_create_payment_intent(self):
+        content_length = int(self.headers.get('Content-Length', '0'))
+        post_data = self.rfile.read(content_length)
+        try:
+            data = json.loads(post_data.decode("utf-8"))
+            order_id = clean_string(data.get("order_id"), "order_id", 50, required=True, pattern=r"[A-Za-z0-9_-]+")
+            method = clean_string(data.get("method") or "promptpay", "method", 40, required=True).lower()
+
+            with closing(get_db_connection()) as conn:
+                row = conn.execute("SELECT total FROM orders WHERE id = ?", (order_id,)).fetchone()
+                if not row:
+                    raise ValueError(f"Order '{order_id}' not found.")
+                amount = float(row[0])
+
+            if method in ("promptpay", "qr", "qr_promptpay"):
+                if not PROMPTPAY_ID:
+                    self._send_json_response(503, {
+                        "success": False,
+                        "provider": "promptpay",
+                        "message": "PROMPTPAY_ID is not configured."
+                    })
+                    return
+                intent = {
+                    "success": True,
+                    "provider": "promptpay",
+                    "status": "requires_customer_action",
+                    "orderId": order_id,
+                    "amount": round(amount, 2),
+                    "currency": "THB",
+                    "promptPayId": PROMPTPAY_ID,
+                    "qrPayload": f"promptpay://pay?recipient={urllib.parse.quote(PROMPTPAY_ID)}&amount={amount:.2f}",
+                }
+            elif method in ("cash", "manual"):
+                intent = {
+                    "success": True,
+                    "provider": "manual",
+                    "status": "requires_staff_confirmation",
+                    "orderId": order_id,
+                    "amount": round(amount, 2),
+                    "currency": "THB",
+                }
+            else:
+                self._send_json_response(501, {
+                    "success": False,
+                    "provider": method,
+                    "message": "External payment provider is not configured."
+                })
+                return
+
+            log_event("info", "payment.intent.created", order_id=order_id, provider=intent["provider"], amount=round(amount, 2))
+            self._send_json_response(200, intent)
+        except Exception as e:
+            log_event("warning", "payment.intent.rejected", str(e))
+            self._send_error_json(400, f"Error creating payment intent: {str(e)}")
 
     def handle_get_sessions(self):
         try:
@@ -1814,7 +1979,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 # Delete order item
                 cursor.execute("DELETE FROM order_items WHERE id = ?", (order_item_id,))
                 
-                # Recalculate order total
+                # Recalculate order total from remaining line subtotals.
                 cursor.execute("SELECT SUM(price * quantity) FROM order_items WHERE order_id = ?", (order_id,))
                 remaining_subtotal = cursor.fetchone()[0] or 0.0
                 
@@ -1824,19 +1989,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     conn.commit()
                     print(f"Server API [Order Item]: Deleted order item {order_item_id}. Order {order_id} has no items left and was deleted.")
                 else:
-                    # Get old total
-                    cursor.execute("SELECT total FROM orders WHERE id = ?", (order_id,))
-                    old_total = cursor.fetchone()[0] or 0.0
-                    
-                    # We calculate old subtotal as remaining_subtotal + deleted_item_subtotal
-                    deleted_subtotal = float(row["price"]) * int(row["quantity"])
-                    old_subtotal = remaining_subtotal + deleted_subtotal
-                    
-                    if old_subtotal > 0:
-                        new_total = (remaining_subtotal / old_subtotal) * old_total
-                    else:
-                        new_total = remaining_subtotal
-                        
+                    new_total = calculate_order_total(remaining_subtotal)
                     cursor.execute("UPDATE orders SET total = ? WHERE id = ?", (new_total, order_id))
                     conn.commit()
                     print(f"Server API [Order Item]: Deleted order item {order_item_id}. Updated Order {order_id} total to {new_total:.2f}")
@@ -2300,7 +2453,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             with closing(get_db_connection()) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, title, promo_description, image_data, is_active, is_deleted, updated_at FROM promotions WHERE is_active = 1 AND is_deleted = 0 ORDER BY updated_at DESC")
+                cursor.execute("SELECT id, title, promo_description, image_data, media_type, is_active, is_deleted, updated_at FROM promotions WHERE is_active = 1 AND is_deleted = 0 ORDER BY updated_at DESC")
                 rows = cursor.fetchall()
                 
                 promotions = []
@@ -2310,6 +2463,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "title": row["title"],
                         "promoDescription": row["promo_description"],
                         "imageData": row["image_data"],
+                        "mediaType": row["media_type"] or "image",
                         "isActive": bool(row["is_active"]),
                         "isDeleted": bool(row["is_deleted"]),
                         "updatedAt": row["updated_at"]
@@ -2332,6 +2486,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             title = promo_data.get("title")
             promo_desc = promo_data.get("promoDescription") or promo_data.get("promo_description")
             image_data = promo_data.get("imageData") or promo_data.get("image_data")
+            media_type = promo_data.get("mediaType") or promo_data.get("media_type") or "image"
             is_active = promo_data.get("isActive") if promo_data.get("isActive") is not None else True
             is_deleted = promo_data.get("isDeleted") if promo_data.get("isDeleted") is not None else False
             updated_at = promo_data.get("updatedAt") or promo_data.get("updated_at") or get_utc_now_iso()
@@ -2345,6 +2500,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 "title": title,
                 "promo_description": promo_desc or "",
                 "image_data": image_data or "",
+                "media_type": media_type,
                 "is_active": 1 if is_active else 0,
                 "is_deleted": 1 if is_deleted else 0,
                 "updated_at": updated_at,
@@ -2355,12 +2511,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             with closing(get_db_connection()) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, is_active, is_deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, media_type, is_active, is_deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         promo_id,
                         title,
                         promo_desc or "",
                         image_data or "",
+                        media_type,
                         1 if is_active else 0,
                         1 if is_deleted else 0,
                         updated_at
@@ -2458,6 +2615,11 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
     supabaseUrl: '{SUPABASE_URL}',
     supabaseKey: '{SUPABASE_ANON_KEY}',
     merchantId: '{MERCHANT_ID}',
+    apiAuthToken: '{API_AUTH_TOKEN if not IS_PRODUCTION else ""}',
+    paymentProviders: {{
+        promptpay: {str(bool(PROMPTPAY_ID)).lower()},
+        external: false
+    }},
     isProduction: {str(IS_PRODUCTION).lower()}
 }};"""
         self.send_response(200)
@@ -2518,6 +2680,8 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 # Server Launcher
 # ==========================================
 def run():
+    if IS_PRODUCTION and not API_AUTH_TOKEN:
+        raise RuntimeError("API_AUTH_TOKEN is required when ALPHAPOS_ENV=production")
     init_db()
     server_address = ('', PORT)
     httpd = HTTPServer(server_address, UnifiedRequestHandler)

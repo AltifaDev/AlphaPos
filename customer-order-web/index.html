@@ -170,14 +170,6 @@
             <div class="spinner" id="bannerSpinner"></div>
         </div>
 
-        <div id="syncHealthPanel" class="sync-health-panel synced" aria-live="polite">
-            <div class="sync-health-main">
-                <span class="sync-health-dot"></span>
-                <span id="syncHealthTitle" class="sync-health-title">Synced</span>
-                <span id="syncHealthMeta" class="sync-health-meta">0 pending</span>
-            </div>
-            <button id="syncRetryBtn" class="sync-health-retry hide" type="button" onclick="app.retrySyncQueue()">Retry</button>
-        </div>
 
         <!-- Promotions Banner Carousel -->
         <div id="promotionsBannerContainer" class="promo-banner-container anim-fade-in-scale">
@@ -319,7 +311,7 @@
         </div>
 
         <!-- Floating Cart Bar -->
-        <div class="cart-bar-container anim-fade-in-up" id="cartBar">
+        <div class="cart-bar-container" id="cartBar">
             <div class="cart-bar-content" onclick="app.toggleCartDrawer(true)">
                 <div class="cart-badge">
                     <span id="cartCount">0</span>

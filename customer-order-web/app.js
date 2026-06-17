@@ -1,5 +1,8 @@
 import { translations } from './js/i18n.js';
 import { defaultMenuItems } from './js/data.js';
+import { fetchWithFallback, fetchWithRetry } from './js/api.js';
+import { clearCart, loadCart, saveCart } from './js/cart.js';
+import { hideStatusModal, showStatusModal, showToast } from './js/ui.js';
 
 // Debug Logger for Headless testing
 (function() {
@@ -143,119 +146,44 @@ class AlphaPosApp {
 
     // Retry wrapper with exponential backoff
     async _fetchWithRetry(fn, maxRetries = 2) {
-        let lastError;
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-            try {
-                return await fn();
-            } catch (err) {
-                lastError = err;
-                if (attempt < maxRetries) {
-                    await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 200));
-                }
-            }
-        }
-        throw lastError;
+        return fetchWithRetry(fn, maxRetries);
     }
 
     // Generic helper: try Supabase first, fall back to local Python server
     async _fetchWithFallback({ supabaseFn, localUrl, localOptions = {}, transform }) {
-        let success = false;
-        let result = null;
-
-        if (this.supabase && this.supabaseKey) {
-            try {
-                result = await this._fetchWithRetry(supabaseFn);
-                if (result != null) {
-                    if (transform) result = transform(result);
-                    success = true;
-                }
-            } catch (err) {
-                console.warn('Supabase failed, trying local server:', err);
-            }
-        }
-
-        if (!success && localUrl) {
-            try {
-                const res = await this._fetchWithRetry(async () => {
-                    const r = await fetch(localUrl, {
-                        headers: { 'Content-Type': 'application/json' },
-                        ...localOptions
-                    });
-                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                    return r;
-                });
-                result = await (localOptions.parseJson !== false ? res.json() : res.text());
-                if (transform) result = transform(result);
-                success = true;
-            } catch (err) {
-                console.error('Local server also failed:', err);
-            }
-        }
-
-        return { success, data: result };
+        return fetchWithFallback({
+            supabase: this.supabase,
+            supabaseKey: this.supabaseKey,
+            supabaseFn,
+            localUrl,
+            localOptions,
+            transform
+        });
     }
 
     _showToast(message, duration = 3000) {
-        const toast = document.getElementById("toast");
-        if (!toast) return;
-        toast.textContent = message;
-        toast.className = "toast show";
-        setTimeout(() => { toast.className = "toast"; }, duration);
+        showToast(message, duration);
     }
 
     _showStatusModal(title, desc, isSuccess = false) {
-        const modal = document.getElementById("statusModal");
-        const spinner = document.getElementById("statusModalSpinner");
-        const successIcon = document.getElementById("statusModalSuccessIcon");
-        const titleEl = document.getElementById("statusModalTitle");
-        const descEl = document.getElementById("statusModalDesc");
-
-        if (!modal || !spinner || !successIcon || !titleEl || !descEl) return;
-
-        titleEl.innerText = title;
-        descEl.innerText = desc;
-
-        if (isSuccess) {
-            spinner.classList.add("hide");
-            successIcon.classList.remove("hide");
-        } else {
-            spinner.classList.remove("hide");
-            successIcon.classList.add("hide");
-        }
-
-        modal.classList.remove("hide");
-        modal.offsetHeight; // trigger layout reflow
-        modal.classList.add("show");
+        showStatusModal(title, desc, isSuccess);
     }
 
     _hideStatusModal() {
-        const modal = document.getElementById("statusModal");
-        if (!modal) return;
-        modal.classList.remove("show");
-        setTimeout(() => {
-            modal.classList.add("hide");
-        }, 350);
+        hideStatusModal();
     }
 
     saveCartToStorage() {
-        if (this.tableNumber) {
-            localStorage.setItem(`cart_T${this.tableNumber}`, JSON.stringify(this.cart));
-        }
+        saveCart(this.tableNumber, this.cart);
     }
 
     loadCartFromStorage() {
-        if (this.tableNumber) {
-            const saved = localStorage.getItem(`cart_T${this.tableNumber}`);
-            if (saved) {
-                try {
-                    this.cart = JSON.parse(saved);
-                } catch (e) {
-                    console.error("Failed to parse saved cart:", e);
-                    this.cart = {};
-                }
-            } else {
-                this.cart = {};
-            }
+        try {
+            this.cart = loadCart(this.tableNumber);
+        } catch (e) {
+            console.error("Failed to parse saved cart:", e);
+            clearCart(this.tableNumber);
+            this.cart = {};
         }
     }
 
@@ -269,6 +197,22 @@ class AlphaPosApp {
                 }
             });
             this.realtimeChannels = [];
+        }
+    }
+
+    shutdownRealtime() {
+        this.unsubscribeRealtimeChannels();
+        if (this.pollingInterval) {
+            clearInterval(this.pollingInterval);
+            this.pollingInterval = null;
+        }
+        if (this.syncHealthInterval) {
+            clearInterval(this.syncHealthInterval);
+            this.syncHealthInterval = null;
+        }
+        if (this.promoCarouselInterval) {
+            clearInterval(this.promoCarouselInterval);
+            this.promoCarouselInterval = null;
         }
     }
 
@@ -415,9 +359,8 @@ class AlphaPosApp {
         this.parseURLParams();
         this.loadCartFromStorage();
 
-        window.addEventListener("beforeunload", () => {
-            this.unsubscribeRealtimeChannels();
-        });
+        window.addEventListener("beforeunload", () => this.shutdownRealtime());
+        window.addEventListener("pagehide", () => this.shutdownRealtime());
 
         // Initialize Supabase Client
         // If a JWT token with merchant_id claim is available (from QR code URL),
@@ -450,7 +393,6 @@ class AlphaPosApp {
 
         // Start status polling
         this.startStatusPolling();
-        this.startSyncHealthPolling();
         this.setupAccessibilityHandlers();
 
         // Initialize Theme from localStorage (Default: Light Mode)
@@ -2358,10 +2300,7 @@ class AlphaPosApp {
                             this.cart = {};
                             this.saveCartToStorage(); // Clear cart on session close
 
-                            const toast = document.getElementById("toast");
-                            toast.innerText = "Your session has been closed by the staff. Thank you!";
-                            toast.className = "toast show";
-                            setTimeout(() => { toast.className = "toast"; }, 5000);
+                            this._showToast("Your session has been closed by the staff. Thank you!", 5000);
                         }
                     });
                 ch3.subscribe();
@@ -2382,10 +2321,7 @@ class AlphaPosApp {
                             this.renderCategories();
                             this.renderMenuItems();
 
-                            const toast = document.getElementById("toast");
-                            toast.innerText = "Menu has been updated!";
-                            toast.className = "toast show";
-                            setTimeout(() => { toast.className = "toast"; }, 3000);
+                            this._showToast("Menu has been updated!", 3000);
                         });
                     });
                 ch4.subscribe();
@@ -2408,10 +2344,7 @@ class AlphaPosApp {
                     this.sessionToken = null;
                     localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
 
-                    const toast = document.getElementById("toast");
-                    toast.innerText = "Your session has been closed by the staff. Thank you!";
-                    toast.className = "toast show";
-                    setTimeout(() => { toast.className = "toast"; }, 5000);
+                    this._showToast("Your session has been closed by the staff. Thank you!", 5000);
 
                     // Show onboarding wizard again
                     const wizard = document.getElementById("onboardingWizard");
