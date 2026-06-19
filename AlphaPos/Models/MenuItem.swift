@@ -8,6 +8,9 @@ final class MenuItem {
     var itemDescription: String?
     var price: Double
     var imageUrl: String?
+    var imageUrl2: String?
+    var imageUrl3: String?
+    var videoUrl: String?
     var isAvailable: Bool
     var taxRate: Double // e.g., 7.0 for 7% VAT
     var category: Category?
@@ -16,6 +19,9 @@ final class MenuItem {
     
     // Offline-First and International Fields
     @Attribute(.externalStorage) var imageData: Data?
+    @Attribute(.externalStorage) var imageData2: Data?
+    @Attribute(.externalStorage) var imageData3: Data?
+    @Attribute(.externalStorage) var videoData: Data?
     var barcode: String?
     var sku: String?
     var isTaxInclusive: Bool?
@@ -102,10 +108,16 @@ final class MenuItem {
         itemDescription: String? = nil,
         price: Double,
         imageUrl: String? = nil,
+        imageUrl2: String? = nil,
+        imageUrl3: String? = nil,
+        videoUrl: String? = nil,
         isAvailable: Bool = true,
         taxRate: Double = 7.0,
         category: Category? = nil,
         imageData: Data? = nil,
+        imageData2: Data? = nil,
+        imageData3: Data? = nil,
+        videoData: Data? = nil,
         barcode: String? = nil,
         sku: String? = nil,
         isTaxInclusive: Bool? = true,
@@ -123,10 +135,16 @@ final class MenuItem {
         self.itemDescription = itemDescription
         self.price = price
         self.imageUrl = imageUrl
+        self.imageUrl2 = imageUrl2
+        self.imageUrl3 = imageUrl3
+        self.videoUrl = videoUrl
         self.isAvailable = isAvailable
         self.taxRate = taxRate
         self.category = category
         self.imageData = imageData
+        self.imageData2 = imageData2
+        self.imageData3 = imageData3
+        self.videoData = videoData
         self.barcode = barcode
         self.sku = sku
         self.isTaxInclusive = isTaxInclusive

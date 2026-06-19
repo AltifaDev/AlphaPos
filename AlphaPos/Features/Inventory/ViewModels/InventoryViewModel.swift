@@ -861,6 +861,9 @@ final class InventoryViewModel {
         isBestseller: Bool = false,
         colorHex: String? = nil,
         imageData: Data? = nil,
+        imageData2: Data? = nil,
+        imageData3: Data? = nil,
+        videoData: Data? = nil,
         taxRate: Double = 7.0,
         deliveryPrices: [(brandName: String, price: Double)] = [],
         nameTranslations: [String: String] = [:],
@@ -884,6 +887,9 @@ final class InventoryViewModel {
             taxRate: taxRate,
             category: selectedCategory,
             imageData: imageData,
+            imageData2: imageData2,
+            imageData3: imageData3,
+            videoData: videoData,
             barcode: barcode,
             sku: sku,
             isTaxInclusive: isTaxInclusive,
@@ -919,6 +925,9 @@ final class InventoryViewModel {
         isFavorite: Bool,
         colorHex: String?,
         imageData: Data?,
+        imageData2: Data?,
+        imageData3: Data?,
+        videoData: Data?,
         taxRate: Double,
         deliveryPrices: [(brandName: String, price: Double)],
         nameTranslations: [String: String] = [:],
@@ -936,6 +945,9 @@ final class InventoryViewModel {
         menuItem.isFavorite = isFavorite
         menuItem.colorHex = colorHex
         menuItem.imageData = imageData
+        menuItem.imageData2 = imageData2
+        menuItem.imageData3 = imageData3
+        menuItem.videoData = videoData
         menuItem.taxRate = taxRate
         menuItem.nameTranslations = nameTranslations
         menuItem.descriptionTranslations = descriptionTranslations

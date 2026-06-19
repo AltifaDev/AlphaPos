@@ -1,6 +1,7 @@
 
 import SwiftUI
 import SwiftData
+import PhotosUI
 
 struct TableView: View {
     @Environment(\.modelContext) private var modelContext
@@ -10,6 +11,7 @@ struct TableView: View {
     
     @Binding var selectedTab: MainDashboardView.DashboardTab
     @Binding var activeSession: TableSession?
+    @Binding var columnVisibility: NavigationSplitViewVisibility
     
     @State private var selectedTable: RestaurantTable?
     @State private var showingDetailSheet = false
@@ -30,23 +32,27 @@ struct TableView: View {
     @State private var headerWidth: CGFloat = 0
     @ObservedObject private var syncEngine = SyncEngine.shared
     
-    @Query(sort: \RestaurantWall.updatedAt) private var walls: [RestaurantWall]
-    @State private var isDrawingWalls = false
-    @State private var selectedDrawTool: DrawTool = .wall
-    @State private var activeStartPoint: CGPoint? = nil
-    @State private var activeEndPoint: CGPoint? = nil
-    @State private var curveControlPoint: CGPoint? = nil
-    @State private var curvePoints: [CGPoint] = []
-    
-    enum DrawTool: String, CaseIterable, Identifiable {
-        case wall = "Wall"
-        case curve = "Curve"
-        case eraser = "Eraser"
-        var id: String { self.rawValue }
-    }
+    @Query(sort: \FloorPlanImage.floor) private var floorPlanImages: [FloorPlanImage]
+    @Query(sort: \TableLayoutPreset.name) private var layoutPresets: [TableLayoutPreset]
+    @State private var showingSavePresetAlert = false
+    @State private var presetNameInput = ""
     
     @AppStorage("logged_in_email") private var loggedInEmail = "owner@alphapos.com"
     @State private var isLayoutManagerAuthorized = false
+    // MARK: - Layout & View Mode
+    @AppStorage("table_layout_mode") private var layoutModeRaw: String = "canvas"
+    @AppStorage("table_view_mode") private var tableViewModeRaw: String = "map"
+    // MARK: - Dynamic Floors
+    @AppStorage("table_floors_json") private var floorsJson: String = FloorData.defaultFloors.jsonString
+    private var floors: [FloorData] { floorsJson.asFloorDataArray }
+    // Floor edit state
+    @State private var showingAddFloorAlert = false
+    @State private var showingRenameFloorAlert = false
+    @State private var renamingFloorId: Int? = nil
+    @State private var floorNameInput: String = ""
+    @State private var showingRemoveFloorConfirm = false
+    @State private var selectedPhotoItem: PhotosPickerItem? = nil
+    @State private var cachedFloorPlanImage: UIImage? = nil
     @State private var showingManagerPinSheet = false
     @State private var showingBatchQRSheet = false
     @State private var pendingAuthAction: AuthAction? = nil
@@ -60,20 +66,21 @@ struct TableView: View {
     var body: some View {
         // Outer GeometryReader วัด available width ก่อน render header
         GeometryReader { outerGeo in
-        ZStack {
+            let isLandscape = outerGeo.size.width > outerGeo.size.height
+            ZStack {
                 Color.appBackground.ignoresSafeArea()
                 
                 VStack(spacing: 0) {
                     // Responsive Header — ใช้ outerGeo.size.width แทน headerWidth
                     Group {
-                        if outerGeo.size.width < 720 {
-                            compactHeader
+                        if outerGeo.size.width < 960 {
+                            compactHeader(showsSidebarButton: isLandscape, width: outerGeo.size.width)
                         } else {
-                            wideHeader
+                            wideHeader(showsSidebarButton: isLandscape)
                         }
                     }
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, isLandscape ? 6 : 10)
                     .frame(maxWidth: .infinity)
                     .background(Color.appSurface)
                     .overlay(
@@ -83,23 +90,138 @@ struct TableView: View {
                     
                     // Floor Plan Canvas with Floating Panel Overlaid
                     ZStack(alignment: .bottomTrailing) {
-                        floorPlanCanvas
+                        if isListView {
+                            tableListView
+                        } else {
+                            VStack(spacing: 0) {
+                                // Grid/Canvas + Add Table toolbar (only in edit mode, map view)
+                                if isEditingLayout {
+                                    HStack(spacing: 12) {
+                                        // Grid / Canvas segmented toggle
+                                        HStack(spacing: 2) {
+                                            ForEach([("square.grid.2x2", "grid", "table_layout_mode_grid"),
+                                                     ("rectangle.on.rectangle.angled", "canvas", "table_layout_mode_canvas")],
+                                                    id: \.1) { icon, mode, key in
+                                                Button(action: {
+                                                    withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                                                        layoutModeRaw = mode
+                                                        APHaptic.trigger()
+                                                    }
+                                                }) {
+                                                    Image(systemName: icon)
+                                                        .font(.system(size: 14, weight: .semibold))
+                                                        .foregroundColor(layoutModeRaw == mode ? .white : .textSecondary)
+                                                        .frame(width: 34, height: 30)
+                                                        .background(layoutModeRaw == mode ? Color.appAccent : Color.clear)
+                                                        .cornerRadius(6)
+                                                }
+                                                .buttonStyle(.plain)
+                                                .accessibilityLabel(key.t)
+                                            }
+                                        }
+                                        .padding(2)
+                                        .background(Color.appSurfaceHigh)
+                                        .cornerRadius(8)
+                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.appBorderSubtle, lineWidth: 1))
+
+                                        Divider()
+                                            .frame(width: 1, height: 20)
+                                            .background(Color.appDivider)
+
+                                        // Floor Management Actions
+                                        HStack(spacing: 8) {
+                                            // Add Floor
+                                            Button(action: { showingAddFloorAlert = true }) {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: "plus")
+                                                        .font(.system(size: 10, weight: .bold))
+                                                    Text("table_floor_add_btn".t)
+                                                        .font(.system(size: 11, weight: .semibold))
+                                                }
+                                                .foregroundColor(.appAccent)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(Color.appAccent.opacity(0.1))
+                                                .cornerRadius(8)
+                                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.appAccent.opacity(0.3), lineWidth: 1))
+                                            }
+                                            .buttonStyle(.plain)
+
+                                            // Remove Floor
+                                            if floors.count > 1 {
+                                                Button(action: { showingRemoveFloorConfirm = true }) {
+                                                    HStack(spacing: 4) {
+                                                        Image(systemName: "trash")
+                                                            .font(.system(size: 10, weight: .bold))
+                                                        Text("table_floor_remove_btn".t)
+                                                            .font(.system(size: 11, weight: .semibold))
+                                                    }
+                                                    .foregroundColor(.appRose)
+                                                    .padding(.horizontal, 10)
+                                                    .padding(.vertical, 6)
+                                                    .background(Color.appRose.opacity(0.08))
+                                                    .cornerRadius(8)
+                                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.appRose.opacity(0.3), lineWidth: 1))
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+                                        }
+
+                                        Divider()
+                                            .frame(width: 1, height: 20)
+                                            .background(Color.appDivider)
+
+                                        layoutPresetsToolbar
+
+                                        Spacer()
+
+                                        // Add Table button
+                                        Button(action: { checkManagerPermission(for: .addTable) }) {
+                                            HStack(spacing: 5) {
+                                                Image(systemName: "plus")
+                                                    .font(.system(size: 12, weight: .bold))
+                                                Text("table_add_new_title".t)
+                                                    .font(.system(size: 13, weight: .semibold))
+                                            }
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 14)
+                                            .padding(.vertical, 8)
+                                            .background(Color.appAccent)
+                                            .cornerRadius(9)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 8)
+                                    .background(Color.appSurface)
+                                    .overlay(Divider().background(Color.appDivider), alignment: .bottom)
+                                }
+                                floorPlanCanvas
+                            }
+                        }
                         
-                        floatingControlsPanel
-                            .padding(20)
+                        if !isListView {
+                            floatingControlsPanel
+                                .padding(20)
+                        }
                         
                         if !syncEngine.activeRequests.isEmpty {
                             activeRequestsOverlay
-                        }
-                        
-                        if isEditingLayout {
-                            wallDrawingToolbar
                         }
                     }
                 }
             }
             .navigationTitle("tab_tables".t)
-            .apNavBar()
+        .apNavBar()
+        .onAppear { loadCachedFloorPlanImage() }
+        .onChange(of: selectedFloor) { loadCachedFloorPlanImage() }
+        .onChange(of: floorPlanImages) { loadCachedFloorPlanImage() }
+            #if os(iOS) || os(visionOS)
+            // The custom controls already act as this screen's header. In
+            // landscape, hiding the duplicate navigation title recovers the
+            // vertical space while the safe area still protects system UI.
+            .toolbar(isLandscape ? .hidden : .visible, for: .navigationBar)
+            #endif
             .sheet(item: $selectedTable) { table in
                 TableDetailView(table: table, selectedTab: $selectedTab, posTableSession: $activeSession)
             }
@@ -135,6 +257,22 @@ struct TableView: View {
 
                 // Large canvas content (grid + tables)
                 ZStack(alignment: .topLeading) {
+                    // Floor Plan background image (behind grid & tables)
+                    if let img = cachedFloorPlanImage {
+                        let bgScale = activeFloorPlanImage?.scale ?? 1.0
+                        let bgOffsetX = activeFloorPlanImage?.offsetX ?? 0.0
+                        let bgOffsetY = activeFloorPlanImage?.offsetY ?? 0.0
+                        
+                        Image(uiImage: img)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 1500 * bgScale, height: 1200 * bgScale)
+                            .offset(x: bgOffsetX, y: bgOffsetY)
+                            .clipped()
+                            .opacity(0.35)
+                            .allowsHitTesting(false)
+                    }
+
                     // Grid lines overlay on background
                     Canvas { context, size in
                         let gridSize: CGFloat = 20
@@ -148,33 +286,17 @@ struct TableView: View {
                                 path.addLine(to: CGPoint(x: 1500, y: y))
                             }
                         }
-                        context.stroke(path, with: .color(Color.appDivider.opacity(0.12)), lineWidth: 0.6)
+                        let gridOpacity: CGFloat = isGridMode ? 0.25 : 0.12
+                        context.stroke(path, with: .color(Color.appDivider.opacity(gridOpacity)), lineWidth: isGridMode ? 0.8 : 0.6)
                     }
                     .frame(width: 1500, height: 1200)
                     .allowsHitTesting(false)
-                    
-                    // Render partition walls (CAD wall style)
-                    let floorWalls = walls.filter { $0.floor == selectedFloor && !$0.isDeleted }
-                    ForEach(floorWalls) { wall in
-                        Path { path in
-                            path.move(to: CGPoint(x: wall.startX, y: wall.startY))
-                            if wall.type == .curved, let cx = wall.controlX, let cy = wall.controlY {
-                                path.addQuadCurve(to: CGPoint(x: wall.endX, y: wall.endY), control: CGPoint(x: cx, y: cy))
-                            } else {
-                                path.addLine(to: CGPoint(x: wall.endX, y: wall.endY))
-                            }
-                        }
-                        .stroke(
-                            Color.appDivider.opacity(isEditingLayout ? 0.95 : 0.6),
-                            style: StrokeStyle(lineWidth: wall.strokeWidth, lineCap: .round, lineJoin: .round)
-                        )
-                    }
                     
                     // Render filtered tables
                     ForEach(floorTables) { table in
                         InteractiveTableCardWrapper(
                             table: table,
-                            isEditingLayout: isEditingLayout && !isDrawingWalls,
+                            isEditingLayout: isEditingLayout,
                             activeDraggingTableId: activeDraggingTableId,
                             selectedTableId: selectedTable?.id,
                             dragTranslation: dragTranslation,
@@ -263,38 +385,6 @@ struct TableView: View {
                         )
                         .opacity(selectedZone == "All" || table.zone == selectedZone ? 1.0 : 0.25)
                         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: selectedZone)
-                    }
-                    
-                    // Live drawing preview path
-                    if isEditingLayout && isDrawingWalls, let start = activeStartPoint {
-                        Path { path in
-                            path.move(to: start)
-                            if selectedDrawTool == .curve, let control = curveControlPoint, let end = activeEndPoint {
-                                path.addQuadCurve(to: end, control: control)
-                            } else if let current = activeEndPoint {
-                                path.addLine(to: current)
-                            }
-                        }
-                        .stroke(
-                            Color.appAccent.opacity(0.8),
-                            style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round, dash: [6, 4])
-                        )
-                    }
-                    
-                    // Drawing Gesture Overlay
-                    if isEditingLayout && isDrawingWalls {
-                        Color.clear
-                            .frame(width: 1500, height: 1200)
-                            .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture(minimumDistance: 0)
-                                    .onChanged { value in
-                                        handleDrawGestureChanged(location: value.location)
-                                    }
-                                    .onEnded { value in
-                                        handleDrawGestureEnded(location: value.location)
-                                    }
-                            )
                     }
                 }
                 .frame(width: 1500, height: 1200)
@@ -397,6 +487,15 @@ struct TableView: View {
                     }
                 }
             )
+            .overlay(
+                Group {
+                    if isEditingLayout && activeFloorPlanImage != nil {
+                        bgImageAdjustmentsPanel
+                            .padding(16)
+                    }
+                },
+                alignment: .bottomLeading
+            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
@@ -404,6 +503,9 @@ struct TableView: View {
     
     private var floatingControlsPanel: some View {
         VStack(spacing: 12) {
+            // Floor Plan upload button (visible only in edit mode)
+            floorPlanUploadButton
+
             // Zoom Container
             VStack(spacing: 0) {
                 // Zoom In
@@ -498,6 +600,304 @@ struct TableView: View {
             )
         }
     }
+
+    // MARK: - Table List View
+    @ViewBuilder
+    private var tableListView: some View {
+        let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
+        let sortedTables = floorTables.sorted { $0.tableNumber < $1.tableNumber }
+        let availableCount  = floorTables.filter { $0.status.lowercased() == "vacant" }.count
+        let occupiedCount   = floorTables.filter { $0.status.lowercased() == "occupied" }.count
+        let reservedCount   = floorTables.filter { $0.status.lowercased() == "reserved" }.count
+        let withOrdersCount = floorTables.filter { !$0.sessions.filter({ $0.isActive }).isEmpty }.count
+        let totalSeats      = floorTables.reduce(0) { $0 + $1.capacity }
+
+        ZStack {
+            Color.appBackground.ignoresSafeArea()
+            VStack(spacing: 0) {
+
+                // ── Floor underline tabs ──
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        ForEach(floors) { floor in
+                            Button(action: {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    selectedFloor = floor.id
+                                    APHaptic.trigger()
+                                }
+                            }) {
+                                VStack(spacing: 0) {
+                                    Text(floor.name)
+                                        .font(.system(size: 14, weight: selectedFloor == floor.id ? .bold : .regular))
+                                        .foregroundColor(selectedFloor == floor.id ? .appAccent : .textSecondary)
+                                        .padding(.horizontal, 20)
+                                        .padding(.vertical, 12)
+                                    Rectangle()
+                                        .fill(selectedFloor == floor.id ? Color.appAccent : Color.clear)
+                                        .frame(height: 2)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .background(Color.appSurface)
+                .overlay(Divider().background(Color.appDivider), alignment: .bottom)
+
+                // ── Summary bar ──
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 16) {
+                        listSummaryChip(text: String(format: "table_list_total".t, floorTables.count), color: .textSecondary)
+                        listSummaryChip(text: String(format: "table_list_available".t, availableCount), color: .appTeal, dot: true)
+                        listSummaryChip(text: String(format: "table_list_occupied".t, occupiedCount), color: .appRose, dot: true)
+                        listSummaryChip(text: String(format: "table_list_reserved".t, reservedCount), color: .appAmber, dot: true)
+                        listSummaryChip(text: String(format: "table_list_with_orders".t, withOrdersCount), color: .appAccent)
+                        listSummaryChip(text: String(format: "table_list_total_seats".t, totalSeats), color: .textSecondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                .background(Color.appSurface)
+                .overlay(Divider().background(Color.appDivider), alignment: .bottom)
+
+                if floorTables.isEmpty {
+                    Spacer()
+                    VStack(spacing: 12) {
+                        Image(systemName: "tablecells")
+                            .font(.system(size: 48))
+                            .foregroundColor(.textTertiary)
+                        Text("table_empty_canvas_title".t)
+                            .font(.headline)
+                            .foregroundColor(.textSecondary)
+                    }
+                    Spacer()
+                } else {
+                    // ── Tip ──
+                    HStack {
+                        Image(systemName: "info.circle")
+                            .font(.caption)
+                            .foregroundColor(.textTertiary)
+                        Text("table_list_tip".t)
+                            .font(.caption)
+                            .foregroundColor(.textTertiary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+
+                    // ── Column headers ──
+                    HStack(spacing: 0) {
+                        Spacer().frame(width: 48)
+                        Text("table_list_col_table".t)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text("table_list_col_seats".t)
+                            .frame(width: 60, alignment: .center)
+                        Text("table_list_col_shape".t)
+                            .frame(width: 100, alignment: .center)
+                        Text("table_list_col_status".t)
+                            .frame(width: 110, alignment: .center)
+                        Text("table_list_col_qr".t)
+                            .frame(width: 90, alignment: .center)
+                        Text("table_list_col_total".t)
+                            .frame(width: 80, alignment: .trailing)
+                    }
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.textTertiary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .background(Color.appSurfaceHigh)
+
+                    Divider().background(Color.appDivider)
+
+                    // ── Table rows ──
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(sortedTables) { table in
+                                listTableRow(table)
+                                Divider().background(Color.appDivider).padding(.leading, 16)
+                            }
+                        }
+                    }
+                    .background(Color.appSurface)
+                }
+            }
+        }
+    }
+
+    private func listSummaryChip(text: String, color: Color, dot: Bool = false) -> some View {
+        HStack(spacing: 5) {
+            if dot {
+                Circle().fill(color).frame(width: 7, height: 7)
+            }
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.textSecondary)
+        }
+    }
+
+    @ViewBuilder
+    private func listTableRow(_ table: RestaurantTable) -> some View {
+        let activeSession = table.sessions.last(where: { $0.isActive })
+        Button(action: {
+            selectedTable = table
+            showingDetailSheet = true
+        }) {
+            HStack(spacing: 0) {
+                // Icon
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.appSurfaceHigh)
+                        .frame(width: 32, height: 32)
+                    Image(systemName: "chair.lounge")
+                        .font(.system(size: 14))
+                        .foregroundColor(.textSecondary)
+                }
+                .frame(width: 48, alignment: .center)
+
+                // Table name
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(table.tableNumber)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.textPrimary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                // Seats
+                Text("\(table.capacity)")
+                    .font(.system(size: 14))
+                    .foregroundColor(.textSecondary)
+                    .frame(width: 60, alignment: .center)
+
+                // Shape badge
+                Text(shapeLabel(table.tableShape))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.textSecondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.appSurfaceHigh)
+                    .cornerRadius(12)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.appBorderSubtle, lineWidth: 1))
+                    .frame(width: 100, alignment: .center)
+
+                // Status badge
+                listStatusBadge(status: table.status)
+                    .frame(width: 110, alignment: .center)
+
+                // QR actions
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 14))
+                        .foregroundColor(.textSecondary)
+                    Image(systemName: "qrcode")
+                        .font(.system(size: 14))
+                        .foregroundColor(.textSecondary)
+                }
+                .frame(width: 90, alignment: .center)
+
+                // Total
+                if let session = activeSession {
+                    Text(String(format: "%.0f", session.totalAmount))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.appAccent)
+                        .frame(width: 80, alignment: .trailing)
+                } else {
+                    Text("—")
+                        .font(.system(size: 13))
+                        .foregroundColor(.textTertiary)
+                        .frame(width: 80, alignment: .trailing)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color.appSurface)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func shapeLabel(_ shape: String) -> String {
+        switch shape {
+        case "circle":    return "table_shape_circle".t
+        case "oval":      return "table_shape_oval".t
+        case "square":    return "table_shape_square".t
+        default:          return "table_shape_rectangle".t
+        }
+    }
+
+    @ViewBuilder
+    private func listStatusBadge(status: String) -> some View {
+        let (label, bg, fg): (String, Color, Color) = {
+            switch status.lowercased() {
+            case "occupied":  return ("table_status_occupied".t,  Color.appRose.opacity(0.15),  .appRose)
+            case "reserved":  return ("table_status_reserved".t,  Color.appAmber.opacity(0.15), .appAmber)
+            case "cleaning":  return ("table_status_cleaning".t,  Color.appAccent.opacity(0.15),.appAccent)
+            default:          return ("table_status_available".t, Color.appTeal.opacity(0.15),  .appTeal)
+            }
+        }()
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(fg)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundColor(fg.opacity(0.7))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(bg)
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(fg.opacity(0.3), lineWidth: 1))
+    }
+
+    // MARK: - Floor Plan Upload Button (shown in edit mode)
+    @ViewBuilder
+    private var floorPlanUploadButton: some View {  // floorPlanUploadButton body
+        if isEditingLayout {
+            VStack(spacing: 0) {
+                PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                    Image(systemName: currentFloorPlanImagePath.isEmpty ? "photo.badge.plus" : "photo.badge.checkmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(currentFloorPlanImagePath.isEmpty ? .textPrimary : .appAccent)
+                        .frame(width: 44, height: 44)
+                }
+                .onChange(of: selectedPhotoItem) { _, newItem in
+                    guard let newItem else { return }
+                    Task {
+                        if let data = try? await newItem.loadTransferable(type: Data.self),
+                           let uiImage = UIImage(data: data) {
+                            let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                            let filename = "floor_plan_\(selectedFloor)_\(Int(Date().timeIntervalSince1970)).jpg"
+                            let fileURL = docsURL.appendingPathComponent(filename)
+                            if let jpegData = uiImage.jpegData(compressionQuality: 0.85) {
+                                try? jpegData.write(to: fileURL)
+                                saveFloorPlanImage(filename: filename)
+                                await MainActor.run {
+                                    cachedFloorPlanImage = uiImage
+                                    selectedPhotoItem = nil
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if floorPlanImages.first(where: { $0.floor == selectedFloor && !$0.isDeleted }) != nil {
+                    Divider().background(Color.appDivider).frame(width: 32)
+                    Button(action: { removeFloorPlanImage() }) {
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.appRose)
+                            .frame(width: 44, height: 36)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(Color.appSurface.opacity(0.88))
+            .cornerRadius(12)
+            .shadow(color: Color.black.opacity(0.12), radius: 8, x: 0, y: 4)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.appBorderSubtle, lineWidth: 1))
+        }
+    }
     
 
     
@@ -584,10 +984,19 @@ struct TableView: View {
         let minY: CGFloat = 16
         let maxY: CGFloat = 1200 - tableSize.height - 16
         
-        let finalPosition = CGPoint(
-            x: min(max(newX, minX), maxX),
-            y: min(max(newY, minY), maxY)
-        )
+        var clampedX = min(max(newX, minX), maxX)
+        var clampedY = min(max(newY, minY), maxY)
+
+        // Snap to grid when Grid Mode is active
+        if isGridMode {
+            let gridSize: CGFloat = 80
+            clampedX = round(clampedX / gridSize) * gridSize
+            clampedY = round(clampedY / gridSize) * gridSize
+            clampedX = min(max(clampedX, minX), maxX)
+            clampedY = min(max(clampedY, minY), maxY)
+        }
+
+        let finalPosition = CGPoint(x: clampedX, y: clampedY)
         updateTablePosition(table, newPosition: finalPosition)
         
         withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
@@ -660,26 +1069,316 @@ struct TableView: View {
     
     // MARK: - Premium Redesigned Header Elements
 
-    @ViewBuilder
-    private var modernStatusWidget: some View {
-        HStack(spacing: 12) {
-            modernStatusDot(color: .appTeal, label: "table_status_vacant".t, count: countTables(status: "vacant"))
-            modernStatusDot(color: .appRose, label: "table_status_occupied".t, count: countTables(status: "occupied"))
-            modernStatusDot(color: .appAmber, label: "table_status_reserved".t, count: countTables(status: "reserved"))
-            modernStatusDot(color: .appAccent, label: "table_status_cleaning".t, count: countTables(status: "cleaning"))
+    // MARK: - Computed Mode Helpers
+    private var isGridMode: Bool { layoutModeRaw == "grid" }
+    private var isListView: Bool { tableViewModeRaw == "list" }
+
+    private var currentFloorPlanImagePath: String {
+        floorPlanImages.first(where: { $0.floor == selectedFloor && !$0.isDeleted })?.resolvedImagePath ?? ""
+    }
+
+    private func saveFloorPlanImage(filename: String) {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? "unknown"
+        if let existing = floorPlanImages.first(where: { $0.floor == selectedFloor }) {
+            existing.imageFilename = filename
+            existing.isDeleted = false
+            existing.isSynced = false
+            existing.updatedAt = Date()
+        } else {
+            let newItem = FloorPlanImage(
+                merchantId: merchantId,
+                floor: selectedFloor,
+                imageFilename: filename
+            )
+            modelContext.insert(newItem)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        try? modelContext.save()
+        Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+    }
+
+    private func removeFloorPlanImage() {
+        guard let existing = floorPlanImages.first(where: { $0.floor == selectedFloor }) else { return }
+
+        // 1. Remove local file from disk if it exists
+        if let path = existing.resolvedImagePath, FileManager.default.fileExists(atPath: path) {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+
+        // 2. Clear in-memory cached image
+        cachedFloorPlanImage = nil
+
+        // 3. Create unmanaged copy for background remote deletion sync
+        let unmanagedCopy = FloorPlanImage(
+            id: existing.id,
+            merchantId: existing.merchantId,
+            floor: existing.floor,
+            imageFilename: existing.imageFilename,
+            updatedAt: Date(),
+            isSynced: false,
+            isDeleted: true
+        )
+
+        // 4. Delete from local database context immediately
+        modelContext.delete(existing)
+        try? modelContext.save()
+
+        // 5. Sync deletion to remote database
+        Task {
+            _ = try? await NetworkManager.shared.uploadFloorPlanImage(floorPlan: unmanagedCopy)
+        }
+    }
+
+
+    private func loadCachedFloorPlanImage() {
+        if let path = floorPlanImages
+            .first(where: { $0.floor == selectedFloor && !$0.isDeleted })?
+            .resolvedImagePath,
+           let uiImage = UIImage(contentsOfFile: path) {
+            cachedFloorPlanImage = uiImage
+        } else {
+            cachedFloorPlanImage = nil
+        }
+    }
+
+    // MARK: - Floor Plan Background Adjustments Helpers
+    private var activeFloorPlanImage: FloorPlanImage? {
+        floorPlanImages.first(where: { $0.floor == selectedFloor && !$0.isDeleted })
+    }
+
+    private var bgScaleBinding: Binding<Double> {
+        Binding(
+            get: { activeFloorPlanImage?.scale ?? 1.0 },
+            set: { newValue in
+                if let img = activeFloorPlanImage {
+                    img.scale = newValue
+                    img.isSynced = false
+                    img.updatedAt = Date()
+                    try? modelContext.save()
+                }
+            }
+        )
+    }
+
+    private var bgOffsetXBinding: Binding<Double> {
+        Binding(
+            get: { activeFloorPlanImage?.offsetX ?? 0.0 },
+            set: { newValue in
+                if let img = activeFloorPlanImage {
+                    img.offsetX = newValue
+                    img.isSynced = false
+                    img.updatedAt = Date()
+                    try? modelContext.save()
+                }
+            }
+        )
+    }
+
+    private var bgOffsetYBinding: Binding<Double> {
+        Binding(
+            get: { activeFloorPlanImage?.offsetY ?? 0.0 },
+            set: { newValue in
+                if let img = activeFloorPlanImage {
+                    img.offsetY = newValue
+                    img.isSynced = false
+                    img.updatedAt = Date()
+                    try? modelContext.save()
+                }
+            }
+        )
+    }
+
+    // MARK: - Table Layout Presets (Templates) Operations
+    private func saveLayoutPreset(name: String) {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? "default_merchant"
+        let branchId = UserDefaults.standard.string(forKey: "active_branch_id") ?? "default_branch"
+        
+        let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
+        let items = floorTables.map { table in
+            TableLayoutItem(
+                id: table.id,
+                tableNumber: table.tableNumber,
+                capacity: table.capacity,
+                tableShape: table.tableShape,
+                positionX: table.positionX,
+                positionY: table.positionY,
+                zone: table.zone
+            )
+        }
+        
+        guard let data = try? JSONEncoder().encode(items),
+              let json = String(data: data, encoding: .utf8) else { return }
+        
+        let bgImage = activeFloorPlanImage
+        let bgFilename = bgImage?.imageFilename
+        let bgScale = bgImage?.scale ?? 1.0
+        let bgOffsetX = bgImage?.offsetX ?? 0.0
+        let bgOffsetY = bgImage?.offsetY ?? 0.0
+        
+        if let existing = layoutPresets.first(where: {
+            $0.floor == selectedFloor &&
+            $0.name.lowercased() == name.lowercased() &&
+            $0.branchId == branchId &&
+            $0.merchantId == merchantId &&
+            !$0.isDeleted
+        }) {
+            existing.tableLayoutJson = json
+            existing.bgImageFilename = bgFilename
+            existing.bgImageScale = bgScale
+            existing.bgImageOffsetX = bgOffsetX
+            existing.bgImageOffsetY = bgOffsetY
+            existing.updatedAt = Date()
+            existing.isSynced = false
+        } else {
+            let preset = TableLayoutPreset(
+                merchantId: merchantId,
+                branchId: branchId,
+                floor: selectedFloor,
+                name: name,
+                bgImageFilename: bgFilename,
+                bgImageScale: bgScale,
+                bgImageOffsetX: bgOffsetX,
+                bgImageOffsetY: bgOffsetY,
+                tableLayoutJson: json
+            )
+            modelContext.insert(preset)
+        }
+        
+        try? modelContext.save()
+        APHaptic.trigger()
+        
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
+    }
+
+    private func applyLayoutPreset(_ preset: TableLayoutPreset) {
+        let currentMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? "default_merchant"
+        let currentBranchId = UserDefaults.standard.string(forKey: "active_branch_id") ?? "default_branch"
+        
+        // Security check
+        guard preset.merchantId == currentMerchantId && preset.branchId == currentBranchId else {
+            print("Security boundary breach: layout preset merchant/branch mismatch")
+            return
+        }
+        
+        guard let data = preset.tableLayoutJson.data(using: .utf8),
+              let items = try? JSONDecoder().decode([TableLayoutItem].self, from: data) else { return }
+        
+        // Apply background image transform
+        let currentBg = activeFloorPlanImage
+        if let newFilename = preset.bgImageFilename {
+            if let bg = currentBg {
+                bg.imageFilename = newFilename
+                bg.scale = preset.bgImageScale
+                bg.offsetX = preset.bgImageOffsetX
+                bg.offsetY = preset.bgImageOffsetY
+                bg.updatedAt = Date()
+                bg.isSynced = false
+            } else {
+                let newBg = FloorPlanImage(
+                    merchantId: currentMerchantId,
+                    floor: selectedFloor,
+                    imageFilename: newFilename,
+                    scale: preset.bgImageScale,
+                    offsetX: preset.bgImageOffsetX,
+                    offsetY: preset.bgImageOffsetY
+                )
+                modelContext.insert(newBg)
+            }
+        } else {
+            if let bg = currentBg {
+                bg.isDeleted = true
+                bg.isSynced = false
+                bg.updatedAt = Date()
+            }
+        }
+        
+        loadCachedFloorPlanImage()
+        
+        // Rearrange tables
+        let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
+        var matchedTableNumbers = Set<String>()
+        
+        for item in items {
+            matchedTableNumbers.insert(item.tableNumber)
+            if let existingTable = floorTables.first(where: { $0.tableNumber == item.tableNumber }) {
+                existingTable.positionX = item.positionX
+                existingTable.positionY = item.positionY
+                existingTable.capacity = item.capacity
+                existingTable.tableShape = item.tableShape
+                existingTable.isRound = item.tableShape == "circle" || item.tableShape == "oval"
+                existingTable.zone = item.zone
+                existingTable.updatedAt = Date()
+                existingTable.isSynced = false
+            } else {
+                let newTable = RestaurantTable(
+                    tableNumber: item.tableNumber,
+                    capacity: item.capacity,
+                    tableShape: item.tableShape,
+                    positionX: item.positionX,
+                    positionY: item.positionY,
+                    floor: selectedFloor,
+                    zone: item.zone
+                )
+                modelContext.insert(newTable)
+            }
+        }
+        
+        for table in floorTables {
+            if !matchedTableNumbers.contains(table.tableNumber) {
+                table.isDeleted = true
+                table.isSynced = false
+                table.updatedAt = Date()
+            }
+        }
+        
+        try? modelContext.save()
+        APHaptic.trigger()
+        
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
+    }
+
+    private func deleteLayoutPreset(_ preset: TableLayoutPreset) {
+        let currentMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? "default_merchant"
+        let currentBranchId = UserDefaults.standard.string(forKey: "active_branch_id") ?? "default_branch"
+        
+        // Security check
+        guard preset.merchantId == currentMerchantId && preset.branchId == currentBranchId else { return }
+        
+        preset.isDeleted = true
+        preset.updatedAt = Date()
+        preset.isSynced = false
+        
+        try? modelContext.save()
+        APHaptic.trigger()
+        
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
+    }
+
+    @ViewBuilder
+    private func modernStatusWidget(showLabels: Bool) -> some View {
+        HStack(spacing: showLabels ? 14 : 8) {
+            modernStatusDot(color: .appTeal, label: "table_status_vacant".t, count: countTables(status: "vacant"), showLabel: showLabels)
+            modernStatusDot(color: .appRose, label: "table_status_occupied".t, count: countTables(status: "occupied"), showLabel: showLabels)
+            modernStatusDot(color: .appAmber, label: "table_status_reserved".t, count: countTables(status: "reserved"), showLabel: showLabels)
+            modernStatusDot(color: .appAccent, label: "table_status_cleaning".t, count: countTables(status: "cleaning"), showLabel: showLabels)
+        }
+        .padding(.horizontal, showLabels ? 16 : 10)
+        .padding(.vertical, 7)
         .background(Color.appSurfaceHigh.opacity(0.6))
-        .cornerRadius(10)
+        .clipShape(Capsule())
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
+            Capsule()
                 .stroke(Color.appBorderSubtle, lineWidth: 1)
         )
     }
     
-    private func modernStatusDot(color: Color, label: String, count: Int) -> some View {
-        HStack(spacing: 6) {
+    private func modernStatusDot(color: Color, label: String, count: Int, showLabel: Bool) -> some View {
+        HStack(spacing: 4) {
             Text("\(count)")
                 .font(.system(size: 11, weight: .bold, design: .rounded))
                 .foregroundColor(.white)
@@ -690,53 +1389,411 @@ struct TableView: View {
                 .scaleEffect(count > 0 ? 1.08 : 1.0)
                 .animation(.spring(response: 0.25, dampingFraction: 0.6), value: count)
             
-            Text(label)
-                .font(.caption2)
-                .fontWeight(.bold)
-                .foregroundColor(.textSecondary)
+            if showLabel {
+                Text(label)
+                    .font(.caption2)
+                    .fontWeight(.bold)
+                    .foregroundColor(.textSecondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+    }
+
+    // MARK: - Floor Pill Tabs + Management Buttons
+    @ViewBuilder
+    private var floorTabsBar: some View {
+        HStack(spacing: 0) {
+            // Pill tabs scrollable
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(floors) { floor in
+                        floorTab(floor: floor)
+                    }
+                }
+                .padding(3)
+            }
+            .background(Color.appSurfaceHigh.opacity(0.5))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.appBorderSubtle, lineWidth: 1)
+            )
+        }
+        .alert("table_floor_add_btn".t, isPresented: $showingAddFloorAlert) {
+            TextField("table_floor_new_name".t, text: $floorNameInput)
+            Button("table_create_btn".t) {
+                let nextId = (floors.map(\.id).max() ?? 0) + 1
+                let name = floorNameInput.isEmpty
+                    ? String(format: "table_floor_new_name".t, nextId)
+                    : floorNameInput
+                var updated = floors
+                updated.append(FloorData(id: nextId, name: name))
+                floorsJson = updated.jsonString
+                selectedFloor = nextId
+                floorNameInput = ""
+                APHaptic.trigger()
+            }
+            Button("cancel".t, role: .cancel) { floorNameInput = "" }
+        }
+        .confirmationDialog("table_floor_remove_confirm".t, isPresented: $showingRemoveFloorConfirm, titleVisibility: .visible) {
+            Button("table_floor_remove_btn".t, role: .destructive) {
+                // soft-delete tables on this floor
+                let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
+                for t in floorTables {
+                    t.isDeleted = true
+                    t.isSynced = false
+                    t.updatedAt = Date()
+                }
+                try? modelContext.save()
+                // remove floor from list
+                var updated = floors.filter { $0.id != selectedFloor }
+                floorsJson = updated.jsonString
+                selectedFloor = updated.first?.id ?? 1
+            }
+            Button("cancel".t, role: .cancel) { }
+        }
+        // Rename alert
+        .alert("table_floor_rename_title".t, isPresented: $showingRenameFloorAlert) {
+            TextField("", text: $floorNameInput)
+            Button("ok_btn".t) {
+                if let fid = renamingFloorId, !floorNameInput.isEmpty {
+                    var updated = floors
+                    if let idx = updated.firstIndex(where: { $0.id == fid }) {
+                        updated[idx].name = floorNameInput
+                        floorsJson = updated.jsonString
+                    }
+                }
+                renamingFloorId = nil
+                floorNameInput = ""
+            }
+            Button("cancel".t, role: .cancel) { renamingFloorId = nil; floorNameInput = "" }
+        }
+    }
+
+    private func floorTab(floor: FloorData) -> some View {
+        let isSelected = selectedFloor == floor.id
+        return Button(action: {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                selectedFloor = floor.id
+                selectedZone = "All"
+                APHaptic.trigger()
+            }
+        }) {
+            VStack(spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(floor.name)
+                        .font(.system(size: 12, weight: isSelected ? .bold : .semibold))
+                        .foregroundColor(isSelected ? Color.appAccent : .textSecondary)
+                    
+                    if isEditingLayout {
+                        Button(action: {
+                            renamingFloorId = floor.id
+                            floorNameInput = floor.name
+                            showingRenameFloorAlert = true
+                        }) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(isSelected ? Color.appAccent.opacity(0.8) : .textTertiary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, isEditingLayout ? 4 : 6)
+                
+                // Bottom blue indicator matching Figure 3
+                Capsule()
+                    .fill(isSelected ? Color.appAccent : Color.clear)
+                    .frame(width: 18, height: 3)
+            }
+            .background(
+                isSelected ? Color.appAccent.opacity(0.08) : Color.clear
+            )
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Table Layout Presets UI Components
+    private var activePresets: [TableLayoutPreset] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? "default_merchant"
+        let branchId = UserDefaults.standard.string(forKey: "active_branch_id") ?? "default_branch"
+        return layoutPresets.filter {
+            $0.floor == selectedFloor &&
+            $0.merchantId == merchantId &&
+            $0.branchId == branchId &&
+            !$0.isDeleted
         }
     }
 
     @ViewBuilder
+    private var layoutPresetsToolbar: some View {
+        HStack(spacing: 8) {
+            Text("table_presets_title".t)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.textSecondary)
+            
+            // Dropdown menu to select a preset
+            Menu {
+                if activePresets.isEmpty {
+                    Text("No templates saved")
+                } else {
+                    ForEach(activePresets) { preset in
+                        Button(action: {
+                            applyLayoutPreset(preset)
+                        }) {
+                            Text(preset.name)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("Select Template...")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.textPrimary)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8))
+                        .foregroundColor(.textSecondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.appSurfaceHigh)
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(Color.appBorderSubtle, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+
+            // Save layout preset button
+            Button(action: {
+                showingSavePresetAlert = true
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 9, weight: .bold))
+                    Text("table_presets_save_alert".t)
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.appAccent)
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            
+            // Delete active presets (if any exist, let them delete)
+            if !activePresets.isEmpty {
+                Menu {
+                    ForEach(activePresets) { preset in
+                        Button(role: .destructive, action: {
+                            deleteLayoutPreset(preset)
+                        }) {
+                            Label("Delete \(preset.name)", systemImage: "trash")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.appRose)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(Color.appRose.opacity(0.1))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .alert("table_presets_save_alert".t, isPresented: $showingSavePresetAlert) {
+            TextField("table_presets_enter_name".t, text: $presetNameInput)
+            Button("ok_btn".t) {
+                if !presetNameInput.isEmpty {
+                    saveLayoutPreset(name: presetNameInput)
+                }
+                presetNameInput = ""
+            }
+            Button("cancel".t, role: .cancel) { presetNameInput = "" }
+        }
+    }
+
+    // MARK: - Resizable Background Adjustments Panel UI
+    @ViewBuilder
+    private var bgImageAdjustmentsPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "photo.artframe")
+                    .foregroundColor(.appAccent)
+                    .font(.system(size: 13, weight: .bold))
+                Text("table_bg_adjust_title".t)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.textPrimary)
+                Spacer()
+                Button(action: {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                        if let bg = activeFloorPlanImage {
+                            bg.scale = 1.0
+                            bg.offsetX = 0.0
+                            bg.offsetY = 0.0
+                            bg.updatedAt = Date()
+                            bg.isSynced = false
+                            try? modelContext.save()
+                        }
+                    }
+                    APHaptic.trigger()
+                }) {
+                    Text("reset".t)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.appRose)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.appRose.opacity(0.1))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 2)
+            
+            // Zoom/Scale Slider
+            HStack(spacing: 8) {
+                Text("table_bg_scale_label".t)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.textSecondary)
+                    .frame(width: 45, alignment: .leading)
+                Slider(value: bgScaleBinding, in: 0.5...3.0, step: 0.05)
+                    .tint(.appAccent)
+                Text(String(format: "%.1fx", activeFloorPlanImage?.scale ?? 1.0))
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundColor(.textPrimary)
+                    .frame(width: 35, alignment: .trailing)
+            }
+            
+            // Offset X Slider
+            HStack(spacing: 8) {
+                Text("table_bg_x_label".t)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.textSecondary)
+                    .frame(width: 45, alignment: .leading)
+                Slider(value: bgOffsetXBinding, in: -800...800, step: 5)
+                    .tint(.appAccent)
+                Text("\(Int(activeFloorPlanImage?.offsetX ?? 0.0)) px")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundColor(.textPrimary)
+                    .frame(width: 45, alignment: .trailing)
+            }
+            
+            // Offset Y Slider
+            HStack(spacing: 8) {
+                Text("table_bg_y_label".t)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.textSecondary)
+                    .frame(width: 45, alignment: .leading)
+                Slider(value: bgOffsetYBinding, in: -800...800, step: 5)
+                    .tint(.appAccent)
+                Text("\(Int(activeFloorPlanImage?.offsetY ?? 0.0)) px")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundColor(.textPrimary)
+                    .frame(width: 45, alignment: .trailing)
+            }
+        }
+        .padding(12)
+        .frame(width: 280)
+        .background(Color.appSurface.opacity(0.92))
+        .cornerRadius(16)
+        .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: 5)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.appBorderSubtle, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
     private var customFloorPicker: some View {
+        let currentFloorName = floors.first(where: { $0.id == selectedFloor })?.name ?? "Floor \(selectedFloor)"
         Menu {
-            ForEach([1, 2, 3], id: \.self) { floor in
-                let title = floor == 1 ? "table_floor_1".t : (floor == 2 ? "table_floor_2".t : "table_floor_3".t)
+            ForEach(floors) { floor in
                 Button {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        selectedFloor = floor
+                        selectedFloor = floor.id
                         selectedZone = "All"
                         APHaptic.trigger()
                     }
                 } label: {
-                    if selectedFloor == floor {
-                        Label(title, systemImage: "checkmark")
+                    if selectedFloor == floor.id {
+                        Label(floor.name, systemImage: "checkmark")
                     } else {
-                        Text(title)
+                        Text(floor.name)
                     }
                 }
             }
         } label: {
-            HStack(spacing: 5) {
-                let floorTitle = selectedFloor == 1 ? "table_floor_1".t : (selectedFloor == 2 ? "table_floor_2".t : "table_floor_3".t)
-                Text(floorTitle)
+            HStack(spacing: 6) {
+                Image(systemName: "building.2")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.appAccent)
+                Text(currentFloorName)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.textPrimary)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.textSecondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(Color.appSurfaceHigh)
-            .cornerRadius(9)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color.appSurfaceHigh.opacity(0.6))
+            .clipShape(Capsule())
             .overlay(
-                RoundedRectangle(cornerRadius: 9)
+                Capsule()
                     .stroke(Color.appBorderSubtle, lineWidth: 1)
             )
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Floor selector, currently \(selectedFloor == 1 ? "table_floor_1".t : (selectedFloor == 2 ? "table_floor_2".t : "table_floor_3".t))")
+        .alert("table_floor_add_btn".t, isPresented: $showingAddFloorAlert) {
+            TextField("table_floor_new_name".t, text: $floorNameInput)
+            Button("table_create_btn".t) {
+                let nextId = (floors.map(\.id).max() ?? 0) + 1
+                let name = floorNameInput.isEmpty
+                    ? String(format: "table_floor_new_name".t, nextId)
+                    : floorNameInput
+                var updated = floors
+                updated.append(FloorData(id: nextId, name: name))
+                floorsJson = updated.jsonString
+                selectedFloor = nextId
+                floorNameInput = ""
+                APHaptic.trigger()
+            }
+            Button("cancel".t, role: .cancel) { floorNameInput = "" }
+        }
+        .confirmationDialog("table_floor_remove_confirm".t, isPresented: $showingRemoveFloorConfirm, titleVisibility: .visible) {
+            Button("table_floor_remove_btn".t, role: .destructive) {
+                // soft-delete tables on this floor
+                let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
+                for t in floorTables {
+                    t.isDeleted = true
+                    t.isSynced = false
+                    t.updatedAt = Date()
+                }
+                try? modelContext.save()
+                // remove floor from list
+                var updated = floors.filter { $0.id != selectedFloor }
+                floorsJson = updated.jsonString
+                selectedFloor = updated.first?.id ?? 1
+            }
+            Button("cancel".t, role: .cancel) { }
+        }
+        .alert("table_floor_rename_title".t, isPresented: $showingRenameFloorAlert) {
+            TextField("", text: $floorNameInput)
+            Button("ok_btn".t) {
+                if let fid = renamingFloorId, !floorNameInput.isEmpty {
+                    var updated = floors
+                    if let idx = updated.firstIndex(where: { $0.id == fid }) {
+                        updated[idx].name = floorNameInput
+                        floorsJson = updated.jsonString
+                    }
+                }
+                renamingFloorId = nil
+                floorNameInput = ""
+            }
+            Button("cancel".t, role: .cancel) { renamingFloorId = nil; floorNameInput = "" }
+        }
     }
 
     @ViewBuilder
@@ -759,7 +1816,7 @@ struct TableView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 5) {
+                HStack(spacing: 6) {
                     Text("table_zone_\(selectedZone.lowercased())".t)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.textPrimary)
@@ -767,12 +1824,12 @@ struct TableView: View {
                         .font(.system(size: 9, weight: .bold))
                         .foregroundColor(.textSecondary)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(Color.appSurfaceHigh)
-                .cornerRadius(9)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color.appSurfaceHigh.opacity(0.6))
+                .clipShape(Capsule())
                 .overlay(
-                    RoundedRectangle(cornerRadius: 9)
+                    Capsule()
                         .stroke(Color.appBorderSubtle, lineWidth: 1)
                 )
             }
@@ -807,13 +1864,55 @@ struct TableView: View {
                 .padding(.horizontal, 2)
             
             editLayoutSwitchCompactButton
+
+            Divider()
+                .frame(width: 1, height: 16)
+                .background(Color.appBorderSubtle)
+                .padding(.horizontal, 2)
+
+            // List / Map toggle
+            Button(action: {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                    tableViewModeRaw = (tableViewModeRaw == "map") ? "list" : "map"
+                    APHaptic.trigger()
+                }
+            }) {
+                Image(systemName: tableViewModeRaw == "map" ? "list.bullet" : "map")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.textPrimary)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(tableViewModeRaw == "map" ? "table_view_mode_list".t : "table_view_mode_map".t)
+
+            Divider()
+                .frame(width: 1, height: 16)
+                .background(Color.appBorderSubtle)
+                .padding(.horizontal, 2)
+
+            // Grid / Canvas toggle (only in map view)
+            if !isListView {
+                Button(action: {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                        layoutModeRaw = isGridMode ? "canvas" : "grid"
+                        APHaptic.trigger()
+                    }
+                }) {
+                    Image(systemName: isGridMode ? "rectangle.on.rectangle.angled" : "square.grid.2x2")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(isGridMode ? .appAccent : .textPrimary)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isGridMode ? "table_layout_mode_canvas".t : "table_layout_mode_grid".t)
+            }
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(Color.appSurfaceHigh)
-        .cornerRadius(10)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Color.appSurfaceHigh.opacity(0.6))
+        .clipShape(Capsule())
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
+            Capsule()
                 .stroke(Color.appBorderSubtle, lineWidth: 1)
         )
     }
@@ -911,51 +2010,148 @@ struct TableView: View {
     }
 
     @ViewBuilder
-    private var compactHeader: some View {
-        VStack(spacing: 6) {
-            // Row 1: status + actions — ไม่ถูกบีบ
-            HStack(spacing: 0) {
-                modernStatusWidget
-                    .layoutPriority(1)
-                Spacer(minLength: 8)
-                quickActionsBar
-                    .layoutPriority(1)
-            }
-            // Row 2: pickers — horizontal scroll ป้องกันถูกบีบ
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    customFloorPicker
-                    customZonePicker
+    private func compactHeader(showsSidebarButton: Bool, width: CGFloat) -> some View {
+        VStack(spacing: 8) {
+            if width < 600 {
+                // iPhone Layout:
+                // Row 1: Sidebar Toggle + Status Badges (no labels) + Quick Actions
+                HStack(spacing: 0) {
+                    if showsSidebarButton {
+                        sidebarToggleButton
+                        Spacer(minLength: 8)
+                    }
+                    modernStatusWidget(showLabels: false)
+                        .layoutPriority(1)
+                    Spacer(minLength: 8)
+                    quickActionsBar
+                        .layoutPriority(1)
                 }
-                .padding(.horizontal, 2)
-                .padding(.vertical, 1)
+                
+                // Row 2: Floor & Zone Pickers (Horizontal Scroll)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        customFloorPicker
+                        customZonePicker
+                    }
+                    .padding(.horizontal, 2)
+                    .padding(.vertical, 1)
+                }
+            } else {
+                // iPad Portrait / Landscape with Sidebar Open Layout:
+                // Row 1: Sidebar Toggle + Title + Floor & Zone Pickers + Quick Actions
+                HStack(spacing: 0) {
+                    if showsSidebarButton {
+                        sidebarToggleButton
+                        Spacer(minLength: 10)
+                    }
+                    
+                    headerTitleView
+                        .layoutPriority(3)
+                    
+                    Spacer(minLength: 12)
+                    
+                    HStack(spacing: 12) {
+                        customFloorPicker
+                        customZonePicker
+                    }
+                    .layoutPriority(2)
+                    
+                    Spacer(minLength: 12)
+                    
+                    quickActionsBar
+                        .layoutPriority(1)
+                }
+                
+                // Row 2: Status Badges (Left Aligned, With Labels)
+                HStack {
+                    modernStatusWidget(showLabels: true)
+                    Spacer()
+                }
             }
         }
     }
 
     @ViewBuilder
-    private var wideHeader: some View {
+    private func wideHeader(showsSidebarButton: Bool) -> some View {
         HStack(alignment: .center, spacing: 0) {
-            // ── Left: Status badges ──
-            modernStatusWidget
-                .layoutPriority(1)
+            if showsSidebarButton {
+                sidebarToggleButton
+                Spacer(minLength: 12)
+            }
 
-            Spacer(minLength: 12)
+            // ── Left: Page Title & Icon ──
+            headerTitleView
+                .layoutPriority(3)
 
-            // ── Center: Floor + Zone pickers ──
-            HStack(spacing: 8) {
+            Spacer(minLength: 16)
+
+            // ── Center-Left: Floor + Zone pickers ──
+            HStack(spacing: 12) {
                 customFloorPicker
                 customZonePicker
             }
-            .layoutPriority(2)   // pickers ได้พื้นที่ก่อน
+            .layoutPriority(2)
 
-            Spacer(minLength: 12)
+            Spacer(minLength: 16)
+
+            // ── Center-Right: Status badges ──
+            modernStatusWidget(showLabels: true)
+                .layoutPriority(1)
+
+            Spacer(minLength: 16)
 
             // ── Right: Action buttons ──
             quickActionsBar
                 .layoutPriority(1)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var sidebarToggleButton: some View {
+        Button {
+            APHaptic.trigger()
+            withAnimation(.easeInOut(duration: 0.2)) {
+                columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+            }
+        } label: {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundColor(.textPrimary)
+                .frame(width: 34, height: 34)
+                .background(Color.appSurfaceHigh.opacity(0.6))
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color.appBorderSubtle, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(columnVisibility == .detailOnly ? "Show sidebar" : "Hide sidebar")
+    }
+
+    private var headerTitleView: some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(Color.appAccent.opacity(0.15))
+                    .frame(width: 28, height: 28)
+                Image(systemName: "tablecells.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.appAccent)
+            }
+            Text("table_management_title".t)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundColor(.textPrimary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.appAccent.opacity(0.06))
+        .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.appAccent.opacity(0.15), lineWidth: 1)
+        )
     }
     
     // MARK: - Active Service Requests Overlay
@@ -1033,227 +2229,6 @@ struct TableView: View {
                 await SyncEngine.shared.syncServiceRequests()
             }
         }
-    }
-    
-    // MARK: - Wall Drawing Tool Methods & Toolbar
-    
-    @ViewBuilder
-    private var wallDrawingToolbar: some View {
-        HStack(spacing: 16) {
-            Button(action: {
-                isDrawingWalls.toggle()
-                if isDrawingWalls {
-                    isMovementLocked = true
-                } else {
-                    isMovementLocked = false
-                    activeStartPoint = nil
-                    activeEndPoint = nil
-                    curveControlPoint = nil
-                    curvePoints = []
-                }
-                APHaptic.trigger()
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: isDrawingWalls ? "paintpalette.fill" : "paintpalette")
-                    Text(isDrawingWalls ? "table_draw_exit_btn".t : "table_draw_walls_btn".t)
-                        .font(.caption).fontWeight(.bold)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(isDrawingWalls ? Color.appAccent : Color.appSurfaceHigh)
-                .foregroundColor(isDrawingWalls ? .white : .textPrimary)
-                .cornerRadius(8)
-                .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-            }
-            .buttonStyle(PlainButtonStyle())
-            
-            if isDrawingWalls {
-                ForEach(DrawTool.allCases) { tool in
-                    let isSelected = selectedDrawTool == tool
-                    Button(action: {
-                        selectedDrawTool = tool
-                        activeStartPoint = nil
-                        activeEndPoint = nil
-                        curveControlPoint = nil
-                        curvePoints = []
-                        APHaptic.trigger()
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: iconForTool(tool))
-                            Text("table_draw_tool_\(tool.rawValue.lowercased())".t)
-                                .font(.caption).fontWeight(.bold)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(isSelected ? Color.appAccent : Color.appSurfaceHigh)
-                        .foregroundColor(isSelected ? .white : .textPrimary)
-                        .cornerRadius(8)
-                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                }
-                
-                // Undo button (deletes last wall segment)
-                Button(action: {
-                    let floorWalls = walls.filter { $0.floor == selectedFloor && !$0.isDeleted }
-                    if let lastWall = floorWalls.last {
-                        lastWall.isDeleted = true
-                        lastWall.isSynced = false
-                        lastWall.updatedAt = Date()
-                        try? modelContext.save()
-                        APHaptic.trigger()
-                    }
-                }) {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 14, weight: .bold))
-                        .frame(width: 34, height: 34)
-                        .background(Color.appSurfaceHigh)
-                        .foregroundColor(.textPrimary)
-                        .cornerRadius(8)
-                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                }
-                .buttonStyle(PlainButtonStyle())
-            }
-        }
-        .padding(8)
-        .background(Color.appSurface.opacity(0.9))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.15), radius: 10, x: 0, y: 5)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.appBorderSubtle, lineWidth: 1)
-        )
-        .padding(.trailing, 220) // Shift slightly left of the floatingControlsPanel so they don't overlap!
-        .padding(.bottom, 20)
-    }
-    
-    private func iconForTool(_ tool: DrawTool) -> String {
-        switch tool {
-        case .wall: return "pencil"
-        case .curve: return "curve.connector"
-        case .eraser: return "eraser.fill"
-        }
-    }
-    
-    private func handleDrawGestureChanged(location: CGPoint) {
-        let gridSize: CGFloat = 20
-        let snappedX = round(location.x / gridSize) * gridSize
-        let snappedY = round(location.y / gridSize) * gridSize
-        let snappedPoint = CGPoint(x: snappedX, y: snappedY)
-        
-        if activeStartPoint == nil {
-            activeStartPoint = snappedPoint
-            APHaptic.trigger()
-        }
-        
-        if selectedDrawTool == .wall {
-            activeEndPoint = snappedPoint
-        } else if selectedDrawTool == .curve {
-            if curvePoints.count == 0 {
-                activeEndPoint = snappedPoint
-            } else if curvePoints.count == 2 {
-                curveControlPoint = snappedPoint
-            }
-        }
-    }
-    
-    private func handleDrawGestureEnded(location: CGPoint) {
-        let gridSize: CGFloat = 20
-        let snappedX = round(location.x / gridSize) * gridSize
-        let snappedY = round(location.y / gridSize) * gridSize
-        let snappedPoint = CGPoint(x: snappedX, y: snappedY)
-        
-        guard let start = activeStartPoint else { return }
-        
-        if selectedDrawTool == .wall {
-            if start != snappedPoint {
-                let newWall = RestaurantWall(
-                    floor: selectedFloor,
-                    type: .straight,
-                    startX: start.x,
-                    startY: start.y,
-                    endX: snappedPoint.x,
-                    endY: snappedPoint.y
-                )
-                modelContext.insert(newWall)
-                try? modelContext.save()
-                APHaptic.trigger()
-            }
-            activeStartPoint = nil
-            activeEndPoint = nil
-            
-        } else if selectedDrawTool == .curve {
-            if curvePoints.count == 0 {
-                if start != snappedPoint {
-                    curvePoints = [start, snappedPoint]
-                    activeEndPoint = snappedPoint
-                    curveControlPoint = CGPoint(x: (start.x + snappedPoint.x) / 2, y: (start.y + snappedPoint.y) / 2)
-                } else {
-                    activeStartPoint = nil
-                    activeEndPoint = nil
-                }
-            } else if curvePoints.count == 2 {
-                let newWall = RestaurantWall(
-                    floor: selectedFloor,
-                    type: .curved,
-                    startX: curvePoints[0].x,
-                    startY: curvePoints[0].y,
-                    endX: curvePoints[1].x,
-                    endY: curvePoints[1].y,
-                    controlX: snappedPoint.x,
-                    controlY: snappedPoint.y
-                )
-                modelContext.insert(newWall)
-                try? modelContext.save()
-                APHaptic.trigger()
-                
-                activeStartPoint = nil
-                activeEndPoint = nil
-                curveControlPoint = nil
-                curvePoints = []
-            }
-        } else if selectedDrawTool == .eraser {
-            let tapPoint = location
-            let threshold: CGFloat = 20.0
-            let floorWalls = walls.filter { $0.floor == selectedFloor && !$0.isDeleted }
-            
-            if let wallToDelete = floorWalls.first(where: { wall in
-                if wall.type == .curved, let cx = wall.controlX, let cy = wall.controlY {
-                    let distToStart = distance(tapPoint, CGPoint(x: wall.startX, y: wall.startY))
-                    let distToEnd = distance(tapPoint, CGPoint(x: wall.endX, y: wall.endY))
-                    let distToControl = distance(tapPoint, CGPoint(x: cx, y: cy))
-                    return min(distToStart, distToEnd, distToControl) < threshold * 1.5
-                } else {
-                    return distanceToLineSegment(
-                        p: tapPoint,
-                        a: CGPoint(x: wall.startX, y: wall.startY),
-                        b: CGPoint(x: wall.endX, y: wall.endY)
-                    ) < threshold
-                }
-            }) {
-                wallToDelete.isDeleted = true
-                wallToDelete.isSynced = false
-                wallToDelete.updatedAt = Date()
-                try? modelContext.save()
-                APHaptic.trigger()
-            }
-            
-            activeStartPoint = nil
-            activeEndPoint = nil
-        }
-    }
-    
-    private func distance(_ p1: CGPoint, _ p2: CGPoint) -> CGFloat {
-        sqrt(pow(p1.x - p2.x, 2) + pow(p1.y - p2.y, 2))
-    }
-    
-    private func distanceToLineSegment(p: CGPoint, a: CGPoint, b: CGPoint) -> CGFloat {
-        let l2 = pow(a.x - b.x, 2) + pow(a.y - b.y, 2)
-        if l2 == 0 { return distance(p, a) }
-        var t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2
-        t = max(0, min(1, t))
-        let projection = CGPoint(x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y))
-        return distance(p, projection)
     }
 }
 
@@ -1838,7 +2813,7 @@ struct TableDetailView: View {
 }
 
 #Preview {
-    TableView(selectedTab: .constant(.tables), activeSession: .constant(nil))
+    TableView(selectedTab: .constant(.tables), activeSession: .constant(nil), columnVisibility: .constant(.all))
         .modelContainer(for: [RestaurantTable.self, TableSession.self], inMemory: true)
 }
 

@@ -155,7 +155,39 @@ final class NetworkManager {
         UserDefaults.standard.object(forKey: "enable_web_ordering") as? Bool ?? true
     }
 
-    private init() {}
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: .merchantTokenDidRefresh,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { try? await self?.registerSavedPushToken() }
+        }
+    }
+
+    func registerPushDevice(token: String) async throws {
+        UserDefaults.standard.set(token, forKey: "apns_device_token")
+        try await registerSavedPushToken()
+    }
+
+    private func registerSavedPushToken() async throws {
+        guard let token = UserDefaults.standard.string(forKey: "apns_device_token"), !token.isEmpty else { return }
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let payload: [String: Any] = [
+            "merchant_id": merchantId,
+            "device_token": token,
+            "app_id": "pos",
+            "platform": "ios",
+            "is_active": true,
+            "updated_at": NetworkManager.iso8601.string(from: Date())
+        ]
+        _ = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "push_devices",
+            queryItems: [URLQueryItem(name: "on_conflict", value: "device_token")],
+            payload: payload
+        )
+    }
 
     // Connectivity cache: avoid one HEAD request per sync function
     private var _lastConnectedAt: Date?
@@ -650,7 +682,37 @@ final class NetworkManager {
         return true
     }
 
+    // MARK: - Floor Plan Image Sync
+    func fetchFloorPlanImages() async throws -> [[String: Any]] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "floor_plan_images", queryItems: [
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "is_deleted", value: "eq.false")
+        ])
+        return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+    }
+
+    func uploadFloorPlanImage(floorPlan: FloorPlanImage) async throws -> Bool {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let payload: [String: Any] = [
+            "id": floorPlan.id.uuidString.lowercased(),
+            "merchant_id": merchantId,
+            "floor": floorPlan.floor,
+            "image_filename": floorPlan.imageFilename,
+            "is_deleted": floorPlan.isDeleted,
+            "updated_at": NetworkManager.iso8601.string(from: floorPlan.updatedAt)
+        ]
+        _ = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "floor_plan_images",
+            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+            payload: payload
+        )
+        return true
+    }
+
     func uploadTableSession(session: TableSession) async throws -> Bool {
+
         let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         var payload: [String: Any] = [
             "id": session.id.uuidString.lowercased(),
@@ -860,6 +922,43 @@ final class NetworkManager {
 
     // MARK: - Menu Items Sync
 
+    private func uploadProductMedia(
+        _ data: Data,
+        merchantId: String,
+        itemId: String,
+        fileName: String,
+        contentType: String
+    ) async throws -> String {
+        let objectPath = "\(merchantId.lowercased())/\(itemId.lowercased())/\(fileName)"
+        var uploadURL = config.supabaseURL
+        for component in ["storage", "v1", "object", "product-media"] + objectPath.split(separator: "/").map(String.init) {
+            uploadURL.appendPathComponent(component)
+        }
+
+        var request = URLRequest(url: uploadURL)
+        request.httpMethod = "POST"
+        let token = MerchantAuthManager.shared.currentToken ?? anonKey
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.setValue("true", forHTTPHeaderField: "x-upsert")
+        request.httpBody = data
+        request.timeoutInterval = 60
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            let message = String(data: responseData, encoding: .utf8) ?? "Storage upload failed"
+            throw NetworkError.serverError(message)
+        }
+
+        var publicURL = config.supabaseURL
+        for component in ["storage", "v1", "object", "public", "product-media"] + objectPath.split(separator: "/").map(String.init) {
+            publicURL.appendPathComponent(component)
+        }
+        return publicURL.absoluteString
+    }
+
     /// Maps iPad Category display names to the lowercase category slugs used by the iPhone app and Supabase schema.
     private func categorySlug(from categoryName: String?) -> String {
         guard let name = categoryName?.lowercased() else { return "mains" }
@@ -888,6 +987,19 @@ final class NetworkManager {
         let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let catSlug = categorySlug(from: item.category?.name)
 
+        if let data = item.imageData {
+            item.imageUrl = try await uploadProductMedia(data, merchantId: merchantId, itemId: item.id, fileName: "image-1.jpg", contentType: "image/jpeg")
+        }
+        if let data = item.imageData2 {
+            item.imageUrl2 = try await uploadProductMedia(data, merchantId: merchantId, itemId: item.id, fileName: "image-2.jpg", contentType: "image/jpeg")
+        }
+        if let data = item.imageData3 {
+            item.imageUrl3 = try await uploadProductMedia(data, merchantId: merchantId, itemId: item.id, fileName: "image-3.jpg", contentType: "image/jpeg")
+        }
+        if let data = item.videoData {
+            item.videoUrl = try await uploadProductMedia(data, merchantId: merchantId, itemId: item.id, fileName: "video.mp4", contentType: "video/mp4")
+        }
+
         let payload: [String: Any] = [
             "id": item.id.lowercased(),
             "name": item.name,
@@ -898,6 +1010,9 @@ final class NetworkManager {
             "img_class": catSlug,
             "merchant_id": merchantId,
             "image_url": item.imageUrl ?? "",
+            "image_url_2": item.imageUrl2 ?? "",
+            "image_url_3": item.imageUrl3 ?? "",
+            "video_url": item.videoUrl ?? "",
             "name_translations": item.nameTranslations,
             "description_translations": item.descriptionTranslations
         ]

@@ -52,6 +52,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
     }
 
     private var notifiedRequestIds = Set<String>()
+    private var isFirstSync = true
 
     private override init() {
         super.init()
@@ -77,9 +78,38 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         return defaultValue
     }
 
-    private func remoteDate(_ value: Any?, fallback defaultValue: Date = Date()) -> Date {
+    private func parseISO8601Date(_ value: Any?, fallback defaultValue: Date = Date()) -> Date {
         guard let stringValue = value as? String else { return defaultValue }
-        return ISO8601DateFormatter().date(from: stringValue) ?? defaultValue
+        let cleanStr = stringValue.replacingOccurrences(of: " ", with: "T")
+        
+        let f1 = ISO8601DateFormatter()
+        f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f1.date(from: cleanStr) { return d }
+        
+        let f2 = ISO8601DateFormatter()
+        f2.formatOptions = [.withInternetDateTime]
+        if let d = f2.date(from: cleanStr) { return d }
+        
+        return defaultValue
+    }
+    
+    private func parseISO8601DateOptional(_ value: Any?) -> Date? {
+        guard let stringValue = value as? String else { return nil }
+        let cleanStr = stringValue.replacingOccurrences(of: " ", with: "T")
+        
+        let f1 = ISO8601DateFormatter()
+        f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f1.date(from: cleanStr) { return d }
+        
+        let f2 = ISO8601DateFormatter()
+        f2.formatOptions = [.withInternetDateTime]
+        if let d = f2.date(from: cleanStr) { return d }
+        
+        return nil
+    }
+
+    private func remoteDate(_ value: Any?, fallback defaultValue: Date = Date()) -> Date {
+        return parseISO8601Date(value, fallback: defaultValue)
     }
 
     private func setupLifecycleObservers() {
@@ -104,6 +134,24 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 }
             }
         }
+
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("merchantTokenDidRefresh"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            #if DEBUG
+            print("SyncEngine: JWT token refreshed. Reconnecting WebSocket...")
+            #endif
+            self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
+            self.webSocketTask = nil
+            self.heartbeatTimer?.invalidate()
+            self.heartbeatTimer = nil
+            if let context = self.cachedModelContext {
+                self.startRealtimeSync(modelContext: context)
+            }
+        }
     }
 
     private func requestNotificationPermission() {
@@ -123,6 +171,10 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         content.title = "New Customer Order!"
         content.body = "Table \(tableNumber) placed order \(orderNumber.suffix(4))"
         content.sound = UNNotificationSound.default
+        content.userInfo = [
+            "table_number": tableNumber,
+            "type": "order"
+        ]
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         let request = UNNotificationRequest(
@@ -155,6 +207,10 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         let displayType = serviceKeyMap[requestType] ?? requestType
         content.body = "Table \(tableNumber) requested: \(displayType)"
         content.sound = UNNotificationSound.default
+        content.userInfo = [
+            "table_number": tableNumber,
+            "type": "service_request"
+        ]
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         let request = UNNotificationRequest(
@@ -170,16 +226,30 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             #endif
         }
-    }
-
-    // MARK: - UNUserNotificationCenterDelegate
+      // MARK: - UNUserNotificationCenterDelegate
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .list, .sound, .badge])
+        completionHandler([.badge, .sound, .banner, .list])
     }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        if let tableNumber = userInfo["table_number"] as? String {
+            NotificationCenter.default.post(
+                name: .openTableNotification,
+                object: nil,
+                userInfo: ["table_number": tableNumber]
+            )
+        }
+        completionHandler()
+    }    }
 
     // Asynchronous task to sync all unsynced data
     func syncAll(modelContext: ModelContext) async {
@@ -215,6 +285,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         await syncAuditLogs(modelContext)
         await syncTables(modelContext)
         await syncTableSessions(modelContext)
+        await syncFloorPlanImages(modelContext)
         await syncEmployees(modelContext)
         await syncEmployeeShifts(modelContext)
         await syncOrders(modelContext)
@@ -260,6 +331,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         await MainActor.run {
             self.syncStatus = .idle
             self.lastSyncedAt = Date()
+            self.isFirstSync = false
         }
 
         #if DEBUG
@@ -578,12 +650,12 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     local.allergies = remote["allergies"] as? String
                     local.preferences = remote["preferences"] as? String
                     if let dobStr = remote["date_of_birth"] as? String {
-                        local.dateOfBirth = ISO8601DateFormatter().date(from: dobStr)
+                        local.dateOfBirth = parseISO8601DateOptional(dobStr)
                     }
                     local.updatedAt = updatedAt
                     local.isSynced = true
                 } else {
-                    let dob = (remote["date_of_birth"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) }
+                    let dob = (remote["date_of_birth"] as? String).flatMap { parseISO8601DateOptional($0) }
                     let customer = Customer(
                         id: id,
                         name: name,
@@ -654,7 +726,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     customer = (try? modelContext.fetch(FetchDescriptor<Customer>(predicate: #Predicate<Customer> { $0.id == customerId })))?.first
                 }
 
-                let expiresAt = (remote["expires_at"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) }
+                let expiresAt = (remote["expires_at"] as? String).flatMap { parseISO8601DateOptional($0) }
 
                 if let local = localById[idStr.lowercased()] {
                     guard local.isSynced, updatedAt > local.updatedAt else { continue }
@@ -1188,6 +1260,9 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 let desc = remote["description"] as? String ?? ""
                 let categorySlug = remote["category"] as? String ?? "mains"
                 let imageUrl = remote["image_url"] as? String ?? ""
+                let imageUrl2 = remote["image_url_2"] as? String ?? ""
+                let imageUrl3 = remote["image_url_3"] as? String ?? ""
+                let videoUrl = remote["video_url"] as? String ?? ""
                 
                 let nameTrans = remote["name_translations"] as? [String: String] ?? [:]
                 let descTrans = remote["description_translations"] as? [String: String] ?? [:]
@@ -1223,6 +1298,9 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     if abs((existing.price) - price) > 0.001 { existing.price = price; changed = true }
                     if (existing.itemDescription ?? "") != desc { existing.itemDescription = desc; changed = true }
                     if (existing.imageUrl ?? "") != imageUrl { existing.imageUrl = imageUrl; changed = true }
+                    if (existing.imageUrl2 ?? "") != imageUrl2 { existing.imageUrl2 = imageUrl2; changed = true }
+                    if (existing.imageUrl3 ?? "") != imageUrl3 { existing.imageUrl3 = imageUrl3; changed = true }
+                    if (existing.videoUrl ?? "") != videoUrl { existing.videoUrl = videoUrl; changed = true }
                     if existing.nameTranslationsJson != nameTransJson { existing.nameTranslationsJson = nameTransJson; changed = true }
                     if existing.descriptionTranslationsJson != descTransJson { existing.descriptionTranslationsJson = descTransJson; changed = true }
                     if changed {
@@ -1238,6 +1316,9 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                         itemDescription: desc.isEmpty ? nil : desc,
                         price: price,
                         imageUrl: imageUrl.isEmpty ? nil : imageUrl,
+                        imageUrl2: imageUrl2.isEmpty ? nil : imageUrl2,
+                        imageUrl3: imageUrl3.isEmpty ? nil : imageUrl3,
+                        videoUrl: videoUrl.isEmpty ? nil : videoUrl,
                         category: category,
                         nameTranslationsJson: nameTransJson,
                         descriptionTranslationsJson: descTransJson
@@ -1401,7 +1482,6 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
 
             var didChange = false
-            let df = ISO8601DateFormatter()
             var remoteIds = Set<String>()
 
             for remote in remotePromos {
@@ -1451,7 +1531,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 }
 
                 let updatedAtStr = remote["updated_at"] as? String ?? ""
-                let updatedAt = df.date(from: updatedAtStr) ?? Date()
+                let updatedAt = parseISO8601Date(updatedAtStr)
 
                 if let existing = localPromosById[idStr.lowercased()] {
                     if isDeleted {
@@ -1641,6 +1721,8 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
     }
 
     private func syncTableSessions(_ modelContext: ModelContext) async {
+
+
         let descriptor = FetchDescriptor<TableSession>(
             predicate: #Predicate<TableSession> { $0.isSynced == false }
         )
@@ -1664,6 +1746,31 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 }
             } catch {
                 print("SyncEngine [TableSession Sync Error]: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Floor Plan Image Sync
+    private func syncFloorPlanImages(_ modelContext: ModelContext) async {
+        let descriptor = FetchDescriptor<FloorPlanImage>(
+            predicate: #Predicate<FloorPlanImage> { $0.isSynced == false }
+        )
+        guard let items = try? modelContext.fetch(descriptor), !items.isEmpty else { return }
+
+        for item in items {
+            do {
+                let success = try await NetworkManager.shared.uploadFloorPlanImage(floorPlan: item)
+                if success {
+                    if item.isDeleted {
+                        modelContext.delete(item)
+                    } else {
+                        item.isSynced = true
+                        item.updatedAt = Date()
+                    }
+                    try? modelContext.save()
+                }
+            } catch {
+                print("SyncEngine [FloorPlanImage Sync Error]: \(error.localizedDescription)")
             }
         }
     }
@@ -1813,9 +1920,8 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 let zone = remoteTable["zone"] as? String ?? "Indoor"
                 let isDeleted = remoteTable["is_deleted"] as? Bool ?? false
 
-                let df = ISO8601DateFormatter()
                 let updatedAtStr = remoteTable["updated_at"] as? String ?? ""
-                let updatedAt = df.date(from: updatedAtStr) ?? Date()
+                let updatedAt = parseISO8601Date(updatedAtStr)
 
                 var existingTable: RestaurantTable? = nil
                 let idDescriptor = FetchDescriptor<RestaurantTable>(
@@ -1853,25 +1959,13 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 if let table = existingTable {
                     if isDeleted {
                         modelContext.delete(table)
-                    } else if table.isSynced || updatedAt > table.updatedAt {
+                    } else {
                         table.tableNumber = tableNumber
                         table.capacity = capacity
 
-                        // Defer status to pullActiveSessions to avoid flickering.
-                        // Only apply the cloud status if there is NO local active session.
-                        // If an active session exists, pullActiveSessions will set the correct status.
-                        let sessionDesc = FetchDescriptor<TableSession>(
-                            predicate: #Predicate<TableSession> { $0.table?.tableNumber == tableNumber && $0.isActive }
-                        )
-                        let hasLocalActiveSession = ((try? modelContext.fetch(sessionDesc)) ?? []).first != nil
-
-                        if !hasLocalActiveSession {
-                            // No active session locally — safe to use cloud status
-                            // But only set to "vacant" if cloud says so; avoid overriding
-                            // statuses like "cleaning" or "reserved" set by staff
-                            table.status = status
-                        }
-                        // If hasLocalActiveSession == true, keep current status (pullActiveSessions will reconcile)
+                        // Supabase is authoritative. Active sessions are applied immediately
+                        // afterwards by pullActiveSessions and will set occupied when needed.
+                        table.status = status
 
                         table.qrCodeIdentifier = qrCodeIdentifier
                         table.positionX = positionX
@@ -1932,8 +2026,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 let createdAtStr = remoteOrder["createdAt"] as? String ?? ""
                 let tableNumber = remoteOrder["tableNumber"] as? String ?? ""
 
-                let df = ISO8601DateFormatter()
-                let createdAt = df.date(from: createdAtStr) ?? Date()
+                let createdAt = parseISO8601Date(createdAtStr)
 
                 // Find or create Table Session for this tableNumber
                 let tableDescriptor = FetchDescriptor<RestaurantTable>(
@@ -2068,7 +2161,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                                 let amount = remotePayment["amount"] as? Double ?? 0.0
                                 let method = remotePayment["paymentMethod"] as? String ?? "cash"
                                 let pCreatedAtStr = remotePayment["createdAt"] as? String ?? ""
-                                let pCreatedAt = df.date(from: pCreatedAtStr) ?? Date()
+                                let pCreatedAt = parseISO8601Date(pCreatedAtStr)
 
                                 if let localPayment = existingOrder.payments.first(where: { $0.id == paymentId }) {
                                     localPayment.amount = amount
@@ -2147,7 +2240,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                         let amount = remotePayment["amount"] as? Double ?? 0.0
                         let method = remotePayment["paymentMethod"] as? String ?? "cash"
                         let pCreatedAtStr = remotePayment["createdAt"] as? String ?? ""
-                        let pCreatedAt = df.date(from: pCreatedAtStr) ?? Date()
+                        let pCreatedAt = parseISO8601Date(pCreatedAtStr)
 
                         let newPayment = Payment(
                             id: paymentId,
@@ -2164,7 +2257,12 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 }
 
                 try modelContext.save()
-                self.triggerLocalNotification(orderNumber: orderNumber, tableNumber: tableNumber)
+                
+                let age = Date().timeIntervalSince(createdAt)
+                if !self.isFirstSync && age < 300 {
+                    self.triggerLocalNotification(orderNumber: orderNumber, tableNumber: tableNumber)
+                }
+                
                 #if DEBUG
                 print("SyncEngine [Pull]: Inserted customer order \(orderNumber) for Table \(tableNumber) successfully.")
                 #endif
@@ -2210,22 +2308,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     let localActiveSessions = (try? modelContext.fetch(sessionDesc)) ?? []
 
                     for activeSession in localActiveSessions {
-                        if !Calendar.current.isDateInToday(activeSession.startedAt) {
-                            activeSession.isActive = false
-                            activeSession.endedAt = Date()
-                            activeSession.isSynced = false
-                            activeSession.updatedAt = Date()
-                            table.status = "vacant"
-                            table.updatedAt = Date()
-
-                            let tNum = table.tableNumber
-                            Task {
-                                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: tNum)
-                            }
-                            #if DEBUG
-                            print("SyncEngine [Session Pull]: Expired stale local active session (from previous day) for Table \(table.tableNumber).")
-                            #endif
-                        } else if !hasRemoteSession && activeSession.isSynced {
+                        if !hasRemoteSession {
                             activeSession.isActive = false
                             activeSession.endedAt = Date()
                             table.status = "vacant"
@@ -2253,21 +2336,9 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 guard let tableNumber = session["tableNumber"] as? String,
                       let sessionToken = session["sessionToken"] as? String else { continue }
 
-                // Check if session started today
-                let startedAtStr = session["created_at"] as? String ?? ""
-                let df = ISO8601DateFormatter()
-                let startedAt = df.date(from: startedAtStr) ?? Date()
-
-                if !Calendar.current.isDateInToday(startedAt) {
-                    // Stale active session from remote! Close it on remote asynchronously and ignore it.
-                    Task {
-                        _ = try? await NetworkManager.shared.closeTableSession(tableNumber: tableNumber)
-                    }
-                    #if DEBUG
-                    print("SyncEngine [Session Pull]: Ignored stale remote session for Table \(tableNumber) (started at \(startedAtStr)) and closed it.")
-                    #endif
-                    continue
-                }
+                // An explicitly active cloud session remains authoritative across midnight.
+                let startedAtStr = session["started_at"] as? String ?? session["created_at"] as? String ?? ""
+                let startedAt = parseISO8601Date(startedAtStr)
 
                 // Fetch table locally
                 let tableDescriptor = FetchDescriptor<RestaurantTable>(
@@ -2280,22 +2351,32 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     )
                     let localActiveSessions = (try? modelContext.fetch(sessionDesc)) ?? []
 
-                    if let activeSession = localActiveSessions.first {
-                        if activeSession.sessionToken != sessionToken {
-                            activeSession.sessionToken = sessionToken
+                    var foundMatchingSession = false
+                    for activeSession in localActiveSessions {
+                        if activeSession.sessionToken == sessionToken {
+                            activeSession.startedAt = startedAt
+                            let remoteGuestCount = (session["guest_count"] as? Int) ?? (session["guestCount"] as? Int) ?? 2
+                            if activeSession.guestCount != remoteGuestCount {
+                                activeSession.guestCount = remoteGuestCount
+                            }
+                            if table.status != "occupied" {
+                                table.status = "occupied"
+                                table.updatedAt = Date()
+                            }
+                            foundMatchingSession = true
+                        } else {
+                            activeSession.isActive = false
+                            activeSession.endedAt = Date()
+                            #if DEBUG
+                            print("SyncEngine [Session Pull]: Closed stale local session \(activeSession.sessionToken ?? "") because it mismatches remote session \(sessionToken)")
+                            #endif
                         }
+                    }
+
+                    if !foundMatchingSession {
+                        // No active session locally matches the remote session token. Create one!
                         let remoteGuestCount = (session["guest_count"] as? Int) ?? (session["guestCount"] as? Int) ?? 2
-                        if activeSession.guestCount != remoteGuestCount {
-                            activeSession.guestCount = remoteGuestCount
-                        }
-                        if table.status != "occupied" {
-                            table.status = "occupied"
-                            table.updatedAt = Date()
-                        }
-                    } else {
-                        // No active session locally. Create one and mark occupied!
-                        let remoteGuestCount = (session["guest_count"] as? Int) ?? (session["guestCount"] as? Int) ?? 2
-                        let newSession = TableSession(sessionToken: sessionToken, startedAt: Date(), isActive: true, table: table, guestCount: remoteGuestCount)
+                        let newSession = TableSession(sessionToken: sessionToken, startedAt: startedAt, isActive: true, table: table, guestCount: remoteGuestCount)
                         modelContext.insert(newSession)
                         table.status = "occupied"
                         table.updatedAt = Date()
@@ -2442,6 +2523,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         let rawMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let merchantId = rawMerchantId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? config.defaultMerchantId.lowercased() : rawMerchantId.lowercased()
 
+        let accessToken = MerchantAuthManager.shared.currentToken ?? anonKey
         let joinPayload: [String: Any] = [
             "topic": "realtime:public",
             "event": "phx_join",
@@ -2455,7 +2537,8 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                         ["event": "*", "schema": "public", "table": "restaurant_tables", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "merchants", "filter": "id=eq.\(merchantId)"]
                     ]
-                ]
+                ],
+                "access_token": accessToken
             ],
             "ref": "1"
         ]
@@ -2854,4 +2937,8 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         }
         try? modelContext.save()
     }
+}
+
+extension Notification.Name {
+    static let openTableNotification = Notification.Name("openTableNotification")
 }

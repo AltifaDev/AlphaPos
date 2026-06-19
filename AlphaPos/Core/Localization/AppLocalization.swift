@@ -114,10 +114,132 @@ class LocalizationManager: ObservableObject {
         translate(key)
     }
 
+    private static func extractFormatSpecifiers(from format: String) -> [String] {
+        var specifiers: [String] = []
+        let chars = Array(format)
+        var i = 0
+        while i < chars.count {
+            if chars[i] == "%" {
+                i += 1
+                if i < chars.count {
+                    if chars[i] == "%" {
+                        i += 1
+                        continue
+                    }
+                    var specifier = "%"
+                    while i < chars.count {
+                        let c = chars[i]
+                        specifier.append(c)
+                        i += 1
+                        if c == "@" || c == "d" || c == "f" || c == "s" || c == "i" || c == "x" || c == "X" || c == "u" || c == "g" || c == "e" {
+                            break
+                        }
+                        if !c.isLetter && !c.isNumber && c != "." && c != "-" && c != "+" {
+                            break
+                        }
+                    }
+                    specifiers.append(specifier)
+                }
+            } else {
+                i += 1
+            }
+        }
+        return specifiers
+    }
+
+    private static func safeCVarArg(for arg: CVarArg, specifier: String?) -> CVarArg {
+        let spec = specifier?.lowercased() ?? "%@"
+        
+        if spec.hasSuffix("@") {
+            if let string = arg as? String {
+                return string as NSString
+            } else if let number = arg as? NSNumber {
+                return number
+            } else if let int = arg as? Int {
+                return NSNumber(value: int)
+            } else if let double = arg as? Double {
+                return NSNumber(value: double)
+            } else if let float = arg as? Float {
+                return NSNumber(value: float)
+            } else if let bool = arg as? Bool {
+                return NSNumber(value: bool)
+            } else if let nsObject = arg as? NSObject {
+                return nsObject
+            } else {
+                return String(describing: arg) as NSString
+            }
+        }
+        
+        if spec.hasSuffix("d") || spec.hasSuffix("i") || spec.hasSuffix("u") || spec.hasSuffix("x") || spec.hasSuffix("o") {
+            if let int = arg as? Int {
+                return int
+            } else if let number = arg as? NSNumber {
+                return number.intValue
+            } else if let double = arg as? Double {
+                return Int(double)
+            } else if let float = arg as? Float {
+                return Int(float)
+            } else if let string = arg as? String {
+                return Int(string) ?? 0
+            } else if let bool = arg as? Bool {
+                return bool ? 1 : 0
+            } else {
+                return 0
+            }
+        }
+        
+        if spec.hasSuffix("f") || spec.hasSuffix("e") || spec.hasSuffix("g") || spec.hasSuffix("a") {
+            if let double = arg as? Double {
+                return double
+            } else if let float = arg as? Float {
+                return Double(float)
+            } else if let number = arg as? NSNumber {
+                return number.doubleValue
+            } else if let int = arg as? Int {
+                return Double(int)
+            } else if let string = arg as? String {
+                return Double(string) ?? 0.0
+            } else {
+                return 0.0
+            }
+        }
+        
+        if let string = arg as? String {
+            return string as NSString
+        } else if let nsObject = arg as? NSObject {
+            return nsObject
+        } else {
+            return String(describing: arg) as NSString
+        }
+    }
+
     func t(_ key: String, _ args: CVarArg...) -> String {
         let format = translate(key)
         guard !args.isEmpty else { return format }
-        return String(format: format, arguments: args)
+        
+        let specifiers = Self.extractFormatSpecifiers(from: format)
+        
+        var safeArgs: [CVarArg] = []
+        for idx in 0..<max(args.count, specifiers.count) {
+            let specifier = idx < specifiers.count ? specifiers[idx] : nil
+            if idx < args.count {
+                let arg = args[idx]
+                safeArgs.append(Self.safeCVarArg(for: arg, specifier: specifier))
+            } else if let spec = specifier {
+                let lowerSpec = spec.lowercased()
+                if lowerSpec.hasSuffix("@") {
+                    safeArgs.append("" as NSString)
+                } else if lowerSpec.hasSuffix("d") || lowerSpec.hasSuffix("i") || lowerSpec.hasSuffix("u") || lowerSpec.hasSuffix("x") || lowerSpec.hasSuffix("o") {
+                    safeArgs.append(0)
+                } else if lowerSpec.hasSuffix("f") || lowerSpec.hasSuffix("e") || lowerSpec.hasSuffix("g") || lowerSpec.hasSuffix("a") {
+                    safeArgs.append(0.0)
+                } else {
+                    safeArgs.append("" as NSString)
+                }
+            }
+        }
+        
+        return String(format: format, arguments: safeArgs)
     }
 }
 
@@ -537,20 +659,29 @@ enum AppLocalization {
         "use_store_account_btn": ["en": "Use store account", "th": "ใช้บัญชีร้าน"],
         "lock_register_btn": ["en": "Lock register", "th": "ล็อกเครื่องขาย"],
         "tab_tables": ["en": "Tables", "th": "โต๊ะ", "zh": "桌台", "ja": "テーブル", "ko": "테이블", "id": "Meja", "ms": "Meja"],
-        "tab_pos": ["en": "POS", "th": "ขายหน้าร้าน", "zh": "收银", "ja": "POS", "ko": "POS", "id": "POS", "ms": "POS"],
+        "tab_pos": ["en": "Orders", "th": "ออเดอร์", "zh": "订单", "ja": "注文", "ko": "주문", "id": "Pesanan", "ms": "Pesanan"],
         "tab_cash_drawer": ["en": "Cash Drawer", "th": "ลิ้นชักเงินสด", "zh": "钱箱", "ja": "キャッシュドロワー", "ko": "금전함", "id": "Laci Kas", "ms": "Laci Tunai"],
-        "tab_kitchen": ["en": "Kitchen", "th": "ครัว", "zh": "厨房", "ja": "キッチン", "ko": "주방", "id": "Dapur", "ms": "Dapur"],
+        "tab_kitchen": ["en": "Kitchen Display", "th": "จอครัว", "zh": "厨房显示", "ja": "キッチンディスプレイ", "ko": "주방 디스플레이", "id": "Tampilan Dapur", "ms": "Paparan Dapur"],
         "tab_timecard": ["en": "Timecard", "th": "บัตรเวลา", "zh": "考勤", "ja": "タイムカード", "ko": "타임카드", "id": "Kartu Waktu", "ms": "Kad Masa"],
-        "tab_inventory": ["en": "Inventory", "th": "สินค้าคงคลัง", "zh": "库存", "ja": "在庫", "ko": "재고", "id": "Inventaris", "ms": "Inventori"],
+        "tab_inventory": ["en": "Menus", "th": "เมนู", "zh": "菜单", "ja": "メニュー", "ko": "메뉴", "id": "Menu", "ms": "Menu"],
         "tab_gift_cards": ["en": "Gift Cards", "th": "บัตรของขวัญ", "zh": "礼品卡", "ja": "ギフトカード", "ko": "기프트 카드", "id": "Kartu Hadiah", "ms": "Kad Hadiah"],
         "tab_loyalty": ["en": "Loyalty", "th": "สะสมแต้ม", "zh": "会员", "ja": "ロイヤルティ", "ko": "로열티", "id": "Loyalitas", "ms": "Kesetiaan"],
         "tab_payroll": ["en": "Payroll", "th": "เงินเดือน", "zh": "工资", "ja": "給与", "ko": "급여", "id": "Penggajian", "ms": "Gaji"],
-        "tab_sales": ["en": "Sales", "th": "ยอดขาย", "zh": "销售", "ja": "売上", "ko": "매출", "id": "Penjualan", "ms": "Jualan"],
+        "tab_sales": ["en": "Accounting", "th": "บัญชี", "zh": "财务", "ja": "会計", "ko": "회계", "id": "Akuntansi", "ms": "Perakaunan"],
         "tab_reports": ["en": "Reports", "th": "รายงาน", "zh": "报表", "ja": "レポート", "ko": "보고서", "id": "Laporan", "ms": "Laporan"],
-        "tab_promotions": ["en": "Promotions", "th": "โปรโมชั่น", "zh": "促销", "ja": "プロモーション", "ko": "프로모션", "id": "Promosi", "ms": "Promosi"],
-        "tab_store": ["en": "Store", "th": "ร้านค้า", "zh": "门店", "ja": "店舗", "ko": "매장", "id": "Toko", "ms": "Kedai"],
-        "tab_sync_health": ["en": "Sync Health", "th": "สถานะซิงค์", "zh": "同步状态", "ja": "同期状態", "ko": "동기화 상태", "id": "Status Sinkronisasi", "ms": "Status Segerak"],
+        "tab_promotions": ["en": "Marketing", "th": "การตลาด", "zh": "营销", "ja": "マーケティング", "ko": "마케팅", "id": "Pemasaran", "ms": "Pemasaran"],
+        "tab_store": ["en": "Stores", "th": "สาขา", "zh": "门店管理", "ja": "店舗管理", "ko": "매장 관리", "id": "Toko", "ms": "Kedai"],
+        "tab_sync_health": ["en": "Integrations", "th": "การเชื่อมต่อ", "zh": "集成", "ja": "連携", "ko": "연동", "id": "Integrasi", "ms": "Integrasi"],
         "tab_settings": ["en": "Settings", "th": "ตั้งค่า", "zh": "设置", "ja": "設定", "ko": "설정", "id": "Pengaturan", "ms": "Tetapan"],
+        // MARK: - Sidebar badges
+        "sidebar_badge_beta": ["en": "Beta", "th": "Beta", "zh": "Beta", "ja": "Beta", "ko": "Beta", "id": "Beta", "ms": "Beta"],
+        "sidebar_badge_new": ["en": "New", "th": "ใหม่", "zh": "新", "ja": "新機能", "ko": "신규", "id": "Baru", "ms": "Baru"],
+        // MARK: - Sidebar section headers
+        "sidebar_section_operations": ["en": "Operations", "th": "การดำเนินงาน", "zh": "运营", "ja": "オペレーション", "ko": "운영", "id": "Operasional", "ms": "Operasi"],
+        "sidebar_section_management": ["en": "Management", "th": "จัดการ", "zh": "管理", "ja": "管理", "ko": "관리", "id": "Manajemen", "ms": "Pengurusan"],
+        "sidebar_section_system": ["en": "System", "th": "ระบบ", "zh": "系统", "ja": "システム", "ko": "시스템", "id": "Sistem", "ms": "Sistem"],
+        // MARK: - New tab: Hot Actions / Cash Drawer
+        "tab_cash_drawer_hot": ["en": "Hot Actions", "th": "คำสั่งด่วน", "zh": "快捷操作", "ja": "クイック操作", "ko": "빠른 작업", "id": "Tindakan Cepat", "ms": "Tindakan Pantas"],
         "sys_online_ssl": ["en": "System Online • SSL Secured", "th": "ระบบออนไลน์ • SSL ปลอดภัย", "zh": "系统在线 • SSL加密", "ja": "システムオンライン • SSL保護", "ko": "시스템 온라인 • SSL 보안", "id": "Sistem Online • SSL Aman", "ms": "Sistem Dalam Talian • SSL Selamat"],
         "cloud_engine_ver": ["en": "Cloud Engine v2.1", "th": "Cloud Engine v2.1", "zh": "云引擎 v2.1", "ja": "クラウドエンジン v2.1", "ko": "클라우드 엔진 v2.1", "id": "Cloud Engine v2.1", "ms": "Cloud Engine v2.1"],
         "sign_in_title": ["en": "Sign In", "th": "เข้าสู่ระบบ", "zh": "登录", "ja": "サインイン", "ko": "로그인", "id": "Masuk", "ms": "Log Masuk"],
@@ -951,6 +1082,52 @@ enum AppLocalization {
         "table_zone_lbl": ["en": "Zone", "th": "โซน", "zh": "区域", "ja": "エリア", "ko": "구역", "id": "Zona", "ms": "Zon"],
         "table_zone_hint": ["en": "Select the zone for this table", "th": "เลือกโซนสำหรับโต๊ะนี้", "zh": "选择此桌的区域", "ja": "このテーブルのエリアを選択してください", "ko": "이 테이블의 구역을 선택하세요", "id": "Pilih zona untuk meja ini", "ms": "Pilih zon untuk meja ini"],
         // MARK: - Time
+        // MARK: - Table Layout Mode
+        "table_layout_mode_canvas": ["en": "Canvas", "th": "แคนวาส", "zh": "画布", "ja": "キャンバス", "ko": "캔버스", "id": "Kanvas", "ms": "Kanvas"],
+        "table_layout_mode_grid": ["en": "Grid", "th": "กริด", "zh": "网格", "ja": "グリッド", "ko": "그리드", "id": "Grid", "ms": "Grid"],
+        // MARK: - Table View Mode
+        "table_view_mode_map": ["en": "Map View", "th": "มุมมองแผนผัง", "zh": "地图视图", "ja": "マップ表示", "ko": "지도 보기", "id": "Tampilan Peta", "ms": "Paparan Peta"],
+        "table_view_mode_list": ["en": "List View", "th": "มุมมองรายการ", "zh": "列表视图", "ja": "リสต์表示", "ko": "목록 보기", "id": "Tampilan Daftar", "ms": "Paparan Senarai"],
+        "table_order_total_template": ["en": "Total: %@", "th": "ยอดรวม: %@", "zh": "总计: %@", "ja": "合計: %@", "ko": "합계: %@", "id": "Total: %@", "ms": "Jumlah: %@"],
+        // MARK: - Table Floor Plan Upload
+        "table_floor_plan_upload_btn": ["en": "Upload Floor Plan", "th": "อัปโหลดแผนผัง", "zh": "上传平面图", "ja": "フロアプランをアップロード", "ko": "평면도 업로드", "id": "Unggah Denah Lantai", "ms": "Muat Naik Pelan Lantai"],
+        "table_floor_plan_remove_btn": ["en": "Remove Image", "th": "ลบรูปภาพ", "zh": "删除图片", "ja": "画像を削除", "ko": "이미지 삭제", "id": "Hapus Gambar", "ms": "Buang Gambar"],
+        // MARK: - Table Shape Extended
+        "table_shape_square": ["en": "Square", "th": "สี่เหลี่ยมจัตุรัส", "zh": "正方形", "ja": "正方形", "ko": "정사각형", "id": "Persegi", "ms": "Segi Empat Sama"],
+        "table_shape_oval": ["en": "Oval", "th": "วงรี", "zh": "椭圆形", "ja": "楕円形", "ko": "타원형", "id": "Oval", "ms": "Bujur"],
+        "table_shape_circle": ["en": "Circle", "th": "วงกลม", "zh": "圆形", "ja": "円形", "ko": "원형", "id": "Lingkaran", "ms": "Bulatan"],
+        // MARK: - Table Floor Management
+        "table_floor_add_btn": ["en": "Add Floor", "th": "เพิ่มชั้น", "zh": "添加楼层", "ja": "フロア追加", "ko": "층 추가", "id": "Tambah Lantai", "ms": "Tambah Lantai"],
+        "table_floor_remove_btn": ["en": "Remove Floor", "th": "ลบชั้น", "zh": "删除楼层", "ja": "フロア削除", "ko": "층 삭제", "id": "Hapus Lantai", "ms": "Buang Lantai"],
+        "table_floor_save_btn": ["en": "Save Floors", "th": "บันทึกชั้น", "zh": "保存楼层", "ja": "保存", "ko": "저장", "id": "Simpan Lantai", "ms": "Simpan Lantai"],
+        "table_floor_new_name": ["en": "Floor %d", "th": "ชั้น %d", "zh": "%d楼", "ja": "%d階", "ko": "%d층", "id": "Lantai %d", "ms": "Lantai %d"],
+        "table_floor_rename_title": ["en": "Rename Floor", "th": "เปลี่ยนชื่อชั้น", "zh": "重命名楼层", "ja": "フロア名変更", "ko": "층 이름 변경", "id": "Ubah Nama Lantai", "ms": "Namakan Semula Lantai"],
+        "table_floor_remove_confirm": ["en": "Remove this floor and all its tables?", "th": "ลบชั้นนี้และโต๊ะทั้งหมด?", "zh": "删除此楼层及所有桌位？", "ja": "このフロアとすべてのテーブルを削除しますか？", "ko": "이 층과 모든 테이블을 삭제하시겠습니까?", "id": "Hapus lantai ini beserta semua mejanya?", "ms": "Buang lantai ini dan semua mejanya?"],
+        // MARK: - Table Background & Presets Localization
+        "table_bg_adjust_title": ["en": "Adjust Background", "th": "ปรับแต่งรูปพื้นหลัง", "zh": "调整背景", "ja": "背景調整", "ko": "배경 조정", "id": "Sesuaikan Latar", "ms": "Laraskan Latar"],
+        "table_bg_scale_label": ["en": "Zoom", "th": "ย่อขยาย", "zh": "缩放", "ja": "ズーム", "ko": "줌", "id": "Zoom", "ms": "Zon"],
+        "table_bg_x_label": ["en": "Offset X", "th": "แกน X", "zh": "偏移 X", "ja": "オフセット X", "ko": "오프셋 X", "id": "Ofset X", "ms": "Ofset X"],
+        "table_bg_y_label": ["en": "Offset Y", "th": "แกน Y", "zh": "偏移 Y", "ja": "オフセット Y", "ko": "오ฟเซ็ต Y", "id": "Ofset Y", "ms": "Ofset Y"],
+        "table_presets_title": ["en": "Layout Templates", "th": "รูปแบบจัดโต๊ะ", "zh": "布局预设", "ja": "レイアウトプリセット", "ko": "레이아웃 프리셋", "id": "Preset Tata Letak", "ms": "Preset Reka Letak"],
+        "table_presets_save_alert": ["en": "Save Current Layout", "th": "บันทึกรูปแบบการจัดโต๊ะ", "zh": "保存当前布局", "ja": "現在のレイアウトを保存", "ko": "현재 레이아웃 저장", "id": "Simpan Tata Letak", "ms": "Simpan Reka Letak"],
+        "table_presets_enter_name": ["en": "Enter template name (e.g. Layout A)", "th": "กรอกชื่อรูปแบบ (เช่น รูปแบบ A)", "zh": "输入预设名称 (例如 布局 A)", "ja": "プリセット名を入力 (例: レイアウト A)", "ko": "프리셋 이름 입력 (예: ...)", "id": "Masukkan nama preset", "ms": "Masukkan nama preset"],
+        "table_presets_delete_confirm": ["en": "Delete this layout template?", "th": "ลบรูปแบบการจัดโต๊ะนี้?", "zh": "删除此布局预设？", "ja": "このプリセットを削除しますか？", "ko": "이 레이아웃 프리셋을 삭제하시겠습니까?", "id": "Hapus preset ini?", "ms": "Buang preset ini?"],
+        // MARK: - Table List Summary Bar
+        "table_list_total": ["en": "Total Tables: %d", "th": "โต๊ะทั้งหมด: %d", "zh": "总桌位: %d", "ja": "総テーブル: %d", "ko": "전체 테이블: %d", "id": "Total Meja: %d", "ms": "Jumlah Meja: %d"],
+        "table_list_available": ["en": "Available: %d", "th": "ว่าง: %d", "zh": "可用: %d", "ja": "空席: %d", "ko": "이용 가능: %d", "id": "Tersedia: %d", "ms": "Tersedia: %d"],
+        "table_list_occupied": ["en": "Occupied: %d", "th": "มีลูกค้า: %d", "zh": "已占用: %d", "ja": "使用中: %d", "ko": "사용 중: %d", "id": "Terisi: %d", "ms": "Terisi: %d"],
+        "table_list_reserved": ["en": "Reserved: %d", "th": "จองแล้ว: %d", "zh": "已预订: %d", "ja": "予約済: %d", "ko": "예약됨: %d", "id": "Dipesan: %d", "ms": "Ditempah: %d"],
+        "table_list_with_orders": ["en": "With Orders: %d", "th": "มีออเดอร์: %d", "zh": "有订单: %d", "ja": "注文あり: %d", "ko": "주문 있음: %d", "id": "Dengan Pesanan: %d", "ms": "Dengan Pesanan: %d"],
+        "table_list_total_seats": ["en": "Total Seats: %d", "th": "ที่นั่งรวม: %d", "zh": "总座位: %d", "ja": "総席数: %d", "ko": "전체 좌석: %d", "id": "Total Kursi: %d", "ms": "Jumlah Kerusi: %d"],
+        "table_list_tip": ["en": "Tip: click a table row to view orders.", "th": "แตะแถวโต๊ะเพื่อดูออเดอร์", "zh": "提示：点击行查看订单", "ja": "ヒント：行をタップして注文を確認", "ko": "팁: 행을 눌러 주문 확인", "id": "Tips: klik baris untuk melihat pesanan.", "ms": "Tip: klik baris untuk lihat pesanan."],
+        "table_list_col_table": ["en": "Table", "th": "โต๊ะ", "zh": "桌位", "ja": "テーブル", "ko": "테이블", "id": "Meja", "ms": "Meja"],
+        "table_list_col_seats": ["en": "Seats", "th": "ที่นั่ง", "zh": "座位", "ja": "席数", "ko": "좌석", "id": "Kursi", "ms": "Kerusi"],
+        "table_list_col_shape": ["en": "Shape", "th": "รูปร่าง", "zh": "形状", "ja": "形状", "ko": "모양", "id": "Bentuk", "ms": "Bentuk"],
+        "table_list_col_status": ["en": "Status", "th": "สถานะ", "zh": "状态", "ja": "状態", "ko": "상태", "id": "Status", "ms": "Status"],
+        "table_list_col_qr": ["en": "QR Code", "th": "คิวอาร์", "zh": "二维码", "ja": "QRコード", "ko": "QR코드", "id": "Kode QR", "ms": "Kod QR"],
+        "table_list_col_total": ["en": "Total", "th": "ยอดรวม", "zh": "总计", "ja": "合計", "ko": "합계", "id": "Total", "ms": "Jumlah"],
+        "table_status_available": ["en": "Available", "th": "ว่าง", "zh": "可用", "ja": "空席", "ko": "이용가능", "id": "Tersedia", "ms": "Tersedia"],
+        // MARK: - Time (restored label)
         "time_minutes": ["en": "minutes", "th": "นาที", "zh": "分钟", "ja": "分", "ko": "분", "id": "menit", "ms": "minit"],
         "overtime_minutes_label": ["en": "Overtime (min)", "th": "ล่วงเวลา (นาที)", "zh": "加班时间 (分钟)", "ja": "残業時間 (分)", "ko": "초과 근무 (분)", "id": "Lembur (menit)", "ms": "Kerja Lebih Masa (minit)"],
 
@@ -1066,6 +1243,7 @@ enum AppLocalization {
         "pos_total_amount": ["en": "Total Amount", "th": "ยอดรวมทั้งหมด", "zh": "总金额", "ja": "合計金額", "ko": "총 금액", "id": "Jumlah Total", "ms": "Jumlah Keseluruhan"],
         "pos_vat": ["en": "VAT", "th": "ภาษีมูลค่าเพิ่ม", "zh": "增值税", "ja": "消費税", "ko": "부가세", "id": "PPN", "ms": "GST"],
         // MARK: - Table Management
+        "table_management_title": ["en": "Table Management", "th": "ระบบจัดการโต๊ะ", "zh": "桌台管理", "ja": "テーブル管理", "ko": "테이블 관리", "id": "Manajemen Meja", "ms": "Pengurusan Meja"],
         "table_actions_title": ["en": "Table Actions", "th": "จัดการโต๊ะ", "zh": "桌位操作", "ja": "テーブル操作", "ko": "테이블 작업", "id": "Aksi Meja", "ms": "Tindakan Meja"],
         "table_active_dining_session": ["en": "Active Dining Session", "th": "เซสชันทานอาหารที่ใช้งาน", "zh": "活跃用餐中", "ja": "アクティブな食事セッション", "ko": "활성 식사 세션", "id": "Sesi Makan Aktif", "ms": "Sesi Makan Aktif"],
         "table_add_new_title": ["en": "Add New Table", "th": "เพิ่มโต๊ะใหม่", "zh": "添加新桌", "ja": "新しいテーブルを追加", "ko": "새 테이블 추가", "id": "Tambah Meja Baru", "ms": "Tambah Meja Baru"],
@@ -1080,6 +1258,9 @@ enum AppLocalization {
         "table_details_title": ["en": "Table Details", "th": "รายละเอียดโต๊ะ", "zh": "桌位详情", "ja": "テーブル詳細", "ko": "테이블 상세", "id": "Detail Meja", "ms": "Butiran Meja"],
         "table_draw_exit_btn": ["en": "Exit Draw Mode", "th": "ออกจากโหมดวาด", "zh": "退出绘制模式", "ja": "描画モード終了", "ko": "그리기 모드 종료", "id": "Keluar Mode Gambar", "ms": "Keluar Mod Lukis"],
         "table_draw_walls_btn": ["en": "Draw Walls", "th": "วาดผนัง", "zh": "绘制墙壁", "ja": "壁を描画", "ko": "벽 그리기", "id": "Gambar Dinding", "ms": "Lukis Dinding"],
+        "table_draw_tool_wall": ["en": "Straight Wall", "th": "วาดผนังตรง", "zh": "直墙", "ja": "直線壁", "ko": "직선 벽", "id": "Dinding Lurus", "ms": "Dinding Lurus"],
+        "table_draw_tool_curve": ["en": "Curved Wall", "th": "วาดผนังโค้ง", "zh": "弧形墙", "ja": "曲線壁", "ko": "곡선 벽", "id": "Dinding Lengkung", "ms": "Dinding Lengkung"],
+        "table_draw_tool_eraser": ["en": "Eraser", "th": "ยางลบ", "zh": "橡皮擦", "ja": "消しゴム", "ko": "지우개", "id": "Penghapus", "ms": "Pemadam"],
         "table_empty_canvas_subtitle": ["en": "Tap + to add your first table", "th": "แตะ + เพื่อเพิ่มโต๊ะแรก", "zh": "点击 + 添加第一张桌子", "ja": "タップ + で最初のテーブルを追加", "ko": "+ 를 탭하여 첫 번째 테이블 추가", "id": "Ketuk + untuk tambah meja pertama", "ms": "Ketik + untuk tambah meja pertama"],
         "table_empty_canvas_title": ["en": "No Tables Yet", "th": "ยังไม่มีโต๊ะ", "zh": "还没有桌位", "ja": "テーブルがありません", "ko": "아직 테이블이 없습니다", "id": "Belum Ada Meja", "ms": "Belum Ada Meja"],
         "table_enter_edit_mode_acc": ["en": "Enter Edit Mode", "th": "เข้าสู่โหมดแก้ไข", "zh": "进入编辑模式", "ja": "編集モードに入る", "ko": "편집 모드 진입", "id": "Masuk Mode Edit", "ms": "Masuk Mod Edit"],
@@ -1970,5 +2151,35 @@ enum AppLocalization {
         "unassigned": ["en": "Unassigned", "th": "ไม่ได้กำหนด", "zh": "未分配", "ja": "未割当", "ko": "미배정", "id": "Tidak Ditetapkan", "ms": "Tidak Ditetapkan"],
         "transactions": ["en": "Transactions", "th": "รายการธุรกรรม", "zh": "交易记录", "ja": "取引履歴", "ko": "거래 내역", "id": "Transaksi", "ms": "Transaksi"],
         "uncategorized": ["en": "Uncategorized", "th": "ไม่มีหมวดหมู่", "zh": "未分类", "ja": "未分類", "ko": "미분류", "id": "Tidak Berkategori", "ms": "Tidak Berkategori"],
+        // MARK: - Menu Image Import
+        "menu_import_title": ["en": "Import from Menu Photo", "th": "นำเข้าจากรูปเมนู", "zh": "从菜单照片导入", "ja": "メニュー写真からインポート", "ko": "메뉴 사진에서 가져오기", "id": "Impor dari Foto Menu", "ms": "Import dari Foto Menu"],
+        "menu_import_step_upload": ["en": "Select Photos", "th": "เลือกรูปเมนู", "zh": "选择照片", "ja": "写真を選択", "ko": "사진 선택", "id": "Pilih Foto", "ms": "Pilih Foto"],
+        "menu_import_step_review": ["en": "Review Items", "th": "ตรวจสอบรายการ", "zh": "检查项目", "ja": "項目を確認", "ko": "항목 검토", "id": "Periksa Item", "ms": "Semak Item"],
+        "menu_import_step_complete": ["en": "Complete", "th": "เสร็จสิ้น", "zh": "完成", "ja": "完了", "ko": "완료", "id": "Selesai", "ms": "Selesai"],
+        "menu_import_analyze_btn": ["en": "Analyze Menu", "th": "วิเคราะห์เมนู", "zh": "分析菜单", "ja": "メニューを分析", "ko": "메뉴 분석", "id": "Analisis Menu", "ms": "Analisis Menu"],
+        "menu_import_analyzing": ["en": "Analyzing menu...", "th": "กำลังวิเคราะห์เมนู...", "zh": "正在分析菜单...", "ja": "メニューを分析中...", "ko": "메뉴 분석 중...", "id": "Menganalisis menu...", "ms": "Menganalisis menu..."],
+        "menu_import_confirm_btn": ["en": "Import Selected Items", "th": "นำเข้ารายการที่เลือก", "zh": "导入选中的项目", "ja": "選択した項目をインポート", "ko": "선택한 항목 가져오기", "id": "Impor Item Terpilih", "ms": "Import Item Terpilih"],
+        "menu_import_select_all": ["en": "Select All", "th": "เลือกทั้งหมด", "zh": "全选", "ja": "すべて選択", "ko": "전체 선택", "id": "Pilih Semua", "ms": "Pilih Semua"],
+        "menu_import_deselect_all": ["en": "Deselect All", "th": "ยกเลิกทั้งหมด", "zh": "取消全选", "ja": "すべて解除", "ko": "전체 해제", "id": "Hapus Semua", "ms": "Nyahpilih Semua"],
+        "menu_import_upload_hint": ["en": "Upload photos of your menu to automatically extract product names and prices", "th": "อัปโหลดรูปเมนูเพื่อดึงชื่อสินค้าและราคาอัตโนมัติ", "zh": "上传菜单照片以自动提取产品名称和价格", "ja": "メニューの写真をアップロードして商品名と価格を自動抽出", "ko": "메뉴 사진을 업로드하여 상품명과 가격을 자동 추출", "id": "Unggah foto menu untuk otomatis mengekstrak nama dan harga produk", "ms": "Muat naik foto menu untuk mengekstrak nama dan harga produk secara automatik"],
+        "menu_import_max_photos": ["en": "Up to 5 photos", "th": "ได้สูงสุด 5 รูป", "zh": "最多5张照片", "ja": "最大5枚", "ko": "최대 5장", "id": "Maksimal 5 foto", "ms": "Maksimum 5 foto"],
+        "menu_import_found_items": ["en": "Found %d items", "th": "พบ %d รายการ", "zh": "找到 %d 个项目", "ja": "%d 件見つかりました", "ko": "%d개 항목 발견", "id": "Ditemukan %d item", "ms": "Ditemui %d item"],
+        "menu_import_duplicate_badge": ["en": "Duplicate", "th": "ซ้ำ", "zh": "重复", "ja": "重複", "ko": "중복", "id": "Duplikat", "ms": "Pendua"],
+        "menu_import_success_title": ["en": "Import Complete!", "th": "นำเข้าเสร็จสิ้น!", "zh": "导入完成！", "ja": "インポート完了！", "ko": "가져오기 완료!", "id": "Impor Selesai!", "ms": "Import Selesai!"],
+        "menu_import_imported_count": ["en": "%d items imported", "th": "นำเข้า %d รายการ", "zh": "已导入 %d 个项目", "ja": "%d 件インポート", "ko": "%d개 항목 가져옴", "id": "%d item diimpor", "ms": "%d item diimport"],
+        "menu_import_skipped_count": ["en": "%d skipped", "th": "ข้าม %d รายการ", "zh": "跳过 %d 个", "ja": "%d 件スキップ", "ko": "%d개 건너뜀", "id": "%d dilewati", "ms": "%d dilangkau"],
+        "menu_import_categories_created": ["en": "%d new categories created", "th": "สร้างหมวดหมู่ใหม่ %d หมวด", "zh": "创建了 %d 个新分类", "ja": "%d 件の新カテゴリー作成", "ko": "새 카테고리 %d개 생성", "id": "%d kategori baru dibuat", "ms": "%d kategori baharu dicipta"],
+        "menu_import_no_items": ["en": "No items found in the image", "th": "ไม่พบรายการในรูปภาพ", "zh": "图片中未找到项目", "ja": "画像にアイテムが見つかりません", "ko": "이미지에서 항목을 찾을 수 없음", "id": "Tidak ada item ditemukan di gambar", "ms": "Tiada item ditemui dalam gambar"],
+        "menu_import_error": ["en": "Failed to analyze image", "th": "วิเคราะห์รูปภาพไม่สำเร็จ", "zh": "分析图片失败", "ja": "画像の分析に失敗", "ko": "이미지 분석 실패", "id": "Gagal menganalisis gambar", "ms": "Gagal menganalisis gambar"],
+        "menu_import_confidence": ["en": "Confidence: %d%%", "th": "ความมั่นใจ: %d%%", "zh": "置信度: %d%%", "ja": "確信度: %d%%", "ko": "신뢰도: %d%%", "id": "Keyakinan: %d%%", "ms": "Keyakinan: %d%%"],
+        "menu_import_new_category": ["en": "New", "th": "ใหม่", "zh": "新", "ja": "新規", "ko": "신규", "id": "Baru", "ms": "Baharu"],
+        "menu_import_add_photos": ["en": "Add Photos", "th": "เพิ่มรูป", "zh": "添加照片", "ja": "写真を追加", "ko": "사진 추가", "id": "Tambah Foto", "ms": "Tambah Foto"],
+        "menu_import_take_photo": ["en": "Take Photo", "th": "ถ่ายรูป", "zh": "拍照", "ja": "写真を撮る", "ko": "사진 촬영", "id": "Ambil Foto", "ms": "Ambil Foto"],
+        "menu_import_importing": ["en": "Importing products...", "th": "กำลังนำเข้าสินค้า...", "zh": "正在导入产品...", "ja": "商品をインポート中...", "ko": "상품 가져오는 중...", "id": "Mengimpor produk...", "ms": "Mengimport produk..."],
+        "menu_import_done_btn": ["en": "Done", "th": "เสร็จ", "zh": "完成", "ja": "完了", "ko": "완료", "id": "Selesai", "ms": "Selesai"],
+        "menu_import_price": ["en": "Price", "th": "ราคา", "zh": "价格", "ja": "価格", "ko": "가격", "id": "Harga", "ms": "Harga"],
+        "menu_import_no_category": ["en": "No Category", "th": "ไม่มีหมวดหมู่", "zh": "无分类", "ja": "カテゴリーなし", "ko": "카테고리 없음", "id": "Tanpa Kategori", "ms": "Tanpa Kategori"],
+        "menu_import_retry": ["en": "Try Again", "th": "ลองอีกครั้ง", "zh": "重试", "ja": "再試行", "ko": "다시 시도", "id": "Coba Lagi", "ms": "Cuba Lagi"],
     ]
 }
+

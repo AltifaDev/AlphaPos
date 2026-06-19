@@ -20,6 +20,7 @@ struct CatalogManagerView: View {
     @State private var selectedModifierGroup: ModifierGroup? = nil
     
     @State private var showingAddProduct = false
+    @State private var showingMenuImport = false
     @State private var showingAddCategory = false
     @State private var showingAddModifierGroup = false
     
@@ -34,6 +35,18 @@ struct CatalogManagerView: View {
                         Text("catalog_extras".t).tag(2)
                     }
                     .pickerStyle(.segmented)
+                    
+                    if subTab == 0 {
+                        Button(action: { showingMenuImport = true }) {
+                            Image(systemName: "doc.text.viewfinder")
+                                .font(.subheadline).fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding(8)
+                                .background(APGradient.accent)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                     
                     Button(action: openAddSheet) {
                         Image(systemName: "plus")
@@ -92,11 +105,14 @@ struct CatalogManagerView: View {
             }
             .background(Color.appBackground)
         }
-        .sheet(item: $selectedProduct) { item in
+        .fullScreenCover(item: $selectedProduct) { item in
             ProductEditSheet(menuItem: item) { selectedProduct = nil }
         }
-        .sheet(isPresented: $showingAddProduct) {
+        .fullScreenCover(isPresented: $showingAddProduct) {
             ProductEditSheet(menuItem: nil) { showingAddProduct = false }
+        }
+        .fullScreenCover(isPresented: $showingMenuImport) {
+            MenuImportSheet { showingMenuImport = false }
         }
         .sheet(item: $selectedCategory) { item in
             CategoryEditSheet(category: item) { selectedCategory = nil }

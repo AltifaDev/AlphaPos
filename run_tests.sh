@@ -45,6 +45,7 @@ echo ""
 # Order matters: shared helpers first, then TestResult, suites, then runner.
 SOURCES=(
     "$PROJECT_DIR/Core/Security/SecurityHelper.swift"
+    "$PROJECT_DIR/Core/Localization/AppLocalization.swift"
     "$TESTS_DIR/TestResult.swift"
     "$TESTS_DIR/SecurityTests.swift"
     "$TESTS_DIR/POSTests.swift"
@@ -55,6 +56,7 @@ SOURCES=(
     "$TESTS_DIR/InventoryEnterpriseTests.swift"
     "$TESTS_DIR/TimecardTests.swift"
     "$TESTS_DIR/PayrollTests.swift"
+    "$TESTS_DIR/LocalizationTests.swift"
     "$TESTS_DIR/TestRunner.swift"
 )
 

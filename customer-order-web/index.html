@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=10">
+    <link rel="stylesheet" href="styles.css?v=20">
     <!-- Supabase JS Client SDK -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -124,12 +124,14 @@
         <!-- Header HUD -->
         <header class="app-header anim-fade-in-down">
             <div class="brand-section">
-                <span class="logo-dot"></span>
+                <div class="header-logo-circle">
+                    <span class="header-logo-inner">A</span>
+                </div>
                 <h1 class="brand-title">AlphaPos</h1>
             </div>
             <div class="header-actions">
                 <div class="lang-dropdown" id="langDropdown">
-                    <button class="lang-dropdown-toggle" onclick="app.toggleLangDropdown(event)">
+                    <button class="lang-dropdown-toggle header-btn-white" onclick="app.toggleLangDropdown(event)">
                         <span id="langCurrentFlag">🇹🇭</span>
                         <span id="langCurrentLabel">TH</span>
                         <svg class="lang-chevron" width="10" height="6" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -149,10 +151,10 @@
                         </button>
                     </div>
                 </div>
-                <button id="themeToggleBtn" class="theme-toggle-btn" aria-label="Toggle Theme" onclick="app.toggleTheme()">
+                <button id="themeToggleBtn" class="theme-toggle-btn header-btn-white" aria-label="Toggle Theme" onclick="app.toggleTheme()">
                     <span class="theme-toggle-icon app-icon icon-moon" aria-hidden="true"></span>
                 </button>
-                <div class="table-badge" id="tableBadge">
+                <div class="table-badge header-table-badge" id="tableBadge">
                     <span class="table-icon app-icon icon-table" aria-hidden="true"></span>
                     <span class="table-text">Table --</span>
                 </div>
@@ -444,6 +446,6 @@
     <!-- Script imports -->
     <script src="config.js"></script>
     <script src="hybrid-location.js"></script>
-    <script type="module" src="app.js?v=10"></script>
+    <script type="module" src="app.js?v=20"></script>
 </body>
 </html>

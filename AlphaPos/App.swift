@@ -1,9 +1,33 @@
 import SwiftUI
 import SwiftData
 import Combine
+import UIKit
+import UserNotifications
+
+final class AlphaPosAppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        application.registerForRemoteNotifications()
+        return true
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        Task { try? await NetworkManager.shared.registerPushDevice(token: token) }
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        #if DEBUG
+        print("APNs registration failed: \(error.localizedDescription)")
+        #endif
+    }
+}
 
 @main
 struct AlphaPosApp: App {
+    @UIApplicationDelegateAdaptor(AlphaPosAppDelegate.self) private var appDelegate
     // Set up the SwiftData ModelContainer with all custom models
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
@@ -48,7 +72,9 @@ struct AlphaPosApp: App {
             GiftCard.self,
             MerchantDevice.self,
             StaffSessionRecord.self,
-            SecurityPolicy.self
+            SecurityPolicy.self,
+            FloorPlanImage.self,
+            TableLayoutPreset.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         

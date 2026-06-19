@@ -9,10 +9,11 @@ import Combine
 struct DashboardIntegration: View {
     @State private var selectedTab: MainDashboardView.DashboardTab = .tables
     @State private var activeSession: TableSession?
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     
     var body: some View {
         TabView(selection: $selectedTab) {
-            TableView(selectedTab: $selectedTab, activeSession: $activeSession)
+            TableView(selectedTab: $selectedTab, activeSession: $activeSession, columnVisibility: $columnVisibility)
                 .tabItem {
                     Label("Tables", systemImage: "square.grid.2x2")
                 }

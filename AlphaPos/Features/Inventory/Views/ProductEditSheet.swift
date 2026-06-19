@@ -4,6 +4,9 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
+import AVFoundation
+import CoreTransferable
+import UniformTypeIdentifiers
 
 struct ProductEditSheet: View {
     let menuItem: MenuItem? // Nil when creating new
@@ -32,8 +35,12 @@ struct ProductEditSheet: View {
     @State private var descZh = ""
     
     // New Standard POS States
-    @State private var selectedPhotoItem: PhotosPickerItem? = nil
-    @State private var imageData: Data? = nil
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var imageDataItems: [Data] = []
+    @State private var selectedVideoItem: PhotosPickerItem?
+    @State private var videoData: Data?
+    @State private var isProcessingMedia = false
+    @State private var mediaErrorMessage: String?
     @State private var barcode = ""
     @State private var sku = ""
     @State private var isFavorite = false
@@ -171,6 +178,14 @@ struct ProductEditSheet: View {
             } message: {
                 Text("delete_product_confirm_msg".t)
             }
+            .alert("ไม่สามารถเพิ่มสื่อ", isPresented: Binding(
+                get: { mediaErrorMessage != nil },
+                set: { if !$0 { mediaErrorMessage = nil } }
+            )) {
+                Button("ตกลง", role: .cancel) { mediaErrorMessage = nil }
+            } message: {
+                Text(mediaErrorMessage ?? "")
+            }
         }
         .apColorScheme()
     }
@@ -179,66 +194,83 @@ struct ProductEditSheet: View {
     
     private var detailsTabContent: some View {
         VStack(spacing: APSpacing.md) {
-            // 1. Image Picker Section
+            // 1. Product media
             VStack(alignment: .leading, spacing: APSpacing.sm) {
-                Text("product_image_title".t)
+                Text("สื่อสินค้า")
                     .font(.caption)
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
                     .textCase(.uppercase)
-                
-                HStack(spacing: APSpacing.md) {
-                    if let imageData = imageData, let uiImage = UIImage(data: imageData) {
-                        Image(uiImage: uiImage)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 80, height: 80)
-                            .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: APRadius.sm)
-                                    .stroke(Color.appBorderSubtle, lineWidth: 1)
-                            )
-                    } else {
-                        let previewColor = colorOptions.first(where: { $0.hex == selectedColorHex })?.color ?? Color.appAccent
-                        RoundedRectangle(cornerRadius: APRadius.sm)
-                            .fill(previewColor.opacity(0.15))
-                            .frame(width: 80, height: 80)
-                            .overlay(
-                                Image(systemName: "photo")
-                                    .font(.title)
-                                    .foregroundColor(previewColor)
-                            )
-                    }
-                    
-                    VStack(alignment: .leading, spacing: APSpacing.xs) {
-                        PhotosPicker(selection: $selectedPhotoItem, matching: .images, photoLibrary: .shared()) {
-                            Label("choose_photo_btn".t, systemImage: "photo.badge.plus")
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(APGradient.accent)
-                                .cornerRadius(APRadius.sm)
-                        }
-                        .onChange(of: selectedPhotoItem) { _, newItem in
-                            Task {
-                                if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                                    imageData = data
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: APSpacing.md) {
+                        VStack(alignment: .leading, spacing: APSpacing.xs) {
+                            Text("รูปภาพ · สูงสุด 3 รูป")
+                                .font(.caption2)
+                                .foregroundColor(.textSecondary)
+
+                            HStack(spacing: APSpacing.sm) {
+                                ForEach(Array(imageDataItems.enumerated()), id: \.offset) { index, data in
+                                    mediaImageTile(data: data) {
+                                        imageDataItems.remove(at: index)
+                                    }
+                                }
+
+                                if imageDataItems.count < 3 {
+                                    PhotosPicker(
+                                        selection: $selectedPhotoItems,
+                                        maxSelectionCount: 3 - imageDataItems.count,
+                                        matching: .images,
+                                        photoLibrary: .shared()
+                                    ) {
+                                        addMediaTile(title: "เพิ่มรูป", systemImage: "photo.badge.plus")
+                                    }
+                                    .onChange(of: selectedPhotoItems) { _, items in
+                                        Task { await loadImages(from: items) }
+                                    }
                                 }
                             }
                         }
-                        
-                        if imageData != nil {
-                            Button(role: .destructive) {
-                                imageData = nil
-                                selectedPhotoItem = nil
-                            } label: {
-                                Text("remove_photo_btn".t)
-                                    .font(.caption2)
-                                    .foregroundColor(.appRose)
+
+                        Divider().frame(height: 106)
+
+                        VStack(alignment: .leading, spacing: APSpacing.xs) {
+                            Text("วิดีโอ · 1 คลิป / 10 วิ · MP4 720p")
+                                .font(.caption2)
+                                .foregroundColor(.textSecondary)
+
+                            if let videoData {
+                                ZStack(alignment: .topTrailing) {
+                                    RoundedRectangle(cornerRadius: APRadius.sm)
+                                        .fill(Color.appAccent.opacity(0.12))
+                                        .frame(width: 150, height: 82)
+                                        .overlay {
+                                            VStack(spacing: 4) {
+                                                Image(systemName: "play.rectangle.fill").font(.title2)
+                                                Text(ByteCountFormatter.string(fromByteCount: Int64(videoData.count), countStyle: .file))
+                                                    .font(.caption2)
+                                            }
+                                            .foregroundColor(.appAccent)
+                                        }
+                                    removeMediaButton {
+                                        self.videoData = nil
+                                        selectedVideoItem = nil
+                                    }
+                                }
+                            } else {
+                                PhotosPicker(selection: $selectedVideoItem, matching: .videos, photoLibrary: .shared()) {
+                                    addMediaTile(title: "เพิ่มวิดีโอ", systemImage: "video.badge.plus")
+                                        .frame(width: 150)
+                                }
+                                .onChange(of: selectedVideoItem) { _, item in
+                                    guard let item else { return }
+                                    Task { await loadVideo(from: item) }
+                                }
                             }
-                            .buttonStyle(.plain)
+                        }
+
+                        if isProcessingMedia {
+                            ProgressView().padding(.top, 44)
                         }
                     }
                 }
@@ -761,6 +793,120 @@ struct ProductEditSheet: View {
                 )
         }
     }
+
+    private func addMediaTile(title: String, systemImage: String) -> some View {
+        RoundedRectangle(cornerRadius: APRadius.sm)
+            .fill(Color.appAccent.opacity(0.10))
+            .frame(width: 92, height: 82)
+            .overlay {
+                VStack(spacing: 5) {
+                    Image(systemName: systemImage).font(.title3)
+                    Text(title).font(.caption2).fontWeight(.semibold)
+                }
+                .foregroundColor(.appAccent)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: APRadius.sm)
+                    .stroke(Color.appAccent.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5]))
+            }
+    }
+
+    private func mediaImageTile(data: Data, onRemove: @escaping () -> Void) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if let image = UIImage(data: data) {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    Color.appSurfaceHigh.overlay { Image(systemName: "photo") }
+                }
+            }
+            .frame(width: 92, height: 82)
+            .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
+
+            removeMediaButton(action: onRemove)
+        }
+    }
+
+    private func removeMediaButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 20))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, Color.black.opacity(0.65))
+        }
+        .buttonStyle(.plain)
+        .offset(x: 6, y: -6)
+    }
+
+    @MainActor
+    private func loadImages(from items: [PhotosPickerItem]) async {
+        guard !items.isEmpty else { return }
+        isProcessingMedia = true
+        defer {
+            isProcessingMedia = false
+            selectedPhotoItems = []
+        }
+
+        for item in items.prefix(3 - imageDataItems.count) {
+            guard let original = try? await item.loadTransferable(type: Data.self),
+                  let compressed = compressedImageData(from: original) else {
+                mediaErrorMessage = "อ่านไฟล์รูปภาพไม่สำเร็จ กรุณาเลือกรูปอื่น"
+                continue
+            }
+            imageDataItems.append(compressed)
+        }
+    }
+
+    @MainActor
+    private func loadVideo(from item: PhotosPickerItem) async {
+        isProcessingMedia = true
+        defer { isProcessingMedia = false }
+
+        do {
+            guard let movie = try await item.loadTransferable(type: ProductMovie.self) else {
+                throw ProductMediaError.unreadableVideo
+            }
+            defer { try? FileManager.default.removeItem(at: movie.url) }
+
+            let asset = AVURLAsset(url: movie.url)
+            let duration = try await asset.load(.duration)
+            guard duration.seconds.isFinite, duration.seconds <= 10.05 else {
+                throw ProductMediaError.videoTooLong
+            }
+
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("product-\(UUID().uuidString).mp4")
+            defer { try? FileManager.default.removeItem(at: outputURL) }
+
+            guard let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset1280x720) else {
+                throw ProductMediaError.exportFailed
+            }
+            try await exporter.export(to: outputURL, as: .mp4)
+            let compressed = try Data(contentsOf: outputURL, options: .mappedIfSafe)
+            guard compressed.count <= 15 * 1_024 * 1_024 else {
+                throw ProductMediaError.videoTooLarge
+            }
+            videoData = compressed
+        } catch let error as ProductMediaError {
+            selectedVideoItem = nil
+            mediaErrorMessage = error.localizedDescription
+        } catch {
+            selectedVideoItem = nil
+            mediaErrorMessage = "ไม่สามารถประมวลผลวิดีโอนี้ได้ กรุณาลองไฟล์อื่น"
+        }
+    }
+
+    private func compressedImageData(from data: Data) -> Data? {
+        guard let image = UIImage(data: data) else { return nil }
+        let longestSide = max(image.size.width, image.size.height)
+        let scale = min(1, 1_600 / longestSide)
+        let targetSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        let resized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+        return resized.jpegData(compressionQuality: 0.75)
+    }
     
     private func loadProductData() {
         if let item = menuItem {
@@ -776,7 +922,8 @@ struct ProductEditSheet: View {
             isTaxInclusive = item.isTaxInclusive ?? true
             isFavorite = item.isFavorite ?? false
             selectedColorHex = item.colorHex
-            imageData = item.imageData
+            imageDataItems = [item.imageData, item.imageData2, item.imageData3].compactMap { $0 }
+            videoData = item.videoData
             taxRateString = String(format: "%.1f", item.taxRate)
             
             // Load translations
@@ -858,7 +1005,10 @@ struct ProductEditSheet: View {
                 isTaxInclusive: isTaxInclusive,
                 isFavorite: isFavorite,
                 colorHex: selectedColorHex,
-                imageData: imageData,
+                imageData: imageDataItems.indices.contains(0) ? imageDataItems[0] : nil,
+                imageData2: imageDataItems.indices.contains(1) ? imageDataItems[1] : nil,
+                imageData3: imageDataItems.indices.contains(2) ? imageDataItems[2] : nil,
+                videoData: videoData,
                 taxRate: taxRate,
                 deliveryPrices: deliveryPricesList,
                 nameTranslations: nameTrans,
@@ -890,7 +1040,10 @@ struct ProductEditSheet: View {
                 isTaxInclusive: isTaxInclusive,
                 isFavorite: isFavorite,
                 colorHex: selectedColorHex,
-                imageData: imageData,
+                imageData: imageDataItems.indices.contains(0) ? imageDataItems[0] : nil,
+                imageData2: imageDataItems.indices.contains(1) ? imageDataItems[1] : nil,
+                imageData3: imageDataItems.indices.contains(2) ? imageDataItems[2] : nil,
+                videoData: videoData,
                 taxRate: taxRate,
                 deliveryPrices: deliveryPricesList,
                 nameTranslations: nameTrans,
@@ -899,6 +1052,37 @@ struct ProductEditSheet: View {
         }
         
         onDismiss()
+    }
+}
+
+private struct ProductMovie: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { movie in
+            SentTransferredFile(movie.url)
+        } importing: { received in
+            let copyURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("selected-\(UUID().uuidString).\(received.file.pathExtension)")
+            try FileManager.default.copyItem(at: received.file, to: copyURL)
+            return ProductMovie(url: copyURL)
+        }
+    }
+}
+
+private enum ProductMediaError: LocalizedError {
+    case unreadableVideo
+    case videoTooLong
+    case videoTooLarge
+    case exportFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .unreadableVideo: return "อ่านไฟล์วิดีโอไม่สำเร็จ กรุณาเลือกคลิปอื่น"
+        case .videoTooLong: return "วิดีโอต้องมีความยาวไม่เกิน 10 วินาที"
+        case .videoTooLarge: return "วิดีโอหลังบีบอัดต้องมีขนาดไม่เกิน 15 MB"
+        case .exportFailed: return "อุปกรณ์ไม่รองรับการแปลงวิดีโอนี้"
+        }
     }
 }
 

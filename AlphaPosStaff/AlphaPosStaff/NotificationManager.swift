@@ -45,7 +45,7 @@ import UIKit
     ///   - type: NotificationType for styling/sound decisions
     ///   - deduplicationKey: Unique key to prevent duplicate fires within 30s window.
     ///                       If nil, no deduplication is performed.
-    func notify(title: String, body: String, type: NotificationType = .system, deduplicationKey: String? = nil) {
+    func notify(title: String, body: String, type: NotificationType = .system, deduplicationKey: String? = nil, userInfo: [String: Any]? = nil) {
         // 1. Deduplication check
         if let key = deduplicationKey {
             let now = Date()
@@ -61,17 +61,17 @@ import UIKit
         
         // 2. Route based on app state
         if Thread.isMainThread {
-            routeNotification(title: title, body: body, type: type)
+            routeNotification(title: title, body: body, type: type, userInfo: userInfo)
         } else {
             DispatchQueue.main.async { [self] in
-                routeNotification(title: title, body: body, type: type)
+                routeNotification(title: title, body: body, type: type, userInfo: userInfo)
             }
         }
     }
     
     // MARK: - Private Routing
     
-    private func routeNotification(title: String, body: String, type: NotificationType) {
+    private func routeNotification(title: String, body: String, type: NotificationType, userInfo: [String: Any]?) {
         let appState = UIApplication.shared.applicationState
         
         if appState == .active {
@@ -86,17 +86,23 @@ import UIKit
             #if DEBUG
             print("NotificationManager [ROUTE]: Background → iOS notification: \(title)")
             #endif
-            fireSystemNotification(title: title, body: body)
+            fireSystemNotification(title: title, body: body, userInfo: userInfo)
         }
     }
     
     // MARK: - iOS System Notification (Background only)
     
-    private func fireSystemNotification(title: String, body: String) {
+    private func fireSystemNotification(title: String, body: String, userInfo: [String: Any]?) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = UNNotificationSound.default
+        if let info = userInfo {
+            content.userInfo = info
+        }
+        
+        let count = NetworkService.shared.activeAlertsCount
+        content.badge = NSNumber(value: count)
         
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(
@@ -134,6 +140,33 @@ import UIKit
         }
     }
     
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        let type = userInfo["type"] as? String
+        
+        if type == "order" || type == "service_request" {
+            NotificationCenter.default.post(
+                name: .openAlertsNotification,
+                object: nil,
+                userInfo: userInfo
+            )
+        } else if type == "table_status" {
+            if let tableNumber = userInfo["table_number"] as? String {
+                NotificationCenter.default.post(
+                    name: .openTableNotification,
+                    object: nil,
+                    userInfo: ["table_number": tableNumber]
+                )
+            }
+        }
+        
+        completionHandler()
+    }
+    
     // MARK: - Dedup Maintenance
     
     private func pruneRecentKeys() {
@@ -149,4 +182,9 @@ import UIKit
             }
         }
     }
+}
+
+extension Notification.Name {
+    static let openAlertsNotification = Notification.Name("openAlertsNotification")
+    static let openTableNotification = Notification.Name("openTableNotification")
 }

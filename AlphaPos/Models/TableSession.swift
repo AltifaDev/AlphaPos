@@ -22,6 +22,10 @@ final class TableSession {
     var cashierName: String = "Alex M."
     var queueNumber: String? = nil
     
+    var totalAmount: Double {
+        orders.filter { !$0.isDeleted && $0.status != "cancelled" }.reduce(0.0) { $0 + $1.total }
+    }
+    
     init(id: UUID = UUID(), sessionToken: String = UUID().uuidString, startedAt: Date = Date(), endedAt: Date? = nil, isActive: Bool = true, table: RestaurantTable? = nil, guestCount: Int = 2, cashierName: String = "Alex M.", queueNumber: String? = nil, isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
         self.id = id
         self.sessionToken = sessionToken

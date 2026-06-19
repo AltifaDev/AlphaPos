@@ -39,61 +39,87 @@ struct MainDashboardView: View {
     }
 
     enum DashboardTab: String, CaseIterable, Identifiable {
-        case tables     = "Tables System"
-        case pos        = "POS Ordering"
-        case cashDrawer = "Cash Drawer & Shifts"
+        // ── Group 1: Core Operations ─────────────────────────────────────
+        case inventory  = "Menus"               // Menus (renamed from Inventory)
+        case pos        = "Orders"               // Orders (renamed from POS)
+        case tables     = "Table Management"
         case kitchen    = "Kitchen Display"
-        case timecard   = "Biometric Clock-In"
-        case inventory  = "Stock Inventory"
-        case giftCards  = "Gift Cards"
-        case loyalty    = "Loyalty"
-        case payroll    = "Payroll & Shifts"
-        case sales      = "Sales & Analytics"
+        // ── Group 2: Management ──────────────────────────────────────────
+        case store      = "Stores"               // Stores (renamed)
+        case promotions = "Marketing"            // Marketing (renamed)
+        case cashDrawer = "Hot Actions"          // Hot Actions (renamed)
         case reports    = "Reports"
-        case promotions = "Manage Promotions"
-        case store      = "Store Management"
-        case syncHealth = "Sync & Device Health"
-        case settings   = "System Settings"
+        case sales      = "Accounting"           // Accounting (renamed)
+        case loyalty    = "Loyalty"
+        case giftCards  = "Gift Cards"
+        case payroll    = "Payroll"
+        case timecard   = "Timecard"
+        // ── Group 3: System ──────────────────────────────────────────────
+        case syncHealth = "Integrations"         // Integrations (renamed)
+        case settings   = "Settings"
 
         var id: String { rawValue }
 
-        /// ชื่อที่แปลแล้วตามภาษาปัจจุบัน — ใช้แทน rawValue ใน UI
+        // MARK: - Section grouping
+        enum SidebarSection { case operations, management, system }
+        var section: SidebarSection {
+            switch self {
+            case .inventory, .pos, .tables, .kitchen:
+                return .operations
+            case .store, .promotions, .cashDrawer, .reports, .sales, .loyalty, .giftCards, .payroll, .timecard:
+                return .management
+            case .syncHealth, .settings:
+                return .system
+            }
+        }
+
+        // MARK: - Badge
+        enum Badge { case beta, new, none }
+        var badge: Badge {
+            switch self {
+            case .kitchen: return .beta
+            case .sales:   return .new
+            default:       return .none
+            }
+        }
+
+        /// ชื่อที่แปลแล้วตามภาษาปัจจุบัน
         var localizedName: String {
             switch self {
-            case .tables:     return L.Nav.tabTables.t
-            case .pos:        return L.Nav.tabPOS.t
-            case .cashDrawer: return L.Nav.tabCashDrawer.t
-            case .kitchen:    return L.Nav.tabKitchen.t
-            case .timecard:   return L.Nav.tabTimecard.t
-            case .inventory:  return L.Nav.tabInventory.t
-            case .giftCards:  return L.Nav.tabGiftCards.t
-            case .loyalty:    return L.Nav.tabLoyalty.t
-            case .payroll:    return L.Nav.tabPayroll.t
-            case .sales:      return L.Nav.tabSales.t
+            case .inventory:  return L.Nav.tabInventory.t    // "Menus"
+            case .pos:        return L.Nav.tabPOS.t          // "Orders"
+            case .tables:     return L.Nav.tabTables.t       // "Table Management"
+            case .kitchen:    return L.Nav.tabKitchen.t      // "Kitchen Display"
+            case .store:      return L.Nav.tabStore.t        // "Stores"
+            case .promotions: return L.Nav.tabPromotions.t   // "Marketing"
+            case .cashDrawer: return L.Nav.tabCashDrawer.t   // "Hot Actions"
             case .reports:    return L.Nav.tabReports.t
-            case .promotions: return L.Nav.tabPromotions.t
-            case .store:      return L.Nav.tabStore.t
-            case .syncHealth: return L.Nav.tabSyncHealth.t
+            case .sales:      return L.Nav.tabSales.t        // "Accounting"
+            case .loyalty:    return L.Nav.tabLoyalty.t
+            case .giftCards:  return L.Nav.tabGiftCards.t
+            case .payroll:    return L.Nav.tabPayroll.t
+            case .timecard:   return L.Nav.tabTimecard.t
+            case .syncHealth: return L.Nav.tabSyncHealth.t   // "Integrations"
             case .settings:   return L.Nav.tabSettings.t
             }
         }
 
         var icon: String {
             switch self {
-            case .tables:     return "tablecells.fill"
-            case .pos:        return "cart.fill"
-            case .cashDrawer: return "safe.fill"
-            case .kitchen:    return "flame.fill"
-            case .timecard:   return "faceid"
-            case .inventory:  return "shippingbox.fill"
-            case .giftCards:  return "giftcard.fill"
+            case .inventory:  return "fork.knife"                        // Menus
+            case .pos:        return "tray.full.fill"                    // Orders
+            case .tables:     return "tablecells.fill"                   // Table Management
+            case .kitchen:    return "display"                           // Kitchen Display
+            case .store:      return "chart.bar.fill"                    // Stores
+            case .promotions: return "megaphone.fill"                    // Marketing
+            case .cashDrawer: return "bolt.circle.fill"                  // Hot Actions
+            case .reports:    return "chart.bar.fill"                    // Reports
+            case .sales:      return "chart.bar.fill"                    // Accounting
             case .loyalty:    return "star.circle.fill"
+            case .giftCards:  return "giftcard.fill"
             case .payroll:    return "dollarsign.circle.fill"
-            case .sales:      return "chart.bar.xaxis"
-            case .reports:    return "doc.text.fill"
-            case .promotions: return "megaphone.fill"
-            case .store:      return "storefront.fill"
-            case .syncHealth: return "waveform.path.ecg.rectangle.fill"
+            case .timecard:   return "faceid"
+            case .syncHealth: return "puzzlepiece.extension.fill"        // Integrations
             case .settings:   return "gearshape.fill"
             }
         }
@@ -101,19 +127,19 @@ struct MainDashboardView: View {
         /// Accent gradient per tab for selected state
         var gradient: LinearGradient {
             switch self {
-            case .tables:     return APGradient.accent
-            case .pos:        return LinearGradient(colors: [Color.appAccent, Color(hex: "60A5FA")], startPoint: .leading, endPoint: .trailing)
-            case .cashDrawer: return LinearGradient(colors: [Color(hex: "10B981"), Color(hex: "059669")], startPoint: .leading, endPoint: .trailing)
-            case .kitchen:    return LinearGradient(colors: [Color(hex: "F59E0B"), Color(hex: "FB923C")], startPoint: .leading, endPoint: .trailing)
-            case .timecard:   return APGradient.positive
             case .inventory:  return LinearGradient(colors: [Color(hex: "0EA5E9"), Color(hex: "6366F1")], startPoint: .leading, endPoint: .trailing)
-            case .giftCards:  return LinearGradient(colors: [Color(hex: "F59E0B"), Color(hex: "F97316")], startPoint: .leading, endPoint: .trailing)
-            case .loyalty:    return LinearGradient(colors: [Color(hex: "A78BFA"), Color(hex: "F59E0B")], startPoint: .leading, endPoint: .trailing)
-            case .payroll:    return LinearGradient(colors: [Color(hex: "A855F7"), Color(hex: "EC4899")], startPoint: .leading, endPoint: .trailing)
-            case .sales:      return LinearGradient(colors: [Color(hex: "8B5CF6"), Color(hex: "D946EF")], startPoint: .leading, endPoint: .trailing)
-            case .reports:    return LinearGradient(colors: [Color(hex: "06B6D4"), Color(hex: "3B82F6")], startPoint: .leading, endPoint: .trailing)
-            case .promotions: return LinearGradient(colors: [Color(hex: "10B981"), Color(hex: "34D399")], startPoint: .leading, endPoint: .trailing)
+            case .pos:        return LinearGradient(colors: [Color.appAccent, Color(hex: "60A5FA")], startPoint: .leading, endPoint: .trailing)
+            case .tables:     return APGradient.accent
+            case .kitchen:    return LinearGradient(colors: [Color(hex: "F59E0B"), Color(hex: "FB923C")], startPoint: .leading, endPoint: .trailing)
             case .store:      return LinearGradient(colors: [Color(hex: "F43F5E"), Color(hex: "FDA4AF")], startPoint: .leading, endPoint: .trailing)
+            case .promotions: return LinearGradient(colors: [Color(hex: "10B981"), Color(hex: "34D399")], startPoint: .leading, endPoint: .trailing)
+            case .cashDrawer: return LinearGradient(colors: [Color(hex: "F97316"), Color(hex: "EF4444")], startPoint: .leading, endPoint: .trailing)
+            case .reports:    return LinearGradient(colors: [Color(hex: "06B6D4"), Color(hex: "3B82F6")], startPoint: .leading, endPoint: .trailing)
+            case .sales:      return LinearGradient(colors: [Color(hex: "8B5CF6"), Color(hex: "D946EF")], startPoint: .leading, endPoint: .trailing)
+            case .loyalty:    return LinearGradient(colors: [Color(hex: "A78BFA"), Color(hex: "F59E0B")], startPoint: .leading, endPoint: .trailing)
+            case .giftCards:  return LinearGradient(colors: [Color(hex: "F59E0B"), Color(hex: "F97316")], startPoint: .leading, endPoint: .trailing)
+            case .payroll:    return LinearGradient(colors: [Color(hex: "A855F7"), Color(hex: "EC4899")], startPoint: .leading, endPoint: .trailing)
+            case .timecard:   return APGradient.positive
             case .syncHealth: return LinearGradient(colors: [Color(hex: "22C55E"), Color(hex: "0EA5E9")], startPoint: .leading, endPoint: .trailing)
             case .settings:   return LinearGradient(colors: [Color(hex: "9CA3AF"), Color(hex: "4B5563")], startPoint: .leading, endPoint: .trailing)
             }
@@ -121,19 +147,19 @@ struct MainDashboardView: View {
 
         var iconColor: Color {
             switch self {
-            case .tables:     return Color.appAccent
-            case .pos:        return Color(hex: "60A5FA")
-            case .cashDrawer: return Color(hex: "10B981")
-            case .kitchen:    return Color(hex: "F59E0B")
-            case .timecard:   return Color(hex: "34D399")
             case .inventory:  return Color(hex: "0EA5E9")
-            case .giftCards:  return Color(hex: "F59E0B")
-            case .loyalty:    return Color(hex: "A78BFA")
-            case .payroll:    return Color(hex: "A855F7")
-            case .sales:      return Color(hex: "8B5CF6")
-            case .reports:    return Color(hex: "06B6D4")
-            case .promotions: return Color(hex: "10B981")
+            case .pos:        return Color(hex: "60A5FA")
+            case .tables:     return Color.appAccent
+            case .kitchen:    return Color(hex: "F59E0B")
             case .store:      return Color(hex: "F43F5E")
+            case .promotions: return Color(hex: "10B981")
+            case .cashDrawer: return Color(hex: "F97316")
+            case .reports:    return Color(hex: "06B6D4")
+            case .sales:      return Color(hex: "8B5CF6")
+            case .loyalty:    return Color(hex: "A78BFA")
+            case .giftCards:  return Color(hex: "F59E0B")
+            case .payroll:    return Color(hex: "A855F7")
+            case .timecard:   return Color(hex: "34D399")
             case .syncHealth: return Color(hex: "22C55E")
             case .settings:   return Color(hex: "9CA3AF")
             }
@@ -141,21 +167,21 @@ struct MainDashboardView: View {
 
         var requiredPermission: AppPermission {
             switch self {
-            case .tables: return .tablesManage
-            case .pos: return .posSell
+            case .tables:     return .tablesManage
+            case .pos:        return .posSell
             case .cashDrawer: return .cashDrawerManage
-            case .kitchen: return .kitchenView
-            case .timecard: return .posSell
-            case .inventory: return .inventoryView
-            case .giftCards: return .posSell
-            case .loyalty: return .posSell
-            case .payroll: return .payrollManage
-            case .sales: return .reportsView
-            case .reports: return .reportsView
+            case .kitchen:    return .kitchenView
+            case .timecard:   return .posSell
+            case .inventory:  return .inventoryView
+            case .giftCards:  return .posSell
+            case .loyalty:    return .posSell
+            case .payroll:    return .payrollManage
+            case .sales:      return .reportsView
+            case .reports:    return .reportsView
             case .promotions: return .discountApply
-            case .store: return .settingsManage
+            case .store:      return .settingsManage
             case .syncHealth: return .deviceManage
-            case .settings: return .settingsManage
+            case .settings:   return .settingsManage
             }
         }
     }
@@ -185,6 +211,20 @@ struct MainDashboardView: View {
                 await SyncEngine.shared.syncAll(modelContext: modelContext)
             }
             enforceStaffSessionTimeout()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openTableNotification)) { notification in
+            guard let tableNumber = notification.userInfo?["table_number"] as? String else { return }
+            let descriptor = FetchDescriptor<RestaurantTable>(
+                predicate: #Predicate<RestaurantTable> { $0.tableNumber == tableNumber }
+            )
+            if let tables = try? modelContext.fetch(descriptor), let table = tables.first {
+                if let activeSession = table.sessions.first(where: { $0.isActive }) {
+                    self.posTableSession = activeSession
+                    self.selectedTab = .pos
+                } else {
+                    self.selectedTab = .tables
+                }
+            }
         }
         .onAppear {
             if !enableTableSystem && selectedTab == .tables {
@@ -229,18 +269,32 @@ struct MainDashboardView: View {
                 // ── Navigation items ─────────────────────────────────────────
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: APSpacing.xs) {
-                        ForEach(visibleTabs) { tab in
-                            SidebarTabRow(
-                                tab: tab,
-                                isSelected: selectedTab == tab
-                            )
-                            .onTapGesture {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    selectedTab = tab
-                                    columnVisibility = .detailOnly
-                                }
-                            }
+                        // ── Group 1: Core Operations ─────────────────────
+                        let opTabs  = visibleTabs.filter { $0.section == .operations }
+                        let mgtTabs = visibleTabs.filter { $0.section == .management }
+                        let sysTabs = visibleTabs.filter { $0.section == .system }
+
+                        ForEach(opTabs) { tab in sidebarRow(tab) }
+
+                        if !opTabs.isEmpty && !mgtTabs.isEmpty {
+                            Divider()
+                                .background(Color.appDivider)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 4)
                         }
+
+                        // ── Group 2: Management ──────────────────────────
+                        ForEach(mgtTabs) { tab in sidebarRow(tab) }
+
+                        if !mgtTabs.isEmpty && !sysTabs.isEmpty {
+                            Divider()
+                                .background(Color.appDivider)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 4)
+                        }
+
+                        // ── Group 3: System ──────────────────────────────
+                        ForEach(sysTabs) { tab in sidebarRow(tab) }
                     }
                     .padding(.horizontal, APSpacing.sm)
                     .padding(.top, APSpacing.md)
@@ -278,123 +332,133 @@ struct MainDashboardView: View {
     }
 
     private var brandHeader: some View {
-        HStack(spacing: 12) {
-            // Logo mark
+        HStack(spacing: 10) {
+            // Logo mark — compact to align with sidebar toggle button
             ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(APGradient.accent)
-                    .frame(width: 40, height: 40)
-                    .shadow(color: Color.appAccent.opacity(0.6), radius: 10, x: 0, y: 4)
+                    .frame(width: 32, height: 32)
+                    .shadow(color: Color.appAccent.opacity(0.5), radius: 6, x: 0, y: 2)
                 Image(systemName: "bolt.fill")
-                    .font(.system(size: 20, weight: .black))
+                    .font(.system(size: 15, weight: .black))
                     .foregroundColor(.white)
             }
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text("AlphaPos")
-                    .font(.title3)
-                    .fontWeight(.black)
+                    .font(.system(size: 15, weight: .black))
                     .foregroundColor(.textPrimary)
                 Text(L.Dashboard.restaurantManagement.t)
-                    .font(.caption2)
+                    .font(.system(size: 9))
                     .foregroundColor(.textSecondary)
             }
             Spacer()
         }
-        .padding(.horizontal, APSpacing.md)
-        .padding(.vertical, APSpacing.md)
+        .padding(.horizontal, APSpacing.sm)
+        .padding(.top, 6)
+        .padding(.bottom, 4)
+    }
+
+    // MARK: - Sidebar Row Helper
+    private func sidebarRow(_ tab: DashboardTab) -> some View {
+        SidebarTabRow(tab: tab, isSelected: selectedTab == tab)
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    selectedTab = tab
+                    columnVisibility = .detailOnly
+                }
+            }
     }
 
     private var sidebarFooter: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Circle()
-                    .fill(Color.appTeal)
-                    .frame(width: 7, height: 7)
-                Text(L.Dashboard.systemOnline.t)
-                    .font(.caption2)
-                    .foregroundColor(.textSecondary)
-                Spacer()
-                Text("v2.0")
-                    .font(.caption2)
-                    .foregroundColor(.textTertiary)
-            }
-            
-            HStack(spacing: 5) {
+        HStack(spacing: 6) {
+            // Online status dot
+            Circle()
+                .fill(Color.appTeal)
+                .frame(width: 6, height: 6)
+            Text(L.Dashboard.systemOnline.t)
+                .font(.system(size: 9))
+                .foregroundColor(.textSecondary)
+
+            Spacer()
+
+            // Sync status
+            HStack(spacing: 3) {
                 Image(systemName: syncIcon)
                     .font(.system(size: 8))
                     .foregroundColor(syncColor)
-                
-                Text(syncStatusText)
-                    .font(.system(size: 9))
-                    .foregroundColor(.textTertiary)
-                
                 if let lastSynced = syncEngine.lastSyncedAt {
-                    Text("• \(formatTime(lastSynced))")
+                    Text(formatTime(lastSynced))
                         .font(.system(size: 8))
                         .foregroundColor(.textTertiary)
+                } else {
+                    Text(syncStatusText)
+                        .font(.system(size: 8))
+                        .foregroundColor(.textTertiary)
+                        .lineLimit(1)
                 }
             }
-            .padding(.top, 2)
+
+            Text("v2.0")
+                .font(.system(size: 8))
+                .foregroundColor(.textTertiary)
         }
-        .padding(.horizontal, APSpacing.md)
-        .padding(.bottom, APSpacing.sm)
+        .padding(.horizontal, APSpacing.sm)
+        .padding(.vertical, 6)
     }
 
     @ViewBuilder
     private var staffSessionWidget: some View {
         if let staff = sessionManager.currentStaffSession {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 10) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.appAccent.opacity(0.18))
-                            .frame(width: 34, height: 34)
-                        Text(staffInitials(staff.displayName))
-                            .font(.caption.weight(.black))
-                            .foregroundColor(.appAccent)
-                    }
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(staff.displayName)
-                            .font(.caption.weight(.bold))
-                            .foregroundColor(.textPrimary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                        Text(staff.roleName)
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.textSecondary)
-                            .lineLimit(1)
-                    }
-
-                    Spacer()
+            HStack(spacing: 8) {
+                // Avatar
+                ZStack {
+                    Circle()
+                        .fill(Color.appAccent.opacity(0.18))
+                        .frame(width: 28, height: 28)
+                    Text(staffInitials(staff.displayName))
+                        .font(.system(size: 10, weight: .black))
+                        .foregroundColor(.appAccent)
                 }
 
+                // Name + role
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(staff.displayName)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.textPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Text(staff.roleName)
+                        .font(.system(size: 9))
+                        .foregroundColor(.textSecondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                // Lock button — compact icon
                 Button {
                     APHaptic.trigger()
                     sessionManager.lockStaffSession(modelContext: modelContext)
                 } label: {
-                    Label("lock_register_btn".t, systemImage: "lock.fill")
-                        .font(.caption.weight(.bold))
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.appAccent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                        .frame(width: 28, height: 28)
                         .background(Color.appAccent.opacity(0.10))
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
-            .padding(10)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color.appSurface)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.appBorderSubtle, lineWidth: 1)
-                    )
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.appBorderSubtle, lineWidth: 1))
             )
-            .padding(.horizontal, APSpacing.md)
-            .padding(.bottom, APSpacing.sm)
+            .padding(.horizontal, APSpacing.sm)
+            .padding(.bottom, 4)
         }
     }
     
@@ -453,70 +517,56 @@ struct MainDashboardView: View {
     private var inventoryHealthWidget: some View {
         let activeBranchUUID = UUID(uuidString: activeBranchId)
         let branchItems = inventoryItems.filter { item in
-            if let activeId = activeBranchUUID {
-                return item.branch?.id == activeId
-            }
+            if let activeId = activeBranchUUID { return item.branch?.id == activeId }
             return true
         }
         let lowStockItems = branchItems.filter { $0.currentQuantity <= $0.reorderLevel }
-        let totalValue = branchItems.reduce(0.0) { $0 + ($1.currentQuantity * $1.costPrice) }
-        
-        return VStack(spacing: APSpacing.xs) {
-            // Stock Valuation
-            HStack(spacing: 8) {
+        let totalValue    = branchItems.reduce(0.0) { $0 + ($1.currentQuantity * $1.costPrice) }
+
+        return HStack(spacing: 6) {
+            // Stock value chip
+            HStack(spacing: 4) {
                 Image(systemName: "banknote.fill")
-                    .font(.system(size: 11))
+                    .font(.system(size: 9))
                     .foregroundColor(.appTeal)
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 0) {
                     Text(L.Dashboard.stockValue.t)
-                        .font(.system(size: 8))
+                        .font(.system(size: 7))
                         .foregroundColor(.textTertiary)
                     Text("฿\(totalValue.formatted(.number.precision(.fractionLength(0))))")
-                        .font(.caption)
-                        .fontWeight(.bold)
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.textPrimary)
                 }
-                Spacer()
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
             .background(Color.appSurfaceHigh)
-            .cornerRadius(APRadius.sm)
-            
-            // Low Stock Alert
+            .cornerRadius(8)
+
+            Spacer()
+
+            // Low-stock badge (only when needed)
             if !lowStockItems.isEmpty {
-                HStack(spacing: 8) {
+                HStack(spacing: 3) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11))
+                        .font(.system(size: 9))
                         .foregroundColor(.appRose)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(L.Dashboard.lowStockAlert.t)
-                            .font(.system(size: 8))
-                            .foregroundColor(.textTertiary)
-                        Text(LocalizationManager.shared.t(L.Dashboard.itemsBelowReorder, lowStockItems.count))
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.appRose)
-                    }
-                    Spacer()
+                    Text(LocalizationManager.shared.t(L.Dashboard.itemsBelowReorder, lowStockItems.count))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.appRose)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
                 .background(Color.appRose.opacity(0.08))
-                .cornerRadius(APRadius.sm)
-                .overlay(
-                    RoundedRectangle(cornerRadius: APRadius.sm)
-                        .stroke(Color.appRose.opacity(0.2), lineWidth: 1)
-                )
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.appRose.opacity(0.2), lineWidth: 1))
                 .onTapGesture {
-                    withAnimation {
-                        selectedTab = .inventory
-                        columnVisibility = .detailOnly
-                    }
+                    withAnimation { selectedTab = .inventory; columnVisibility = .detailOnly }
                 }
             }
         }
         .padding(.horizontal, APSpacing.sm)
-        .padding(.bottom, APSpacing.sm)
+        .padding(.bottom, 4)
     }
 
     // MARK: - Detail
@@ -526,7 +576,7 @@ struct MainDashboardView: View {
         ZStack {
             Color.appBackground.ignoresSafeArea()
             switch selectedTab {
-            case .tables:     TableView(selectedTab: $selectedTab, activeSession: $posTableSession)
+            case .tables:     TableView(selectedTab: $selectedTab, activeSession: $posTableSession, columnVisibility: $columnVisibility)
             case .pos:        POSView(activeSession: $posTableSession, selectedTab: $selectedTab, columnVisibility: $columnVisibility)
             case .cashDrawer: CashDrawerManagementView()
             case .kitchen:    KitchenDisplayView()
@@ -567,10 +617,35 @@ private struct SidebarTabRow: View {
                     .foregroundColor(isSelected ? .white : tab.iconColor.opacity(0.7))
             }
 
-            Text(tab.localizedName)
-                .font(.subheadline)
-                .fontWeight(isSelected ? .semibold : .regular)
-                .foregroundColor(isSelected ? .textPrimary : .textSecondary)
+            HStack(spacing: 6) {
+                Text(tab.localizedName)
+                    .font(.subheadline)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                    .foregroundColor(isSelected ? .textPrimary : .textSecondary)
+
+                // Badge: Beta / New
+                switch tab.badge {
+                case .beta:
+                    Text("sidebar_badge_beta".t)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.textSecondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.appSurfaceHigh)
+                        .cornerRadius(6)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.appBorderSubtle, lineWidth: 1))
+                case .new:
+                    Text("sidebar_badge_new".t)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(Color(hex: "854D0E"))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color(hex: "FEF08A").opacity(0.9))
+                        .cornerRadius(6)
+                case .none:
+                    EmptyView()
+                }
+            }
 
             Spacer()
 

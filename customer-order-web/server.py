@@ -623,6 +623,12 @@ def _init_db_helper(conn):
     if 'description_translations' not in columns:
         cursor.execute("ALTER TABLE menu_items ADD COLUMN description_translations TEXT DEFAULT '{}'")
 
+    # Ensure notes exists in order_items
+    cursor.execute("PRAGMA table_info(order_items)")
+    order_item_columns = [col[1] for col in cursor.fetchall()]
+    if 'notes' not in order_item_columns:
+        cursor.execute("ALTER TABLE order_items ADD COLUMN notes TEXT")
+
     # 4. Table Sessions table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS table_sessions (
@@ -1352,13 +1358,30 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     
                     items = []
                     for item_row in item_rows:
+                        db_item_id = item_row["id"]
+                        # Fetch modifiers for this item
+                        cursor.execute("SELECT * FROM order_item_modifiers WHERE order_item_id = ?", (db_item_id,))
+                        mod_rows = cursor.fetchall()
+                        item_mods = []
+                        for mod_row in mod_rows:
+                            cursor.execute("SELECT name FROM modifiers WHERE id = ?", (mod_row["modifier_id"],))
+                            mod_name_row = cursor.fetchone()
+                            item_mods.append({
+                                "id": mod_row["id"],
+                                "modifier_id": mod_row["modifier_id"],
+                                "name": mod_name_row[0] if mod_name_row else "Modifier",
+                                "price": mod_row["price"]
+                            })
+
                         items.append({
                             "id": item_row["id"],
                             "name": item_row["item_name"],
                             "quantity": item_row["quantity"],
                             "price": item_row["price"],
                             "status": item_row["status"],
-                            "item_id": item_row["item_id"]
+                            "item_id": item_row["item_id"],
+                            "notes": item_row["notes"] if "notes" in item_row.keys() else "",
+                            "modifiers": item_mods
                         })
                     
                     # Fetch payments for this order
@@ -1566,6 +1589,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             qty = item.get("quantity")
                             price = item.get("price")
                             item_status = item.get("status")
+                            notes = clean_string(item.get("notes") or "", "notes", 500)
                             
                             # Look for existing item *only* within this specific order
                             item_exists = None
@@ -1580,16 +1604,16 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             if item_exists:
                                 cursor.execute('''
                                     UPDATE order_items 
-                                    SET quantity = ?, price = ?, status = ?
+                                    SET quantity = ?, price = ?, status = ?, notes = ?
                                     WHERE id = ?
-                                ''', (qty, price, item_status, item_exists[0]))
+                                ''', (qty, price, item_status, notes, item_exists[0]))
                                 db_id = item_exists[0]
                             else:
                                 new_item_id = str(uuid.uuid4())
                                 cursor.execute('''
-                                    INSERT INTO order_items (id, order_id, item_name, quantity, price, status, item_id, merchant_id)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', (new_item_id, order_id, name, qty, price, item_status, menu_item_id, MERCHANT_ID))
+                                    INSERT INTO order_items (id, order_id, item_name, quantity, price, status, item_id, merchant_id, notes)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', (new_item_id, order_id, name, qty, price, item_status, menu_item_id, MERCHANT_ID, notes))
                                 db_id = new_item_id
                                 
                             # Delete and recreate modifiers for this item
@@ -1620,12 +1644,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             qty = item.get("quantity")
                             price = item.get("price")
                             item_status = item.get("status")
+                            notes = item.get("notes")
                             
                             db_id = client_id or str(uuid.uuid4())
                             cursor.execute('''
-                                INSERT INTO order_items (id, order_id, item_name, quantity, price, status, item_id, merchant_id)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            ''', (db_id, order_id, name, qty, price, item_status, menu_item_id, MERCHANT_ID))
+                                INSERT INTO order_items (id, order_id, item_name, quantity, price, status, item_id, merchant_id, notes)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (db_id, order_id, name, qty, price, item_status, menu_item_id, MERCHANT_ID, notes))
                             
                             # Insert Order Item Modifiers
                             item_modifiers = item.get("modifiers", [])
@@ -1667,7 +1692,8 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     "price": item.get("price"),
                     "status": item.get("status"),
                     "item_id": item.get("item_id"),
-                    "merchant_id": MERCHANT_ID
+                    "merchant_id": MERCHANT_ID,
+                    "notes": item.get("notes") or ""
                 }
                 supabase_post("order_items", supabase_item)
                 

@@ -131,6 +131,20 @@ class AlphaPosApp {
         // Mock Menu Data representing actual restaurant dishes
         this.menuItems = defaultMenuItems; // Loaded from API as fallback
 
+        // Inject sample high-quality food looping videos for recommended items
+        if (this.menuItems && this.menuItems.length > 0) {
+            // main1: Signature River Prawn Pad Thai
+            const main1 = this.menuItems.find(i => i.id === "main1");
+            if (main1) main1.videoUrl = "https://player.vimeo.com/external/435674703.sd.mp4?s=7f773cdccf1a0e784534f5263a232f3c64e5ba79&profile_id=139&oauth2_token_id=57447761";
+            
+            // app3: Tom Yum Goong
+            const app3 = this.menuItems.find(i => i.id === "app3");
+            if (app3) app3.videoUrl = "https://player.vimeo.com/external/371433846.sd.mp4?s=236da2f3c0227e3d077b90f741131a1b&profile_id=139&oauth2_token_id=57447761";
+
+            // dessert1: Mango Sticky Rice
+            const dessert1 = this.menuItems.find(i => i.id === "dessert1");
+            if (dessert1) dessert1.videoUrl = "https://player.vimeo.com/external/538571059.sd.mp4?s=d00e62d22b62d377b8b209d6f83a45c382215c2d&profile_id=139&oauth2_token_id=57447761";
+        }
 
         // Categories List
         this.categories = [
@@ -1372,7 +1386,8 @@ class AlphaPosApp {
                         category: item.category,
                         emoji: item.emoji || "",
                         imgClass: item.img_class || "img-main",
-                        imageUrl: item.image_url || item.imageUrl || ""
+                        imageUrl: item.image_url || item.imageUrl || "",
+                        videoUrl: item.video_url || item.videoUrl || ""
                     }));
                     success = true;
                 }
@@ -1395,7 +1410,8 @@ class AlphaPosApp {
                             category: item.category,
                             emoji: item.emoji || "",
                             imgClass: item.imgClass || item.img_class || "img-main",
-                            imageUrl: item.image_url || item.imageUrl || ""
+                            imageUrl: item.image_url || item.imageUrl || "",
+                            videoUrl: item.video_url || item.videoUrl || ""
                         }));
                         success = true;
                         console.log("Loaded menu from local server fallback.");
@@ -1616,10 +1632,18 @@ class AlphaPosApp {
         const container = document.getElementById("categoryTabs");
         container.innerHTML = "";
 
+        const categoryIcons = {
+            "foods": `<svg class="category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"></path><path d="M7 2v4"></path><path d="M21 15V2v0a5 5 0 0 0-5 5v3c0 1.1.9 2 2 2h3Z"></path><path d="M12 11v11"></path><path d="M18 11v11"></path></svg>`,
+            "drinks": `<svg class="category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8h12L16 22H8L6 8z"></path><path d="m14 2-3 6"></path><path d="M18 2h-4"></path></svg>`,
+            "desserts": `<svg class="category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a5 5 0 0 0-5 5v2a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5z"></path><path d="M6 14h12L12 22z"></path><path d="M17 14H7"></path></svg>`
+        };
+
         this.categories.forEach(category => {
             const tab = document.createElement("button");
             tab.className = `category-tab ${this.currentCategory === category.id ? 'active' : ''}`;
-            tab.innerText = this.translate('category_' + category.id, category.name);
+            const iconHtml = categoryIcons[category.id] || '';
+            const labelText = this.translate('category_' + category.id, category.name);
+            tab.innerHTML = `${iconHtml}<span class="category-name">${escapeHtml(labelText)}</span>`;
             tab.onclick = () => this.switchCategory(category.id);
             container.appendChild(tab);
         });
@@ -1690,8 +1714,8 @@ class AlphaPosApp {
         if (isSearching) {
             listItems = itemsToRender;
         } else {
-            featuredItems = itemsToRender.slice(0, 2);
-            listItems = itemsToRender.slice(2);
+            featuredItems = itemsToRender.slice(0, 5);
+            listItems = itemsToRender.slice(5);
             if (featuredItems.length === 0 && featuredSection) {
                 featuredSection.style.display = "none";
             }
@@ -1704,9 +1728,8 @@ class AlphaPosApp {
             let actionPillHtml;
             if (inCartQty === 0) {
                 actionPillHtml = `
-                    <button class="price-add-pill" aria-label="Add ${escapeHtml(this.getItemName(item))} to cart" onclick="app.updateCartQuantity('${item.id}', 1); event.stopPropagation();">
-                        <span class="pill-price">฿${item.price.toFixed(2)}</span>
-                        <span class="pill-add-btn">+</span>
+                    <button class="add-btn-only" aria-label="Add ${escapeHtml(this.getItemName(item))} to cart" onclick="app.updateCartQuantity('${item.id}', 1); event.stopPropagation();">
+                        <span class="add-btn-plus">+</span>
                     </button>
                 `;
             } else {
@@ -1740,6 +1763,7 @@ class AlphaPosApp {
             element.setAttribute("role", "button");
             element.setAttribute("tabindex", "0");
             element.setAttribute("aria-label", `${this.getItemName(item)} ฿${item.price.toFixed(2)}`);
+            element.setAttribute("data-item-id", item.id);
             element.addEventListener("keydown", (event) => {
                 if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
@@ -1747,10 +1771,23 @@ class AlphaPosApp {
                 }
             });
 
+            let mediaHtml;
+            if (isFeatured && item.videoUrl) {
+                mediaHtml = `
+                    <video class="featured-item-img" autoplay loop muted playsinline style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <source src="${escapeHtml(item.videoUrl)}" type="video/mp4">
+                        <img class="featured-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                    </video>
+                    <img class="featured-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" style="display:none;" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                `;
+            } else {
+                mediaHtml = `<img class="featured-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">`;
+            }
+
             if (isFeatured) {
                 element.innerHTML = `
                     <div class="featured-item-img-container" onclick="event.stopPropagation()">
-                        <img class="featured-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                        ${mediaHtml}
                     </div>
                     <div class="featured-item-content">
                         <div class="featured-item-category">${escapeHtml(itemSubcategory)}</div>
@@ -1764,8 +1801,11 @@ class AlphaPosApp {
                         </div>
                         <h3 class="featured-item-title">${escapeHtml(this.getItemName(item))}</h3>
                         <p class="featured-item-desc">${escapeHtml(this.getItemDesc(item))}</p>
-                        <div class="featured-item-action" onclick="event.stopPropagation()">
-                            ${actionPillHtml}
+                        <div class="featured-item-price-action" onclick="event.stopPropagation()">
+                            <span class="featured-item-price">฿${item.price.toFixed(2)}</span>
+                            <div class="featured-item-action">
+                                ${actionPillHtml}
+                            </div>
                         </div>
                     </div>
                 `;
@@ -1778,8 +1818,11 @@ class AlphaPosApp {
                         </div>
                         <h3 class="list-item-title">${escapeHtml(this.getItemName(item))}</h3>
                         <p class="list-item-desc">${escapeHtml(this.getItemDesc(item))}</p>
-                        <div class="list-item-action" onclick="event.stopPropagation()">
-                            ${actionPillHtml}
+                        <div class="list-item-price-action">
+                            <span class="list-item-price">฿${item.price.toFixed(2)}</span>
+                            <div class="list-item-action" onclick="event.stopPropagation()">
+                                ${actionPillHtml}
+                            </div>
                         </div>
                     </div>
                     <div class="list-item-img-container" onclick="event.stopPropagation()">
@@ -1792,6 +1835,9 @@ class AlphaPosApp {
         };
 
         // Render featured items
+        if (featuredGrid) {
+            featuredGrid.classList.toggle("scrollable", featuredItems.length > 3);
+        }
         featuredItems.forEach((item, index) => {
             if (featuredGrid) {
                 featuredGrid.appendChild(createItemHTML(item, index, true));
@@ -1853,7 +1899,7 @@ class AlphaPosApp {
                 notes: notes
             };
         }
-        this.renderMenuItems();
+        this.updateItemCardUI(itemId);
         this.updateCartUI();
         this.jiggleCartNotification();
     }
@@ -1862,6 +1908,7 @@ class AlphaPosApp {
      * Updates cart item quantities (supports cartKey and itemId)
      */
     updateCartQuantity(cartKeyOrItemId, change) {
+        let itemId = (this.cart[cartKeyOrItemId] && typeof this.cart[cartKeyOrItemId] === 'object') ? this.cart[cartKeyOrItemId].itemId : cartKeyOrItemId;
         if (this.cart[cartKeyOrItemId]) {
             if (typeof this.cart[cartKeyOrItemId] === 'number') {
                 const newQty = this.cart[cartKeyOrItemId] + change;
@@ -1887,6 +1934,7 @@ class AlphaPosApp {
                 });
                 if (matchingKeys.length > 0) {
                     const targetKey = matchingKeys[matchingKeys.length - 1];
+                    itemId = (this.cart[targetKey] && typeof this.cart[targetKey] === 'object') ? this.cart[targetKey].itemId : targetKey;
                     if (typeof this.cart[targetKey] === 'number') {
                         const newQty = this.cart[targetKey] + change;
                         if (newQty <= 0) delete this.cart[targetKey];
@@ -1908,8 +1956,46 @@ class AlphaPosApp {
             }
         }
 
-        this.renderMenuItems();
+        this.updateItemCardUI(itemId);
         this.updateCartUI();
+    }
+
+    /**
+     * Inline DOM update helper for individual product cards to prevent page layout redraws
+     */
+    updateItemCardUI(itemId) {
+        const inCartQty = this.getItemTotalQuantity(itemId);
+        const cards = document.querySelectorAll(`[data-item-id="${itemId}"]`);
+        
+        cards.forEach(card => {
+            card.classList.toggle("selected", inCartQty > 0);
+
+            const isFeatured = card.classList.contains("featured-item-card");
+            const actionEl = card.querySelector(isFeatured ? ".featured-item-action" : ".list-item-action");
+            
+            if (actionEl) {
+                const item = this.menuItems.find(i => i.id === itemId);
+                if (!item) return;
+
+                let actionPillHtml;
+                if (inCartQty === 0) {
+                    actionPillHtml = `
+                        <button class="add-btn-only" aria-label="Add ${escapeHtml(this.getItemName(item))} to cart" onclick="app.updateCartQuantity('${item.id}', 1); event.stopPropagation();">
+                            <span class="add-btn-plus">+</span>
+                        </button>
+                    `;
+                } else {
+                    actionPillHtml = `
+                        <div class="quantity-control-pill" onclick="event.stopPropagation()">
+                            <button class="pill-qty-btn dec-btn" aria-label="Decrease ${escapeHtml(this.getItemName(item))}" onclick="app.updateCartQuantity('${item.id}', -1); event.stopPropagation();">-</button>
+                            <span class="pill-qty-val">${inCartQty}</span>
+                            <button class="pill-qty-btn inc-btn" aria-label="Increase ${escapeHtml(this.getItemName(item))}" onclick="app.updateCartQuantity('${item.id}', 1); event.stopPropagation();">+</button>
+                        </div>
+                    `;
+                }
+                actionEl.innerHTML = actionPillHtml;
+            }
+        });
     }
 
     /**
@@ -2173,7 +2259,7 @@ class AlphaPosApp {
                 if (sessionData) {
                     const { data: ordersData, error: ordersError } = await this.supabase
                         .from('orders')
-                        .select('*, order_items(*), payments(*)')
+                        .select('*, order_items(*, order_item_modifiers(*)), payments(*)')
                         .eq('table_number', this.tableNumber)
                         .gte('created_at', sessionData.created_at)
                         .order('created_at', { ascending: true });
@@ -2181,14 +2267,26 @@ class AlphaPosApp {
                     if (ordersError) throw ordersError;
 
                     formattedOrders = ordersData.map(order => {
-                        const items = (order.order_items || []).map(item => ({
-                            id: item.id,
-                            name: item.item_name,
-                            quantity: item.quantity,
-                            price: item.price,
-                            status: item.status,
-                            item_id: item.item_id
-                        }));
+                        const items = (order.order_items || []).map(item => {
+                            const mods = (item.order_item_modifiers || []).map(m => {
+                                const modConfig = this.modifiersConfig.modifiers.find(mc => mc.id === m.modifier_id);
+                                return {
+                                    id: m.id,
+                                    name: modConfig ? modConfig.name : "Modifier",
+                                    price: m.price
+                                };
+                            });
+                            return {
+                                id: item.id,
+                                name: item.item_name,
+                                quantity: item.quantity,
+                                price: item.price,
+                                status: item.status,
+                                item_id: item.item_id,
+                                notes: item.notes || "",
+                                modifiers: mods
+                            };
+                        });
                         const payments = (order.payments || []).map(p => ({
                             id: p.id,
                             orderId: p.order_id,
@@ -2291,13 +2389,30 @@ class AlphaPosApp {
                 const statusClass = item.status === "ready" ? "ready" : "cooking";
                 const statusIcon = item.status === "ready" ? "icon-bell" : "icon-clock";
 
-                const matchedMenuItem = this.menuItems.find(m => m.name === item.name);
+                const matchedMenuItem = this.menuItems.find(m => m.id === item.item_id) || this.menuItems.find(m => m.name === item.name);
                 const displayName = matchedMenuItem ? this.getItemName(matchedMenuItem) : item.name;
 
                 const el = document.createElement("div");
                 el.className = "status-item-card";
                 const noteKey = `item_note_${item.id}`;
                 const savedNote = localStorage.getItem(noteKey) || '';
+                
+                let modifiersHtml = "";
+                if (item.modifiers && item.modifiers.length > 0) {
+                    const modNames = item.modifiers.map(m => {
+                        const translatedName = this.translate('modifier_' + m.name, m.name);
+                        return `${translatedName} (+฿${parseFloat(m.price || 0).toFixed(2)})`;
+                    });
+                    modifiersHtml = `<div class="item-modifiers-display" style="font-size: 0.8rem; color: #6B7280; margin-top: 2px;">${modNames.join(", ")}</div>`;
+                }
+
+                const itemNote = item.notes || savedNote;
+                const noteHtml = itemNote.trim()
+                    ? `<div class="item-note-display" style="font-size: 0.8rem; color: #d97706; margin-top: 2px; font-style: italic;">
+                         <span class="note-icon app-icon icon-menu" aria-hidden="true"></span> <span class="note-text">${escapeHtml(itemNote)}</span>
+                       </div>`
+                    : "";
+
                 el.innerHTML = `
                     <div class="item-info">
                         <div class="item-header">
@@ -2305,7 +2420,8 @@ class AlphaPosApp {
                             <span class="item-qty">× ${item.quantity}</span>
                         </div>
                         <div class="item-meta">${this.translate('orderLabel')}: ${escapeHtml(item.orderNumber || '')}</div>
-                        ${savedNote ? `<div class="item-note-display"><span class="note-icon app-icon icon-menu" aria-hidden="true"></span> <span class="note-text">${escapeHtml(savedNote)}</span></div>` : ''}
+                        ${modifiersHtml}
+                        ${noteHtml}
                     </div>
                     <div class="status-action-group">
                         <button class="add-note-btn" aria-label="${this.translate('addNoteBtn')}" onclick="app.addItemNote('${item.id}', '${escapeHtml(displayName)}')" title="${this.translate('addNoteBtn')}"><span class="app-icon icon-menu" aria-hidden="true"></span></button>
@@ -2324,13 +2440,30 @@ class AlphaPosApp {
                 const statusClass = item.status === "cancelled" ? "cancelled" : "served";
                 const statusIcon = item.status === "cancelled" ? "icon-alert" : "icon-utensils";
 
-                const matchedMenuItem = this.menuItems.find(m => m.name === item.name);
+                const matchedMenuItem = this.menuItems.find(m => m.id === item.item_id) || this.menuItems.find(m => m.name === item.name);
                 const displayName = matchedMenuItem ? this.getItemName(matchedMenuItem) : item.name;
 
                 const el = document.createElement("div");
                 el.className = "status-item-card served-item";
                 const pastNoteKey = `item_note_${item.id}`;
                 const pastSavedNote = localStorage.getItem(pastNoteKey) || '';
+
+                let modifiersHtml = "";
+                if (item.modifiers && item.modifiers.length > 0) {
+                    const modNames = item.modifiers.map(m => {
+                        const translatedName = this.translate('modifier_' + m.name, m.name);
+                        return `${translatedName} (+฿${parseFloat(m.price || 0).toFixed(2)})`;
+                    });
+                    modifiersHtml = `<div class="item-modifiers-display" style="font-size: 0.8rem; color: #6B7280; margin-top: 2px;">${modNames.join(", ")}</div>`;
+                }
+
+                const itemNote = item.notes || pastSavedNote;
+                const noteHtml = itemNote.trim()
+                    ? `<div class="item-note-display" style="font-size: 0.8rem; color: #d97706; margin-top: 2px; font-style: italic;">
+                         <span class="note-icon app-icon icon-menu" aria-hidden="true"></span> <span class="note-text">${escapeHtml(itemNote)}</span>
+                       </div>`
+                    : "";
+
                 el.innerHTML = `
                     <div class="item-info">
                         <div class="item-header">
@@ -2338,7 +2471,8 @@ class AlphaPosApp {
                             <span class="item-qty">× ${item.quantity}</span>
                         </div>
                         <div class="item-meta">${this.translate('orderLabel')}: ${escapeHtml(item.orderNumber || '')}</div>
-                        ${pastSavedNote ? `<div class="item-note-display"><span class="note-icon app-icon icon-menu" aria-hidden="true"></span> <span class="note-text">${escapeHtml(pastSavedNote)}</span></div>` : ''}
+                        ${modifiersHtml}
+                        ${noteHtml}
                     </div>
                     <div class="served-action-group">
                         <button class="add-note-btn" aria-label="${this.translate('addNoteBtn')}" onclick="app.addItemNote('${item.id}', '${escapeHtml(displayName)}')" title="${this.translate('addNoteBtn')}"><span class="app-icon icon-menu" aria-hidden="true"></span></button>
@@ -2774,7 +2908,12 @@ class AlphaPosApp {
         };
 
         const orderId = generateUUID();
-        const orderNum = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
+        const now = new Date();
+        const yyyy = now.getFullYear();
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const dd = String(now.getDate()).padStart(2, '0');
+        const rand = Math.floor(100 + Math.random() * 900);
+        const orderNum = `ORD-${yyyy}${mm}${dd}-${rand}`;
 
         const orderItems = [];
         Object.keys(this.cart).forEach(cartKey => {
@@ -2827,6 +2966,64 @@ class AlphaPosApp {
 
         const { total } = this.calculateTotals();
         let success = false;
+
+        if (this.supabase) {
+            try {
+                const orderPayload = {
+                        id: orderId,
+                        order_number: orderNum,
+                        table_number: this.tableNumber,
+                        total: total,
+                        status: 'preparing',
+                        session_token: this.sessionToken,
+                        guest_count: this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount),
+                        merchant_id: this.merchantId,
+                        created_at: new Date().toISOString()
+                    };
+
+                const itemsToInsert = orderItems.map(item => ({
+                    id: item.id,
+                    order_id: item.order_id,
+                    item_name: item.item_name,
+                    quantity: item.quantity,
+                    price: item.price,
+                    status: item.status,
+                    item_id: item.item_id,
+                    merchant_id: item.merchant_id,
+                    notes: item.notes
+                }));
+
+                const modifiersToInsert = [];
+                orderItems.forEach(item => {
+                    if (item.modifiers && item.modifiers.length > 0) {
+                        item.modifiers.forEach(m => {
+                            modifiersToInsert.push({
+                                id: m.id,
+                                order_item_id: m.order_item_id,
+                                modifier_id: m.modifier_id,
+                                price: m.price,
+                                merchant_id: m.merchant_id
+                            });
+                        });
+                    }
+                });
+
+                // One PostgreSQL transaction: order, items and modifiers commit together.
+                const { error: orderErr } = await this.supabase.rpc('create_customer_order', {
+                    p_order: orderPayload,
+                    p_items: itemsToInsert,
+                    p_modifiers: modifiersToInsert
+                });
+                if (orderErr) throw orderErr;
+
+                success = true;
+                console.log("Supabase order submission succeeded.");
+
+                // Push is now handled reliably by a database trigger/webhook on orders INSERT.
+            } catch (sbErr) {
+                console.error("Supabase order submission failed, falling back to local server:", sbErr);
+            }
+        }
 
         if (!success) {
             try {

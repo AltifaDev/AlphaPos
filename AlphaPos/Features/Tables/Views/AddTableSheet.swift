@@ -1,6 +1,21 @@
 import SwiftUI
 import SwiftData
 
+// MARK: - TableShapeOption
+enum TableShapeOption: String, CaseIterable, Identifiable {
+    case rectangle, square, circle, oval
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .rectangle: return "rectangle"
+        case .square: return "square"
+        case .circle: return "circle"
+        case .oval: return "oval"
+        }
+    }
+    var labelKey: String { "table_shape_\(rawValue)" }
+}
+
 struct AddTableSheet: View {
     @Binding var isPresented: Bool
     @EnvironmentObject private var lm: LocalizationManager
@@ -9,7 +24,7 @@ struct AddTableSheet: View {
     @State private var tableNumber: String = ""
     @State private var capacity: Int = 2
     @State private var selectedStatus: String = "vacant"
-    @State private var isRoundTable: Bool = false
+    @State private var selectedShape: TableShapeOption = .rectangle
     @State private var showingError = false
     @State private var errorMessage = ""
     @State private var selectedFloor: Int
@@ -121,22 +136,28 @@ struct AddTableSheet: View {
                                     .fontWeight(.bold)
                                     .foregroundColor(.textPrimary)
 
-                                HStack(spacing: 12) {
-                                    ForEach([false, true], id: \.self) { round in
-                                        Button(action: { isRoundTable = round }) {
-                                            HStack(spacing: 8) {
-                                                Image(systemName: round ? "circle" : "rectangle")
-                                                    .font(.system(size: 18))
-                                                Text(round ? "table_shape_round".t : "table_shape_rectangle".t)
-                                                    .font(.subheadline).fontWeight(.semibold)
+                                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                                    ForEach(TableShapeOption.allCases) { shape in
+                                        Button(action: {
+                                            selectedShape = shape
+                                            APHaptic.trigger()
+                                        }) {
+                                            VStack(spacing: 6) {
+                                                Image(systemName: shape.icon)
+                                                    .font(.system(size: 28, weight: .medium))
+                                                    .foregroundColor(selectedShape == shape ? .white : .appAccent)
+                                                Text(shape.labelKey.t)
+                                                    .font(.caption)
+                                                    .fontWeight(.semibold)
+                                                    .foregroundColor(selectedShape == shape ? .white : .textSecondary)
                                             }
-                                            .foregroundColor(isRoundTable == round ? .white : .textSecondary)
                                             .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 10)
-                                            .background(isRoundTable == round ? Color.appAccent : Color.appSurfaceHigh)
+                                            .padding(.vertical, 14)
+                                            .background(selectedShape == shape ? Color.appAccent : Color.appSurfaceHigh)
                                             .cornerRadius(APRadius.md)
                                             .overlay(RoundedRectangle(cornerRadius: APRadius.md)
-                                                .stroke(isRoundTable == round ? Color.appAccent : Color.appBorderSubtle, lineWidth: 1))
+                                                .stroke(selectedShape == shape ? Color.appAccent : Color.appBorderSubtle, lineWidth: 1))
+                                            .animation(.spring(response: 0.2, dampingFraction: 0.7), value: selectedShape)
                                         }
                                         .buttonStyle(.plain)
                                     }
@@ -237,7 +258,7 @@ struct AddTableSheet: View {
                                 DynamicTableLayoutView(
                                     tableNumber: tableNumber.isEmpty ? "No." : tableNumber,
                                     capacity: capacity,
-                                    isRound: isRoundTable,
+                                    isRound: selectedShape == .circle || selectedShape == .oval,
                                     status: selectedStatus,
                                     isEditingLayout: false,
                                     isDragging: false,
@@ -298,7 +319,7 @@ struct AddTableSheet: View {
         let iconSize: CGFloat = 13
         let effectiveCount = max(capacity, 1)
 
-        if isRoundTable {
+        if selectedShape == .circle || selectedShape == .oval {
             let diam: CGFloat = 36
             let radius = diam / 2 + 8
 
@@ -396,7 +417,7 @@ struct AddTableSheet: View {
         let newTable = RestaurantTable(
             tableNumber: tableNumber.trimmingCharacters(in: .whitespaces),
             capacity: capacity,
-            isRound: isRoundTable,
+            tableShape: selectedShape.rawValue,
             status: selectedStatus,
             qrCodeIdentifier: "table_\(UUID().uuidString)",
             positionX: Double.random(in: 20...300),

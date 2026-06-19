@@ -25,7 +25,7 @@ struct MainTabView: View {
                 .tabItem {
                     Label("alerts".localized(for: appLanguage), systemImage: "bell.badge.fill")
                 }
-                .badge(requestsCount > 0 ? requestsCount : 0)
+                .badge(networkService.activeAlertsCount)
                 .tag(1)
             
             if let emp = loggedInEmployee {
@@ -51,6 +51,12 @@ struct MainTabView: View {
         .onDisappear {
             countTimer?.invalidate()
             countTimer = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openAlertsNotification)) { _ in
+            self.selectedTab = 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openTableNotification)) { _ in
+            self.selectedTab = 0
         }
     }
     

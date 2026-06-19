@@ -13,7 +13,8 @@ final class RestaurantTable {
     var positionX: Double = 0
     var positionY: Double = 0
     var floor: Int? = 1
-    var isRound: Bool = false   // true = round table, false = rectangle
+    var isRound: Bool = false   // kept for backward compatibility
+    var tableShape: String = "rectangle" // "rectangle", "square", "circle", "oval"
     var zone: String? = "Indoor"
 
     // Self-referential relationship for table combining/splitting
@@ -30,11 +31,12 @@ final class RestaurantTable {
     var isDeleted: Bool
     var updatedAt: Date
 
-    init(id: UUID = UUID(), tableNumber: String, capacity: Int, isRound: Bool = false, status: String = "vacant", qrCodeIdentifier: String? = nil, positionX: Double = 0, positionY: Double = 0, floor: Int? = 1, zone: String? = "Indoor", isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
+    init(id: UUID = UUID(), tableNumber: String, capacity: Int, tableShape: String = "rectangle", isRound: Bool = false, status: String = "vacant", qrCodeIdentifier: String? = nil, positionX: Double = 0, positionY: Double = 0, floor: Int? = 1, zone: String? = "Indoor", isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
         self.id = id
         self.tableNumber = tableNumber
         self.capacity = capacity
-        self.isRound = isRound
+        self.tableShape = tableShape
+        self.isRound = tableShape == "circle" || tableShape == "oval"
         self.status = status
         self.qrCodeIdentifier = qrCodeIdentifier
         self.positionX = positionX

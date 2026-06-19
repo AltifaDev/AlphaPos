@@ -46,6 +46,12 @@ final class NetworkService {
     var serviceRequests: [ServiceRequest] = []
     var orders: [Order] = []
     
+    var activeAlertsCount: Int {
+        let pendingRequests = serviceRequests.filter { $0.status == "pending" }.count
+        let preparingOrReadyOrders = orders.filter { $0.status == "preparing" || $0.status == "ready" }.count
+        return pendingRequests + preparingOrReadyOrders
+    }
+    
     // Status states
     var isFetching = false
     var connectionError = false
@@ -189,7 +195,31 @@ final class NetworkService {
             self.heartbeatTimer?.invalidate()
             self.heartbeatTimer = nil
             self.startRealtimeSync()
+            Task { try? await self.registerSavedPushToken() }
         }
+    }
+
+    func registerPushDevice(token: String) async throws {
+        UserDefaults.standard.set(token, forKey: "apns_device_token")
+        try await registerSavedPushToken()
+    }
+
+    private func registerSavedPushToken() async throws {
+        guard let token = UserDefaults.standard.string(forKey: "apns_device_token"), !token.isEmpty else { return }
+        let payload: [String: Any] = [
+            "merchant_id": activeMerchantId,
+            "device_token": token,
+            "app_id": "staff",
+            "platform": "ios",
+            "is_active": true,
+            "updated_at": ISO8601DateFormatter().string(from: Date())
+        ]
+        _ = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "push_devices",
+            queryItems: [URLQueryItem(name: "on_conflict", value: "device_token")],
+            payload: payload
+        )
     }
     
     // Ping/Check connection to Supabase menu_items REST endpoint
@@ -368,7 +398,7 @@ final class NetworkService {
                                 self.markRequestAsNotified(requestId: req.id)
                                 let title = "🔔 Table \(req.tableNumber): \(req.requestType)"
                                 let body = "Customer requested assistance at \(self.formatISOStringTime(req.createdAt))"
-                                NotificationManager.shared.notify(title: title, body: body, type: .request, deduplicationKey: "req-\(req.id)")
+                                NotificationManager.shared.notify(title: title, body: body, type: .request, deduplicationKey: "req-\(req.id)", userInfo: ["table_number": req.tableNumber, "type": "service_request", "request_id": req.id])
                             }
                         }
                         
@@ -382,11 +412,11 @@ final class NetworkService {
                                         if table.status == "occupied" {
                                             let title = "🚪 Table \(table.tableNumber) Occupied"
                                             let body = "Session started for \(table.guestCount) guests"
-                                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(table.tableNumber)-occupied")
+                                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(table.tableNumber)-occupied", userInfo: ["table_number": table.tableNumber, "type": "table_status"])
                                         } else if table.status == "vacant" && oldTable.status == "occupied" {
                                             let title = "💳 Table \(table.tableNumber) Vacant"
                                             let body = "Session ended / table cleared"
-                                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(table.tableNumber)-vacant")
+                                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(table.tableNumber)-vacant", userInfo: ["table_number": table.tableNumber, "type": "table_status"])
                                         }
                                     }
                                 }
@@ -408,7 +438,7 @@ final class NetworkService {
                                             let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
                                             let title = "🍳 Order \(order.orderNumber) Ready!"
                                             let body = "Table \(order.tableNumber): \(itemsSummary)"
-                                            NotificationManager.shared.notify(title: title, body: body, type: .order, deduplicationKey: notificationKey)
+                                            NotificationManager.shared.notify(title: title, body: body, type: .order, deduplicationKey: notificationKey, userInfo: ["table_number": order.tableNumber, "type": "order", "order_id": order.id])
                                         }
                                     }
                                 }
@@ -422,7 +452,7 @@ final class NetworkService {
                                         let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
                                         let title = statusLower == "ready" ? "🍳 Order \(order.orderNumber) Ready!" : "📝 New Order \(order.orderNumber)"
                                         let body = "Table \(order.tableNumber): \(itemsSummary)"
-                                        NotificationManager.shared.notify(title: title, body: body, type: .order, deduplicationKey: notificationKey)
+                                        NotificationManager.shared.notify(title: title, body: body, type: .order, deduplicationKey: notificationKey, userInfo: ["table_number": order.tableNumber, "type": "order", "order_id": order.id])
                                     } else {
                                         self.writeDebugLog("Already notified order \(order.orderNumber) with key \(notificationKey)")
                                     }
@@ -1109,12 +1139,10 @@ final class NetworkService {
     func startRealtimeSync() {
         guard webSocketTask == nil else { return }
         
-        // Use merchant JWT if available for WebSocket auth, otherwise fall back to anon key
-        let wsToken = MerchantAuthManager.shared.currentToken ?? anonKey
         let baseRealtimeURL = AppConfig.supabaseRealtimeURL.absoluteString
             .replacingOccurrences(of: "https://", with: "wss://")
             .replacingOccurrences(of: "http://", with: "ws://")
-        let wsURLString = "\(baseRealtimeURL)/websocket?apikey=\(wsToken)&vsn=1.0.0"
+        let wsURLString = "\(baseRealtimeURL)/websocket?apikey=\(anonKey)&vsn=1.0.0"
         guard let url = URL(string: wsURLString) else { return }
         
         let wsSession = URLSession(configuration: .default)
@@ -1173,6 +1201,7 @@ final class NetworkService {
     
     private func joinRealtimeTopic() {
         let merchantId = self.activeMerchantId
+        let accessToken = MerchantAuthManager.shared.currentToken ?? anonKey
         
         let joinPayload: [String: Any] = [
             "topic": "realtime:public",
@@ -1191,7 +1220,8 @@ final class NetworkService {
                         ["event": "*", "schema": "public", "table": "employee_shifts", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "timecards", "filter": "merchant_id=eq.\(merchantId)"]
                     ]
-                ]
+                ],
+                "access_token": accessToken
             ],
             "ref": "1"
         ]
@@ -1283,7 +1313,7 @@ final class NetworkService {
                         
                         let title = "🔔 Table \(tableNumber): \(requestType)"
                         let body = "Customer requested assistance"
-                        NotificationManager.shared.notify(title: title, body: body, type: .request, deduplicationKey: "req-\(id)")
+                        NotificationManager.shared.notify(title: title, body: body, type: .request, deduplicationKey: "req-\(id)", userInfo: ["table_number": tableNumber, "type": "service_request", "request_id": id])
                     }
                 }
                 
@@ -1319,7 +1349,7 @@ final class NetworkService {
                                     self.markOrderAsNotified(key: notificationKey)
                                     let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "📝 New Order \(orderNumber)"
                                     let body = "Table \(tableNumber)"
-                                    NotificationManager.shared.notify(title: title, body: body, type: .order, deduplicationKey: notificationKey)
+                                    NotificationManager.shared.notify(title: title, body: body, type: .order, deduplicationKey: notificationKey, userInfo: ["table_number": tableNumber, "type": "order", "order_id": id])
                                 }
                             }
                         } else if type == "UPDATE" {
@@ -1329,7 +1359,7 @@ final class NetworkService {
                                     let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "🍽️ Order \(orderNumber) Served"
                                     let body = statusLower == "ready" ? "Table \(tableNumber) is ready to be served" : "Table \(tableNumber) has been served"
                                     let notifyType: NotificationType = statusLower == "ready" ? .order : .tableStatus
-                                    NotificationManager.shared.notify(title: title, body: body, type: notifyType, deduplicationKey: notificationKey)
+                                    NotificationManager.shared.notify(title: title, body: body, type: notifyType, deduplicationKey: notificationKey, userInfo: ["table_number": tableNumber, "type": "order", "order_id": id])
                                 }
                             }
                         }
@@ -1375,11 +1405,11 @@ final class NetworkService {
                             let guestCount = record["guest_count"] as? Int ?? 0
                             let title = "🚪 Table \(tableNumber) Occupied"
                             let body = "Session started for \(guestCount) guests"
-                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(tableNumber)-occupied")
+                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(tableNumber)-occupied", userInfo: ["table_number": tableNumber, "type": "table_status"])
                         } else if status == "vacant" {
                             let title = "💳 Table \(tableNumber) Vacant"
                             let body = "Session ended / table cleared"
-                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(tableNumber)-vacant")
+                            NotificationManager.shared.notify(title: title, body: body, type: .tableStatus, deduplicationKey: "table-\(tableNumber)-vacant", userInfo: ["table_number": tableNumber, "type": "table_status"])
                         }
                     }
                 }

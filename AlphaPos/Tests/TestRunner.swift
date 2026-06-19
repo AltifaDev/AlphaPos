@@ -23,7 +23,8 @@ enum TestRunner {
             ("Inventory Enhancement", InventoryEnhancementTests.runAll()),
             ("Inventory Enterprise", InventoryEnterpriseTests.runAll()),
             ("Timecard",  TimecardTests.runAll()),
-            ("Payroll",   PayrollTests.runAll())
+            ("Payroll",   PayrollTests.runAll()),
+            ("Localization", LocalizationTests.runAll())
         ]
 
         printHeader()
