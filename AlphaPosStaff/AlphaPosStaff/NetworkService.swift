@@ -45,6 +45,7 @@ final class NetworkService {
     var menuItems: [MenuItem] = []
     var serviceRequests: [ServiceRequest] = []
     var orders: [Order] = []
+    var floorPlanImages: [FloorPlanImageStaff] = []
     
     var activeAlertsCount: Int {
         let pendingRequests = serviceRequests.filter { $0.status == "pending" }.count
@@ -352,10 +353,11 @@ final class NetworkService {
             async let fetchedOrders = fetchAllActiveOrders()
             async let fetchedWorkflow = fetchMerchantSettings()
             async let fetchedWalls = fetchWalls()
+            async let fetchedFloorPlans = fetchFloorPlanImages()
             
             // Await all concurrent fetches (orders first for notification priority)
             let ordersRes = try await fetchedOrders
-            let (tablesRes, requestsRes, wallsRes) = try await (fetchedTables, fetchedRequests, fetchedWalls)
+            let (tablesRes, requestsRes, wallsRes, floorPlansRes) = try await (fetchedTables, fetchedRequests, fetchedWalls, fetchedFloorPlans)
             let settingsRes = (try? await fetchedWorkflow) ?? (true, "", true, true)
             
             await MainActor.run {
@@ -376,6 +378,9 @@ final class NetworkService {
                 }
                 if self.walls != wallsRes {
                     self.walls = wallsRes
+                }
+                if self.floorPlanImages != floorPlansRes {
+                    self.floorPlanImages = floorPlansRes
                 }
                 if self.serviceRequests != requestsRes {
                     self.serviceRequests = requestsRes
@@ -636,6 +641,22 @@ final class NetworkService {
                 strokeWidth: strokeWidth,
                 isDeleted: isDeleted
             )
+        }
+    }
+    
+    func fetchFloorPlanImages() async throws -> [FloorPlanImageStaff] {
+        let merchantId = activeMerchantId.isEmpty ? AppConfig.defaultMerchantId : activeMerchantId
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "floor_plan_images", queryItems: [
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "is_deleted", value: "eq.false")
+        ])
+        let json = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+        return json.compactMap { dict -> FloorPlanImageStaff? in
+            guard let id = dict["id"] as? String,
+                  let floor = dict["floor"] as? Int,
+                  let imageFilename = dict["image_filename"] as? String else { return nil }
+            let isDeleted = dict["is_deleted"] as? Bool ?? false
+            return FloorPlanImageStaff(id: id, floor: floor, imageFilename: imageFilename, isDeleted: isDeleted)
         }
     }
     
@@ -1215,6 +1236,7 @@ final class NetworkService {
                         ["event": "*", "schema": "public", "table": "service_requests", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "restaurant_tables", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "restaurant_walls", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "floor_plan_images", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "merchants", "filter": "id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "employees", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "employee_shifts", "filter": "merchant_id=eq.\(merchantId)"],
@@ -1447,6 +1469,14 @@ final class NetworkService {
                     if let fetchedWalls = try? await self.fetchWalls() {
                         await MainActor.run {
                             self.walls = fetchedWalls
+                        }
+                    }
+                }
+            } else if table == "floor_plan_images" {
+                Task {
+                    if let fetchedFloorPlans = try? await self.fetchFloorPlanImages() {
+                        await MainActor.run {
+                            self.floorPlanImages = fetchedFloorPlans
                         }
                     }
                 }

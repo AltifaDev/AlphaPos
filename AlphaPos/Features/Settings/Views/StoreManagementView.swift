@@ -791,17 +791,24 @@ struct StoreManagementView: View {
         filter.setValue(string.data(using: .utf8), forKey: "inputMessage")
         filter.setValue("H", forKey: "inputCorrectionLevel")
         
-        let transform = CGAffineTransform(scaleX: 10, y: 10)
-        guard let ciImage = filter.outputImage?.transformed(by: transform) else { return nil }
+        guard let ciImage = filter.outputImage else { return nil }
         
-        let context = CIContext()
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
-        
-        let qrImage = UIImage(cgImage: cgImage)
         let tintColor = UIColor(hex: qrCustomColor)
         
-        // Tint
-        guard let tintedImage = qrImage.tinted(with: tintColor) else { return qrImage }
+        guard let colorFilter = CIFilter(name: "CIFalseColor") else { return nil }
+        colorFilter.setValue(ciImage, forKey: kCIInputImageKey)
+        colorFilter.setValue(CIColor(color: tintColor), forKey: "inputColor0")
+        colorFilter.setValue(CIColor(red: 1, green: 1, blue: 1), forKey: "inputColor1")
+        
+        guard let output = colorFilter.outputImage else { return nil }
+        
+        let transform = CGAffineTransform(scaleX: 10, y: 10)
+        let scaledOutput = output.transformed(by: transform)
+        
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(scaledOutput, from: scaledOutput.extent) else { return nil }
+        
+        let tintedImage = UIImage(cgImage: cgImage)
         
         // Logo
         if qrCustomShowLogo {

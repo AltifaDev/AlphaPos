@@ -137,3 +137,22 @@ struct ServiceRequest: Codable, Identifiable, Hashable {
     var status: String // "pending", "completed"
     let createdAt: String
 }
+
+struct FloorPlanImageStaff: Codable, Identifiable, Hashable {
+    let id: String
+    let floor: Int
+    let imageFilename: String
+    let isDeleted: Bool
+    
+    enum CodingKeys: String, CodingKey {
+        case id, floor, isDeleted = "is_deleted"
+        case imageFilename = "image_filename"
+    }
+
+    /// Resolved absolute path for reading the image file
+    var resolvedImagePath: String? {
+        guard !imageFilename.isEmpty else { return nil }
+        let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        return docsURL.appendingPathComponent(imageFilename).path
+    }
+}

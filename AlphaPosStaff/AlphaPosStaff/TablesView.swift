@@ -28,6 +28,7 @@ struct TablesView: View {
     @State private var viewMode: ViewMode = .canvas
     @State private var isAnimatedIn = false
     @State private var offlinePulse = false
+    @State private var cachedFloorPlanImage: UIImage? = nil
     
     // Zoom & Pan gesture states for canvas mode (iPad-like interaction)
     @State private var zoomScale: CGFloat = 0.45
@@ -452,25 +453,20 @@ struct TablesView: View {
                             GeometryReader { viewport in
                                 ZStack(alignment: .topLeading) {
                                     ZStack(alignment: .topLeading) {
+                                        // Floor Plan background image (behind grid & tables)
+                                        if let img = cachedFloorPlanImage {
+                                            Image(uiImage: img)
+                                                .resizable()
+                                                .scaledToFill()
+                                                .frame(width: 1500, height: 1200)
+                                                .clipped()
+                                                .opacity(0.35)
+                                                .allowsHitTesting(false)
+                                        }
+
                                         CanvasBackgroundGrid()
                                             .frame(width: 1500, height: 1200)
                                             .allowsHitTesting(false)
-
-                                        // Render partition walls (CAD wall style)
-                                        ForEach(floorWalls) { wall in
-                                            Path { path in
-                                                path.move(to: CGPoint(x: wall.startX, y: wall.startY))
-                                                if wall.typeString == "curved", let cx = wall.controlX, let cy = wall.controlY {
-                                                    path.addQuadCurve(to: CGPoint(x: wall.endX, y: wall.endY), control: CGPoint(x: cx, y: cy))
-                                                } else {
-                                                    path.addLine(to: CGPoint(x: wall.endX, y: wall.endY))
-                                                }
-                                            }
-                                            .stroke(
-                                                Color.appDivider.opacity(0.6),
-                                                style: StrokeStyle(lineWidth: wall.strokeWidth, lineCap: .round, lineJoin: .round)
-                                            )
-                                        }
 
                                         
                                         ForEach(Array(canvasTables.enumerated()), id: \.element.id) { index, table in
@@ -564,7 +560,7 @@ struct TablesView: View {
                 await loadTables()
             }
             canvasTables = tables.filter { $0.floor == selectedFloor }
-            
+            loadCachedFloorPlanImage()
             withAnimation(.spring(response: 0.65, dampingFraction: 0.8)) {
                 isAnimatedIn = true
             }
@@ -598,6 +594,7 @@ struct TablesView: View {
         }
         .onChange(of: selectedFloor) { _, newFloor in
             canvasTables = tables.filter { $0.floor == newFloor }
+            loadCachedFloorPlanImage()
             
             // Reset zone filter if not available on the new floor
             let newFloorTables = tables.filter { $0.floor == newFloor }
@@ -606,10 +603,24 @@ struct TablesView: View {
                 selectedZone = "All"
             }
         }
+        .onChange(of: networkService.floorPlanImages) { _, _ in
+            loadCachedFloorPlanImage()
+        }
         .sheet(item: $selectedTable) { table in
             openSessionSheetView(for: table)
                 .presentationDetents([.fraction(0.45)])
                 .apColorScheme()
+        }
+    }
+
+    private func loadCachedFloorPlanImage() {
+        if let path = networkService.floorPlanImages
+            .first(where: { $0.floor == selectedFloor && !$0.isDeleted })?
+            .resolvedImagePath,
+           let uiImage = UIImage(contentsOfFile: path) {
+            cachedFloorPlanImage = uiImage
+        } else {
+            cachedFloorPlanImage = nil
         }
     }
 
