@@ -54,13 +54,13 @@ def run_browser_test():
         
         # 2. Wait for menu items to render and get the first one
         menu_items = wait.until(
-            EC.presence_of_all_elements_located((By.CLASS_NAME, "menu-item-card"))
+            EC.presence_of_all_elements_located((By.CLASS_NAME, "featured-item-card"))
         )
         print(f"Found {len(menu_items)} menu items on the page.")
         
         first_item = menu_items[0]
-        item_name = first_item.find_element(By.CLASS_NAME, "menu-item-title").text
-        item_price = first_item.find_element(By.CLASS_NAME, "menu-item-price").text
+        item_name = first_item.find_element(By.CLASS_NAME, "featured-item-title").text
+        item_price = first_item.find_element(By.CLASS_NAME, "featured-item-price").text
         print(f"Clicking on first menu item: '{item_name}' ({item_price})")
         
         driver.execute_script("arguments[0].click();", first_item)
