@@ -173,6 +173,9 @@ class AlphaPosApp {
         this.supabase = null;
         this.merchantId = cfg.merchantId || '';
         this.localServerURL = cfg.localServerURL || window.location.origin;
+        const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const hasExplicitLocalServer = !!cfg.localServerURL && cfg.localServerURL !== window.location.origin;
+        this.isLocalServerAvailable = isLocalHost || hasExplicitLocalServer;
         this.merchantToken = null; // JWT token with merchant_id claim
         this._submitInProgress = false;
         this.syncHealthInterval = null;
@@ -203,7 +206,7 @@ class AlphaPosApp {
             supabase: this.supabase,
             supabaseKey: this.supabaseKey,
             supabaseFn,
-            localUrl,
+            localUrl: this.isLocalServerAvailable ? localUrl : null,
             localOptions,
             transform
         });
@@ -494,6 +497,11 @@ class AlphaPosApp {
         const retryBtn = document.getElementById("syncRetryBtn");
         if (!panel || !title || !meta || !retryBtn) return;
 
+        if (!this.isLocalServerAvailable) {
+            panel.classList.add("hide");
+            return;
+        }
+
         try {
             const res = await fetch(`${this.localServerURL}/v1/sync/status`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -568,6 +576,7 @@ class AlphaPosApp {
     async retrySyncQueue() {
         const retryBtn = document.getElementById("syncRetryBtn");
         if (retryBtn) retryBtn.disabled = true;
+        if (!this.isLocalServerAvailable) return;
 
         try {
             let headers = {};
@@ -717,14 +726,16 @@ class AlphaPosApp {
         };
         const localUrl = `${this.localServerURL}/v1/merchants`;
 
-        try {
-            const res = await fetch(localUrl, { headers: { 'Content-Type': 'application/json' } });
-            if (res.ok) {
-                const localSettings = pickMerchant(await res.json());
-                if (localSettings) return localSettings;
+        if (this.isLocalServerAvailable) {
+            try {
+                const res = await fetch(localUrl, { headers: { 'Content-Type': 'application/json' } });
+                if (res.ok) {
+                    const localSettings = pickMerchant(await res.json());
+                    if (localSettings) return localSettings;
+                }
+            } catch (error) {
+                console.warn("Local merchant settings unavailable, trying Supabase:", error);
             }
-        } catch (error) {
-            console.warn("Local merchant settings unavailable, trying Supabase:", error);
         }
 
         const { success, data } = await this._fetchWithFallback({
@@ -850,7 +861,7 @@ class AlphaPosApp {
             }
         }
 
-        if (!success) {
+        if (!success && this.isLocalServerAvailable) {
             try {
                 const res = await fetch(`${this.localServerURL}/v1/sessions`);
                 if (res.ok) {
@@ -1013,7 +1024,7 @@ class AlphaPosApp {
             }
         }
 
-        if (!success) {
+        if (!success && this.isLocalServerAvailable) {
             try {
                 const res = await fetch(`${this.localServerURL}/v1/sessions`);
                 if (res.ok) {
@@ -1345,7 +1356,7 @@ class AlphaPosApp {
             }
         }
 
-        if (!success) {
+        if (!success && this.isLocalServerAvailable) {
             try {
                 const res = await fetch(`${this.localServerURL}/v1/modifiers-config`);
                 if (res.ok) {
@@ -1396,7 +1407,7 @@ class AlphaPosApp {
             }
         }
 
-        if (!success) {
+        if (!success && this.isLocalServerAvailable) {
             try {
                 const res = await fetch(`${this.localServerURL}/v1/menu`);
                 if (res.ok) {
@@ -2312,7 +2323,7 @@ class AlphaPosApp {
             }
         }
 
-        if (!success) {
+        if (!success && this.isLocalServerAvailable) {
             try {
                 const res = await fetch(`${this.localServerURL}/v1/orders?table=${this.tableNumber}&token=${this.sessionToken}`);
                 if (res.ok) {
@@ -2560,15 +2571,17 @@ class AlphaPosApp {
         }
 
         // Fallback to local server
-        try {
-            await fetch(`${this.localServerURL}/v1/order-items/${itemId}/note`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ customer_note: note })
-            });
-            console.log(`[Note] Saved note for item ${itemId} to local server`);
-        } catch (e) {
-            console.warn('[Note] Local server PATCH also failed:', e);
+        if (this.isLocalServerAvailable) {
+            try {
+                await fetch(`${this.localServerURL}/v1/order-items/${itemId}/note`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ customer_note: note })
+                });
+                console.log(`[Note] Saved note for item ${itemId} to local server`);
+            } catch (e) {
+                console.warn('[Note] Local server PATCH also failed:', e);
+            }
         }
     }
 
@@ -2746,7 +2759,7 @@ class AlphaPosApp {
             }
         }
 
-        if (!success) {
+        if (!success && this.isLocalServerAvailable) {
             try {
                 const res = await fetch(`${this.localServerURL}/v1/orders?table=${this.tableNumber}&token=${this.sessionToken}`);
                 if (res.ok) {
@@ -2822,7 +2835,7 @@ class AlphaPosApp {
             }
         }
 
-        if (!success) {
+        if (!success && this.isLocalServerAvailable) {
             try {
                 const res = await fetch(`${this.localServerURL}/v1/requests`, {
                     method: "POST",
@@ -3025,7 +3038,7 @@ class AlphaPosApp {
             }
         }
 
-        if (!success) {
+        if (!success && this.isLocalServerAvailable) {
             try {
                 const res = await fetch(`${this.localServerURL}/v1/orders`, {
                     method: "POST",
@@ -3115,7 +3128,7 @@ class AlphaPosApp {
         }
 
         // 2. If empty/failed, try local python server
-        if (promoData.length === 0) {
+        if (promoData.length === 0 && this.isLocalServerAvailable) {
             try {
                 const res = await fetch(`${this.localServerURL}/v1/promotions`);
                 if (res.ok) {
