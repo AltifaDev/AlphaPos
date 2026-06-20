@@ -37,7 +37,12 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
     @Published var activeRequests: [ServiceRequest] = []
     private var cachedModelContext: ModelContext?
     private var activeSyncTask: Task<Void, Never>?
-    private var encounteredSyncError = false
+    private let syncErrorLock = OSAllocatedUnfairLock()
+    private var _encounteredSyncError: Bool = false
+    private var encounteredSyncError: Bool {
+        get { syncErrorLock.lock(); defer { syncErrorLock.unlock() }; return _encounteredSyncError }
+        set { syncErrorLock.lock(); defer { syncErrorLock.unlock() }; _encounteredSyncError = newValue }
+    }
     private static let alertTimesLock = OSAllocatedUnfairLock()
     private static var _lastAlertTimes: [UUID: Date] = [:]
     static func getAlertTime(_ key: UUID) -> Date? {
@@ -80,33 +85,31 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         return defaultValue
     }
 
+    // MARK: - Static Date Formatters (shared instances — avoids allocation on every sync call)
+    private static let iso8601WithFractionals: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let iso8601Standard: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
     private func parseISO8601Date(_ value: Any?, fallback defaultValue: Date = Date()) -> Date {
         guard let stringValue = value as? String else { return defaultValue }
         let cleanStr = stringValue.replacingOccurrences(of: " ", with: "T")
-        
-        let f1 = ISO8601DateFormatter()
-        f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = f1.date(from: cleanStr) { return d }
-        
-        let f2 = ISO8601DateFormatter()
-        f2.formatOptions = [.withInternetDateTime]
-        if let d = f2.date(from: cleanStr) { return d }
-        
+        if let d = SyncEngine.iso8601WithFractionals.date(from: cleanStr) { return d }
+        if let d = SyncEngine.iso8601Standard.date(from: cleanStr) { return d }
         return defaultValue
     }
     
     private func parseISO8601DateOptional(_ value: Any?) -> Date? {
         guard let stringValue = value as? String else { return nil }
         let cleanStr = stringValue.replacingOccurrences(of: " ", with: "T")
-        
-        let f1 = ISO8601DateFormatter()
-        f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = f1.date(from: cleanStr) { return d }
-        
-        let f2 = ISO8601DateFormatter()
-        f2.formatOptions = [.withInternetDateTime]
-        if let d = f2.date(from: cleanStr) { return d }
-        
+        if let d = SyncEngine.iso8601WithFractionals.date(from: cleanStr) { return d }
+        if let d = SyncEngine.iso8601Standard.date(from: cleanStr) { return d }
         return nil
     }
 
@@ -230,6 +233,41 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         }
     }
 
+    func triggerStaleShiftNotification(hoursOpen: Int) {
+        let lastNotifiedKey = "last_stale_shift_notification_time"
+        if let lastNotified = UserDefaults.standard.object(forKey: lastNotifiedKey) as? Date {
+            // Only notify at most once per 6 hours to avoid spamming the user
+            if Date().timeIntervalSince(lastNotified) < 3600 * 6 {
+                return
+            }
+        }
+        UserDefaults.standard.set(Date(), forKey: lastNotifiedKey)
+
+        let content = UNMutableNotificationContent()
+        content.title = "stale_shift_notification_title".t
+        content.body = String(format: "stale_shift_notification_body".t, hoursOpen)
+        content.sound = UNNotificationSound.default
+        content.userInfo = [
+            "type": "stale_shift",
+            "hours_open": hoursOpen
+        ]
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(
+            identifier: "stale_shift_notification",
+            content: content,
+            trigger: trigger
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            #if DEBUG
+            if let error = error {
+                print("SyncEngine: Failed to trigger stale shift notification: \(error)")
+            }
+            #endif
+        }
+    }
+
     // MARK: - UNUserNotificationCenterDelegate
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
@@ -276,6 +314,20 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
     private func performSync(modelContext: ModelContext) async {
         encounteredSyncError = false
 
+        // Check for stale RegisterSession
+        await MainActor.run {
+            let descriptor = FetchDescriptor<RegisterSession>(
+                predicate: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted }
+            )
+            if let sessions = try? modelContext.fetch(descriptor), let activeShift = sessions.first {
+                let hoursOpen = Calendar.current.dateComponents([.hour], from: activeShift.openedAt, to: Date()).hour ?? 0
+                let isDifferentDay = !Calendar.current.isDate(activeShift.openedAt, inSameDayAs: Date())
+                if isDifferentDay || hoursOpen >= 16 {
+                    self.triggerStaleShiftNotification(hoursOpen: hoursOpen)
+                }
+            }
+        }
+
         // Initialize Realtime WebSocket task
         await MainActor.run {
             self.startRealtimeSync(modelContext: modelContext)
@@ -315,6 +367,25 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         await syncPayments(modelContext)
         await syncOrderDiscounts(modelContext)
         await syncTimecards(modelContext)
+
+        // Sync Categories first
+        await syncCategories(modelContext)
+        await pullCategoriesFromSupabase(modelContext)
+
+        // Sync Modifier groups, Modifiers, and relations
+        await syncModifierGroups(modelContext)
+        await pullModifierGroupsFromSupabase(modelContext)
+        await syncModifiers(modelContext)
+        await pullModifiersFromSupabase(modelContext)
+        await syncMenuItemModifierGroups(modelContext)
+        await pullMenuItemModifierGroupsFromSupabase(modelContext)
+
+        // Sync inventory items BEFORE transactions so FK references exist on server
+        // Sync branches FIRST so inventory_items and inventory_transactions FK is satisfied
+        await syncBranches(modelContext)
+        await pullBranchesFromSupabase(modelContext)
+        await syncInventoryItems(modelContext)
+        await pullInventoryItemsFromSupabase(modelContext)
         await syncInventoryTransactions(modelContext)
         await syncMenuItems(modelContext)
         await syncPromotions(modelContext)
@@ -352,8 +423,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         await checkForDelayedOrders(modelContext: modelContext)
 
         let isStillConnected = await NetworkManager.shared.isConnected()
-        let hasPendingUploads = hasPendingSyncData(in: modelContext)
-        let completedSuccessfully = isStillConnected && !encounteredSyncError && !hasPendingUploads
+        let completedSuccessfully = isStillConnected && !encounteredSyncError
 
         await MainActor.run {
             self.syncStatus = completedSuccessfully ? .idle : (isStillConnected ? .error : .offline)
@@ -412,6 +482,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 let success = try await NetworkManager.shared.uploadSecurityPolicy(policy)
                 if success { policy.isSynced = true }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [SecurityPolicy Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -428,6 +499,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 let success = try await NetworkManager.shared.replaceRolePermissions(role: role)
                 if success { role.isSynced = true }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [RolePermission Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -444,6 +516,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 let success = try await NetworkManager.shared.uploadMerchantDevice(device)
                 if success { device.isSynced = true }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [MerchantDevice Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -455,11 +528,26 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             predicate: #Predicate<StaffSessionRecord> { $0.isSynced == false }
         )
         guard let sessions = try? modelContext.fetch(descriptor), !sessions.isEmpty else { return }
+
+        // Pre-fetch all employees once (avoid N+1 query inside loop)
+        let allEmployees = (try? modelContext.fetch(FetchDescriptor<Employee>())) ?? []
+        let employeeMap = Dictionary(uniqueKeysWithValues: allEmployees.map { ($0.id, $0) })
+
         for session in sessions {
             do {
+                // Guard: skip if the referenced employee hasn't been synced to server yet
+                // to avoid FK violation on staff_sessions.employee_id_fkey
+                if let empId = session.employeeId {
+                    let emp = employeeMap[empId]
+                    // Skip if: employee not in local store (unknown) OR found but not yet synced
+                    if emp == nil || emp?.isSynced == false {
+                        continue  // employee not yet on server — defer to next sync cycle
+                    }
+                }
                 let success = try await NetworkManager.shared.uploadStaffSessionRecord(session)
                 if success { session.isSynced = true }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [StaffSession Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -471,16 +559,36 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             predicate: #Predicate<AuditLog> { $0.isSynced == false }
         )
         guard let logs = try? modelContext.fetch(descriptor), !logs.isEmpty else { return }
+
+        // Pre-fetch all employees once to avoid N+1 query inside loop
+        let allEmployees = (try? modelContext.fetch(FetchDescriptor<Employee>())) ?? []
+        let employeeMap = Dictionary(uniqueKeysWithValues: allEmployees.map { ($0.id, $0) })
+
         for log in logs {
             do {
                 if log.isDeleted {
+                    // Guard: skip if referenced employee not yet on server
+                    if let empId = log.employeeId {
+                        let emp = employeeMap[empId]
+                        if emp == nil || emp?.isSynced == false {
+                            continue
+                        }
+                    }
                     _ = try await NetworkManager.shared.deleteAuditLogOnServer(id: log.id)
                     modelContext.delete(log)
                 } else {
+                    // Guard: skip if referenced employee not yet on server
+                    if let empId = log.employeeId {
+                        let emp = employeeMap[empId]
+                        if emp == nil || emp?.isSynced == false {
+                            continue
+                        }
+                    }
                     let success = try await NetworkManager.shared.uploadAuditLog(log)
                     if success { log.isSynced = true }
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [AuditLog Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -537,6 +645,12 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
 
         for payment in payments {
             if payment.isDeleted {
+                do {
+                    _ = try await NetworkManager.shared.deletePaymentOnServer(id: payment.id)
+                } catch {
+                    // Non-fatal: payment may not exist on server yet (created offline then deleted before sync)
+                    print("SyncEngine [Payment Delete]: \(error.localizedDescription)")
+                }
                 modelContext.delete(payment)
                 try? modelContext.save()
                 continue
@@ -569,6 +683,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     try modelContext.save()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [Payment Sync Error]: \(error.localizedDescription)")
             }
 
@@ -600,6 +715,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     }
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [OrderDiscount Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -614,12 +730,19 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
 
         for timecard in timecards {
             if timecard.isDeleted {
+                do {
+                    _ = try await NetworkManager.shared.deleteTimecardOnServer(id: timecard.id)
+                } catch {
+                    print("SyncEngine [Timecard Delete]: \(error.localizedDescription)")
+                    encounteredSyncError = true
+                }
                 modelContext.delete(timecard)
                 try? modelContext.save()
                 continue
             }
 
             guard let employeeId = timecard.employee?.id else {
+                encounteredSyncError = true
                 print("SyncEngine [Timecard Sync Error]: Missing employee relation for timecard \(timecard.id)")
                 continue
             }
@@ -661,6 +784,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     try modelContext.save()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [Timecard Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -682,6 +806,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     customer.updatedAt = Date()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [Customer Push Error]: \(error.localizedDescription)")
             }
         }
@@ -770,6 +895,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     card.updatedAt = Date()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [GiftCard Push Error]: \(error.localizedDescription)")
             }
         }
@@ -847,6 +973,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     txn.updatedAt = Date()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [LoyaltyTransaction Push Error]: \(error.localizedDescription)")
             }
         }
@@ -926,6 +1053,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     category.updatedAt = Date()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [Category Push Error]: \(error.localizedDescription)")
             }
         }
@@ -961,7 +1089,64 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             try? modelContext.save()
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [Category Pull Error]: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Branch Sync
+
+    private func syncBranches(_ modelContext: ModelContext) async {
+        let descriptor = FetchDescriptor<Branch>(
+            predicate: #Predicate<Branch> { $0.isSynced == false }
+        )
+        guard let branches = try? modelContext.fetch(descriptor), !branches.isEmpty else { return }
+        for branch in branches {
+            do {
+                if try await NetworkManager.shared.uploadBranch(branch) {
+                    branch.isSynced = true
+                    branch.updatedAt = Date()
+                    try? modelContext.save()
+                }
+            } catch {
+                encounteredSyncError = true
+                print("SyncEngine [Branch Sync Error]: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func pullBranchesFromSupabase(_ modelContext: ModelContext) async {
+        do {
+            let remoteBranches = try await NetworkManager.shared.fetchBranchesFromSupabase()
+            guard !remoteBranches.isEmpty else { return }
+            let locals = (try? modelContext.fetch(FetchDescriptor<Branch>())) ?? []
+            let localById = Dictionary(uniqueKeysWithValues: locals.map { ($0.id.uuidString.lowercased(), $0) })
+
+            for remote in remoteBranches {
+                guard let idStr = remote["id"] as? String,
+                      let id = UUID(uuidString: idStr),
+                      let name = remote["name"] as? String else { continue }
+                let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
+
+                if let local = localById[idStr.lowercased()] {
+                    // skip if local has pending unsynced changes
+                    guard local.isSynced else { continue }
+                    if updatedAt > local.updatedAt {
+                        local.name = name
+                        local.location = remote["location"] as? String
+                        local.phone = remote["phone"] as? String
+                        local.updatedAt = updatedAt
+                        local.isSynced = true
+                    }
+                } else {
+                    let branch = Branch(id: id, name: name, location: remote["location"] as? String, phone: remote["phone"] as? String, isSynced: true, updatedAt: updatedAt == .distantPast ? Date() : updatedAt)
+                    modelContext.insert(branch)
+                }
+            }
+            try? modelContext.save()
+        } catch {
+            encounteredSyncError = true
+            print("SyncEngine [Branch Pull Error]: \(error.localizedDescription)")
         }
     }
 
@@ -979,6 +1164,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     item.updatedAt = Date()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [InventoryItem Push Error]: \(error.localizedDescription)")
             }
         }
@@ -1030,6 +1216,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             try? modelContext.save()
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [InventoryItem Pull Error]: \(error.localizedDescription)")
         }
     }
@@ -1048,6 +1235,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     group.updatedAt = Date()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [ModifierGroup Push Error]: \(error.localizedDescription)")
             }
         }
@@ -1081,6 +1269,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             try? modelContext.save()
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [ModifierGroup Pull Error]: \(error.localizedDescription)")
         }
     }
@@ -1099,6 +1288,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     modifier.updatedAt = Date()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [Modifier Push Error]: \(error.localizedDescription)")
             }
         }
@@ -1145,6 +1335,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             try? modelContext.save()
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [Modifier Pull Error]: \(error.localizedDescription)")
         }
     }
@@ -1167,6 +1358,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     relation.updatedAt = Date()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [MenuItemModifierGroup Push Error]: \(error.localizedDescription)")
             }
         }
@@ -1210,6 +1402,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             try? modelContext.save()
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [MenuItemModifierGroup Pull Error]: \(error.localizedDescription)")
         }
     }
@@ -1250,6 +1443,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     try modelContext.save()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [InventoryTxn Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -1265,10 +1459,14 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         for item in items {
             if item.isDeleted {
                 do {
-                    _ = try await NetworkManager.shared.deleteMenuItemOnServer(id: item.id)
-                    modelContext.delete(item)
-                    try modelContext.save()
+                    if try await NetworkManager.shared.deleteMenuItemOnServer(id: item.id) {
+                        modelContext.delete(item)
+                        try modelContext.save()
+                    } else {
+                        encounteredSyncError = true
+                    }
                 } catch {
+                    encounteredSyncError = true
                     print("SyncEngine [MenuItem Delete Error]: \(error.localizedDescription)")
                 }
                 continue
@@ -1282,6 +1480,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     try modelContext.save()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [MenuItem Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -1399,6 +1598,16 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 }
             }
 
+            // Reconcile hard-deletes made directly in Supabase.
+            // Items no longer present remotely are purged from local SwiftData.
+            let remoteIdSet = Set(remoteItems.compactMap { $0["id"] as? String }.map { $0.lowercased() })
+            for local in localItems where local.isSynced && !local.isDeleted {
+                if !remoteIdSet.contains(local.id.lowercased()) {
+                    modelContext.delete(local)
+                    didChange = true
+                }
+            }
+
             if didChange {
                 try? modelContext.save()
                 #if DEBUG
@@ -1428,14 +1637,17 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         for po in purchaseOrders {
             if po.isDeleted {
                 do {
-                    _ = try await NetworkManager.shared.deletePurchaseOrderOnServer(id: po.id)
-                    // Purge items then PO from local store
-                    for item in po.items {
-                        modelContext.delete(item)
+                    if try await NetworkManager.shared.deletePurchaseOrderOnServer(id: po.id) {
+                        for item in po.items {
+                            modelContext.delete(item)
+                        }
+                        modelContext.delete(po)
+                        try modelContext.save()
+                    } else {
+                        encounteredSyncError = true
                     }
-                    modelContext.delete(po)
-                    try modelContext.save()
                 } catch {
+                    encounteredSyncError = true
                     print("SyncEngine [PurchaseOrder Delete Error]: \(error.localizedDescription)")
                 }
                 continue
@@ -1457,6 +1669,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     #endif
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [PurchaseOrder Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -1505,6 +1718,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                         try modelContext.save()
                     }
                 } catch {
+                    encounteredSyncError = true
                     print("SyncEngine [Promotion Delete Error]: \(error.localizedDescription)")
                 }
                 continue
@@ -1523,6 +1737,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     try modelContext.save()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [Promotion Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -1579,27 +1794,9 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 let startsAt = remoteDate(remote["starts_at"], fallback: .distantPast) == .distantPast ? nil : remoteDate(remote["starts_at"], fallback: .distantPast)
                 let endsAt = remoteDate(remote["ends_at"], fallback: .distantPast) == .distantPast ? nil : remoteDate(remote["ends_at"], fallback: .distantPast)
 
-                let isActive: Bool
-                if let boolVal = remote["is_active"] as? Bool {
-                    isActive = boolVal
-                } else if let intVal = remote["is_active"] as? Int {
-                    isActive = intVal != 0
-                } else if let doubleVal = remote["is_active"] as? Double {
-                    isActive = doubleVal != 0.0
-                } else {
-                    isActive = true
-                }
-
-                let isDeleted: Bool
-                if let boolVal = remote["is_deleted"] as? Bool {
-                    isDeleted = boolVal
-                } else if let intVal = remote["is_deleted"] as? Int {
-                    isDeleted = intVal != 0
-                } else if let doubleVal = remote["is_deleted"] as? Double {
-                    isDeleted = doubleVal != 0.0
-                } else {
-                    isDeleted = false
-                }
+                // Use existing remoteBool() helper instead of manual if/else chains
+                let isActive = remoteBool(remote["is_active"], fallback: true)
+                let isDeleted = remoteBool(remote["is_deleted"], fallback: false)
 
                 let updatedAtStr = remote["updated_at"] as? String ?? ""
                 let updatedAt = parseISO8601Date(updatedAtStr)
@@ -1787,6 +1984,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     try modelContext.save()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [Table Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -1804,9 +2002,14 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         for session in sessions {
             do {
                 if session.isDeleted {
-                    _ = try? await NetworkManager.shared.deleteTableSession(id: session.id)
-                    modelContext.delete(session)
-                    try modelContext.save()
+                    do {
+                        _ = try await NetworkManager.shared.deleteTableSession(id: session.id)
+                        modelContext.delete(session)
+                        try modelContext.save()
+                    } catch {
+                        encounteredSyncError = true
+                        print("SyncEngine [TableSession Delete Error]: \(error.localizedDescription)")
+                    }
                     continue
                 }
 
@@ -1817,6 +2020,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     try modelContext.save()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [TableSession Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -1842,6 +2046,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     try? modelContext.save()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [FloorPlanImage Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -1867,6 +2072,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     try modelContext.save()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [Employee Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -1887,6 +2093,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
 
             guard shift.employee != nil else {
+                encounteredSyncError = true
                 print("SyncEngine [EmployeeShift Sync Error]: Missing employee relation for shift \(shift.id)")
                 continue
             }
@@ -1899,6 +2106,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     try modelContext.save()
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [EmployeeShift Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -2194,11 +2402,16 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                                     localItem.subtotal = Double(qty) * price
                                     localItem.status = itemStatus
                                 } else {
-                                    // Item was added remotely, create it locally
-                                    let itemDescriptor = FetchDescriptor<MenuItem>(
-                                        predicate: #Predicate<MenuItem> { $0.name == name }
-                                    )
-                                    let menuItem = (try? modelContext.fetch(itemDescriptor))?.first
+                                    // Item was added remotely — look up MenuItem by ID first, then name
+                                    let menuItemIdStr = remoteItem["menu_item_id"] as? String ?? remoteItem["menuItemId"] as? String
+                                    let menuItem: MenuItem?
+                                    if let menuItemIdStr = menuItemIdStr {
+                                        let idDescriptor = FetchDescriptor<MenuItem>(predicate: #Predicate<MenuItem> { $0.id == menuItemIdStr })
+                                        menuItem = (try? modelContext.fetch(idDescriptor))?.first
+                                    } else {
+                                        let nameDescriptor = FetchDescriptor<MenuItem>(predicate: #Predicate<MenuItem> { $0.name == name })
+                                        menuItem = (try? modelContext.fetch(nameDescriptor))?.first
+                                    }
 
                                     let orderItem = OrderItem(
                                         id: itemId,
@@ -2290,11 +2503,16 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                         let itemIdStr = remoteItem["id"] as? String ?? ""
                         let itemId = UUID(uuidString: itemIdStr) ?? UUID()
 
-                        // Find local MenuItem by name
-                        let itemDescriptor = FetchDescriptor<MenuItem>(
-                            predicate: #Predicate<MenuItem> { $0.name == name }
-                        )
-                        let localItem = (try? modelContext.fetch(itemDescriptor))?.first
+                        // Find local MenuItem by ID first, then fall back to name match
+                        let menuItemIdStr = remoteItem["menu_item_id"] as? String ?? remoteItem["menuItemId"] as? String
+                        let localItem: MenuItem?
+                        if let menuItemIdStr = menuItemIdStr {
+                            let idDescriptor = FetchDescriptor<MenuItem>(predicate: #Predicate<MenuItem> { $0.id == menuItemIdStr })
+                            localItem = (try? modelContext.fetch(idDescriptor))?.first
+                        } else {
+                            let nameDescriptor = FetchDescriptor<MenuItem>(predicate: #Predicate<MenuItem> { $0.name == name })
+                            localItem = (try? modelContext.fetch(nameDescriptor))?.first
+                        }
 
                         let orderItem = OrderItem(
                             id: itemId,
@@ -2501,6 +2719,8 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
 
             await MainActor.run {
                 self.activeRequests = newRequests
+                // Prune IDs for requests no longer active to prevent unbounded growth
+                self.notifiedRequestIds = self.notifiedRequestIds.intersection(Set(newRequests.map { $0.id }))
             }
         } catch {
             encounteredSyncError = true
@@ -2544,7 +2764,10 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         let wsURLString = "\(config.supabaseURL.absoluteString.replacingOccurrences(of: "https://", with: "wss://"))/realtime/v1/websocket?apikey=\(anonKey)&vsn=1.0.0"
         guard let url = URL(string: wsURLString) else { return }
 
-        let session = URLSession(configuration: .default)
+        let wsSessionConfig = URLSessionConfiguration.default
+        wsSessionConfig.timeoutIntervalForRequest = 30
+        wsSessionConfig.timeoutIntervalForResource = 60
+        let session = URLSession(configuration: wsSessionConfig)
         let task = session.webSocketTask(with: url)
         self.webSocketTask = task
         task.resume()
@@ -2730,183 +2953,19 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
     }
 
 
-    // MARK: - Table Sessions Sync (Guest Count)
-
-    /// Sync table sessions: upload local unsync'd sessions, then pull latest from Supabase
-    private func syncTableSessionsNew(_ modelContext: ModelContext) async {
-
-        // Phase 1: Upload unsync'd local table sessions
-        await uploadUnsyncedTableSessions(modelContext: modelContext)
-
-        // Phase 2: Pull latest table sessions from Supabase
-        await pullTableSessionsFromSupabase(modelContext: modelContext)
-    }
-
-    /// Upload all unsync'd table sessions to Supabase
-    private func uploadUnsyncedTableSessions(modelContext: ModelContext) async {
-        do {
-            let descriptor = FetchDescriptor<TableSession>(
-                predicate: #Predicate<TableSession> { session in
-                    !session.isSynced && !session.isDeleted
-                }
-            )
-
-            let unsyncedSessions = try modelContext.fetch(descriptor)
-            guard !unsyncedSessions.isEmpty else {
-                #if DEBUG
-                print("[SyncEngine] No unsync'd table sessions to upload")
-                #endif
-                return
-            }
-
-            #if DEBUG
-            print("[SyncEngine] Uploading \(unsyncedSessions.count) unsync'd table sessions...")
-            #endif
-
-            for session in unsyncedSessions {
-                let uploadSuccess = await uploadTableSession(session, modelContext: modelContext)
-
-                if uploadSuccess {
-                    session.isSynced = true
-                    session.updatedAt = Date()
-                    #if DEBUG
-                    print("[SyncEngine] ✅ Uploaded table session \(session.id.uuidString) - guests: \(session.guestCount)")
-                    #endif
-                } else {
-                    #if DEBUG
-                    print("[SyncEngine] ⚠️ Failed to upload table session \(session.id.uuidString)")
-                    #endif
-                }
-            }
-
-            try modelContext.save()
-
-        } catch {
-            #if DEBUG
-            print("[SyncEngine] Error uploading table sessions: \(error.localizedDescription)")
-            #endif
-        }
-    }
-
-    /// Upload a single table session to Supabase
-    private func uploadTableSession(_ session: TableSession, modelContext: ModelContext) async -> Bool {
-        do {
-            let _: [String: Any] = [
-                "id": session.id.uuidString,
-                "merchant_id": UserDefaults.standard.string(forKey: "activeMerchantId") ?? "",
-                "table_id": session.table?.id.uuidString ?? "",
-                "guest_count": session.guestCount,
-                "session_token": session.sessionToken,
-                "started_at": iso8601Format(session.startedAt),
-                "ended_at": session.endedAt.map { iso8601Format($0) } as Any? ?? NSNull(),
-                "is_active": session.isActive,
-                "updated_at": iso8601Format(Date()),
-                "is_synced": true,
-                "is_deleted": false
-            ]
-
-            let success = try await NetworkManager.shared.uploadTableSession(
-                session: session
-            )
-
-            return success
-
-        } catch {
-            #if DEBUG
-            print("[SyncEngine] Failed to upload table session: \(error.localizedDescription)")
-            #endif
-            return false
-        }
-    }
-
-    /// Pull latest table sessions from Supabase and update local SwiftData
-    private func pullTableSessionsFromSupabase(modelContext: ModelContext) async {
-        do {
-            #if DEBUG
-            print("[SyncEngine] Pulling table sessions from Supabase...")
-            #endif
-
-            let remoteSessions = try await NetworkManager.shared.fetchActiveSessions()
-
-            #if DEBUG
-            print("[SyncEngine] Received \(remoteSessions.count) table sessions from Supabase")
-            #endif
-
-            // Update local SwiftData with remote sessions
-            for remoteSession in remoteSessions {
-                await updateLocalTableSession(remoteSession, modelContext: modelContext)
-            }
-
-        } catch {
-            #if DEBUG
-            print("[SyncEngine] Failed to pull table sessions from Supabase: \(error.localizedDescription)")
-            #endif
-        }
-    }
-
-    /// Update local TableSession with data from Supabase, creating if not exists
-    private func updateLocalTableSession(_ remote: [String: Any], modelContext: ModelContext) async {
-        do {
-            guard let idStr = remote["id"] as? String,
-                  let sessionId = UUID(uuidString: idStr),
-                  let guestCount = remote["guest_count"] as? Int,
-                  let sessionToken = remote["session_token"] as? String
-            else {
-                return
-            }
-
-            let descriptor = FetchDescriptor<TableSession>(
-                predicate: #Predicate<TableSession> { $0.id == sessionId }
-            )
-            let existing = try modelContext.fetch(descriptor).first
-
-            if let existing = existing {
-                // Update existing
-                existing.guestCount = guestCount
-                existing.isSynced = true
-                existing.updatedAt = Date()
-
-                #if DEBUG
-                print("[SyncEngine] Updated table session \(sessionId.uuidString) - guests: \(guestCount)")
-                #endif
-
-            } else {
-                // Create new local session
-                let newSession = TableSession(
-                    id: sessionId,
-                    sessionToken: sessionToken,
-                    guestCount: guestCount,
-                    isSynced: true,
-                    isDeleted: false,
-                    updatedAt: Date()
-                )
-
-                modelContext.insert(newSession)
-                #if DEBUG
-                print("[SyncEngine] Created new table session \(sessionId.uuidString)")
-                #endif
-            }
-
-            try modelContext.save()
-
-        } catch {
-            #if DEBUG
-            print("[SyncEngine] Error updating local table session: \(error.localizedDescription)")
-            #endif
-        }
-    }
-
     // MARK: - Helpers
 
-    /// Format Date to ISO8601 string for Supabase
+    /// Format Date to ISO8601 string for Supabase (reuses shared static formatter)
     private func iso8601Format(_ date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: date)
+        return SyncEngine.iso8601WithFractionals.string(from: date)
     }
 
     private func checkForDelayedOrders(modelContext: ModelContext) async {
-        let descriptor = FetchDescriptor<Order>()
+        // Pre-filter: only fetch orders older than 10 minutes with relevant statuses
+        let cutoff = Date().addingTimeInterval(-600)
+        let descriptor = FetchDescriptor<Order>(
+            predicate: #Predicate<Order> { $0.createdAt < cutoff }
+        )
         guard var orders = try? modelContext.fetch(descriptor) else { return }
 
         // Sort by createdAt ascending (FIFO)
@@ -2917,6 +2976,12 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         // Filter orders that are older than 10 minutes (600 seconds) and not yet delivered/served
         let delayedOrders = orders.filter { order in
             let isOlderThan10Min = now.timeIntervalSince(order.createdAt) >= 600
+            
+            // CRITICAL FIX: If the order belongs to a table session that is already checked out/inactive, ignore it completely
+            if let session = order.tableSession, !session.isActive {
+                return false
+            }
+            
             if order.status == "preparing" {
                 let hasActiveItems = order.items.contains(where: { $0.status == "cooking" || $0.status == "alert" })
                 return hasActiveItems && isOlderThan10Min
@@ -2931,7 +2996,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
 
         let orderId = oldestDelayedOrder.id
         let tableNum = oldestDelayedOrder.tableSession?.table?.tableNumber ?? "1"
-        let orderNum = String(oldestDelayedOrder.orderNumber.suffix(4))
+        let orderNum = String(oldestDelayedOrder.orderNumber.split(separator: "-").last ?? oldestDelayedOrder.orderNumber.suffix(3))
 
         // Check if we should trigger the alert (either first time, or 10 minutes passed since last alert for this specific order)
         let shouldAlert: Bool
@@ -2992,6 +3057,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     }
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [Printer Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -3017,6 +3083,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     }
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [PrintRoutingRule Sync Error]: \(error.localizedDescription)")
             }
         }

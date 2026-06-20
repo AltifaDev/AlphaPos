@@ -746,16 +746,21 @@ struct MerchantAuthView: View {
         )
         modelContext.insert(roleManager)
         modelContext.insert(roleStaff)
-        
+
         // Seed default Users
-        let user1 = User(id: UUID(), username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: roleManager, isSynced: false, isDeleted: false, updatedAt: Date())
-        let user2 = User(id: UUID(), username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: roleStaff, isSynced: false, isDeleted: false, updatedAt: Date())
+        // Fixed UUIDs — must match SampleDataSeeder constants so employeeId FK references stay valid after re-seed
+        let seedEmp1Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111101")!
+        let seedEmp2Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111102")!
+        let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
+        let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
+        let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: roleManager, isSynced: false, isDeleted: false, updatedAt: Date())
+        let user2 = User(id: seedUser2Id, username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: roleStaff, isSynced: false, isDeleted: false, updatedAt: Date())
         modelContext.insert(user1)
         modelContext.insert(user2)
-        
+
         // Seed default Employees
-        let emp1 = Employee(id: UUID(), user: user1, firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, isSynced: false, isDeleted: false, updatedAt: Date())
-        let emp2 = Employee(id: UUID(), user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, isSynced: false, isDeleted: false, updatedAt: Date())
+        let emp1 = Employee(id: seedEmp1Id, user: user1, firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, isSynced: false, isDeleted: false, updatedAt: Date())
+        let emp2 = Employee(id: seedEmp2Id, user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, isSynced: false, isDeleted: false, updatedAt: Date())
         modelContext.insert(emp1)
         modelContext.insert(emp2)
         

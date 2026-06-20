@@ -9,7 +9,7 @@ struct ManagerPINVerificationSheet: View {
     @Binding var isPresented: Bool
     var onSuccess: () -> Void
     var onDismiss: (() -> Void)? = nil
-    @AppStorage("developer_mode_enabled") private var developerModeEnabled = false
+    // REMOVED: developer_mode_enabled bypass — tampered UserDefaults could bypass manager PIN
     
     @State private var enteredPin = ""
     @State private var errorMessage = ""
@@ -196,9 +196,8 @@ struct ManagerPINVerificationSheet: View {
             return false
         }
         
-        let isFallback = developerModeEnabled && (enteredPin == "1234" || enteredPin == "8888")
-        
-        if !matches.isEmpty || isFallback {
+        // Developer PIN bypass removed — never allow hardcoded PIN to bypass manager verification
+        if !matches.isEmpty {
             isPresented = false
             onSuccess()
         } else {

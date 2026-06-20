@@ -26,7 +26,7 @@ struct AppRootView: View {
                         sessionManager.unlock(employee: employee, modelContext: modelContext)
                     },
                     onUseStoreAccount: {
-                        sessionManager.signOutMerchant(modelContext: modelContext)
+                        sessionManager.unlockAsStoreOwner(modelContext: modelContext)
                     }
                 )
                 .id(lm.reloadId)

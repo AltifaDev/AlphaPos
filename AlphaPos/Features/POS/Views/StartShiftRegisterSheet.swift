@@ -22,6 +22,7 @@ struct StartShiftRegisterSheet: View {
     @State private var showConfirmCancel = false
     
     var onComplete: (() -> Void)? = nil
+    var onCancel: (() -> Void)? = nil
     
     var body: some View {
         NavigationStack {
@@ -72,6 +73,7 @@ struct StartShiftRegisterSheet: View {
             .alert("confirm_cancel_session_title".t, isPresented: $showConfirmCancel) {
                 Button("cancel_btn".t, role: .cancel) { }
                 Button("confirm_exit_btn".t, role: .destructive) {
+                    onCancel?()
                     dismiss()
                 }
             } message: {
@@ -295,6 +297,7 @@ struct StartShiftRegisterSheet: View {
     private func attemptCancel() {
         // If user hasn't changed anything, just dismiss
         if openingCashString == "1000" && openingNotes.isEmpty {
+            onCancel?()
             dismiss()
         } else {
             // Show confirmation if data has been entered

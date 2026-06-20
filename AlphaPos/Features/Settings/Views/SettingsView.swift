@@ -22,6 +22,8 @@ struct SettingsView: View {
     
     // Change password state
     @State private var showingChangePasswordSheet = false
+    @State private var showingChangeOwnerPinSheet = false
+    @State private var newOwnerPin = ""
     
     // Delete account state
     @State private var showingDeleteConfirmAlert = false
@@ -145,6 +147,21 @@ struct SettingsView: View {
                                 Divider()
                                     .background(Color.appDivider)
                                 
+                                // Change Owner PIN
+                                Button(action: { showingChangeOwnerPinSheet = true }) {
+                                    HStack {
+                                        Label(lm.languageCode == "th" ? "เปลี่ยน PIN บัญชีร้านค้า" : "Change Store Owner PIN", systemImage: "lock.ipad")
+                                            .foregroundColor(.textPrimary)
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.footnote)
+                                            .foregroundColor(.textSecondary)
+                                    }
+                                }
+                                
+                                Divider()
+                                    .background(Color.appDivider)
+                                
                                 // Sign Out
                                 Button(action: handleLogout) {
                                     HStack {
@@ -204,6 +221,13 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showingChangePasswordSheet) {
             ChangePasswordSheet(isPresented: $showingChangePasswordSheet)
+        }
+        .alert(lm.languageCode == "th" ? "เปลี่ยน PIN บัญชีร้านค้า" : "Change Store Owner PIN", isPresented: $showingChangeOwnerPinSheet) {
+            SecureField(lm.languageCode == "th" ? "ป้อน PIN ใหม่ (ตัวเลข 4 หลัก)" : "Enter new 4-digit PIN", text: $newOwnerPin)
+            Button(lm.languageCode == "th" ? "บันทึก" : "Save", action: saveNewOwnerPin)
+            Button(lm.languageCode == "th" ? "ยกเลิก" : "Cancel", role: .cancel) { newOwnerPin = "" }
+        } message: {
+            Text(lm.languageCode == "th" ? "กรุณาระบุรหัส PIN 4 หลักเพื่อความปลอดภัยในการเข้าสู่ระบบโหมดเจ้าของร้าน" : "Please enter a 4-digit security PIN for accessing owner mode.")
         }
     }
     
@@ -290,6 +314,19 @@ struct SettingsView: View {
         let first = String(parts[0].prefix(1))
         let last = String(parts[parts.count - 1].prefix(1))
         return (first + last).uppercased()
+    }
+    
+    private func saveNewOwnerPin() {
+        let cleanPin = newOwnerPin.trimmingCharacters(in: .decimalDigits.inverted)
+        if cleanPin.count == 4 {
+            UserDefaults.standard.set(cleanPin, forKey: "merchant_owner_pin")
+            statusMessage = lm.languageCode == "th" ? "เปลี่ยน PIN เจ้าของร้านค้าสำเร็จแล้ว" : "Store owner PIN changed successfully."
+            showingStatusAlert = true
+        } else {
+            statusMessage = lm.languageCode == "th" ? "ล้มเหลว: รหัส PIN ต้องเป็นตัวเลข 4 หลักเท่านั้น" : "Failed: PIN must be exactly 4 digits."
+            showingStatusAlert = true
+        }
+        newOwnerPin = ""
     }
     
     private func handleLogout() {

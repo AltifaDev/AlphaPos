@@ -262,7 +262,11 @@ final class NetworkService {
         request.setValue(anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // merchant_id is now embedded in the JWT claims — no x-merchant-id header needed
+        
+        // Add x-merchant-id header so RLS get_active_merchant_id() functions can evaluate correctly
+        // when the JWT token does not explicitly contain the merchant_id claim (like anonKey).
+        let merchantId = activeMerchantId.isEmpty ? AppConfig.defaultMerchantId : activeMerchantId
+        request.setValue(merchantId, forHTTPHeaderField: "x-merchant-id")
         
         request.timeoutInterval = 5.0
         

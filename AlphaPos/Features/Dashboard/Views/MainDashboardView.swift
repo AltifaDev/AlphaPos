@@ -23,7 +23,9 @@ struct MainDashboardView: View {
     @Query(sort: \InventoryItem.name) private var inventoryItems: [InventoryItem]
     @ObservedObject private var syncEngine = SyncEngine.shared
     
-    private let timer = Timer.publish(every: 5.0, on: .main, in: .common).autoconnect()
+    // Manual connect/cancel prevents timer leak when view leaves hierarchy
+    private let timer = Timer.publish(every: 5.0, on: .main, in: .common)
+    @State private var timerCancellable: Cancellable? = nil
 
     
     private var visibleTabs: [DashboardTab] {
@@ -57,6 +59,15 @@ struct MainDashboardView: View {
         // ── Group 3: System ──────────────────────────────────────────────
         case syncHealth = "Integrations"         // Integrations (renamed)
         case settings   = "Settings"
+
+        // Gift cards now live inside the unified Customer Value workspace.
+        // Keep the legacy case so previously persisted navigation remains valid,
+        // but expose only one destination in the sidebar.
+        static var allCases: [DashboardTab] {
+            [.inventory, .pos, .tables, .kitchen, .store, .promotions,
+             .cashDrawer, .reports, .sales, .loyalty, .payroll, .timecard,
+             .syncHealth, .settings]
+        }
 
         var id: String { rawValue }
 
@@ -95,7 +106,7 @@ struct MainDashboardView: View {
             case .cashDrawer: return L.Nav.tabCashDrawer.t   // "Hot Actions"
             case .reports:    return L.Nav.tabReports.t
             case .sales:      return L.Nav.tabSales.t        // "Accounting"
-            case .loyalty:    return L.Nav.tabLoyalty.t
+            case .loyalty:    return "customer_value_title".t
             case .giftCards:  return L.Nav.tabGiftCards.t
             case .payroll:    return L.Nav.tabPayroll.t
             case .timecard:   return L.Nav.tabTimecard.t
@@ -115,7 +126,7 @@ struct MainDashboardView: View {
             case .cashDrawer: return "bolt.circle.fill"                  // Hot Actions
             case .reports:    return "chart.bar.fill"                    // Reports
             case .sales:      return "chart.bar.fill"                    // Accounting
-            case .loyalty:    return "star.circle.fill"
+            case .loyalty:    return "person.crop.circle.badge.checkmark"
             case .giftCards:  return "giftcard.fill"
             case .payroll:    return "dollarsign.circle.fill"
             case .timecard:   return "faceid"
@@ -236,6 +247,11 @@ struct MainDashboardView: View {
             } else {
                 SampleDataSeeder.seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
             }
+            timerCancellable = timer.connect()
+        }
+        .onDisappear {
+            timerCancellable?.cancel()
+            timerCancellable = nil
         }
         .onChange(of: enableTableSystem) { _, enabled in
             if enabled && selectedTab == .pos {
@@ -413,12 +429,21 @@ struct MainDashboardView: View {
             HStack(spacing: 8) {
                 // Avatar
                 ZStack {
-                    Circle()
-                        .fill(Color.appAccent.opacity(0.18))
-                        .frame(width: 28, height: 28)
-                    Text(staffInitials(staff.displayName))
-                        .font(.system(size: 10, weight: .black))
-                        .foregroundColor(.appAccent)
+                    if staff.roleName == "Store Owner" {
+                        Circle()
+                            .fill(LinearGradient(colors: [Color(hex: "8A2387"), Color(hex: "E94057"), Color(hex: "F27121")], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(width: 28, height: 28)
+                        Image(systemName: "crown.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white)
+                    } else {
+                        Circle()
+                            .fill(Color.appAccent.opacity(0.18))
+                            .frame(width: 28, height: 28)
+                        Text(staffInitials(staff.displayName))
+                            .font(.system(size: 10, weight: .black))
+                            .foregroundColor(.appAccent)
+                    }
                 }
 
                 // Name + role
@@ -428,7 +453,7 @@ struct MainDashboardView: View {
                         .foregroundColor(.textPrimary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
-                    Text(staff.roleName)
+                    Text(staff.roleName == "Store Owner" ? "store_owner".t : staff.roleName)
                         .font(.system(size: 9))
                         .foregroundColor(.textSecondary)
                         .lineLimit(1)
@@ -582,8 +607,8 @@ struct MainDashboardView: View {
             case .kitchen:    KitchenDisplayView()
             case .timecard:   EmployeeTimecardView()
             case .inventory:  InventoryView()
-            case .giftCards:  GiftCardManagementView()
-            case .loyalty:    LoyaltyManagementView()
+            case .giftCards:  CustomerValueManagementView(initialSection: .giftCards)
+            case .loyalty:    CustomerValueManagementView(initialSection: .loyalty)
             case .payroll:    PayrollDashboardView()
             case .sales:      SalesDashboardView()
             case .reports:    ReportsView()

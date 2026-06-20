@@ -619,8 +619,9 @@ struct CashDrawerManagementView: View {
     
     private func openRegisterSession() {
         let amount = Double(openingCashString) ?? 0.0
-        let userId = users.first?.id ?? UUID() // Fallback mock userId if none exists
-        
+        // Use the first active user; do not fall back to random UUID — that breaks FK in Supabase
+        guard let userId = users.first?.id else { return }
+
         let newSession = RegisterSession(
             openedByUserId: userId,
             openedAt: Date(),
@@ -672,7 +673,8 @@ struct CashDrawerManagementView: View {
         session.expectedClosingCash = expectedCash
         session.actualClosingCash = actual
         session.cashDiscrepancy = discrepancy
-        session.closedByUserId = users.first?.id ?? UUID()
+        // Only set closedByUserId if a user exists to avoid FK violation
+        session.closedByUserId = users.first?.id
         session.notes = closingNotes.isEmpty ? nil : closingNotes
         session.isSynced = false
         session.updatedAt = Date()

@@ -32,6 +32,10 @@ struct TableView: View {
     @State private var headerWidth: CGFloat = 0
     @ObservedObject private var syncEngine = SyncEngine.shared
     
+    @Query(filter: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted })
+    private var activeRegisterSessions: [RegisterSession]
+    @State private var showNoActiveShiftAlert = false
+    
     @Query(sort: \FloorPlanImage.floor) private var floorPlanImages: [FloorPlanImage]
     @Query(sort: \TableLayoutPreset.name) private var layoutPresets: [TableLayoutPreset]
     @State private var showingSavePresetAlert = false
@@ -225,6 +229,14 @@ struct TableView: View {
             .sheet(item: $selectedTable) { table in
                 TableDetailView(table: table, selectedTab: $selectedTab, posTableSession: $activeSession)
             }
+            .alert("Cash Drawer is Locked", isPresented: $showNoActiveShiftAlert) {
+                Button("go_to_cash_drawer".t) {
+                    selectedTab = .cashDrawer
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("pos_shift_required_hint".t)
+            }
             .sheet(isPresented: $showingAddTableSheet) {
                 AddTableSheet(isPresented: $showingAddTableSheet, modelContext: modelContext, defaultFloor: selectedFloor)
             }
@@ -304,6 +316,10 @@ struct TableView: View {
                             isBouncing: bounceTableId == table.id,
                             onTap: {
                                 if !isEditingLayout {
+                                    if activeRegisterSessions.isEmpty {
+                                        showNoActiveShiftAlert = true
+                                        return
+                                    }
                                     let leader = table.joinedParent ?? table
                                     if let session = leader.sessions.first(where: { $0.isActive }) {
                                         if Calendar.current.isDateInToday(session.startedAt) {
@@ -2273,11 +2289,14 @@ struct TableDetailView: View {
     @Binding var posTableSession: TableSession?
     
     @Query(sort: \RestaurantTable.tableNumber) private var allTables: [RestaurantTable]
+    @Query(filter: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted })
+    private var activeRegisterSessions: [RegisterSession]
     
     @State private var dynamicQRUrl: String = ""
     @State private var showingQRPopover = false
     @State private var editingCapacity = false
     @State private var tempCapacity: String = ""
+    @State private var showNoActiveShiftAlert = false
     
     @AppStorage("logged_in_email") private var loggedInEmail = "owner@alphapos.com"
     @State private var showingManagerPinSheet = false
@@ -2650,6 +2669,10 @@ struct TableDetailView: View {
                                     // Session Action Buttons (Placed Side-by-Side to Fit Height)
                                     HStack(spacing: 12) {
                                         Button(action: {
+                                            if activeRegisterSessions.isEmpty {
+                                                showNoActiveShiftAlert = true
+                                                return
+                                            }
                                             posTableSession = session
                                             selectedTab = .pos
                                             dismiss()
@@ -2701,7 +2724,13 @@ struct TableDetailView: View {
                                         .tracking(1.0)
                                     
                                     VStack(spacing: 10) {
-                                        Button(action: startNewSession) {
+                                        Button(action: {
+                                            if activeRegisterSessions.isEmpty {
+                                                showNoActiveShiftAlert = true
+                                                return
+                                            }
+                                            startNewSession()
+                                        }) {
                                             Text("table_start_session_btn".t)
                                                 .frame(maxWidth: .infinity)
                                         }
@@ -2803,6 +2832,15 @@ struct TableDetailView: View {
                         performDelete()
                     }
                 )
+            }
+            .alert("Cash Drawer is Locked", isPresented: $showNoActiveShiftAlert) {
+                Button("go_to_cash_drawer".t) {
+                    selectedTab = .cashDrawer
+                    dismiss()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("pos_shift_required_hint".t)
             }
         }
     }

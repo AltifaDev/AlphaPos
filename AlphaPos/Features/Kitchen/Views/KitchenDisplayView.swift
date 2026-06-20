@@ -62,7 +62,9 @@ struct KitchenDisplayView: View {
     // Timer for refreshing delayed status every second
     @State private var currentSecond = Date()
     @State private var previousActiveOrderCount = 0
-    private let secondTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    // Use manual connect/cancel to prevent timer leak when view is hidden but not destroyed
+    private let secondTimer = Timer.publish(every: 1, on: .main, in: .common)
+    @State private var secondTimerCancellable: Cancellable? = nil
     
     var filteredTickets: [KDSTicket] {
         var tickets: [KDSTicket] = []
@@ -498,9 +500,12 @@ struct KitchenDisplayView: View {
             withAnimation(.spring(response: 0.65, dampingFraction: 0.75)) {
                 isViewAppeared = true
             }
+            secondTimerCancellable = secondTimer.connect()
         }
         .onDisappear {
             isViewAppeared = false
+            secondTimerCancellable?.cancel()
+            secondTimerCancellable = nil
         }
     }
     

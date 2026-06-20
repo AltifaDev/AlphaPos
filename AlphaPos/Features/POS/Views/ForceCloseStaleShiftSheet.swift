@@ -16,6 +16,7 @@ struct ForceCloseStaleShiftSheet: View {
     @State private var closingNotes = ""
     
     var onComplete: (() -> Void)? = nil
+    var onCancel: (() -> Void)? = nil
     
     // Financial calculations for this session
     private var cashSalesAmount: Double {
@@ -190,6 +191,16 @@ struct ForceCloseStaleShiftSheet: View {
             }
             .navigationTitle("shift_reconciliation_title".t)
             .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled(true)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("cancel_btn".t) {
+                        onCancel?()
+                        dismiss()
+                    }
+                    .foregroundColor(.textPrimary)
+                }
+            }
         }
         .onAppear {
             actualCashString = String(format: "%.2f", expectedCash)

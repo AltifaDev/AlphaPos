@@ -2,6 +2,8 @@ import SwiftUI
 import SwiftData
 
 struct LoyaltyManagementView: View {
+    var embedded = false
+
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
     @Query(sort: \Customer.name) private var customers: [Customer]
@@ -47,7 +49,7 @@ struct LoyaltyManagementView: View {
                 }
             }
         }
-        .navigationTitle("tab_loyalty".t)
+        .navigationTitle(embedded ? "customer_value_title".t : "tab_loyalty".t)
         .apNavBar(background: Color.appBackground)
         .sheet(isPresented: $showingAdjustSheet) {
             if let selectedCustomer {
@@ -100,17 +102,25 @@ struct LoyaltyManagementView: View {
     }
 
     private func metricCard(title: String, value: String, icon: String, color: Color) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon).foregroundColor(color)
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(color.opacity(0.12))
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(color)
+            }
+            .frame(width: 38, height: 38)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.caption2).foregroundColor(.textTertiary)
-                Text(value).font(.headline.weight(.bold)).foregroundColor(.textPrimary)
+                Text(title).font(.caption).foregroundColor(.textSecondary)
+                Text(value).font(.title3.weight(.bold)).foregroundColor(.textPrimary)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(Color.appSurfaceHigh)
-        .cornerRadius(8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.appBorderSubtle, lineWidth: 1))
     }
 
     private var customersPanel: some View {
@@ -130,8 +140,15 @@ struct LoyaltyManagementView: View {
             .cornerRadius(8)
             .padding(APSpacing.md)
 
-            ScrollView {
-                LazyVStack(spacing: APSpacing.sm) {
+            if filteredCustomers.isEmpty {
+                emptyState(
+                    title: searchText.isEmpty ? "loyalty_no_members".t : "customer_value_no_results".t,
+                    subtitle: searchText.isEmpty ? "loyalty_no_members_hint".t : "customer_value_search_hint".t,
+                    icon: "person.2"
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: APSpacing.sm) {
                     ForEach(filteredCustomers) { customer in
                         Button {
                             selectedCustomer = customer
@@ -158,13 +175,14 @@ struct LoyaltyManagementView: View {
                             }
                             .padding(APSpacing.md)
                             .background(selectedCustomer?.id == customer.id ? Color.appAccent.opacity(0.12) : Color.appSurface)
-                            .cornerRadius(8)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(selectedCustomer?.id == customer.id ? Color.appAccent : Color.appBorderSubtle, lineWidth: 1))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(selectedCustomer?.id == customer.id ? Color.appAccent : Color.appBorderSubtle, lineWidth: 1))
                         }
                         .buttonStyle(.plain)
                     }
+                    }
+                    .padding([.horizontal, .bottom], APSpacing.md)
                 }
-                .padding([.horizontal, .bottom], APSpacing.md)
             }
         }
         .frame(width: 400)
@@ -202,6 +220,20 @@ struct LoyaltyManagementView: View {
                     metricCard(title: "loyalty_history".t, value: "\(customerTxns.count)", icon: "clock.arrow.circlepath", color: .appAccent)
                 }
 
+                HStack(spacing: 0) {
+                    profileItem(icon: "phone.fill", label: "customer_phone_label".t, value: customer.phone ?? "—")
+                    Divider().frame(height: 34)
+                    profileItem(icon: "envelope.fill", label: "email_label".t, value: customer.email ?? "—")
+                    Divider().frame(height: 34)
+                    profileItem(icon: "calendar", label: "member_since_label".t, value: customer.createdAt.formatted(date: .abbreviated, time: .omitted))
+                    Divider().frame(height: 34)
+                    profileItem(icon: "arrow.triangle.2.circlepath", label: "updated_label".t, value: customer.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                }
+                .padding(.vertical, 12)
+                .background(Color.appSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.appBorderSubtle, lineWidth: 1))
+
                 HStack(alignment: .top, spacing: APSpacing.lg) {
                     historySection(transactions: customerTxns)
                     orderSection(orders: customerOrders)
@@ -210,16 +242,49 @@ struct LoyaltyManagementView: View {
             .padding(APSpacing.lg)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
-            VStack(spacing: APSpacing.md) {
-                Image(systemName: "star.circle.fill")
-                    .font(.system(size: 44))
-                    .foregroundColor(.textTertiary)
-                Text("loyalty_select_customer_prompt".t)
-                    .font(.headline)
-                    .foregroundColor(.textSecondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            emptyState(
+                title: "loyalty_select_customer_prompt".t,
+                subtitle: "loyalty_select_customer_hint".t,
+                icon: "star.circle.fill"
+            )
         }
+    }
+
+    private func emptyState(title: String, subtitle: String, icon: String) -> some View {
+        VStack(spacing: 14) {
+            ZStack {
+                Circle().fill(Color.appAccent.opacity(0.10))
+                Image(systemName: icon)
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(Color.appAccent)
+            }
+            .frame(width: 72, height: 72)
+            Text(title)
+                .font(.title3.weight(.bold))
+                .foregroundStyle(Color.textPrimary)
+            Text(subtitle)
+                .font(.subheadline)
+                .foregroundStyle(Color.textSecondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func profileItem(icon: String, label: String, value: String) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon)
+                .foregroundStyle(Color.appAccent)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(.caption2).foregroundStyle(Color.textTertiary)
+                Text(value).font(.subheadline.weight(.semibold)).foregroundStyle(Color.textPrimary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity)
     }
 
     private func historySection(transactions: [LoyaltyTransaction]) -> some View {

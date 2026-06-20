@@ -189,8 +189,21 @@ struct POSView: View {
         guard let session = activeSession else { return }
 
         var ordersToPay: [Order] = []
-        // 1. Create payment records for any unpaid orders in the session
+        // 1. Create payment records for any unpaid orders in the session and mark them as completed
         for order in session.orders {
+            if order.status == "preparing" || order.status == "ready" {
+                order.status = "completed"
+                order.isSynced = false
+                order.updatedAt = Date()
+                
+                for item in order.items {
+                    if item.status == "cooking" {
+                        item.status = "served"
+                        item.isSynced = false
+                        item.updatedAt = Date()
+                    }
+                }
+            }
             if order.payments.isEmpty {
                 let payment = Payment(paymentMethod: methodName, amount: order.total)
                 payment.order = order
@@ -241,6 +254,22 @@ struct POSView: View {
 
         let unpaidOrders = session.orders.filter { $0.payments.isEmpty }
         guard !unpaidOrders.isEmpty else { return }
+
+        for order in session.orders {
+            if order.status == "preparing" || order.status == "ready" {
+                order.status = "completed"
+                order.isSynced = false
+                order.updatedAt = Date()
+                
+                for item in order.items {
+                    if item.status == "cooking" {
+                        item.status = "served"
+                        item.isSynced = false
+                        item.updatedAt = Date()
+                    }
+                }
+            }
+        }
 
         if let primaryOrder = unpaidOrders.first {
             for entry in entries {
@@ -486,13 +515,17 @@ struct POSView: View {
             RefundView()
         }
         .fullScreenCover(isPresented: $showStartShiftSheet) {
-            StartShiftRegisterSheet()
+            StartShiftRegisterSheet(onCancel: {
+                selectedTab = .tables
+            })
         }
         .sheet(item: $staleSessionToClose) { session in
-            ForceCloseStaleShiftSheet(session: session) {
+            ForceCloseStaleShiftSheet(session: session, onComplete: {
                 staleSessionToClose = nil
                 showStartShiftSheet = true
-            }
+            }, onCancel: {
+                selectedTab = .tables
+            })
         }
         .sheet(isPresented: $showSplitPayment) {
             SplitPaymentView(totalAmount: displayTotal) { entries in

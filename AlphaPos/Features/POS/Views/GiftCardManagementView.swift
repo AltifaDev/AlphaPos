@@ -2,6 +2,8 @@ import SwiftUI
 import SwiftData
 
 struct GiftCardManagementView: View {
+    var embedded = false
+
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
     @Query(sort: \GiftCard.updatedAt, order: .reverse) private var giftCards: [GiftCard]
@@ -48,7 +50,7 @@ struct GiftCardManagementView: View {
                 }
             }
         }
-        .navigationTitle("gift_cards_title".t)
+        .navigationTitle(embedded ? "customer_value_title".t : "gift_cards_title".t)
         .apNavBar(background: Color.appBackground)
         .sheet(isPresented: $showingIssueSheet) {
             GiftCardIssueSheet(customers: customers) { card in
@@ -125,17 +127,25 @@ struct GiftCardManagementView: View {
     }
 
     private func metricCard(title: String, value: String, icon: String, color: Color) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon).foregroundColor(color)
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(color.opacity(0.12))
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(color)
+            }
+            .frame(width: 38, height: 38)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.caption2).foregroundColor(.textTertiary)
-                Text(value).font(.headline.weight(.bold)).foregroundColor(.textPrimary)
+                Text(title).font(.caption).foregroundColor(.textSecondary)
+                Text(value).font(.title3.weight(.bold)).foregroundColor(.textPrimary)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(Color.appSurfaceHigh)
-        .cornerRadius(8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.appBorderSubtle, lineWidth: 1))
     }
 
     private var listPanel: some View {
@@ -156,7 +166,9 @@ struct GiftCardManagementView: View {
             .padding(APSpacing.md)
 
             if filteredCards.isEmpty {
-                emptyState(title: "no_gift_cards".t, icon: "giftcard")
+                emptyState(title: searchText.isEmpty ? "no_gift_cards".t : "customer_value_no_results".t,
+                           subtitle: searchText.isEmpty ? "gift_card_empty_hint".t : "customer_value_search_hint".t,
+                           icon: "giftcard")
             } else {
                 ScrollView {
                     LazyVStack(spacing: APSpacing.sm) {
@@ -180,15 +192,18 @@ struct GiftCardManagementView: View {
                                         Text("฿\(card.balance, specifier: "%.2f")")
                                             .font(.subheadline.weight(.bold))
                                             .foregroundColor(.textPrimary)
-                                        Text(card.status.capitalized)
+                                        Text(statusLabel(card.status))
                                             .font(.caption2.weight(.bold))
-                                            .foregroundColor(card.status == "active" ? .appTeal : .appRose)
+                                            .foregroundColor(statusColor(card.status))
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .background(statusColor(card.status).opacity(0.10), in: Capsule())
                                     }
                                 }
                                 .padding(APSpacing.md)
                                 .background(selectedCard?.id == card.id ? Color.appAccent.opacity(0.12) : Color.appSurface)
-                                .cornerRadius(8)
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(selectedCard?.id == card.id ? Color.appAccent : Color.appBorderSubtle, lineWidth: 1))
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(selectedCard?.id == card.id ? Color.appAccent : Color.appBorderSubtle, lineWidth: 1))
                             }
                             .buttonStyle(.plain)
                         }
@@ -216,7 +231,7 @@ struct GiftCardManagementView: View {
                 HStack(spacing: APSpacing.md) {
                     metricCard(title: "balance_label".t, value: "฿\(card.balance.formatted(.number.precision(.fractionLength(2))))", icon: "wallet.pass.fill", color: .appTeal)
                     metricCard(title: "initial_value_label".t, value: "฿\(card.initialValue.formatted(.number.precision(.fractionLength(2))))", icon: "banknote.fill", color: .appAccent)
-                    metricCard(title: "status_label".t, value: card.status.capitalized, icon: "flag.fill", color: card.status == "active" ? .appTeal : .appRose)
+                    metricCard(title: "status_label".t, value: statusLabel(card.status), icon: "flag.fill", color: statusColor(card.status))
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -238,6 +253,7 @@ struct GiftCardManagementView: View {
                     detailRow("updated_label".t, card.updatedAt.formatted(date: .abbreviated, time: .shortened))
                     detailRow("expiry_label".t, card.expiresAt?.formatted(date: .abbreviated, time: .omitted) ?? "no_expiry_label".t)
                     detailRow("customer_phone_label".t, card.customer?.phone ?? "-")
+                    detailRow("email_label".t, card.customer?.email ?? "-")
                 }
                 .apCard()
 
@@ -246,7 +262,7 @@ struct GiftCardManagementView: View {
             .padding(APSpacing.lg)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
-            emptyState(title: "select_gift_card_prompt".t, icon: "giftcard.fill")
+            emptyState(title: "select_gift_card_prompt".t, subtitle: "gift_card_select_hint".t, icon: "giftcard.fill")
         }
     }
 
@@ -272,16 +288,43 @@ struct GiftCardManagementView: View {
         .font(.subheadline)
     }
 
-    private func emptyState(title: String, icon: String) -> some View {
-        VStack(spacing: APSpacing.md) {
-            Image(systemName: icon)
-                .font(.system(size: 42))
-                .foregroundColor(.textTertiary)
+    private func emptyState(title: String, subtitle: String, icon: String) -> some View {
+        VStack(spacing: 14) {
+            ZStack {
+                Circle().fill(Color.appAccent.opacity(0.10))
+                Image(systemName: icon)
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(Color.appAccent)
+            }
+            .frame(width: 72, height: 72)
             Text(title)
-                .font(.headline)
+                .font(.title3.weight(.bold))
+                .foregroundColor(.textPrimary)
+            Text(subtitle)
+                .font(.subheadline)
                 .foregroundColor(.textSecondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
         }
+        .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func statusLabel(_ status: String) -> String {
+        switch status.lowercased() {
+        case "active": return "gift_card_status_active".t
+        case "exhausted": return "gift_card_status_exhausted".t
+        case "expired": return "gift_card_status_expired".t
+        default: return "gift_card_status_disabled".t
+        }
+    }
+
+    private func statusColor(_ status: String) -> Color {
+        switch status.lowercased() {
+        case "active": return .appTeal
+        case "exhausted": return Color(hex: "F59E0B")
+        default: return .appRose
+        }
     }
 
     private func insertAudit(action: String, amount: Double, card: GiftCard, note: String) {

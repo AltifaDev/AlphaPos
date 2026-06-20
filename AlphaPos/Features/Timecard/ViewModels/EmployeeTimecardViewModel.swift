@@ -87,19 +87,24 @@ final class EmployeeTimecardViewModel {
     
     func seedSampleEmployees() {
         guard let modelContext = modelContext else { return }
-        
+
         let managerRole = Role(name: "Manager", roleDescription: "Store manager")
         let baristaRole = Role(name: "Barista", roleDescription: "Coffee specialist")
         modelContext.insert(managerRole)
         modelContext.insert(baristaRole)
-        
-        let user1 = User(username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.hashPIN("password"), pinCodeHash: SecurityHelper.hashPIN("1234"), role: managerRole)
-        let user2 = User(username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.hashPIN("password"), pinCodeHash: SecurityHelper.hashPIN("5678"), role: baristaRole)
+
+        // Fixed UUIDs — must match SampleDataSeeder constants so FK references stay valid after re-seed
+        let seedEmp1Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111101")!
+        let seedEmp2Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111102")!
+        let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
+        let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
+        let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.hashPIN("password"), pinCodeHash: SecurityHelper.hashPIN("1234"), role: managerRole, isSynced: false, isDeleted: false, updatedAt: Date())
+        let user2 = User(id: seedUser2Id, username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.hashPIN("password"), pinCodeHash: SecurityHelper.hashPIN("5678"), role: baristaRole, isSynced: false, isDeleted: false, updatedAt: Date())
         modelContext.insert(user1)
         modelContext.insert(user2)
-        
-        let emp1 = Employee(user: user1, firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0)
-        let emp2 = Employee(user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0)
+
+        let emp1 = Employee(id: seedEmp1Id, user: user1, firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, isSynced: false, isDeleted: false, updatedAt: Date())
+        let emp2 = Employee(id: seedEmp2Id, user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, isSynced: false, isDeleted: false, updatedAt: Date())
         
         // Mock Reference face vectors
         emp1.faceEmbeddingData = Data("mock_embedding_1".utf8)

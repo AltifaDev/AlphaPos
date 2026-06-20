@@ -1072,16 +1072,18 @@ struct PayrollDashboardView: View {
                 user.email = userEmail
                 user.role = selectedRole
                 if !empPin.isEmpty {
-                    user.pinCodeHash = SecurityHelper.sha256(empPin)
+                    // Use iterated hash with salt (not plain sha256) per SecurityHelper.hashPIN
+                    user.pinCodeHash = SecurityHelper.hashPIN(empPin)
                 }
                 if !empPassword.isEmpty {
-                    user.passwordHash = SecurityHelper.sha256(empPassword)
+                    // Use iterated hash with salt for passwords too
+                    user.passwordHash = SecurityHelper.hashPIN(empPassword)
                 }
                 user.updatedAt = Date()
                 user.isSynced = false
             } else {
-                let pHash = empPassword.isEmpty ? "default_hash" : SecurityHelper.sha256(empPassword)
-                let pinValue = empPin.isEmpty ? nil : SecurityHelper.sha256(empPin)
+                let pHash = empPassword.isEmpty ? SecurityHelper.hashPIN("") : SecurityHelper.hashPIN(empPassword)
+                let pinValue = empPin.isEmpty ? nil : SecurityHelper.hashPIN(empPin)
                 let newUser = User(
                     username: empUsername.lowercased(),
                     email: userEmail,

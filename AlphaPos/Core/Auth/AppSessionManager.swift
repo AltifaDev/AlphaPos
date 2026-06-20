@@ -57,9 +57,39 @@ final class AppSessionManager: ObservableObject {
 
     func completeMerchantAuthentication(modelContext: ModelContext) {
         UserDefaults.standard.set(true, forKey: "is_logged_in")
-        currentStaffSession = nil
         seedStaffIfNeeded(modelContext: modelContext)
-        route = .staffLock
+        unlockAsStoreOwner(modelContext: modelContext)
+    }
+
+    func unlockAsStoreOwner(modelContext: ModelContext) {
+        let deviceId = ensureCurrentDevice(modelContext: modelContext).id
+        let sessionId = UUID()
+        let ownerId = UUID(uuidString: "00000000-0000-0000-0000-000000000000") ?? UUID()
+        
+        let displayName = UserDefaults.standard.string(forKey: "logged_in_name") ?? "Store Owner"
+        
+        currentStaffSession = StaffSession(
+            id: sessionId,
+            employeeId: ownerId,
+            displayName: displayName,
+            roleName: "Store Owner",
+            permissions: PermissionService.permissions(forRoleName: "Store Manager"),
+            startedAt: Date()
+        )
+        
+        modelContext.insert(StaffSessionRecord(
+            id: sessionId,
+            deviceId: deviceId,
+            employeeId: ownerId,
+            roleName: "Store Owner"
+        ))
+        modelContext.insert(AuditLog(
+            employeeId: ownerId,
+            actionType: "store_owner_unlock",
+            details: "\(displayName) unlocked this register using merchant account"
+        ))
+        try? modelContext.save()
+        route = .dashboard
     }
 
     func unlock(employee: Employee, modelContext: ModelContext) {

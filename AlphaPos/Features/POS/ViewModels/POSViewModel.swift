@@ -416,6 +416,19 @@ final class POSViewModel {
         appliedPromotion.incrementRedemption()
     }
 
+    // Pre-fetch all inventory items for the active branch once (avoids N+1 inside deductIngredientsLocally)
+    var branchInventoryCache: [String: InventoryItem]? = nil
+    if let activeBranch = activeBranch {
+        let allItems = (try? modelContext.fetch(FetchDescriptor<InventoryItem>())) ?? []
+        let branchItems = allItems.filter { $0.branch?.id == activeBranch.id }
+        var cache: [String: InventoryItem] = [:]
+        for item in branchItems {
+            if let sku = item.sku { cache[sku] = item }
+            cache[item.name] = item
+        }
+        branchInventoryCache = cache
+    }
+
     // 3. Add OrderItems and deduct stock for regular cart items
     for cartItem in cart {
         let orderItem = OrderItem(
@@ -441,7 +454,8 @@ final class POSViewModel {
             for: cartItem,
             activeBranch: activeBranch,
             baseReferenceId: orderItem.id,
-            modifierReferenceIds: modifierReferenceIds
+            modifierReferenceIds: modifierReferenceIds,
+            branchInventoryCache: branchInventoryCache
         )
     }
 
@@ -466,6 +480,17 @@ final class POSViewModel {
     if tableSession == nil {
         currentQueueNumber = ""
     }
+
+    // Close dine-in table session after checkout so the table shows as vacant
+    // Without this, staff app still sees the table as occupied
+    if selectedOrderType == "dine_in", let session = tableSession {
+        session.isActive = false
+        session.endedAt = Date()
+        session.isSynced = false
+        session.updatedAt = Date()
+        try? modelContext.save()
+    }
+
     APHaptic.trigger()
 
     // Background sync
@@ -702,7 +727,8 @@ final class POSViewModel {
         for cartItem: CartItem,
         activeBranch: Branch?,
         baseReferenceId: UUID? = nil,
-        modifierReferenceIds: [UUID] = []
+        modifierReferenceIds: [UUID] = [],
+        branchInventoryCache: [String: InventoryItem]? = nil
     ) {
     guard let modelContext = modelContext else { return }
 
@@ -711,10 +737,10 @@ final class POSViewModel {
         if let ingredient = recipe.inventoryItem {
             var localItem = ingredient
             if let activeBranch = activeBranch, ingredient.branch?.id != activeBranch.id {
-                let itemDesc = FetchDescriptor<InventoryItem>()
-                if let allItems = try? modelContext.fetch(itemDesc),
-                   let match = allItems.first(where: { $0.branch?.id == activeBranch.id && ($0.sku == ingredient.sku || $0.name == ingredient.name) }) {
-                    localItem = match
+                // Use pre-fetched cache to avoid N+1 fetch inside loop
+                let key = ingredient.sku ?? ingredient.name
+                if let cached = branchInventoryCache?[key] {
+                    localItem = cached
                 }
             }
 
@@ -740,10 +766,9 @@ final class POSViewModel {
         if let ingredient = mod.inventoryItemLink, let reqQty = mod.quantityRequired {
             var localItem = ingredient
             if let activeBranch = activeBranch, ingredient.branch?.id != activeBranch.id {
-                let itemDesc = FetchDescriptor<InventoryItem>()
-                if let allItems = try? modelContext.fetch(itemDesc),
-                   let match = allItems.first(where: { $0.branch?.id == activeBranch.id && ($0.sku == ingredient.sku || $0.name == ingredient.name) }) {
-                    localItem = match
+                let key = ingredient.sku ?? ingredient.name
+                if let cached = branchInventoryCache?[key] {
+                    localItem = cached
                 }
             }
 
@@ -1032,13 +1057,21 @@ final class SampleDataSeeder {
             // Seed default users and employees if empty
             let employees = (try? modelContext.fetch(FetchDescriptor<Employee>())) ?? []
             if employees.isEmpty {
-                let user1 = User(username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: roleManager)
-                let user2 = User(username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: roleWaitstaff)
+                // Fixed UUIDs ensure that employeeId references stored in staff_sessions,
+                // audit_logs and timecards remain valid after a re-seed.
+                // DO NOT change these constants — they are the canonical seed identities.
+                let seedEmp1Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111101")!
+                let seedEmp2Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111102")!
+                let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
+                let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
+
+                let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: roleManager, isSynced: false, isDeleted: false, updatedAt: Date())
+                let user2 = User(id: seedUser2Id, username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: roleWaitstaff, isSynced: false, isDeleted: false, updatedAt: Date())
                 modelContext.insert(user1)
                 modelContext.insert(user2)
 
-                let emp1 = Employee(user: user1, firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0)
-                let emp2 = Employee(user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0)
+                let emp1 = Employee(id: seedEmp1Id, user: user1, firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, isSynced: false, isDeleted: false, updatedAt: Date())
+                let emp2 = Employee(id: seedEmp2Id, user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, isSynced: false, isDeleted: false, updatedAt: Date())
                 modelContext.insert(emp1)
                 modelContext.insert(emp2)
             }

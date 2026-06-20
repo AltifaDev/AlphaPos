@@ -331,7 +331,7 @@ final class NetworkManager {
     func uploadOrder(order: Order) async throws -> Bool {
         let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         var orderPayload: [String: Any] = [
-            "id": order.id.uuidString,
+            "id": order.id.uuidString.lowercased(),
             "order_number": order.orderNumber,
             "table_number": order.tableSession?.table?.tableNumber ?? "",
             "total": order.total,
@@ -351,14 +351,16 @@ final class NetworkManager {
         }
 
         // 1. Insert order record
-        _ = try await sendSupabaseRequest(method: "POST", endpoint: "orders", payload: orderPayload)
+        _ = try await sendSupabaseRequest(method: "POST", endpoint: "orders",
+            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+            payload: orderPayload)
 
         // 2. Insert order items
         var itemsPayload: [[String: Any]] = []
         for item in order.items {
             var itemPayload: [String: Any] = [
-                "id": item.id.uuidString,
-                "order_id": order.id.uuidString,
+                "id": item.id.uuidString.lowercased(),
+                "order_id": order.id.uuidString.lowercased(),
                 "item_name": item.menuItem?.name ?? "Unknown Item",
                 "quantity": item.quantity,
                 "price": item.unitPrice,
@@ -373,7 +375,9 @@ final class NetworkManager {
             itemsPayload.append(itemPayload)
         }
         if !itemsPayload.isEmpty {
-            _ = try await sendSupabaseRequest(method: "POST", endpoint: "order_items", payload: itemsPayload)
+            _ = try await sendSupabaseRequest(method: "POST", endpoint: "order_items",
+                queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+                payload: itemsPayload)
         }
 
         return true
@@ -498,6 +502,12 @@ final class NetworkManager {
         return true
     }
 
+    func deletePaymentOnServer(id: UUID) async throws -> Bool {
+        _ = try await sendSupabaseRequest(method: "DELETE", endpoint: "payments",
+            queryItems: [URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())")])
+        return true
+    }
+
     func completeCheckout(paymentId: UUID, orderId: UUID, amount: Double, method: String, tableNumber: String) async throws -> Bool {
         let payload: [String: Any] = [
             "p_payment_id": paymentId.uuidString,
@@ -536,6 +546,12 @@ final class NetworkManager {
         }
         payload["updated_at"] = NetworkManager.iso8601.string(from: Date())
         _ = try await sendSupabaseRequest(method: "POST", endpoint: "timecards", queryItems: [URLQueryItem(name: "on_conflict", value: "id")], payload: payload)
+        return true
+    }
+
+    func deleteTimecardOnServer(id: UUID) async throws -> Bool {
+        _ = try await sendSupabaseRequest(method: "DELETE", endpoint: "timecards",
+            queryItems: [URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())")])
         return true
     }
 
@@ -752,7 +768,7 @@ final class NetworkManager {
         _ = try await sendSupabaseRequest(
             method: "POST",
             endpoint: "floor_plan_images",
-            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+            queryItems: [URLQueryItem(name: "on_conflict", value: "merchant_id,floor")],
             payload: payload
         )
         return true
@@ -778,7 +794,8 @@ final class NetworkManager {
         _ = try await sendSupabaseRequest(
             method: "POST",
             endpoint: "table_sessions",
-            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+            // upsert on session_token (has unique constraint) to avoid duplicate key errors
+            queryItems: [URLQueryItem(name: "on_conflict", value: "session_token")],
             payload: payload
         )
 
@@ -1093,7 +1110,7 @@ final class NetworkManager {
             queryItems: [
                 URLQueryItem(name: "select", value: "*"),
                 URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
-                URLQueryItem(name: "is_deleted", value: "eq.false")
+                // is_deleted column does not exist on menu_items table — filter omitted
             ]
         )
         guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
@@ -2255,6 +2272,54 @@ final class NetworkManager {
 
     func deleteCategoryOnServer(id: UUID) async throws -> Bool {
         try await softDeleteMasterData(endpoint: "categories", id: id)
+    }
+
+    // MARK: - Branch Sync
+
+    func fetchBranchesFromSupabase() async throws -> [[String: Any]] {
+        // branches table has no is_deleted column — use custom query without that filter
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let data = try await sendSupabaseRequest(
+            method: "GET",
+            endpoint: "branches",
+            queryItems: [
+                URLQueryItem(name: "select", value: "*"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)")
+            ]
+        )
+        guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw NetworkError.invalidResponse
+        }
+        return jsonArray
+    }
+
+    func uploadBranch(_ branch: Branch) async throws -> Bool {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        var payload: [String: Any] = [
+            "id": branch.id.uuidString.lowercased(),
+            "merchant_id": merchantId,
+            "name": branch.name,
+            "updated_at": NetworkManager.iso8601.string(from: branch.updatedAt)
+        ]
+        if let location = branch.location { payload["location"] = location }
+        if let phone = branch.phone { payload["phone"] = phone }
+        _ = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "branches",
+            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+            payload: payload
+        )
+        return true
+    }
+
+    func deleteBranchOnServer(id: UUID) async throws -> Bool {
+        // branches table has no is_deleted column — use hard DELETE
+        _ = try await sendSupabaseRequest(
+            method: "DELETE",
+            endpoint: "branches",
+            queryItems: [URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())")]
+        )
+        return true
     }
 
     func fetchInventoryItemsFromSupabase() async throws -> [[String: Any]] {

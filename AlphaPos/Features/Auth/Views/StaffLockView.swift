@@ -17,6 +17,7 @@ struct StaffLockView: View {
     @State private var lockedUntil: Date?
 
     @State private var isShowingPasscode = false
+    @State private var isOwnerPasscodeEntry = false
     @State private var shakeAttempts = 0
     @Namespace private var animationNamespace
 
@@ -50,6 +51,7 @@ struct StaffLockView: View {
             passcode = ""
             errorMessage = ""
             isShowingPasscode = false
+            isOwnerPasscodeEntry = false
         }
     }
 
@@ -233,7 +235,12 @@ struct StaffLockView: View {
 
                 Button {
                     APHaptic.trigger()
-                    onUseStoreAccount()
+                    passcode = ""
+                    errorMessage = ""
+                    isOwnerPasscodeEntry = true
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        isShowingPasscode = true
+                    }
                 } label: {
                     Label("use_store_account_btn".t, systemImage: "person.badge.key.fill")
                         .font(.footnote.weight(.bold))
@@ -248,18 +255,27 @@ struct StaffLockView: View {
 
     private var passcodeEntryView: some View {
         VStack(spacing: 32) {
-            if let employee = selectedEmployee {
-                let theme = themeForEmployee(employee)
-                let initials = employeeInitials(employee)
-                let displayName = employeeDisplayName(employee)
-                let roleName = employee.user?.role?.name ?? "Staff"
+            if isOwnerPasscodeEntry || selectedEmployee != nil {
+                let theme = isOwnerPasscodeEntry 
+                    ? ProfileTheme(colors: [Color(hex: "8A2387"), Color(hex: "E94057"), Color(hex: "F27121")], iconName: "crown.fill")
+                    : themeForEmployee(selectedEmployee!)
+                let initials = isOwnerPasscodeEntry
+                    ? String(storeDisplayName.split(separator: " ").prefix(2).compactMap { $0.first } ?? ["S", "O"]).uppercased()
+                    : employeeInitials(selectedEmployee!)
+                let displayName = isOwnerPasscodeEntry ? storeDisplayName : employeeDisplayName(selectedEmployee!)
+                let roleName = isOwnerPasscodeEntry ? "store_owner".t : (selectedEmployee!.user?.role?.name ?? "Staff")
                 
                 VStack(spacing: 14) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
                             .frame(width: 80, height: 80)
-                            .matchedGeometryEffect(id: employee.id, in: animationNamespace)
+                            .matchedGeometryEffect(
+                                id: isOwnerPasscodeEntry
+                                    ? "owner_profile"
+                                    : "employee-\(selectedEmployee!.id.uuidString)",
+                                in: animationNamespace
+                            )
                             .shadow(color: theme.colors[0].opacity(0.3), radius: 8, x: 0, y: 4)
                         
                         VStack(spacing: 4) {
@@ -335,6 +351,7 @@ struct StaffLockView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                         if !isShowingPasscode {
                             selectedEmployee = nil
+                            isOwnerPasscodeEntry = false
                         }
                     }
                 } label: {
@@ -386,27 +403,51 @@ struct StaffLockView: View {
     }
 
     private func verifyPasscode() {
-        guard let employee = selectedEmployee,
-              let storedHash = employee.user?.pinCodeHash,
-              SecurityHelper.verifyPIN(passcode, against: storedHash) else {
-            withAnimation(.default) {
-                shakeAttempts += 1
-            }
-            attempts += 1
-            passcode = ""
-            if attempts >= maxAttempts {
-                lockedUntil = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60))
-                errorMessage = "Too many failed attempts. This register is temporarily locked."
+        if isOwnerPasscodeEntry {
+            let ownerPin = UserDefaults.standard.string(forKey: "merchant_owner_pin") ?? "8888"
+            if passcode == ownerPin {
+                attempts = 0
+                lockedUntil = nil
+                passcode = ""
+                onUseStoreAccount()
             } else {
-                errorMessage = attempts >= 3 ? "Passcode failed. Ask a manager to verify access." : "Invalid passcode"
+                withAnimation(.default) {
+                    shakeAttempts += 1
+                }
+                attempts += 1
+                passcode = ""
+                if attempts >= maxAttempts {
+                    lockedUntil = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60))
+                    errorMessage = "Too many failed attempts. This register is temporarily locked."
+                } else {
+                    errorMessage = LocalizationManager.shared.currentLanguage == .thai 
+                        ? "รหัส PIN ของเจ้าของร้านไม่ถูกต้อง" 
+                        : "Incorrect store owner passcode."
+                }
             }
-            return
-        }
+        } else {
+            guard let employee = selectedEmployee,
+                  let storedHash = employee.user?.pinCodeHash,
+                  SecurityHelper.verifyPIN(passcode, against: storedHash) else {
+                withAnimation(.default) {
+                    shakeAttempts += 1
+                }
+                attempts += 1
+                passcode = ""
+                if attempts >= maxAttempts {
+                    lockedUntil = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60))
+                    errorMessage = "Too many failed attempts. This register is temporarily locked."
+                } else {
+                    errorMessage = attempts >= 3 ? "Passcode failed. Ask a manager to verify access." : "Incorrect passcode."
+                }
+                return
+            }
 
-        attempts = 0
-        lockedUntil = nil
-        passcode = ""
-        onUnlock(employee)
+            attempts = 0
+            lockedUntil = nil
+            passcode = ""
+            onUnlock(employee)
+        }
     }
 }
 
@@ -431,7 +472,7 @@ private struct ProfileGridButton: View {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
                         .frame(width: 125, height: 125)
-                        .matchedGeometryEffect(id: employee.id, in: namespace)
+                        .matchedGeometryEffect(id: "employee-\(employee.id.uuidString)", in: namespace)
                         .shadow(color: theme.colors[0].opacity(0.35), radius: isHovered ? 12 : 6, x: 0, y: isHovered ? 6 : 3)
                     
                     VStack(spacing: 8) {
