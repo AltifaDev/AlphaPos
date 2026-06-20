@@ -872,6 +872,16 @@ struct TableView: View {
                             if let jpegData = uiImage.jpegData(compressionQuality: 0.85) {
                                 try? jpegData.write(to: fileURL)
                                 saveFloorPlanImage(filename: filename)
+                                
+                                // Upload to Storage in background
+                                Task.detached {
+                                    do {
+                                        _ = try await NetworkManager.shared.uploadFloorPlanMedia(data: jpegData, fileName: filename)
+                                    } catch {
+                                        print("Failed to upload floor plan image to storage: \(error)")
+                                    }
+                                }
+                                
                                 await MainActor.run {
                                     cachedFloorPlanImage = uiImage
                                     selectedPhotoItem = nil
@@ -984,27 +994,24 @@ struct TableView: View {
         let minY: CGFloat = 16
         let maxY: CGFloat = 1200 - tableSize.height - 16
         
-        var clampedX = min(max(newX, minX), maxX)
-        var clampedY = min(max(newY, minY), maxY)
-
-        // Snap to grid when Grid Mode is active
-        if isGridMode {
-            let gridSize: CGFloat = 80
-            clampedX = round(clampedX / gridSize) * gridSize
-            clampedY = round(clampedY / gridSize) * gridSize
-            clampedX = min(max(clampedX, minX), maxX)
-            clampedY = min(max(clampedY, minY), maxY)
-        }
+        let clampedX = min(max(newX, minX), maxX)
+        let clampedY = min(max(newY, minY), maxY)
 
         let finalPosition = CGPoint(x: clampedX, y: clampedY)
-        updateTablePosition(table, newPosition: finalPosition)
         
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
-            activeDraggingTableId = nil
-            draggedTableId = nil
-            dragTranslation = .zero
-        }
+        // Reset dragging state completely before updating position
+        // to avoid visual jump caused by animating dragTranslation to zero
+        // while the base offset changes simultaneously
+        activeDraggingTableId = nil
+        draggedTableId = nil
+        dragTranslation = .zero
+        
+        updateTablePosition(table, newPosition: finalPosition)
         APHaptic.trigger()
+
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
     }
     
     private func seedSampleTables() {
@@ -1130,11 +1137,32 @@ struct TableView: View {
 
 
     private func loadCachedFloorPlanImage() {
-        if let path = floorPlanImages
-            .first(where: { $0.floor == selectedFloor && !$0.isDeleted })?
-            .resolvedImagePath,
-           let uiImage = UIImage(contentsOfFile: path) {
-            cachedFloorPlanImage = uiImage
+        if let floorPlan = activeFloorPlanImage, !floorPlan.imageFilename.isEmpty {
+            if let path = floorPlan.resolvedImagePath, let uiImage = UIImage(contentsOfFile: path) {
+                cachedFloorPlanImage = uiImage
+            } else {
+                // If not found locally, try to download from Storage
+                Task {
+                    do {
+                        let data = try await NetworkManager.shared.downloadFloorPlanMedia(fileName: floorPlan.imageFilename)
+                        if let downloadedImage = UIImage(data: data) {
+                            // Save locally for future use
+                            let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                            let fileURL = docsURL.appendingPathComponent(floorPlan.imageFilename)
+                            try? data.write(to: fileURL)
+                            
+                            await MainActor.run {
+                                self.cachedFloorPlanImage = downloadedImage
+                            }
+                        }
+                    } catch {
+                        print("Failed to download floor plan image: \(error)")
+                        await MainActor.run {
+                            self.cachedFloorPlanImage = nil
+                        }
+                    }
+                }
+            }
         } else {
             cachedFloorPlanImage = nil
         }
@@ -3181,7 +3209,7 @@ struct InteractiveTableCardWrapper: View {
         let rotationDegrees = isDragging ? 3.0 : 0.0
         let zIndexVal = isDragging ? 100.0 : (isBouncing ? 50.0 : 1.0)
         
-        let tableDragGesture = DragGesture(minimumDistance: 2)
+        let tableDragGesture = DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged(onDragChanged)
             .onEnded(onDragEnded)
             

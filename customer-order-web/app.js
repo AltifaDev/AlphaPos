@@ -434,7 +434,11 @@ class AlphaPosApp {
             }
         }) : null;
 
-        await this.checkOrOpenSession();
+        const isAllowed = await this.checkOrOpenSession();
+        if (isAllowed === false) {
+            console.warn("Initialization halted: Web ordering or table system is disabled.");
+            return;
+        }
         await this.loadMenuFromServer();
         await this.loadModifiersConfig();
         await this.loadPromotions();
@@ -779,26 +783,31 @@ class AlphaPosApp {
         if (descEl) descEl.textContent = message || this.translate("preparingTable", "Preparing your table...");
     }
 
-    showBlockingState(title, desc, buttonText) {
-        this.showOnboardingPanel("onboardingStep1");
-        const verifyTitle = document.getElementById("verifyTitle");
-        const verifyDesc = document.getElementById("verifyDesc");
-        const radarContainer = document.querySelector(".radar-container");
-        const nextBtn = document.getElementById("btnOnboardingNext1");
-        if (verifyTitle) {
-            verifyTitle.removeAttribute("data-translate-key");
-            verifyTitle.textContent = title;
-        }
-        if (verifyDesc) {
-            verifyDesc.removeAttribute("data-translate-key");
-            verifyDesc.textContent = desc;
-        }
-        if (radarContainer) radarContainer.innerHTML = '<span class="app-icon icon-alert" aria-hidden="true"></span>';
-        if (nextBtn) {
-            nextBtn.removeAttribute("data-translate-key");
-            nextBtn.classList.add("disabled");
-            nextBtn.disabled = true;
-            nextBtn.textContent = buttonText;
+    showBlockingState(titleKey, descKey, footerKey) {
+        // Hide both main app content and onboarding wizard
+        const appContainer = document.querySelector(".app-container");
+        const onboardingWizard = document.getElementById("onboardingWizard");
+        if (appContainer) appContainer.style.display = "none";
+        if (onboardingWizard) onboardingWizard.style.display = "none";
+
+        // Display the safe full-screen blocking overlay
+        const overlay = document.getElementById("blockingOverlay");
+        if (overlay) {
+            overlay.classList.add("active");
+            
+            const titleEl = document.getElementById("blockingTitle");
+            const descEl = document.getElementById("blockingDesc");
+            const footerEl = document.getElementById("blockingFooterText");
+
+            if (titleEl) {
+                titleEl.textContent = this.translate(titleKey, titleKey);
+            }
+            if (descEl) {
+                descEl.textContent = this.translate(descKey, descKey);
+            }
+            if (footerEl) {
+                footerEl.textContent = this.translate(footerKey, footerKey);
+            }
         }
     }
 
@@ -887,30 +896,30 @@ class AlphaPosApp {
         if (merchantSettings) {
             if (merchantSettings.is_table_system_enabled === false) {
                 this.showBlockingState(
-                    "ระบบโต๊ะอาหารปิดใช้งานอยู่",
-                    "ระบบโต๊ะอาหารถูกปิดการใช้งานชั่วคราวโดยร้านค้านี้ กรุณาติดต่อพนักงาน",
-                    "ไม่สามารถใช้บริการได้"
+                    "tableSystemDisabledTitle",
+                    "tableSystemDisabledDesc",
+                    "pleaseOrderStaff"
                 );
-                return;
+                return false;
             }
             if (merchantSettings.is_web_ordering_enabled === false) {
                 this.showBlockingState(
-                    "ปิดระบบสั่งอาหารออนไลน์",
-                    "สาขา/ร้านค้านี้ปิดการรับออเดอร์ผ่านเว็บชั่วคราว กรุณาสั่งอาหารผ่านพนักงาน",
-                    "ปิดระบบชั่วคราว"
+                    "webOrderingDisabledTitle",
+                    "webOrderingDisabledDesc",
+                    "pleaseOrderStaff"
                 );
-                return;
+                return false;
             }
         }
 
         // Block access if table parameter is missing
         if (!tableParam) {
             this.showBlockingState(
-                "ไม่พบรหัสโต๊ะอาหาร",
-                "กรุณาสแกน QR Code บนโต๊ะอาหารของคุณเพื่อเริ่มสั่งอาหาร",
-                "กรุณาสแกน QR Code"
+                "tableParamMissingTitle",
+                "tableParamMissingDesc",
+                "pleaseOrderStaff"
             );
-            return;
+            return false;
         }
 
         document.getElementById("welcomeTableNum").innerText = this.tableNumber;
@@ -930,7 +939,7 @@ class AlphaPosApp {
                 this.finishOnboardingLoading(this.translate("resumingSession", "Resuming your table session..."));
                 this.cleanUrlParams(); // Clean URL params to prevent re-onboarding on reload
                 console.log("Resumed session verified by server:", this.sessionToken);
-                return;
+                return true;
             } else {
                 // Clear invalid/expired session
                 this.sessionToken = null;
@@ -943,7 +952,7 @@ class AlphaPosApp {
                 // If URL had a token (fresh QR scan) but it's invalid, show QR error
                 if (this.sessionToken === null && urlParams.get('token')) {
                     this.showQrInvalidError();
-                    return;
+                    return false;
                 }
             }
         }
@@ -954,13 +963,13 @@ class AlphaPosApp {
             const isValid = await this.verifySessionWithServer(urlToken);
             if (!isValid) {
                 this.showQrInvalidError();
-                return;
+                return false;
             } else {
                 this.sessionToken = urlToken;
                 localStorage.setItem(`sessionToken_T${this.tableNumber}`, urlToken);
                 this.finishOnboardingLoading(this.translate("resumingSession", "Resuming your table session..."));
                 this.cleanUrlParams(); // Clean URL params to prevent re-onboarding on reload
-                return;
+                return true;
             }
         }
 
@@ -972,13 +981,14 @@ class AlphaPosApp {
             this.finishOnboardingLoading(this.translate("resumingSession", "Resuming your table session..."));
             this.cleanUrlParams(); // Clean URL params to prevent re-onboarding on reload
             console.log("Active table session resumed without asking guest count:", this.sessionToken);
-            return;
+            return true;
         }
 
         // No active session exists. Ask for guest count directly; location verification runs in the background.
         this.currentOnboardingStep = 2;
         this.showOnboardingPanel("onboardingStep2");
         this.renderInteractiveSeats();
+        return true;
     }
 
     cleanUrlParams() {
@@ -1047,36 +1057,12 @@ class AlphaPosApp {
      * Displays bilingual error message (Thai + English)
      */
     showQrInvalidError() {
-        const wizard = document.getElementById("onboardingWizard");
-        wizard.classList.add("active");
-        document.getElementById("onboardingStep1").classList.add("active");
-
-        const title = this.translate("qrInvalidTitle");
-        const message = this.translate("qrInvalidMessage");
-
-        document.getElementById("verifyTitle").innerText = title;
-        document.getElementById("verifyDesc").innerText = message;
-
-        // Also show English fallback below if current language is not English
-        if (this.currentLanguage !== 'en') {
-            const enMsg = "This QR code is no longer valid. Please scan the QR code at your table again.";
-            document.getElementById("verifyDesc").innerText = message + "\n" + enMsg;
-        }
-
-        // Hide the radar animation and show error state
-        const radarContainer = document.querySelector(".radar-container");
-        if (radarContainer) {
-            radarContainer.innerHTML = '<span class="app-icon icon-alert" aria-hidden="true"></span>';
-        }
-
-        const nextBtn = document.getElementById("btnOnboardingNext1");
-        if (nextBtn) {
-            nextBtn.classList.add("disabled");
-            nextBtn.disabled = true;
-            nextBtn.innerHTML = "<span>" + this.translate("qrInvalidTitle") + "</span>";
-        }
-
         console.warn("[QR Validation] Token mismatch or table not occupied. Access denied.");
+        this.showBlockingState(
+            "qrInvalidTitle",
+            "qrInvalidMessage",
+            "pleaseOrderStaff"
+        );
     }
 
     updateOnboardingVerification(status, title, description) {
@@ -2271,8 +2257,7 @@ class AlphaPosApp {
                     const { data: ordersData, error: ordersError } = await this.supabase
                         .from('orders')
                         .select('*, order_items(*, order_item_modifiers(*)), payments(*)')
-                        .eq('table_number', this.tableNumber)
-                        .gte('created_at', sessionData.created_at)
+                        .eq('session_token', this.sessionToken)
                         .order('created_at', { ascending: true });
 
                     if (ordersError) throw ordersError;
@@ -2347,6 +2332,12 @@ class AlphaPosApp {
         const grandTotalEl = document.getElementById("sessionGrandTotal");
         const badgeEl = document.getElementById("statusTabBadge");
 
+        // Update table info subtitle in the header
+        const tableInfoEl = document.getElementById("statusTableInfo");
+        if (tableInfoEl) {
+            tableInfoEl.innerText = `${this.translate('tableLabel')} ${this.tableNumber} • ${this.selectedGuestCount || 1} ${this.translate('guestsLabel')}`;
+        }
+
         activeContainer.innerHTML = "";
         pastContainer.innerHTML = "";
 
@@ -2396,10 +2387,7 @@ class AlphaPosApp {
             activeContainer.innerHTML = `<div class="empty-state">${this.translate('noActiveItems')}</div>`;
         } else {
             activeItems.forEach(item => {
-                const statusLabel = item.status === "ready" ? this.translate('readyStatus') : this.translate('cookingStatus');
-                const statusClass = item.status === "ready" ? "ready" : "cooking";
-                const statusIcon = item.status === "ready" ? "icon-bell" : "icon-clock";
-
+                const statusClass = (item.status || "cooking").toLowerCase();
                 const matchedMenuItem = this.menuItems.find(m => m.id === item.item_id) || this.menuItems.find(m => m.name === item.name);
                 const displayName = matchedMenuItem ? this.getItemName(matchedMenuItem) : item.name;
 
@@ -2424,19 +2412,51 @@ class AlphaPosApp {
                        </div>`
                     : "";
 
+                // Stepper state classes
+                const isCooking = statusClass === "cooking" || statusClass === "preparing" || statusClass === "ready";
+                const isReady = statusClass === "ready";
+
+                const step1Class = "step active"; // Received is always active
+                const step2Class = isCooking ? "step active" : "step";
+                const step3Class = isReady ? "step active pulse" : "step";
+                
+                // Stepper progress line width
+                let progressWidth = "0%";
+                if (isReady) {
+                    progressWidth = "100%";
+                } else if (isCooking) {
+                    progressWidth = "50%";
+                }
+
                 el.innerHTML = `
-                    <div class="item-info">
-                        <div class="item-header">
-                            <span class="item-name">${escapeHtml(displayName)}</span>
-                            <span class="item-qty">× ${item.quantity}</span>
+                    <div class="status-item-body">
+                        <div class="item-info">
+                            <div class="item-header">
+                                <span class="item-name">${escapeHtml(displayName)}</span>
+                                <span class="item-qty">× ${item.quantity}</span>
+                            </div>
+                            <div class="item-meta">${this.translate('orderLabel')}: #<strong>${escapeHtml(item.orderNumber || '')}</strong></div>
+                            ${modifiersHtml}
+                            ${noteHtml}
                         </div>
-                        <div class="item-meta">${this.translate('orderLabel')}: ${escapeHtml(item.orderNumber || '')}</div>
-                        ${modifiersHtml}
-                        ${noteHtml}
+                        <div class="status-action-group">
+                            <button class="add-note-btn" aria-label="${this.translate('addNoteBtn')}" onclick="app.addItemNote('${item.id}', '${escapeHtml(displayName)}')" title="${this.translate('addNoteBtn')}"><span class="app-icon icon-menu" aria-hidden="true"></span></button>
+                        </div>
                     </div>
-                    <div class="status-action-group">
-                        <button class="add-note-btn" aria-label="${this.translate('addNoteBtn')}" onclick="app.addItemNote('${item.id}', '${escapeHtml(displayName)}')" title="${this.translate('addNoteBtn')}"><span class="app-icon icon-menu" aria-hidden="true"></span></button>
-                        <span class="status-badge ${statusClass}"><span class="app-icon ${statusIcon}" aria-hidden="true"></span>${statusLabel}</span>
+                    <div class="item-progress-stepper">
+                        <div class="step-line-progress" style="width: ${progressWidth}"></div>
+                        <div class="${step1Class}">
+                            <div class="step-dot"><span class="app-icon icon-check" aria-hidden="true"></span></div>
+                            <span class="step-label">${this.translate('stepReceived')}</span>
+                        </div>
+                        <div class="${step2Class}">
+                            <div class="step-dot"><span class="app-icon icon-clock" aria-hidden="true"></span></div>
+                            <span class="step-label">${this.translate('stepPreparing')}</span>
+                        </div>
+                        <div class="${step3Class}">
+                            <div class="step-dot"><span class="app-icon icon-bell" aria-hidden="true"></span></div>
+                            <span class="step-label">${this.translate('stepReady')}</span>
+                        </div>
                     </div>
                 `;
                 activeContainer.appendChild(el);
@@ -2747,8 +2767,7 @@ class AlphaPosApp {
                 const { data: ords, error: ordersError } = await this.supabase
                     .from('orders')
                     .select('*, order_items(*)')
-                    .eq('table_number', this.tableNumber)
-                    .gte('created_at', sessionData.created_at);
+                    .eq('session_token', this.sessionToken);
 
                 if (!ordersError) {
                     ordersData = ords;

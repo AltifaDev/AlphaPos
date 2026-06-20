@@ -21,6 +21,17 @@ export const translations = {
                 checkingTable: "กำลังตรวจสอบสถานะโต๊ะ...",
                 resumingSession: "กำลังเข้าสู่เซสชันโต๊ะของคุณ...",
                 
+                // Blocking States
+                tableSystemDisabledTitle: "ระบบโต๊ะอาหารปิดใช้งานอยู่",
+                tableSystemDisabledDesc: "ระบบโต๊ะอาหารถูกปิดการใช้งานชั่วคราวโดยร้านค้านี้ กรุณาติดต่อพนักงาน",
+                webOrderingDisabledTitle: "ปิดระบบสั่งอาหารออนไลน์",
+                webOrderingDisabledDesc: "สาขา/ร้านค้านี้ปิดการรับออเดอร์ผ่านเว็บชั่วคราว กรุณาสั่งอาหารผ่านพนักงาน",
+                pleaseOrderStaff: "กรุณาสั่งอาหารโดยตรงกับพนักงานร้าน",
+                tableParamMissingTitle: "ไม่พบรหัสโต๊ะอาหาร",
+                tableParamMissingDesc: "กรุณาสแกน QR Code บนโต๊ะอาหารของคุณเพื่อเริ่มสั่งอาหาร",
+                qrInvalidTitle: "QR Code หมดอายุหรือไม่ถูกต้อง",
+                qrInvalidMessage: "รหัส QR Code สำหรับเซสชันนี้หมดอายุหรือไม่ถูกต้องแล้ว กรุณาสแกนรหัสที่โต๊ะใหม่อีกครั้ง",
+                
                 // Search
                 searchPlaceholder: "ค้นหาเมนู...",
                 searchResults: "ผลลัพธ์ค้นหา: \"{q}\"",
@@ -183,7 +194,14 @@ export const translations = {
                 addNoteBtn: "เพิ่มโน้ต",
                 addNotePrompt: "เพิ่มหมายเหตุสำหรับรายการนี้ (เช่น ไม่เผ็ด, เพิ่มผัก):",
                 noteSavedMsg: "บันทึกหมายเหตุสำหรับ {name} แล้ว",
-                noteLabel: "หมายเหตุ"
+                noteLabel: "หมายเหตุ",
+                
+                // Stepper & Session Info
+                tableLabel: "โต๊ะ",
+                guestsLabel: "ท่าน",
+                stepReceived: "รับออเดอร์",
+                stepPreparing: "กำลังปรุง",
+                stepReady: "พร้อมเสิร์ฟ"
             },
             en: {
                 // Onboarding Step 1
@@ -206,6 +224,17 @@ export const translations = {
                 preparingTable: "Preparing your table...",
                 checkingTable: "Checking table availability...",
                 resumingSession: "Resuming your table session...",
+                
+                // Blocking States
+                tableSystemDisabledTitle: "Table System Disabled",
+                tableSystemDisabledDesc: "The table ordering system is temporarily disabled by the merchant. Please contact our staff.",
+                webOrderingDisabledTitle: "Online Ordering Disabled",
+                webOrderingDisabledDesc: "Online ordering is temporarily closed for this branch. Please order directly from our staff.",
+                pleaseOrderStaff: "Please order directly with our waitstaff.",
+                tableParamMissingTitle: "Table Number Not Found",
+                tableParamMissingDesc: "Please scan the QR code on your table to start ordering.",
+                qrInvalidTitle: "Invalid or Expired QR Code",
+                qrInvalidMessage: "The QR code for this session has expired or is invalid. Please scan the QR code at your table again.",
                 
                 // Search
                 searchPlaceholder: "Search menu...",
@@ -369,7 +398,14 @@ export const translations = {
                 addNoteBtn: "Add Note",
                 addNotePrompt: "Add a note for this item (e.g. no spicy, extra vegetables):",
                 noteSavedMsg: "Note saved for {name}",
-                noteLabel: "Note"
+                noteLabel: "Note",
+                
+                // Stepper & Session Info
+                tableLabel: "Table",
+                guestsLabel: "guests",
+                stepReceived: "Received",
+                stepPreparing: "Cooking",
+                stepReady: "Ready"
             },
             zh: {
                 // Onboarding Step 1
@@ -389,6 +425,20 @@ export const translations = {
                 // Onboarding Step 3
                 checkinComplete: "登记完成！",
                 settingUp: "正在准备您的就餐环境...",
+                preparingTable: "正在准备您的桌号...",
+                checkingTable: "正在验证桌子可用性...",
+                resumingSession: "正在恢复您的桌号会话...",
+                
+                // Blocking States
+                tableSystemDisabledTitle: "桌位系统已停用",
+                tableSystemDisabledDesc: "商家已临时关闭自助点餐系统。如需服务，请联系店员。",
+                webOrderingDisabledTitle: "网上自助点餐已关闭",
+                webOrderingDisabledDesc: "该分店目前已暂停网上点餐服务，请直接联系店员为您下单。",
+                pleaseOrderStaff: "请直接向服务员点餐。",
+                tableParamMissingTitle: "未找到桌号",
+                tableParamMissingDesc: "请扫描餐桌上的二维码开始点餐。",
+                qrInvalidTitle: "二维码已失效或过期",
+                qrInvalidMessage: "此会话的二维码已过期或无效。请重新扫描餐桌上的二维码。",
                 
                 // Search
                 searchPlaceholder: "搜索菜单...",
@@ -552,6 +602,13 @@ export const translations = {
                 addNoteBtn: "添加备注",
                 addNotePrompt: "为此菜品添加备注（如：不辣、加蔬菜）：",
                 noteSavedMsg: "已为 {name} 保存备注",
-                noteLabel: "备注"
+                noteLabel: "备注",
+                
+                // Stepper & Session Info
+                tableLabel: "桌号",
+                guestsLabel: "人",
+                stepReceived: "已接单",
+                stepPreparing: "下锅中",
+                stepReady: "准备就绪"
             }
         }

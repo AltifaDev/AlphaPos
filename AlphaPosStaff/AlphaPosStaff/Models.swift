@@ -30,24 +30,6 @@ struct RestaurantTable: Codable, Identifiable, Hashable {
     }
 }
 
-struct RestaurantWall: Codable, Identifiable, Hashable {
-    let id: String
-    let floor: Int
-    let typeString: String
-    let startX: Double
-    let startY: Double
-    let endX: Double
-    let endY: Double
-    let controlX: Double?
-    let controlY: Double?
-    let strokeWidth: Double
-    let isDeleted: Bool
-    
-    enum CodingKeys: String, CodingKey {
-        case id, floor, startX = "start_x", startY = "start_y", endX = "end_x", endY = "end_y", controlX = "control_x", controlY = "control_y", strokeWidth = "stroke_width", isDeleted = "is_deleted", typeString = "type_string"
-    }
-}
-
 struct MenuItem: Codable, Identifiable, Hashable {
     let id: String
     let name: String
@@ -144,9 +126,14 @@ struct FloorPlanImageStaff: Codable, Identifiable, Hashable {
     let imageFilename: String
     let isDeleted: Bool
     
+    var scale: Double = 1.0
+    var offsetX: Double = 0.0
+    var offsetY: Double = 0.0
+    
     enum CodingKeys: String, CodingKey {
         case id, floor, isDeleted = "is_deleted"
         case imageFilename = "image_filename"
+        case scale, offsetX = "offset_x", offsetY = "offset_y"
     }
 
     /// Resolved absolute path for reading the image file

@@ -36,6 +36,8 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
     @Published var lastSyncedAt: Date? = nil
     @Published var activeRequests: [ServiceRequest] = []
     private var cachedModelContext: ModelContext?
+    private var activeSyncTask: Task<Void, Never>?
+    private var encounteredSyncError = false
     private static let alertTimesLock = OSAllocatedUnfairLock()
     private static var _lastAlertTimes: [UUID: Date] = [:]
     static func getAlertTime(_ key: UUID) -> Date? {
@@ -226,7 +228,9 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             #endif
         }
-      // MARK: - UNUserNotificationCenterDelegate
+    }
+
+    // MARK: - UNUserNotificationCenterDelegate
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
@@ -249,10 +253,29 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             )
         }
         completionHandler()
-    }    }
+    }
 
     // Asynchronous task to sync all unsynced data
     func syncAll(modelContext: ModelContext) async {
+        // Coalesce concurrent requests so only one task touches the shared
+        // ModelContext and remote records at a time.
+        if let activeSyncTask {
+            await activeSyncTask.value
+            return
+        }
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performSync(modelContext: modelContext)
+        }
+        activeSyncTask = task
+        await task.value
+        activeSyncTask = nil
+    }
+
+    private func performSync(modelContext: ModelContext) async {
+        encounteredSyncError = false
+
         // Initialize Realtime WebSocket task
         await MainActor.run {
             self.startRealtimeSync(modelContext: modelContext)
@@ -281,12 +304,12 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         await syncSecurityPolicies(modelContext)
         await syncRolePermissions(modelContext)
         await syncMerchantDevices(modelContext)
+        await syncEmployees(modelContext)
         await syncStaffSessions(modelContext)
         await syncAuditLogs(modelContext)
         await syncTables(modelContext)
         await syncTableSessions(modelContext)
         await syncFloorPlanImages(modelContext)
-        await syncEmployees(modelContext)
         await syncEmployeeShifts(modelContext)
         await syncOrders(modelContext)
         await syncPayments(modelContext)
@@ -328,15 +351,53 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         // Check for delayed orders and dispatch alerts
         await checkForDelayedOrders(modelContext: modelContext)
 
+        let isStillConnected = await NetworkManager.shared.isConnected()
+        let hasPendingUploads = hasPendingSyncData(in: modelContext)
+        let completedSuccessfully = isStillConnected && !encounteredSyncError && !hasPendingUploads
+
         await MainActor.run {
-            self.syncStatus = .idle
-            self.lastSyncedAt = Date()
-            self.isFirstSync = false
+            self.syncStatus = completedSuccessfully ? .idle : (isStillConnected ? .error : .offline)
+            if completedSuccessfully {
+                self.lastSyncedAt = Date()
+                self.isFirstSync = false
+            }
         }
 
         #if DEBUG
-        print("SyncEngine: Sync completed.")
+        print(completedSuccessfully ? "SyncEngine: Sync completed." : "SyncEngine: Sync completed with errors.")
         #endif
+    }
+
+    private func hasPendingSyncData(in modelContext: ModelContext) -> Bool {
+        do {
+            if try modelContext.fetchCount(FetchDescriptor<SecurityPolicy>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<Role>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<MerchantDevice>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<Employee>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<StaffSessionRecord>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<AuditLog>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<RestaurantTable>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<TableSession>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<FloorPlanImage>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<EmployeeShift>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<Order>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<Payment>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<OrderDiscount>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<Timecard>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<InventoryTransaction>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<MenuItem>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<Promotion>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<PurchaseOrder>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<Printer>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<PrintRoutingRule>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<Customer>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<GiftCard>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<LoyaltyTransaction>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            return false
+        } catch {
+            encounteredSyncError = true
+            return true
+        }
     }
 
     // MARK: - Sync Helpers
@@ -435,13 +496,16 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
 
         for order in orders {
             if order.isDeleted {
-                // Handle soft delete upload and then purge
                 do {
-                    // Simulate delete on server
-                    try await Task.sleep(nanoseconds: 100_000_000)
-                    modelContext.delete(order)
-                    try modelContext.save()
+                    let success = try await NetworkManager.shared.deleteOrderOnServer(id: order.id)
+                    if success {
+                        modelContext.delete(order)
+                        try modelContext.save()
+                    } else {
+                        encounteredSyncError = true
+                    }
                 } catch {
+                    encounteredSyncError = true
                     print("SyncEngine [Order Delete Error]: \(error.localizedDescription)")
                 }
                 continue
@@ -454,8 +518,11 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     order.isSynced = true
                     order.updatedAt = Date()
                     try modelContext.save()
+                } else {
+                    encounteredSyncError = true
                 }
             } catch {
+                encounteredSyncError = true
                 print("SyncEngine [Order Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -682,6 +749,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             try? modelContext.save()
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [Customer Pull Error]: \(error.localizedDescription)")
         }
     }
@@ -758,6 +826,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             try? modelContext.save()
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [GiftCard Pull Error]: \(error.localizedDescription)")
         }
     }
@@ -836,6 +905,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             try? modelContext.save()
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [LoyaltyTransaction Pull Error]: \(error.localizedDescription)")
         }
     }
@@ -1336,7 +1406,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 #endif
             }
         } catch {
-            // Silently fail — app works offline with existing SwiftData cache
+            encounteredSyncError = true
             #if DEBUG
             print("SyncEngine [PullMenu]: Skipped (offline or error): \(error.localizedDescription)")
             #endif
@@ -1414,6 +1484,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             print("SyncEngine [DeliveryPrices]: Synced \(allPrices.count) delivery price(s)")
             #endif
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [DeliveryPrices Sync Error]: \(error.localizedDescription)")
         }
     }
@@ -1630,6 +1701,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 #endif
             }
         } catch {
+            encounteredSyncError = true
             #if DEBUG
             print("SyncEngine [PullPromotions]: Skipped or failed: \(error.localizedDescription)")
             #endif
@@ -1875,6 +1947,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 promptPayNumber: promptPayNumber
             )
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [Merchant Sync Error]: \(error.localizedDescription)")
         }
     }
@@ -1960,20 +2033,21 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     if isDeleted {
                         modelContext.delete(table)
                     } else {
-                        table.tableNumber = tableNumber
-                        table.capacity = capacity
+                        // Only overwrite table properties from the server if local changes are already synced
+                        if table.isSynced {
+                            table.tableNumber = tableNumber
+                            table.capacity = capacity
+                            table.qrCodeIdentifier = qrCodeIdentifier
+                            table.positionX = positionX
+                            table.positionY = positionY
+                            table.floor = floor
+                            table.zone = zone
+                            table.updatedAt = updatedAt
+                        }
 
                         // Supabase is authoritative. Active sessions are applied immediately
                         // afterwards by pullActiveSessions and will set occupied when needed.
                         table.status = status
-
-                        table.qrCodeIdentifier = qrCodeIdentifier
-                        table.positionX = positionX
-                        table.positionY = positionY
-                        table.floor = floor
-                        table.zone = zone
-                        table.isSynced = true
-                        table.updatedAt = updatedAt
                     }
                 } else if !isDeleted {
                     let newTable = RestaurantTable(
@@ -1995,6 +2069,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             try? modelContext.save()
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [Table Pull Error]: \(error.localizedDescription)")
         }
     }
@@ -2047,6 +2122,9 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
 
                 if targetTableSession == nil {
                     if let tables = try? modelContext.fetch(tableDescriptor), let table = tables.first {
+                        let tableSessionIdStr = remoteOrder["table_session_id"] as? String ?? remoteOrder["tableSessionId"] as? String ?? ""
+                        let tableSessionId = UUID(uuidString: tableSessionIdStr) ?? UUID()
+
                         if let activeSession = table.sessions.first(where: { $0.isActive }) {
                             if Calendar.current.isDateInToday(activeSession.startedAt) {
                                 targetTableSession = activeSession
@@ -2057,7 +2135,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                                 activeSession.isSynced = false
                                 activeSession.updatedAt = Date()
 
-                                let newSession = TableSession(startedAt: Date(), isActive: true, table: table)
+                                let newSession = TableSession(id: tableSessionId, startedAt: Date(), isActive: true, table: table, isSynced: true)
                                 if let token = sessionToken {
                                     newSession.sessionToken = token
                                 }
@@ -2066,7 +2144,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                                 table.status = "occupied"
                             }
                         } else {
-                            let newSession = TableSession(startedAt: Date(), isActive: true, table: table)
+                            let newSession = TableSession(id: tableSessionId, startedAt: Date(), isActive: true, table: table, isSynced: true)
                             if let token = sessionToken {
                                 newSession.sessionToken = token
                             }
@@ -2285,6 +2363,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
 
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [Pull Customer Orders Error]: \(error.localizedDescription)")
         }
     }
@@ -2363,12 +2442,13 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                                 table.status = "occupied"
                                 table.updatedAt = Date()
                             }
+                            activeSession.isSynced = true
                             foundMatchingSession = true
                         } else {
                             activeSession.isActive = false
                             activeSession.endedAt = Date()
                             #if DEBUG
-                            print("SyncEngine [Session Pull]: Closed stale local session \(activeSession.sessionToken ?? "") because it mismatches remote session \(sessionToken)")
+                            print("SyncEngine [Session Pull]: Closed stale local session \(activeSession.sessionToken) because it mismatches remote session \(sessionToken)")
                             #endif
                         }
                     }
@@ -2376,7 +2456,9 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                     if !foundMatchingSession {
                         // No active session locally matches the remote session token. Create one!
                         let remoteGuestCount = (session["guest_count"] as? Int) ?? (session["guestCount"] as? Int) ?? 2
-                        let newSession = TableSession(sessionToken: sessionToken, startedAt: startedAt, isActive: true, table: table, guestCount: remoteGuestCount)
+                        let idStr = session["id"] as? String ?? ""
+                        let sessionId = UUID(uuidString: idStr) ?? UUID()
+                        let newSession = TableSession(id: sessionId, sessionToken: sessionToken, startedAt: startedAt, isActive: true, table: table, guestCount: remoteGuestCount, isSynced: true)
                         modelContext.insert(newSession)
                         table.status = "occupied"
                         table.updatedAt = Date()
@@ -2388,6 +2470,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             }
             try? modelContext.save()
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [Sessions Pull Error]: \(error.localizedDescription)")
         }
     }
@@ -2420,6 +2503,7 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
                 self.activeRequests = newRequests
             }
         } catch {
+            encounteredSyncError = true
             print("SyncEngine [Service Requests Sync Error]: \(error.localizedDescription)")
         }
     }
@@ -2474,8 +2558,6 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
         // Keep-alive heartbeat every 20 seconds (invalidate any existing timer first)
         startHeartbeat()
 
-        // Reset reconnect counter on successful connection
-        reconnectAttempt = 0
     }
 
     private func listenToWebSocket(modelContext: ModelContext) {
@@ -2594,14 +2676,17 @@ final class SyncEngine: NSObject, ObservableObject, UNUserNotificationCenterDele
             isPostgresChange = true
         } else if event == "phx_reply" || event == "system" || event == "phx_close" {
             // Handle connection lifecycle events
-            #if DEBUG
             if event == "phx_reply" {
                 if let payload = json["payload"] as? [String: Any],
                    let status = payload["status"] as? String {
+                    if status == "ok" {
+                        reconnectAttempt = 0
+                    }
+                    #if DEBUG
                     print("SyncEngine [Realtime]: phx_reply status = \(status)")
+                    #endif
                 }
             }
-            #endif
             isPostgresChange = false
         } else {
             // Catch any other events that contain postgres change data in payload

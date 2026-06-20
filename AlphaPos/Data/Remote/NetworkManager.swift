@@ -691,6 +691,53 @@ final class NetworkManager {
         ])
         return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
     }
+    
+    func uploadFloorPlanMedia(data: Data, fileName: String) async throws -> String {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let objectPath = "\(merchantId.lowercased())/floor_plans/\(fileName)"
+        var uploadURL = config.supabaseURL
+        for component in ["storage", "v1", "object", "product-media"] + objectPath.split(separator: "/").map(String.init) {
+            uploadURL.appendPathComponent(component)
+        }
+
+        var request = URLRequest(url: uploadURL)
+        request.httpMethod = "POST"
+        let token = MerchantAuthManager.shared.currentToken ?? anonKey
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        request.setValue("true", forHTTPHeaderField: "x-upsert")
+        request.httpBody = data
+        request.timeoutInterval = 60
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            let message = String(data: responseData, encoding: .utf8) ?? "Storage upload failed"
+            throw NetworkError.serverError(message)
+        }
+
+        var publicURL = config.supabaseURL
+        for component in ["storage", "v1", "object", "public", "product-media"] + objectPath.split(separator: "/").map(String.init) {
+            publicURL.appendPathComponent(component)
+        }
+        return publicURL.absoluteString
+    }
+    
+    func downloadFloorPlanMedia(fileName: String) async throws -> Data {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let objectPath = "\(merchantId.lowercased())/floor_plans/\(fileName)"
+        var publicURL = config.supabaseURL
+        for component in ["storage", "v1", "object", "public", "product-media"] + objectPath.split(separator: "/").map(String.init) {
+            publicURL.appendPathComponent(component)
+        }
+        
+        let (data, response) = try await URLSession.shared.data(from: publicURL)
+        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+            throw NetworkError.serverError("Failed to download floor plan media")
+        }
+        return data
+    }
 
     func uploadFloorPlanImage(floorPlan: FloorPlanImage) async throws -> Bool {
         let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId

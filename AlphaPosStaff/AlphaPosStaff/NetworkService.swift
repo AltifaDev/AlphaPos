@@ -41,7 +41,7 @@ final class NetworkService {
     
     // Global lists
     var tables: [RestaurantTable] = []
-    var walls: [RestaurantWall] = []
+
     var menuItems: [MenuItem] = []
     var serviceRequests: [ServiceRequest] = []
     var orders: [Order] = []
@@ -352,12 +352,11 @@ final class NetworkService {
             async let fetchedRequests = fetchRequests()
             async let fetchedOrders = fetchAllActiveOrders()
             async let fetchedWorkflow = fetchMerchantSettings()
-            async let fetchedWalls = fetchWalls()
             async let fetchedFloorPlans = fetchFloorPlanImages()
             
             // Await all concurrent fetches (orders first for notification priority)
             let ordersRes = try await fetchedOrders
-            let (tablesRes, requestsRes, wallsRes, floorPlansRes) = try await (fetchedTables, fetchedRequests, fetchedWalls, fetchedFloorPlans)
+            let (tablesRes, requestsRes, floorPlansRes) = try await (fetchedTables, fetchedRequests, fetchedFloorPlans)
             let settingsRes = (try? await fetchedWorkflow) ?? (true, "", true, true)
             
             await MainActor.run {
@@ -376,9 +375,7 @@ final class NetworkService {
                 if self.tables != tablesRes {
                     self.tables = tablesRes
                 }
-                if self.walls != wallsRes {
-                    self.walls = wallsRes
-                }
+
                 if self.floorPlanImages != floorPlansRes {
                     self.floorPlanImages = floorPlansRes
                 }
@@ -609,41 +606,6 @@ final class NetworkService {
         }
     }
     
-    func fetchWalls() async throws -> [RestaurantWall] {
-        let data = try await sendSupabaseRequest(method: "GET", endpoint: "restaurant_walls", queryItems: [
-            URLQueryItem(name: "is_deleted", value: "eq.false")
-        ])
-        let json = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
-        return json.compactMap { dict -> RestaurantWall? in
-            guard let id = dict["id"] as? String,
-                  let floor = dict["floor"] as? Int,
-                  let typeString = dict["type_string"] as? String,
-                  let startX = dict["start_x"] as? Double,
-                  let startY = dict["start_y"] as? Double,
-                  let endX = dict["end_x"] as? Double,
-                  let endY = dict["end_y"] as? Double else { return nil }
-            
-            let controlX = dict["control_x"] as? Double
-            let controlY = dict["control_y"] as? Double
-            let strokeWidth = dict["stroke_width"] as? Double ?? 10.0
-            let isDeleted = dict["is_deleted"] as? Bool ?? false
-            
-            return RestaurantWall(
-                id: id,
-                floor: floor,
-                typeString: typeString,
-                startX: startX,
-                startY: startY,
-                endX: endX,
-                endY: endY,
-                controlX: controlX,
-                controlY: controlY,
-                strokeWidth: strokeWidth,
-                isDeleted: isDeleted
-            )
-        }
-    }
-    
     func fetchFloorPlanImages() async throws -> [FloorPlanImageStaff] {
         let merchantId = activeMerchantId.isEmpty ? AppConfig.defaultMerchantId : activeMerchantId
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "floor_plan_images", queryItems: [
@@ -656,8 +618,27 @@ final class NetworkService {
                   let floor = dict["floor"] as? Int,
                   let imageFilename = dict["image_filename"] as? String else { return nil }
             let isDeleted = dict["is_deleted"] as? Bool ?? false
-            return FloorPlanImageStaff(id: id, floor: floor, imageFilename: imageFilename, isDeleted: isDeleted)
+            var staffImage = FloorPlanImageStaff(id: id, floor: floor, imageFilename: imageFilename, isDeleted: isDeleted)
+            staffImage.scale = dict["scale"] as? Double ?? 1.0
+            staffImage.offsetX = dict["offset_x"] as? Double ?? 0.0
+            staffImage.offsetY = dict["offset_y"] as? Double ?? 0.0
+            return staffImage
         }
+    }
+    
+    func downloadFloorPlanMedia(fileName: String) async throws -> Data {
+        let merchantId = activeMerchantId.isEmpty ? AppConfig.defaultMerchantId : activeMerchantId
+        let objectPath = "\(merchantId.lowercased())/floor_plans/\(fileName)"
+        var publicURL = AppConfig.supabaseURL
+        for component in ["storage", "v1", "object", "public", "product-media"] + objectPath.split(separator: "/").map(String.init) {
+            publicURL.appendPathComponent(component)
+        }
+        
+        let (data, response) = try await URLSession.shared.data(from: publicURL)
+        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+            throw NetworkError.serverError("Failed to download floor plan media")
+        }
+        return data
     }
     
     func fetchMerchantSettings() async throws -> (Bool, String, Bool, Bool) {
@@ -1233,9 +1214,8 @@ final class NetworkService {
                         ["event": "*", "schema": "public", "table": "orders", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "order_items", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "table_sessions", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "service_requests", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "restaurant_tables", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "restaurant_walls", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "service_requests", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "floor_plan_images", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "merchants", "filter": "id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "employees", "filter": "merchant_id=eq.\(merchantId)"],
@@ -1462,14 +1442,6 @@ final class NetworkService {
                         self.tables[idx].status = "vacant"
                         self.tables[idx].currentTotal = 0.0
                         self.tables[idx].sessionStartedAt = nil
-                    }
-                }
-            } else if table == "restaurant_walls" {
-                Task {
-                    if let fetchedWalls = try? await self.fetchWalls() {
-                        await MainActor.run {
-                            self.walls = fetchedWalls
-                        }
                     }
                 }
             } else if table == "floor_plan_images" {

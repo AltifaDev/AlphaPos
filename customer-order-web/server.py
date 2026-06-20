@@ -1319,7 +1319,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 cursor = conn.cursor()
                 
                 if table_number and token:
-                    # Find start time of active session
+                    # Find active session
                     cursor.execute("""
                         SELECT created_at FROM table_sessions 
                         WHERE table_number = ? AND session_token = ? AND is_active = 1
@@ -1327,13 +1327,12 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     session_row = cursor.fetchone()
                     
                     if session_row:
-                        session_start = session_row["created_at"]
-                        # Fetch orders for this table session
+                        # Fetch orders for this table session using session_token directly
                         cursor.execute("""
                             SELECT * FROM orders 
-                            WHERE table_number = ? AND created_at >= ?
+                            WHERE session_token = ?
                             ORDER BY created_at ASC
-                        """, (table_number, session_start))
+                        """, (token,))
                         order_rows = cursor.fetchall()
                     else:
                         order_rows = []

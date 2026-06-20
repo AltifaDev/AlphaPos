@@ -4610,3 +4610,274 @@ body.dark-theme .add-btn-only {
 body.dark-theme .add-btn-only:hover {
     background-color: #2d71f8 !important;
 }
+
+/* ==========================================
+   Steppers & Status Visual Upgrades
+   ========================================== */
+.icon-check { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E"); }
+
+.status-subtitle {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 4px;
+    font-weight: 500;
+}
+
+.status-item-card {
+    background-color: var(--bg-surface);
+    border-radius: 16px;
+    padding: 18px;
+    border: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    transition: var(--transition-standard);
+    box-shadow: var(--card-shadow);
+}
+
+.status-item-body {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    width: 100%;
+}
+
+.status-item-card.served-item {
+    background-color: rgba(255, 255, 255, 0.5);
+    border: 1px dashed var(--border-color);
+    box-shadow: none;
+}
+
+body.dark-theme .status-item-card.served-item {
+    background-color: rgba(23, 28, 39, 0.4);
+}
+
+.item-progress-stepper {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: relative;
+    padding: 8px 10px 0 10px;
+    width: 100%;
+    margin-top: 4px;
+}
+
+.item-progress-stepper::before {
+    content: '';
+    position: absolute;
+    top: 22px;
+    left: 10%;
+    right: 10%;
+    height: 3px;
+    background-color: var(--border-color);
+    z-index: 1;
+}
+
+.item-progress-stepper .step-line-progress {
+    position: absolute;
+    top: 22px;
+    left: 10%;
+    height: 3px;
+    background: var(--primary);
+    z-index: 2;
+    transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.item-progress-stepper .step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    position: relative;
+    z-index: 3;
+    flex: 1;
+}
+
+.item-progress-stepper .step .step-dot {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background-color: var(--bg-surface);
+    border: 2px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: var(--text-muted);
+    transition: all 0.3s ease;
+}
+
+.item-progress-stepper .step.active .step-dot {
+    border-color: var(--primary);
+    background-color: var(--primary);
+    color: #ffffff;
+    box-shadow: 0 0 10px var(--primary-glow);
+}
+
+.item-progress-stepper .step.active.pulse .step-dot {
+    background-color: var(--success);
+    border-color: var(--success);
+    animation: statusPulse 1.8s infinite;
+}
+
+@keyframes statusPulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(8, 127, 111, 0.4);
+    }
+    70% {
+        box-shadow: 0 0 0 8px rgba(8, 127, 111, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(8, 127, 111, 0);
+    }
+}
+
+.item-progress-stepper .step .step-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-muted);
+    transition: color 0.3s ease;
+    text-align: center;
+}
+
+.item-progress-stepper .step.active .step-label {
+    color: var(--text-main);
+    font-weight: 700;
+}
+
+.item-progress-stepper .step.active.pulse .step-label {
+    color: var(--success);
+}
+
+/* ==========================================================================
+   Blocking Overlay & Safety Screens
+   ========================================================================== */
+.blocking-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(15, 23, 42, 0.96); /* Dark Slate 900 Glassmorphism */
+    backdrop-filter: blur(25px);
+    -webkit-backdrop-filter: blur(25px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 99999; /* Higher than onboarding wizard */
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.blocking-overlay.active {
+    display: flex;
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.blocking-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 30px;
+    padding: 40px 30px;
+    width: 90%;
+    max-width: 440px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    box-shadow: 0 30px 80px rgba(239, 68, 68, 0.15), 0 0 0 1px var(--border-color);
+    transform: scale(0.95) translateY(20px);
+    animation: blockingPopIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    position: relative;
+    overflow: hidden;
+}
+
+.blocking-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: linear-gradient(135deg, #ef4444 0%, #f43f5e 100%);
+}
+
+@keyframes blockingPopIn {
+    to {
+        transform: scale(1) translateY(0);
+    }
+}
+
+.blocking-icon-container {
+    position: relative;
+    width: 80px;
+    height: 80px;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.blocking-pulse-circle {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    background: rgba(239, 68, 68, 0.15);
+    border-radius: 50%;
+    animation: blockingPulse 2.2s infinite ease-in-out;
+}
+
+.blocking-pulse-circle.delay-1 {
+    animation-delay: 0.7s;
+}
+
+.blocking-icon {
+    font-size: 38px;
+    color: #ef4444;
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+@keyframes blockingPulse {
+    0% {
+        transform: scale(1);
+        opacity: 0.85;
+    }
+    100% {
+        transform: scale(1.65);
+        opacity: 0;
+    }
+}
+
+.blocking-title {
+    font-size: 22px;
+    font-weight: 750;
+    color: var(--text-main);
+    margin-bottom: 12px;
+    line-height: 1.35;
+}
+
+.blocking-desc {
+    font-size: 15px;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin-bottom: 26px;
+    white-space: pre-line;
+}
+
+.blocking-footer {
+    border-top: 1px solid var(--border-color);
+    padding-top: 20px;
+    width: 100%;
+    font-size: 13px;
+    font-weight: 700;
+    color: #ef4444;
+    text-transform: uppercase;
+    letter-spacing: 0.75px;
+}
+

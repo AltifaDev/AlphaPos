@@ -121,6 +121,22 @@
         </div>
     </div>
 
+    <!-- Full-screen Blocking Overlay -->
+    <div id="blockingOverlay" class="blocking-overlay" role="dialog" aria-modal="true" aria-labelledby="blockingTitle">
+        <div class="blocking-card">
+            <div class="blocking-icon-container">
+                <span class="blocking-pulse-circle"></span>
+                <span class="blocking-pulse-circle delay-1"></span>
+                <span class="blocking-icon app-icon icon-alert" aria-hidden="true"></span>
+            </div>
+            <h2 id="blockingTitle" class="blocking-title font-outfit"></h2>
+            <p id="blockingDesc" class="blocking-desc"></p>
+            <div class="blocking-footer">
+                <span id="blockingFooterText"></span>
+            </div>
+        </div>
+    </div>
+
     <div class="app-container">
         <!-- Header HUD -->
         <header class="app-header anim-fade-in-down">
@@ -257,7 +273,10 @@
         <div id="statusView" class="view-panel hide" role="tabpanel" aria-label="Order status">
             <div class="status-view-container anim-fade-in-up">
                 <div class="status-header anim-fade-in-down">
-                    <h2 data-translate-key="sessionSummary">Session Summary</h2>
+                    <div class="status-header-title-group">
+                        <h2 data-translate-key="sessionSummary">Session Summary</h2>
+                        <p id="statusTableInfo" class="status-subtitle"></p>
+                    </div>
                     <div class="session-total-badge">
                         <span class="label" data-translate-key="grandTotal">Grand Total</span>
                         <span id="sessionGrandTotal" class="price">฿0.00</span>

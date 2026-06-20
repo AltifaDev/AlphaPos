@@ -52,10 +52,7 @@ struct TablesView: View {
         return ["All"] + Array(uniqueZones).sorted()
     }
     
-    private var floorWalls: [RestaurantWall] {
-        networkService.walls.filter { $0.floor == selectedFloor && !$0.isDeleted }
-    }
-    
+
     private var filteredTables: [RestaurantTable] {
         let floorTables = tables.filter { $0.floor == selectedFloor }
         let baseTables: [RestaurantTable]
@@ -455,10 +452,16 @@ struct TablesView: View {
                                     ZStack(alignment: .topLeading) {
                                         // Floor Plan background image (behind grid & tables)
                                         if let img = cachedFloorPlanImage {
+                                            let activeFloorPlanImage = networkService.floorPlanImages.first(where: { $0.floor == selectedFloor })
+                                            let bgScale = activeFloorPlanImage?.scale ?? 1.0
+                                            let bgOffsetX = activeFloorPlanImage?.offsetX ?? 0.0
+                                            let bgOffsetY = activeFloorPlanImage?.offsetY ?? 0.0
+                                            
                                             Image(uiImage: img)
                                                 .resizable()
                                                 .scaledToFill()
-                                                .frame(width: 1500, height: 1200)
+                                                .frame(width: 1500 * bgScale, height: 1200 * bgScale)
+                                                .offset(x: bgOffsetX, y: bgOffsetY)
                                                 .clipped()
                                                 .opacity(0.35)
                                                 .allowsHitTesting(false)
@@ -614,11 +617,32 @@ struct TablesView: View {
     }
 
     private func loadCachedFloorPlanImage() {
-        if let path = networkService.floorPlanImages
-            .first(where: { $0.floor == selectedFloor && !$0.isDeleted })?
-            .resolvedImagePath,
-           let uiImage = UIImage(contentsOfFile: path) {
-            cachedFloorPlanImage = uiImage
+        if let floorPlan = networkService.floorPlanImages.first(where: { $0.floor == selectedFloor && !$0.isDeleted }), !floorPlan.imageFilename.isEmpty {
+            if let path = floorPlan.resolvedImagePath, let uiImage = UIImage(contentsOfFile: path) {
+                cachedFloorPlanImage = uiImage
+            } else {
+                // If not found locally, try to download from Storage
+                Task {
+                    do {
+                        let data = try await networkService.downloadFloorPlanMedia(fileName: floorPlan.imageFilename)
+                        if let downloadedImage = UIImage(data: data) {
+                            // Save locally for future use
+                            let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                            let fileURL = docsURL.appendingPathComponent(floorPlan.imageFilename)
+                            try? data.write(to: fileURL)
+                            
+                            await MainActor.run {
+                                self.cachedFloorPlanImage = downloadedImage
+                            }
+                        }
+                    } catch {
+                        print("Failed to download floor plan image: \(error)")
+                        await MainActor.run {
+                            self.cachedFloorPlanImage = nil
+                        }
+                    }
+                }
+            }
         } else {
             cachedFloorPlanImage = nil
         }
