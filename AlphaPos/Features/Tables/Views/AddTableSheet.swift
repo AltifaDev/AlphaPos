@@ -407,6 +407,17 @@ struct AddTableSheet: View {
             return
         }
         
+        // Table limit check
+        let descriptor = FetchDescriptor<RestaurantTable>(
+            predicate: #Predicate<RestaurantTable> { !$0.isDeleted }
+        )
+        let currentCount = (try? modelContext.fetchCount(descriptor)) ?? 0
+        if currentCount >= 40 {
+            errorMessage = lm.languageCode == "th" ? "ไม่สามารถเพิ่มโต๊ะได้เนื่องจากระบบจำกัดจำนวนโต๊ะสูงสุดไว้ที่ 40 โต๊ะ" : "Cannot add table: table count limit of 40 reached."
+            showingError = true
+            return
+        }
+        
         if capacity < 1 || capacity > 20 {
             errorMessage = "table_error_invalid_capacity".t
             showingError = true

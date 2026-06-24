@@ -111,6 +111,7 @@ Deno.serve(async (req: Request) => {
       .maybeSingle();
 
     if (merchantError || !merchant) {
+      console.error("Merchant lookup failed. Error:", merchantError, "Merchant:", merchant);
       return new Response(
         JSON.stringify({ error: "Invalid merchant_id" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },

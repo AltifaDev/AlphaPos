@@ -91,7 +91,7 @@ final class ReceiptViewModel {
         lineItems = items.map { item in
             let modNames = item.modifiers.compactMap { $0.modifier?.name }
             return ReceiptLineItem(
-                name: item.menuItem?.localizedName ?? "Unknown Item",
+                name: item.menuItem?.localizedName ?? (item.itemName.isEmpty ? "Unknown Item" : item.itemName),
                 quantity: item.quantity,
                 unitPrice: item.unitPrice,
                 modifiers: modNames,

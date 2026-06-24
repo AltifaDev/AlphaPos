@@ -2,7 +2,10 @@ import Foundation
 
 struct AppConfig {
     static var supabaseURL: URL {
-        requiredURL(requiredConfigValue("SUPABASE_URL"), name: "SUPABASE_URL")
+        if let overriddenURL = UserDefaults.standard.string(forKey: "dynamic_supabase_url"), !overriddenURL.isEmpty {
+            return requiredURL(overriddenURL, name: "SUPABASE_URL")
+        }
+        return requiredURL(requiredConfigValue("SUPABASE_URL"), name: "SUPABASE_URL")
     }
 
     static var supabaseAnonKey: String {

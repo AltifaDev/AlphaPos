@@ -74,7 +74,8 @@ struct iPadTableCard: View {
                 Circle()
                     .fill(statusColor)
                     .frame(width: 8, height: 8)
-                
+                    .animation(.spring(response: 0.35, dampingFraction: 0.7), value: table.status)
+
                 Spacer()
                 
                 Text("⋄ \(table.capacity)")
@@ -94,6 +95,7 @@ struct iPadTableCard: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 3)
                 .background(statusColor)
+                .animation(.spring(response: 0.35, dampingFraction: 0.7), value: table.status)
                 .cornerRadius(3)
             
             // ✨ NEW: Elapsed Time (iPad Only)
@@ -148,6 +150,7 @@ struct iPhoneTableCard: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 2)
                 .background(statusColor)
+                .animation(.spring(response: 0.35, dampingFraction: 0.7), value: table.status)
                 .cornerRadius(2)
             
             // ✨ NEW: Elapsed Time (iPhone Only - when occupied)
@@ -168,6 +171,7 @@ struct iPhoneTableCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: APRadius.md)
                 .stroke(isSelected ? statusColor : Color.appBorderSubtle, lineWidth: isSelected ? 2 : 1)
+                .animation(.spring(response: 0.35, dampingFraction: 0.7), value: table.status)
         )
     }
 }

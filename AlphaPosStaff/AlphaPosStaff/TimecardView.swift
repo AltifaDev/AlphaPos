@@ -39,129 +39,101 @@ struct TimecardView: View {
                         ProgressView().tint(.appAccent).frame(maxHeight: .infinity)
                     } else {
                         ScrollView {
-                            VStack(spacing: APSpacing.lg) {
-                                // Status banner
-                                VStack(spacing: APSpacing.md) {
-                                    if let active = activeTimecard {
-                                        ZStack {
-                                            Circle()
-                                                .fill(Color.appTeal.opacity(0.15))
-                                                .frame(width: 80, height: 80)
-                                            Image(systemName: "clock.badge.checkmark.fill")
-                                                .font(.system(size: 40))
-                                                .foregroundColor(.appTeal)
-                                        }
-                                        
-                                        VStack(spacing: 2) {
-                                            Text("on_shift".localized(for: appLanguage))
-                                                .font(.caption).fontWeight(.black)
-                                                .foregroundColor(.appTeal)
-                                            
-                                            let clockInDate = Date(timeIntervalSince1970: active.clockIn)
-                                            Text("started_at".localized(for: appLanguage)) + Text(" ") + Text(clockInDate, style: .time)
-                                                .font(.title2).fontWeight(.black)
-                                                .foregroundColor(.textPrimary)
-                                        }
-                                        
-                                        Button(action: {
-                                            APHaptic.trigger()
-                                            scannerMode = "clockOut"
-                                            showingScanner = true
-                                        }) {
-                                            Label("auth_clock_out".localized(for: appLanguage), systemImage: "door.right.hand.open")
-                                                .apGradientButton(gradient: APGradient.destructive)
-                                        }
-                                    } else {
-                                        ZStack {
-                                            Circle()
-                                                .fill(Color.appAccent.opacity(0.1))
-                                                .frame(width: 80, height: 80)
-                                            Image(systemName: "clock.arrow.circlepath")
-                                                .font(.system(size: 40))
-                                                .foregroundColor(.appAccent)
-                                        }
-                                        
-                                        VStack(spacing: 2) {
-                                            Text("off_duty".localized(for: appLanguage))
-                                                .font(.caption).fontWeight(.black)
-                                                .foregroundColor(.textSecondary)
-                                            Text("not_clocked_in_today".localized(for: appLanguage))
-                                                .font(.headline)
-                                                .foregroundColor(.textSecondary)
-                                        }
-                                        
-                                        Button(action: {
-                                            APHaptic.trigger()
-                                            scannerMode = "clockIn"
-                                            showingScanner = true
-                                        }) {
-                                            Label("auth_clock_in".localized(for: appLanguage), systemImage: "door.left.hand.open")
-                                                .apGradientButton(gradient: APGradient.positive)
-                                        }
-                                    }
-                                }
-                                .padding()
-                                .apCard()
+                            VStack(spacing: 0) {
+                                Spacer().frame(height: 40)
                                 
-                                // History Section
-                                VStack(alignment: .leading, spacing: APSpacing.md) {
-                                    Text("recent_shifts".localized(for: appLanguage))
-                                        .font(.headline).fontWeight(.bold)
+                                // Greeting
+                                VStack(spacing: 8) {
+                                    Text("Good \(timeOfDay), \(localEmployee.firstName)")
+                                        .font(.system(size: 28, weight: .bold))
                                         .foregroundColor(.textPrimary)
                                     
-                                    if recentTimecards.isEmpty {
-                                        Text("no_clock_in_records".localized(for: appLanguage))
-                                            .font(.caption).foregroundColor(.textSecondary)
-                                            .padding(.vertical)
-                                    } else {
-                                        ForEach(recentTimecards.prefix(5)) { card in
-                                            HStack(spacing: APSpacing.md) {
-                                                // Status Icon
-                                                Image(systemName: card.clockOut != nil ? "checkmark.circle.fill" : "arrow.right.circle.fill")
-                                                    .font(.title2)
-                                                    .foregroundColor(card.clockOut != nil ? .appTeal : .appRose)
-                                                
-                                                VStack(alignment: .leading, spacing: 2) {
-                                                    let inDate = Date(timeIntervalSince1970: card.clockIn)
-                                                    Text(inDate, style: .date)
-                                                        .font(.subheadline).fontWeight(.bold)
-                                                        .foregroundColor(.textPrimary)
-                                                    
-                                                    HStack(spacing: 4) {
-                                                        Text(inDate, style: .time)
-                                                        if let outTime = card.clockOut, outTime > 0 {
-                                                            Text("→")
-                                                            let outDate = Date(timeIntervalSince1970: outTime)
-                                                            Text(outDate, style: .time)
-                                                        } else {
-                                                            Text("→ ") + Text("active_now".localized(for: appLanguage))
-                                                                .foregroundColor(.appTeal)
-                                                                .fontWeight(.bold)
-                                                        }
-                                                    }
-                                                    .font(.caption)
-                                                    .foregroundColor(.textSecondary)
-                                                }
-                                                
-                                                Spacer()
-                                                
-                                                // Working Hours
-                                                if let outTime = card.clockOut, outTime > 0 {
-                                                    let hrs = (outTime - card.clockIn) / 3600.0
-                                                    Text(String(format: "hours_worked_format".localized(for: appLanguage), hrs))
-                                                        .font(.subheadline).fontWeight(.black)
-                                                        .foregroundColor(.textPrimary)
-                                                }
-                                            }
-                                            .padding(.vertical, APSpacing.xs)
-                                            Divider().background(Color.appDivider)
-                                        }
-                                    }
+                                    Text(activeTimecard == nil ? "Let's get to work." : "Great job today.")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(.textSecondary)
                                 }
-                                .padding()
-                                .apCard()
+                                
+                                Spacer().frame(height: 40)
+                                
+                                // Avatar Placeholder
+                                ZStack {
+                                    Circle()
+                                        .fill(Color(white: 0.9))
+                                        .frame(width: 180, height: 180)
+                                    
+                                    Text("SMART CREATIVE EXPERT PROBLEM SOLVER ADVANCED")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundColor(Color.gray.opacity(0.3))
+                                        .multilineTextAlignment(.center)
+                                        .frame(width: 150)
+                                        .rotationEffect(.degrees(-10))
+                                    
+                                    Text(String(localEmployee.firstName.prefix(1) + localEmployee.lastName.prefix(1)))
+                                        .font(.system(size: 60, weight: .black))
+                                        .foregroundColor(Color.gray.opacity(0.8))
+                                }
+                                .clipShape(Circle())
+                                
+                                // Status/Scanning Message
+                                if isScanning || scanSuccess {
+                                    Text(displayScannerMessage)
+                                        .font(.subheadline)
+                                        .foregroundColor(scanSuccess ? .appTeal : .appAccent)
+                                        .padding(.top, 20)
+                                }
+                                
+                                Spacer().frame(height: 60)
+                                
+                                // Buttons
+                                VStack(spacing: 16) {
+                                    Button(action: {
+                                        scannerMode = activeTimecard == nil ? "clockIn" : "clockOut"
+                                        startScan()
+                                    }) {
+                                        Text(activeTimecard == nil ? "Clock in" : "Clock out")
+                                            .font(.system(size: 16, weight: .semibold))
+                                            .foregroundColor(.white)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 16)
+                                            .background(Color.appTeal)
+                                            .cornerRadius(4)
+                                    }
+                                    .disabled(isScanning || scanSuccess)
+                                    
+                                    Button(action: {
+                                        // Request time adjustment logic
+                                    }) {
+                                        Text("Request time adjustment")
+                                            .font(.system(size: 16, weight: .semibold))
+                                            .foregroundColor(.appTeal)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 16)
+                                            .background(Color.clear)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 4)
+                                                    .stroke(Color.appTeal, lineWidth: 1.5)
+                                            )
+                                    }
+                                    .disabled(isScanning || scanSuccess)
+                                }
+                                .padding(.horizontal, 40)
+                                
+                                Spacer().frame(height: 32)
+                                
+                                // Log Out as Cancel Button equivalent
+                                Button(action: {
+                                    NotificationCenter.default.post(name: NSNotification.Name("LogoutStaff"), object: nil)
+                                }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "arrow.left")
+                                            .font(.system(size: 14, weight: .bold))
+                                        Text("Log out")
+                                            .font(.system(size: 14, weight: .bold))
+                                    }
+                                    .foregroundColor(.appTeal)
+                                }
+                                .padding(.bottom, 40)
                             }
-                            .padding()
                         }
                     }
                 }
@@ -350,61 +322,105 @@ struct TimecardView: View {
         }
     }
     
-    // MARK: - Normal Biometric Scanner View
+    private var timeOfDay: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        if hour < 12 { return "morning" }
+        if hour < 17 { return "afternoon" }
+        return "evening"
+    }
     
     private var normalScannerView: some View {
-        VStack(spacing: APSpacing.xl) {
-            APBadge(
-                text: scannerMode == "clockIn" ? "clock_in".localized(for: appLanguage).uppercased() : "clock_out".localized(for: appLanguage).uppercased(),
-                color: scannerMode == "clockIn" ? .appTeal : .appRose,
-                icon: "faceid"
-            )
-            .padding(.top, APSpacing.xl)
+        VStack(spacing: 0) {
+            Spacer().frame(height: 40)
             
-            Text("\(localEmployee.firstName) \(localEmployee.lastName)")
-                .font(.title2).fontWeight(.black)
-                .foregroundColor(.textPrimary)
+            // Greeting
+            VStack(spacing: 8) {
+                Text("Good \(timeOfDay), \(localEmployee.firstName)")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundColor(.textPrimary)
+                
+                Text(scannerMode == "clockIn" ? "Let's get to work." : "Great job today.")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.textSecondary)
+            }
             
-            // Scan animation area
+            Spacer().frame(height: 40)
+            
+            // Avatar Placeholder (Word cloud background style)
             ZStack {
                 Circle()
-                    .fill(Color.appSurface)
-                    .frame(width: 240, height: 240)
-                    .overlay(
-                        Circle()
-                            .stroke(isScanning ? (scannerMode == "clockIn" ? Color.appTeal : Color.appRose) : Color.appBorderSubtle, lineWidth: 2)
-                    )
+                    .fill(Color(white: 0.9))
+                    .frame(width: 180, height: 180)
                 
-                Image(systemName: "faceid")
-                    .font(.system(size: 110, weight: .ultraLight))
-                    .foregroundStyle(isScanning ? (scannerMode == "clockIn" ? Color.appTeal : Color.appRose).opacity(0.8) : Color.textSecondary.opacity(0.3))
+                // Placeholder stylized background
+                Text("SMART CREATIVE EXPERT PROBLEM SOLVER ADVANCED")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(Color.gray.opacity(0.3))
+                    .multilineTextAlignment(.center)
+                    .frame(width: 150)
+                    .rotationEffect(.degrees(-10))
                 
-                if isScanning {
-                    Circle()
-                        .trim(from: 0.0, to: scanProgress)
-                        .stroke(scannerMode == "clockIn" ? APGradient.positive : APGradient.destructive, style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                        .frame(width: 240, height: 240)
-                        .rotationEffect(.degrees(-90))
-                }
+                Text(String(localEmployee.firstName.prefix(1) + localEmployee.lastName.prefix(1)))
+                    .font(.system(size: 60, weight: .black))
+                    .foregroundColor(Color.gray.opacity(0.8))
             }
-            .frame(width: 260, height: 260)
+            .clipShape(Circle())
             
-            Text(displayScannerMessage)
-                .font(.subheadline)
-                .foregroundColor(scanSuccess ? .appTeal : .textSecondary)
-            
-            if !isScanning && !scanSuccess {
-                Button(action: startScan) {
-                    Label(scannerMode == "clockIn" ? "auth_clock_in".localized(for: appLanguage) : "auth_clock_out".localized(for: appLanguage), systemImage: "faceid")
-                        .apGradientButton(
-                            gradient: scannerMode == "clockIn" ? APGradient.positive : APGradient.destructive,
-                            shadow: scannerMode == "clockIn" ? APShadow.positiveGlow : APShadow.destructiveGlow
-                        )
-                }
-                .padding(.horizontal, APSpacing.xl)
+            // Status/Scanning Message
+            if isScanning || scanSuccess {
+                Text(displayScannerMessage)
+                    .font(.subheadline)
+                    .foregroundColor(scanSuccess ? .appTeal : .appAccent)
+                    .padding(.top, 20)
             }
             
             Spacer()
+            
+            // Buttons
+            VStack(spacing: 16) {
+                Button(action: startScan) {
+                    Text(scannerMode == "clockIn" ? "Clock in" : "Clock out")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.appTeal)
+                        .cornerRadius(4)
+                }
+                .disabled(isScanning || scanSuccess)
+                
+                Button(action: {
+                    // Placeholder for Request Time Adjustment
+                }) {
+                    Text("Request time adjustment")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.appTeal)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.clear)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.appTeal, lineWidth: 1.5)
+                        )
+                }
+                .disabled(isScanning || scanSuccess)
+            }
+            .padding(.horizontal, 40)
+            
+            Spacer().frame(height: 32)
+            
+            Button(action: {
+                showingScanner = false
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.left")
+                        .font(.system(size: 14, weight: .bold))
+                    Text("Cancel")
+                        .font(.system(size: 14, weight: .bold))
+                }
+                .foregroundColor(.appTeal)
+            }
+            .padding(.bottom, 40)
         }
     }
     

@@ -18,10 +18,22 @@ struct AppConfig {
         let isProduction = plistValue("ALPHAPOS_ENV", in: plist) == "production"
             || env["ALPHAPOS_ENV"] == "production"
 
-        let supabaseURLString = requiredConfigValue(
-            plistValue("SUPABASE_URL", in: plist) ?? env["SUPABASE_URL"],
-            name: "SUPABASE_URL"
-        )
+        let plistSupabaseURL = plistValue("SUPABASE_URL", in: plist) ?? env["SUPABASE_URL"]
+        let plistLocalServerURL = plistValue("LOCAL_SERVER_URL", in: plist) ?? env["LOCAL_SERVER_URL"]
+        
+        let supabaseURLString: String
+        if let overriddenURL = UserDefaults.standard.string(forKey: "dynamic_supabase_url"), !overriddenURL.isEmpty {
+            supabaseURLString = overriddenURL
+        } else {
+            supabaseURLString = requiredConfigValue(plistSupabaseURL, name: "SUPABASE_URL")
+        }
+        
+        let localServerURLString: String
+        if let overriddenLocalURL = UserDefaults.standard.string(forKey: "dynamic_local_server_url"), !overriddenLocalURL.isEmpty {
+            localServerURLString = overriddenLocalURL
+        } else {
+            localServerURLString = plistLocalServerURL ?? "http://119.59.99.163:8080"
+        }
 
         return AppConfig(
             supabaseURL: requiredURL(supabaseURLString, name: "SUPABASE_URL"),
@@ -37,9 +49,7 @@ struct AppConfig {
                 plistValue("DEFAULT_DEVICE_SECRET", in: plist) ?? env["DEFAULT_DEVICE_SECRET"],
                 name: "DEFAULT_DEVICE_SECRET"
             ),
-            localServerURL: plistValue("LOCAL_SERVER_URL", in: plist)
-                ?? nonEmpty(env["LOCAL_SERVER_URL"])
-                ?? "http://127.0.0.1:8080",
+            localServerURL: localServerURLString,
             isProduction: isProduction
         )
     }()

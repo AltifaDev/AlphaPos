@@ -213,7 +213,7 @@ struct KitchenDisplayView: View {
     }
     
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             Color.appBackground.ignoresSafeArea()
                     
                     VStack(spacing: 0) {
@@ -332,6 +332,7 @@ struct KitchenDisplayView: View {
                                     .padding()
                                 }
                             }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .offset(y: isViewAppeared ? 0 : 50)
                             .opacity(isViewAppeared ? 1 : 0)
                         }
@@ -353,7 +354,7 @@ struct KitchenDisplayView: View {
                         historyDrawerOverlay
                     }
                 }
-                .navigationTitle("")
+                .navigationTitle(" ")
                 .navigationBarTitleDisplayMode(.inline)
                 .apNavBar(background: Color.appBackground)
                 .fullScreenCover(item: $selectedTicket) { ticket in
@@ -613,7 +614,7 @@ struct KitchenDisplayView: View {
                                                     .foregroundColor(item.status == "cancelled" ? .textTertiary : .appTeal)
                                                 
                                                 VStack(alignment: .leading, spacing: 1) {
-                                                    Text(item.menuItem?.name ?? "Unknown Item")
+                                                    Text(item.menuItem?.name ?? item.itemName)
                                                         .font(.system(size: 11, weight: .semibold))
                                                         .foregroundColor(item.status == "cancelled" ? .textTertiary : .textPrimary)
                                                         .strikethrough(item.status == "cancelled")
@@ -768,8 +769,7 @@ struct KitchenPremiumTicketCard: View {
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
     var groupedItems: [(category: String, items: [OrderItem])] {
-        let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
-        let filtered = activeItems.filter { item in
+        let filtered = order.items.filter { item in
             if station == .kitchen {
                 return !item.isBeverage
             } else {
@@ -862,28 +862,55 @@ struct KitchenPremiumTicketCard: View {
                                     .padding(.bottom, 2)
                                 
                                 ForEach(group.items) { item in
+                                    let isDone = item.status == "served" || item.status == "cancelled"
                                     HStack(alignment: .top, spacing: 8) {
                                         Text("\(item.quantity)")
                                             .font(.system(size: 14, weight: .black))
-                                            .foregroundColor(item.status == "alert" ? .appRose : .textPrimary)
+                                            .foregroundColor(item.status == "alert" ? .appRose : (isDone ? .textTertiary : .textPrimary))
                                             .frame(width: 14, alignment: .leading)
+                                            .strikethrough(isDone)
                                         
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text(item.menuItem?.name ?? "Unknown Item")
+                                            Text(item.menuItem?.name ?? item.itemName)
                                                 .font(.system(size: 12, weight: .semibold))
-                                                .foregroundColor(item.status == "alert" ? .appRose : .textPrimary)
+                                                .foregroundColor(item.status == "alert" ? .appRose : (isDone ? .textTertiary : .textPrimary))
+                                                .strikethrough(isDone)
                                                 .multilineTextAlignment(.leading)
                                             
                                             if !item.modifiers.isEmpty {
                                                 Text(item.modifiers.compactMap { $0.modifier?.name }.joined(separator: ", "))
                                                     .font(.system(size: 10))
-                                                    .foregroundColor(.appTeal)
+                                                    .foregroundColor(isDone ? .textTertiary : .appTeal)
+                                                    .strikethrough(isDone)
                                                     .multilineTextAlignment(.leading)
+                                            }
+                                            
+                                            if item.status == "served" {
+                                                HStack(spacing: 2) {
+                                                    Image(systemName: "checkmark.circle.fill")
+                                                    if let servedBy = item.servedBy, !servedBy.isEmpty {
+                                                        Text("เสิร์ฟโดย: \(servedBy)")
+                                                    } else {
+                                                        Text("เสิร์ฟแล้ว")
+                                                    }
+                                                }
+                                                .font(.system(size: 9, weight: .bold))
+                                                .foregroundColor(.appTeal)
+                                            } else if item.status == "cancelled" {
+                                                Text("ยกเลิก")
+                                                    .font(.system(size: 9, weight: .bold))
+                                                    .foregroundColor(.appRose)
                                             }
                                         }
                                         Spacer()
                                     }
                                     .padding(.horizontal, 2)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        if item.status != "cancelled" {
+                                            toggleItemServe(item)
+                                        }
+                                    }
                                     Divider().background(Color.appDivider)
                                 }
                             }
@@ -979,6 +1006,36 @@ struct KitchenPremiumTicketCard: View {
         return 1
     }
     
+    private func toggleItemServe(_ item: OrderItem) {
+        withAnimation {
+            if item.status == "served" {
+                item.status = "cooking"
+                item.servedBy = nil
+            } else {
+                item.status = "served"
+                item.servedBy = nil
+            }
+            item.updatedAt = Date()
+            item.isSynced = false
+            
+            order.isSynced = false
+            order.updatedAt = Date()
+            
+            let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
+            if activeItems.isEmpty {
+                order.status = "ready"
+            } else {
+                order.status = "preparing"
+            }
+            try? modelContext.save()
+            
+            // Trigger sync
+            Task {
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
+            }
+        }
+    }
+    
     private func alertWaiter() {
         Task {
             let tableNum = order.tableSession?.table?.tableNumber ?? "1"
@@ -1011,6 +1068,10 @@ struct KitchenPremiumTicketCard: View {
                     order.status = "ready"
                 }
                 try? modelContext.save()
+                
+                Task {
+                    await SyncEngine.shared.syncAll(modelContext: modelContext)
+                }
             }
         }
         APHaptic.trigger()
@@ -1088,8 +1149,7 @@ struct KitchenTicketView: View {
             // Order Items List: compacted to show more items
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
-                    let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
-                    let displayedItems = activeItems.filter { item in
+                    let displayedItems = order.items.filter { item in
                         if station == .kitchen {
                             return !item.isBeverage
                         } else {
@@ -1112,24 +1172,45 @@ struct KitchenTicketView: View {
                         .frame(maxWidth: .infinity, minHeight: 140, alignment: .center)
                     } else {
                         ForEach(displayedItems) { item in
+                            let isDone = item.status == "served" || item.status == "cancelled"
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(alignment: .top) {
                                     Text("\(item.quantity)x")
                                         .font(.system(size: 11, weight: .black))
-                                        .foregroundColor(item.status == "alert" ? .appRose : .appAmber)
+                                        .foregroundColor(item.status == "alert" ? .appRose : (isDone ? .textTertiary : .appAmber))
                                         .frame(width: 14, alignment: .leading)
+                                        .strikethrough(isDone)
                                     
                                     VStack(alignment: .leading, spacing: 1) {
-                                        Text(item.menuItem?.name ?? "Unknown Item")
+                                        Text(item.menuItem?.name ?? item.itemName)
                                             .font(.system(size: 11, weight: .semibold))
-                                            .foregroundColor(item.status == "alert" ? .appRose : .textPrimary)
+                                            .foregroundColor(item.status == "alert" ? .appRose : (isDone ? .textTertiary : .textPrimary))
+                                            .strikethrough(isDone)
                                             .multilineTextAlignment(.leading)
                                         
                                         if !item.modifiers.isEmpty {
                                             Text(item.modifiers.compactMap { $0.modifier?.name }.joined(separator: ", "))
                                                 .font(.system(size: 9))
-                                                .foregroundColor(.textSecondary)
+                                                .foregroundColor(isDone ? .textTertiary : .textSecondary)
+                                                .strikethrough(isDone)
                                                 .multilineTextAlignment(.leading)
+                                        }
+                                        
+                                        if item.status == "served" {
+                                            HStack(spacing: 2) {
+                                                Image(systemName: "checkmark.circle.fill")
+                                                if let servedBy = item.servedBy, !servedBy.isEmpty {
+                                                    Text("เสิร์ฟโดย: \(servedBy)")
+                                                } else {
+                                                    Text("เสิร์ฟแล้ว")
+                                                }
+                                            }
+                                            .font(.system(size: 8, weight: .bold))
+                                            .foregroundColor(.appTeal)
+                                        } else if item.status == "cancelled" {
+                                            Text("ยกเลิก")
+                                                .font(.system(size: 8, weight: .bold))
+                                                .foregroundColor(.appRose)
                                         }
                                     }
                                     
@@ -1137,26 +1218,40 @@ struct KitchenTicketView: View {
                                     
                                     // Compact Action Buttons
                                     HStack(spacing: 4) {
-                                        Button(action: { alertItem(item) }) {
-                                            Image(systemName: "exclamationmark.triangle")
-                                                .font(.system(size: 8))
-                                                .padding(4)
-                                                .background(Color.appAmber.opacity(0.1))
-                                                .foregroundColor(.appAmber)
-                                                .clipShape(Circle())
+                                        if item.status == "served" {
+                                            Button(action: { recallItem(item) }) {
+                                                Image(systemName: "arrow.uturn.backward")
+                                                    .font(.system(size: 8))
+                                                    .padding(4)
+                                                    .background(Color.appAccent.opacity(0.1))
+                                                    .foregroundColor(.appAccent)
+                                                    .clipShape(Circle())
+                                            }
+                                            .buttonStyle(.plain)
+                                        } else if item.status == "cancelled" {
+                                            // Cancelled
+                                        } else {
+                                            Button(action: { alertItem(item) }) {
+                                                Image(systemName: "exclamationmark.triangle")
+                                                    .font(.system(size: 8))
+                                                    .padding(4)
+                                                    .background(Color.appAmber.opacity(0.1))
+                                                    .foregroundColor(.appAmber)
+                                                    .clipShape(Circle())
+                                            }
+                                            .buttonStyle(.plain)
+                                            .disabled(item.status == "alert")
+                                            
+                                            Button(action: { serveItem(item) }) {
+                                                Image(systemName: "checkmark.circle")
+                                                    .font(.system(size: 8))
+                                                    .padding(4)
+                                                    .background(Color.appTeal.opacity(0.1))
+                                                    .foregroundColor(.appTeal)
+                                                    .clipShape(Circle())
+                                            }
+                                            .buttonStyle(.plain)
                                         }
-                                        .buttonStyle(.plain)
-                                        .disabled(item.status == "alert")
-                                        
-                                        Button(action: { serveItem(item) }) {
-                                            Image(systemName: "checkmark.circle")
-                                                .font(.system(size: 8))
-                                                .padding(4)
-                                                .background(Color.appTeal.opacity(0.1))
-                                                .foregroundColor(.appTeal)
-                                                .clipShape(Circle())
-                                        }
-                                        .buttonStyle(.plain)
                                     }
                                 }
                             }
@@ -1263,6 +1358,7 @@ struct KitchenTicketView: View {
     private func serveItem(_ item: OrderItem) {
         withAnimation {
             item.status = "served"
+            item.servedBy = nil
             item.updatedAt = Date()
             item.isSynced = false
             
@@ -1272,8 +1368,38 @@ struct KitchenTicketView: View {
             let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
             if activeItems.isEmpty {
                 order.status = "ready"
+            } else {
+                order.status = "preparing"
             }
             try? modelContext.save()
+            
+            Task {
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
+            }
+        }
+    }
+    
+    private func recallItem(_ item: OrderItem) {
+        withAnimation {
+            item.status = "cooking"
+            item.servedBy = nil
+            item.updatedAt = Date()
+            item.isSynced = false
+            
+            order.isSynced = false
+            order.updatedAt = Date()
+            
+            let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
+            if activeItems.isEmpty {
+                order.status = "ready"
+            } else {
+                order.status = "preparing"
+            }
+            try? modelContext.save()
+            
+            Task {
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
+            }
         }
     }
     
@@ -1286,11 +1412,15 @@ struct KitchenTicketView: View {
             order.isSynced = false
             order.updatedAt = Date()
             try? modelContext.save()
+            
+            Task {
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
+            }
         }
         
         Task {
             let tableNum = order.tableSession?.table?.tableNumber ?? "1"
-            let itemName = item.menuItem?.name ?? "Unknown Item"
+            let itemName = item.menuItem?.name ?? item.itemName
             _ = try? await NetworkManager.shared.createServiceRequest(
                 tableNumber: tableNum,
                 type: "Kitchen Alert: \(itemName) Issue"
@@ -1330,6 +1460,10 @@ struct KitchenTicketView: View {
                     order.status = "ready"
                 }
                 try? modelContext.save()
+                
+                Task {
+                    await SyncEngine.shared.syncAll(modelContext: modelContext)
+                }
             }
         }
         APHaptic.trigger()
@@ -1356,6 +1490,10 @@ struct KitchenTicketView: View {
                     order.status = "served"
                 }
                 try? modelContext.save()
+                
+                Task {
+                    await SyncEngine.shared.syncAll(modelContext: modelContext)
+                }
             }
         }
         APHaptic.trigger()
@@ -1474,8 +1612,7 @@ struct KitchenOrderDetailView: View {
                 // Detailed Items List
                 ScrollView {
                     VStack(spacing: 16) {
-                        let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
-                        let displayedItems = activeItems.filter { item in
+                        let displayedItems = order.items.filter { item in
                             if station == .kitchen {
                                 return !item.isBeverage
                             } else {
@@ -1499,34 +1636,48 @@ struct KitchenOrderDetailView: View {
                                 Spacer()
                             }
                             .frame(maxWidth: .infinity, minHeight: 450)
-                        } else {
                             ForEach(displayedItems) { item in
+                                let isDone = item.status == "served" || item.status == "cancelled"
                                 HStack(alignment: .center, spacing: 20) {
                                     // Big Quantity Label
                                     Text("\(item.quantity)x")
                                         .font(.system(size: 22, weight: .black, design: .rounded))
-                                        .foregroundColor(item.status == "alert" ? .appRose : .appAmber)
+                                        .foregroundColor(item.status == "alert" ? .appRose : (isDone ? .textTertiary : .appAmber))
                                         .frame(width: 54, height: 54)
-                                        .background(item.status == "alert" ? Color.appRose.opacity(0.12) : Color.appAmber.opacity(0.12))
+                                        .background(item.status == "alert" ? Color.appRose.opacity(0.12) : (isDone ? Color.appSurfaceHigh.opacity(0.4) : Color.appAmber.opacity(0.12)))
                                         .cornerRadius(10)
                                         .overlay(
                                             RoundedRectangle(cornerRadius: 10)
-                                                .stroke(item.status == "alert" ? Color.appRose.opacity(0.25) : Color.appAmber.opacity(0.25), lineWidth: 1)
+                                                .stroke(item.status == "alert" ? Color.appRose.opacity(0.25) : (isDone ? Color.appBorderSubtle : Color.appAmber.opacity(0.25)), lineWidth: 1)
                                         )
+                                        .strikethrough(isDone)
                                     
                                     // Food details
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text(item.menuItem?.name ?? "Unknown Item")
+                                        Text(item.menuItem?.name ?? item.itemName)
                                             .font(.system(size: 20, weight: .bold))
-                                            .foregroundColor(item.status == "alert" ? .appRose : .textPrimary)
+                                            .foregroundColor(item.status == "alert" ? .appRose : (isDone ? .textTertiary : .textPrimary))
+                                            .strikethrough(isDone)
                                         
                                         if !item.modifiers.isEmpty {
                                             Text(item.modifiers.compactMap { $0.modifier?.name }.joined(separator: ", "))
                                                 .font(.system(size: 13, weight: .medium))
-                                                .foregroundColor(.appTeal)
+                                                .foregroundColor(isDone ? .textTertiary : .appTeal)
+                                                .strikethrough(isDone)
                                         }
                                         
-                                        if item.status == "alert" {
+                                        if item.status == "served" {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "checkmark.circle.fill")
+                                                if let servedBy = item.servedBy, !servedBy.isEmpty {
+                                                    Text("เสิร์ฟโดย: \(servedBy)")
+                                                } else {
+                                                    Text("เสิร์ฟแล้ว")
+                                                }
+                                            }
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(.appTeal)
+                                        } else if item.status == "alert" {
                                             HStack(spacing: 4) {
                                                 Image(systemName: "exclamationmark.triangle.fill")
                                                     .font(.caption2)
@@ -1542,63 +1693,84 @@ struct KitchenOrderDetailView: View {
                                     
                                     // Premium Action Buttons
                                     HStack(spacing: 10) {
-                                        // Alert Waiter Button
-                                        Button(action: { alertItem(item) }) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "exclamationmark.triangle")
-                                                Text("kds_alert_staff".t)
+                                        if isDone {
+                                            // Recall Button
+                                            Button(action: { recallItem(item) }) {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: "arrow.uturn.backward")
+                                                    Text("pos_recall".t)
+                                                }
+                                                .font(.system(size: 12, weight: .bold))
+                                                .padding(.horizontal, 16)
+                                                .padding(.vertical, 10)
+                                                .background(Color.appAccent.opacity(0.12))
+                                                .foregroundColor(.appAccent)
+                                                .cornerRadius(8)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 8)
+                                                        .stroke(Color.appAccent.opacity(0.3), lineWidth: 0.8)
+                                                )
                                             }
-                                            .font(.system(size: 12, weight: .bold))
-                                            .padding(.horizontal, 14)
-                                            .padding(.vertical, 10)
-                                            .background(Color.appAmber.opacity(item.status == "alert" ? 0.05 : 0.12))
-                                            .foregroundColor(item.status == "alert" ? Color.appAmber.opacity(0.4) : .appAmber)
-                                            .cornerRadius(8)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 8)
-                                                    .stroke(Color.appAmber.opacity(item.status == "alert" ? 0.1 : 0.3), lineWidth: 0.8)
-                                            )
-                                        }
-                                        .buttonStyle(.plain)
-                                        .disabled(item.status == "alert")
-                                        
-                                        // Cancel Button
-                                        Button(action: { rejectItem(item) }) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "xmark.circle")
-                                                Text("cancel".t)
+                                            .buttonStyle(.plain)
+                                        } else {
+                                            // Alert Waiter Button
+                                            Button(action: { alertItem(item) }) {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: "exclamationmark.triangle")
+                                                    Text("kds_alert_staff".t)
+                                                }
+                                                .font(.system(size: 12, weight: .bold))
+                                                .padding(.horizontal, 14)
+                                                .padding(.vertical, 10)
+                                                .background(Color.appAmber.opacity(item.status == "alert" ? 0.05 : 0.12))
+                                                .foregroundColor(item.status == "alert" ? Color.appAmber.opacity(0.4) : .appAmber)
+                                                .cornerRadius(8)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 8)
+                                                        .stroke(Color.appAmber.opacity(item.status == "alert" ? 0.1 : 0.3), lineWidth: 0.8)
+                                                )
                                             }
-                                            .font(.system(size: 12, weight: .bold))
-                                            .padding(.horizontal, 14)
-                                            .padding(.vertical, 10)
-                                            .background(Color.appRose.opacity(0.12))
-                                            .foregroundColor(.appRose)
-                                            .cornerRadius(8)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 8)
-                                                    .stroke(Color.appRose.opacity(0.3), lineWidth: 0.8)
-                                            )
-                                        }
-                                        .buttonStyle(.plain)
-                                        
-                                        // Serve Button
-                                        Button(action: { serveItem(item) }) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "checkmark.circle")
-                                                Text("kds_serve".t)
+                                            .buttonStyle(.plain)
+                                            .disabled(item.status == "alert")
+                                            
+                                            // Cancel Button
+                                            Button(action: { rejectItem(item) }) {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: "xmark.circle")
+                                                    Text("cancel".t)
+                                                }
+                                                .font(.system(size: 12, weight: .bold))
+                                                .padding(.horizontal, 14)
+                                                .padding(.vertical, 10)
+                                                .background(Color.appRose.opacity(0.12))
+                                                .foregroundColor(.appRose)
+                                                .cornerRadius(8)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 8)
+                                                        .stroke(Color.appRose.opacity(0.3), lineWidth: 0.8)
+                                                )
                                             }
-                                            .font(.system(size: 12, weight: .bold))
-                                            .padding(.horizontal, 16)
-                                            .padding(.vertical, 10)
-                                            .background(Color.appTeal.opacity(0.12))
-                                            .foregroundColor(.appTeal)
-                                            .cornerRadius(8)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 8)
-                                                    .stroke(Color.appTeal.opacity(0.3), lineWidth: 0.8)
-                                            )
+                                            .buttonStyle(.plain)
+                                            
+                                            // Serve Button
+                                            Button(action: { serveItem(item) }) {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: "checkmark.circle")
+                                                    Text("kds_serve".t)
+                                                }
+                                                .font(.system(size: 12, weight: .bold))
+                                                .padding(.horizontal, 16)
+                                                .padding(.vertical, 10)
+                                                .background(Color.appTeal.opacity(0.12))
+                                                .foregroundColor(.appTeal)
+                                                .cornerRadius(8)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 8)
+                                                        .stroke(Color.appTeal.opacity(0.3), lineWidth: 0.8)
+                                                )
+                                            }
+                                            .buttonStyle(.plain)
                                         }
-                                        .buttonStyle(.plain)
                                     }
                                 }
                                 .padding(18)
@@ -1706,10 +1878,38 @@ struct KitchenOrderDetailView: View {
             }
             try? modelContext.save()
             
+            Task {
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
+            }
+            
             // Check if all active items matching this station have been served
             let activeItemsForStation = order.items.filter { ($0.status == "cooking" || $0.status == "alert") && (station == .kitchen ? !$0.isBeverage : $0.isBeverage) }
             if activeItemsForStation.isEmpty {
                 dismiss()
+            }
+        }
+    }
+    
+    private func recallItem(_ item: OrderItem) {
+        withAnimation {
+            item.status = "cooking"
+            item.servedBy = nil
+            item.updatedAt = Date()
+            item.isSynced = false
+            
+            order.isSynced = false
+            order.updatedAt = Date()
+            
+            let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
+            if activeItems.isEmpty {
+                order.status = "ready"
+            } else {
+                order.status = "preparing"
+            }
+            try? modelContext.save()
+            
+            Task {
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
             }
         }
     }
@@ -1727,7 +1927,7 @@ struct KitchenOrderDetailView: View {
         
         Task {
             let tableNum = order.tableSession?.table?.tableNumber ?? "1"
-            let itemName = item.menuItem?.name ?? "Unknown Item"
+            let itemName = item.menuItem?.name ?? item.itemName
             _ = try? await NetworkManager.shared.createServiceRequest(
                 tableNumber: tableNum,
                 type: "Kitchen Alert: \(itemName) Issue"
@@ -1778,6 +1978,10 @@ struct KitchenOrderDetailView: View {
                 order.status = "ready"
             }
             try? modelContext.save()
+            
+            Task {
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
+            }
         }
     }
     
@@ -1802,6 +2006,10 @@ struct KitchenOrderDetailView: View {
                 order.status = "served"
             }
             try? modelContext.save()
+            
+            Task {
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
+            }
         }
     }
 }

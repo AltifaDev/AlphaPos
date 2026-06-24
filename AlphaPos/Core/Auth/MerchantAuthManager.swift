@@ -118,8 +118,11 @@ final class MerchantAuthManager {
         KeychainManager.shared.save(String(expiryTimestamp), forKey: keychainExpiryKey)
         KeychainManager.shared.save(merchantId, forKey: keychainMerchantIdKey)
         KeychainManager.shared.save(deviceSecret, forKey: keychainDeviceSecretKey)
-        
-        // Also store merchant_id in UserDefaults for backward compatibility
+
+        // Cache merchant_id in UserDefaults so NetworkManager can read it without Keychain lookup on every call.
+        // NOTE: This is a NON-SENSITIVE cache. The authoritative auth state is the Keychain JWT above.
+        //       Do NOT use UserDefaults "active_merchant_id" as an auth gate — it can be tampered.
+        //       Auth gate must always use MerchantAuthManager.shared.isAuthenticated (Keychain-backed).
         UserDefaults.standard.set(merchantId, forKey: "active_merchant_id")
         
         #if DEBUG

@@ -1566,9 +1566,13 @@ class AlphaPosApp {
         const token = urlParams.get('token');
         const jwt = urlParams.get('jwt'); // Merchant JWT token from QR code
 
-        // Validate table number: must be a positive integer
-        if (table && /^\d+$/.test(table)) {
-            this.tableNumber = table;
+        // Validate table number: must be a non-empty string. Normalize 'T3' -> '3' for DB mapping.
+        if (table && table.trim() !== '') {
+            let normalizedTable = table.trim();
+            if (/^[tT]\d+$/.test(normalizedTable)) {
+                normalizedTable = normalizedTable.substring(1);
+            }
+            this.tableNumber = normalizedTable;
         }
 
         if (token) {
@@ -2944,7 +2948,8 @@ class AlphaPosApp {
         const yyyy = now.getFullYear();
         const mm = String(now.getMonth() + 1).padStart(2, '0');
         const dd = String(now.getDate()).padStart(2, '0');
-        const rand = Math.floor(100 + Math.random() * 900);
+        // Use 5-digit random number to prevent duplicate key conflicts under the 20-char VARCHAR limit (e.g. ORD-20260623-12345 is 18 chars)
+        const rand = Math.floor(10000 + Math.random() * 90000);
         const orderNum = `ORD-${yyyy}${mm}${dd}-${rand}`;
 
         const orderItems = [];
@@ -2982,6 +2987,11 @@ class AlphaPosApp {
                 merchant_id: this.merchantId
             }));
 
+            // Supabase fk_order_items_menu_item constraint references menu_items(id) which is of type TEXT.
+            // Short-key identifiers (e.g. "isan1") exist in menu_items(id) on Supabase, so they are valid.
+            // Pass item.id directly to avoid setting it to null.
+            const safeItemId = item.id;
+
             orderItems.push({
                 id: orderItemId,
                 order_id: orderId,
@@ -2989,7 +2999,7 @@ class AlphaPosApp {
                 price: item.price + modifierPriceSum,
                 quantity: qty,
                 status: 'cooking',
-                item_id: item.id,
+                item_id: safeItemId,
                 merchant_id: this.merchantId,
                 notes: notes,
                 modifiers: mappedModifiers

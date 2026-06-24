@@ -613,65 +613,6 @@ struct PromotionsManagementView: View {
     }
 }
 
-private struct LoopingVideoPlayer: UIViewRepresentable {
-    let url: URL
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeUIView(context: Context) -> PlayerContainerView {
-        let view = PlayerContainerView()
-        context.coordinator.configure(url: url, in: view)
-        return view
-    }
-
-    func updateUIView(_ uiView: PlayerContainerView, context: Context) {
-        context.coordinator.configure(url: url, in: uiView)
-    }
-
-    final class Coordinator {
-        private var currentURL: URL?
-        private var player: AVQueuePlayer?
-        private var looper: AVPlayerLooper?
-
-        func configure(url: URL, in view: PlayerContainerView) {
-            guard currentURL != url else { return }
-            currentURL = url
-
-            let item = AVPlayerItem(url: url)
-            let player = AVQueuePlayer()
-            player.isMuted = true
-            player.actionAtItemEnd = .none
-            looper = AVPlayerLooper(player: player, templateItem: item)
-            self.player = player
-
-            view.playerLayer.player = player
-            player.play()
-        }
-    }
-
-    final class PlayerContainerView: UIView {
-        override static var layerClass: AnyClass {
-            AVPlayerLayer.self
-        }
-
-        var playerLayer: AVPlayerLayer {
-            layer as! AVPlayerLayer
-        }
-
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            playerLayer.videoGravity = .resizeAspectFill
-        }
-
-        required init?(coder: NSCoder) {
-            super.init(coder: coder)
-            playerLayer.videoGravity = .resizeAspectFill
-        }
-    }
-}
-
 struct PromotionFormSheet: View {
     @EnvironmentObject private var lm: LocalizationManager
     @Environment(\.dismiss) private var dismiss

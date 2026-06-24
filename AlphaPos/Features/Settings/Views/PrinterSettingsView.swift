@@ -317,6 +317,7 @@ struct PrinterConfigSheet: View {
                                 Picker("Role", selection: $role) {
                                     Text("Receipt (FOH)").tag("receipt")
                                     Text("Kitchen (BOH)").tag("kitchen")
+                                    Text("Bar Station").tag("bar")
                                     Text("Label Sticker").tag("label")
                                 }
                                 .pickerStyle(SegmentedPickerStyle())
@@ -577,6 +578,7 @@ struct PrintPreviewSheet: View {
                     Picker("Preview Format", selection: $previewType) {
                         Text("FOH Receipt").tag("receipt")
                         Text("BOH Kitchen Ticket").tag("kitchen")
+                        Text("Bar Ticket").tag("bar")
                         Text("Label Sticker").tag("label")
                     }
                     .pickerStyle(SegmentedPickerStyle())
@@ -589,6 +591,8 @@ struct PrintPreviewSheet: View {
                                 ReceiptPreviewCard(paperWidth: printer.paperWidth)
                             } else if previewType == "kitchen" {
                                 KitchenTicketPreviewCard(paperWidth: printer.paperWidth)
+                            } else if previewType == "bar" {
+                                KitchenTicketPreviewCard(paperWidth: printer.paperWidth, stationLabel: "BAR STATION")
                             } else {
                                 StickerPreviewCard()
                             }
@@ -801,11 +805,12 @@ struct ReceiptPreviewCard: View {
 // ── Kitchen Ticket Preview Card
 struct KitchenTicketPreviewCard: View {
     var paperWidth: String
-    
+    var stationLabel: String = "HOT KITCHEN TICKET"
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
-                Text("HOT KITCHEN TICKET")
+                Text(stationLabel)
                     .font(.caption2)
                     .fontWeight(.bold)
                     .foregroundColor(.white)
@@ -1032,6 +1037,7 @@ struct PrinterRowView: View {
         switch printer.role {
         case "receipt": return "printer.fill"
         case "kitchen": return "printer.dotmatrix.fill"
+        case "bar":     return "cup.and.saucer.fill"
         default: return "tag.fill"
         }
     }
@@ -1040,6 +1046,7 @@ struct PrinterRowView: View {
         switch printer.role {
         case "receipt": return Color.appAccent
         case "kitchen": return Color.appTeal
+        case "bar":     return Color.appAmber
         default: return Color.appAmber
         }
     }
@@ -1058,6 +1065,7 @@ struct PrinterRowView: View {
         switch printer.role {
         case "receipt": return "Receipt"
         case "kitchen": return "Kitchen"
+        case "bar":     return "Bar"
         default: return "Sticker"
         }
     }

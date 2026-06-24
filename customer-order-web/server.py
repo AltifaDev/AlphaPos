@@ -135,12 +135,13 @@ def sync_menu_from_supabase(conn):
             data = json.loads(response.read().decode())
         
         if not data:
-            print("[Sync] Supabase returned 0 items — skipping SQLite update.")
+            print("[Sync] ⚠️  Supabase menu_items is empty — retaining SQLite cache.")
+            print("[Sync]     iPad must sync at least one menu item before web ordering works.")
             return
         
         cursor = conn.cursor()
-        # Wipe existing menu items and replace with Supabase data
-        cursor.execute("-- UPSERT used instead")
+        # Replace seed/stale rows with canonical Supabase UUIDs
+        cursor.execute("DELETE FROM menu_items")
         for item in data:
             name_trans = json.dumps(item.get("name_translations", {}))
             desc_trans = json.dumps(item.get("description_translations", {}))
@@ -1044,11 +1045,11 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         self.send_header('Permissions-Policy', 'geolocation=(self), camera=(), microphone=()')
         self.send_header('Content-Security-Policy',
             "default-src 'self'; "
-            "media-src 'self' blob:; "
+            "media-src 'self' blob: https:; "
             "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
             "img-src 'self' data: https:; "
-            f"connect-src 'self'{supabase_connect_src}; "
+            f"connect-src 'self' https://cdn.jsdelivr.net{supabase_connect_src}; "
             "font-src 'self' data: https://fonts.gstatic.com; "
             "frame-ancestors 'none'")
         if not IS_PRODUCTION:
@@ -2690,6 +2691,20 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 
 
     def handle_get_config_js(self):
+        if os.path.exists("config.js"):
+            try:
+                with open("config.js", "rb") as f:
+                    js_content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript")
+                self.send_header("Access-Control-Allow-Origin", self._get_allowed_origin())
+                self.send_header("Content-Length", str(len(js_content)))
+                self.end_headers()
+                self.wfile.write(js_content)
+                return
+            except Exception as e:
+                print(f"Error reading physical config.js: {e}")
+
         js_content = f"""window.ALPHAPOS_CONFIG = {{
     supabaseUrl: '{SUPABASE_URL}',
     supabaseKey: '{SUPABASE_ANON_KEY}',

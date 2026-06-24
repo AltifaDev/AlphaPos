@@ -62,6 +62,9 @@ final class POSViewModel {
     var currentBillNumber: String = ""
     var currentOrderDateString: String = ""
 
+    // L6: Checkout error state — nil means no error, non-nil contains error description
+    var lastCheckoutError: String? = nil
+
     var deliveryBrand: String? = nil
     var deliveryGP: Double = 0.0
     var deliveryAdFee: Double = 0.0
@@ -154,8 +157,8 @@ final class POSViewModel {
             }
         }
 
-        // Service charge is also subject to VAT (VAT is calculated on top of service charge)
-        let serviceChargeTax = cartServiceCharge * (taxRate / 100.0)
+        let serviceChargeTaxable = UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true
+        let serviceChargeTax = serviceChargeTaxable ? cartServiceCharge * (taxRate / 100.0) : 0.0
         return totalTax + serviceChargeTax
     }
 
@@ -200,8 +203,8 @@ final class POSViewModel {
             }
         }
 
-        // Service charge + its tax is added to total
-        let serviceChargeTax = cartServiceCharge * (taxRate / 100.0)
+        let serviceChargeTaxable = UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true
+        let serviceChargeTax = serviceChargeTaxable ? cartServiceCharge * (taxRate / 100.0) : 0.0
         return max(0, totalAmount + cartServiceCharge + serviceChargeTax - cartDiscount)
     }
 
@@ -366,14 +369,35 @@ final class POSViewModel {
         return nil
     }
 
-    @discardableResult func processCheckout(tableSession: TableSession? = nil) -> Order? {
-    guard let modelContext = modelContext else { return nil }
+    @discardableResult func processCheckout(
+        tableSession: TableSession? = nil,
+        createPayment: Bool = false,
+        paymentMethod: String? = nil,
+        dispatchPrint: Bool = true
+    ) -> Order? {
+    lastCheckoutError = nil
+    guard let modelContext = modelContext else {
+        lastCheckoutError = "modelContext unavailable — cannot checkout"
+        return nil
+    }
     let activeBranch = fetchActiveBranch(context: modelContext)
 
     // 1. Create the Order
-    let finalOrderNum = currentBillNumber == "AP-NEW"
-        ? "ORD-\(DateFormatter.orderDateFormat().string(from: Date()))-\(Int.random(in: 100...999))"
-        : currentBillNumber
+    let finalOrderNum: String
+    if currentBillNumber == "AP-NEW" {
+        finalOrderNum = "ORD-\(DateFormatter.orderDateFormat().string(from: Date()))-\(Int.random(in: 100...999))"
+    } else if let session = tableSession {
+        // H-8 FIX: Prevent unique constraint violation on (merchant_id, order_number)
+        // by appending a suffix if this is a subsequent order in the same session.
+        let sessionOrderCount = session.orders.filter { !$0.isDeleted }.count
+        if sessionOrderCount > 0 {
+            finalOrderNum = "\(currentBillNumber)-\(sessionOrderCount + 1)"
+        } else {
+            finalOrderNum = currentBillNumber
+        }
+    } else {
+        finalOrderNum = currentBillNumber
+    }
     let appliedPromotion = activePromotion
     let appliedDiscount = cartDiscount
     let order = Order(
@@ -399,6 +423,13 @@ final class POSViewModel {
     order.customer = selectedCustomer
 
     modelContext.insert(order)
+
+    // Explicitly update relationship in-memory
+    if let session = tableSession {
+        session.orders.append(order)
+        session.isSynced = false
+        session.updatedAt = Date()
+    }
 
     // 2. Record OrderDiscount if promotion applied
     if let appliedPromotion, appliedDiscount > 0 {
@@ -432,20 +463,29 @@ final class POSViewModel {
     // 3. Add OrderItems and deduct stock for regular cart items
     for cartItem in cart {
         let orderItem = OrderItem(
+            order: order,
+            menuItem: cartItem.item,
             quantity: cartItem.quantity,
             unitPrice: cartItem.item.price,
             notes: cartItem.notes,
             status: "cooking"
         )
-        orderItem.menuItem = cartItem.item
-        orderItem.order = order
         modelContext.insert(orderItem)
+        orderItem.order = order
+        
+        // Explicitly update relationship in-memory
+        order.items.append(orderItem)
 
         // Link modifiers selected
         var modifierReferenceIds: [UUID] = []
         for mod in cartItem.selectedModifiers {
             let orderItemMod = OrderItemModifier(orderItem: orderItem, modifier: mod, price: mod.extraPrice)
             modelContext.insert(orderItemMod)
+            orderItemMod.orderItem = orderItem
+            
+            // Explicitly update relationship in-memory
+            orderItem.modifiers.append(orderItemMod)
+            
             modifierReferenceIds.append(orderItemMod.id)
         }
 
@@ -469,21 +509,32 @@ final class POSViewModel {
         )
     }
 
-    // 5. Process payment record
-    let payment = Payment(paymentMethod: selectedPaymentMethod, amount: cartTotal)
-    payment.order = order
-    modelContext.insert(payment)
+    // 5. Process payment record only when this is an actual checkout.
+    // Table-service orders are first sent to the kitchen unpaid, then paid after service.
+    if createPayment {
+        let payment = Payment(paymentMethod: paymentMethod ?? selectedPaymentMethod, amount: cartTotal)
+        payment.order = order
+        modelContext.insert(payment)
+    }
 
-    try? modelContext.save()
+    do {
+        try modelContext.save()
+    } catch {
+        let errMsg = "POSViewModel [Checkout Save Error]: \(error.localizedDescription)\nFull error: \(error)"
+        if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let fileURL = docs.appendingPathComponent("alphapos_error.txt")
+            try? errMsg.write(to: fileURL, atomically: true, encoding: .utf8)
+        }
+        print(errMsg)
+    }
     cart.removeAll()
     selectedCustomer = nil
     if tableSession == nil {
         currentQueueNumber = ""
     }
 
-    // Close dine-in table session after checkout so the table shows as vacant
-    // Without this, staff app still sees the table as occupied
-    if selectedOrderType == "dine_in", let session = tableSession {
+    // Close dine-in table session only after actual payment, not when sending to kitchen.
+    if createPayment, selectedOrderType == "dine_in", let session = tableSession {
         session.isActive = false
         session.endedAt = Date()
         session.isSynced = false
@@ -496,6 +547,13 @@ final class POSViewModel {
     // Background sync
     Task {
         await SyncEngine.shared.syncAll(modelContext: modelContext)
+    }
+
+    if dispatchPrint {
+        let capturedOrder = order
+        Task {
+            await PrintService.shared.dispatchAll(capturedOrder)
+        }
     }
 
     return order
@@ -548,14 +606,16 @@ final class POSViewModel {
 
     // Add reward item to order at price = 0 (it's free)
     let rewardOrderItem = OrderItem(
+        order: order,
+        menuItem: rewardMenuItem,
         quantity: totalRewardQty,
         unitPrice: 0.0,
         notes: "🎁 Promo reward: \(promotion.title)",
         status: "cooking"
     )
-    rewardOrderItem.menuItem = rewardMenuItem
-    rewardOrderItem.order = order
     modelContext.insert(rewardOrderItem)
+    rewardOrderItem.order = order
+    order.items.append(rewardOrderItem)
 
     // Deduct inventory for the reward item
     let rewardCartItem = CartItem(item: rewardMenuItem, selectedModifiers: [], quantity: totalRewardQty)
@@ -598,14 +658,16 @@ final class POSViewModel {
 
         // Add to order as part of the bundle (price = 0, included in bundle price)
         let bundleOrderItem = OrderItem(
+            order: order,
+            menuItem: menuItem,
             quantity: totalQty,
             unitPrice: 0.0,
             notes: "📦 Bundle component: \(promotion.title)",
             status: "cooking"
         )
-        bundleOrderItem.menuItem = menuItem
-        bundleOrderItem.order = order
         modelContext.insert(bundleOrderItem)
+        bundleOrderItem.order = order
+        order.items.append(bundleOrderItem)
 
         // Deduct inventory for this bundle component
         let syntheticCartItem = CartItem(item: menuItem, selectedModifiers: [], quantity: totalQty)
@@ -690,22 +752,30 @@ final class POSViewModel {
 
         for cartItem in cart {
             let orderItem = OrderItem(
+                order: order,
+                menuItem: cartItem.item,
                 quantity: cartItem.quantity,
                 unitPrice: cartItem.item.price,
                 notes: cartItem.notes,
                 status: "cooking"
             )
-            orderItem.menuItem = cartItem.item
-            orderItem.order = order
             modelContext.insert(orderItem)
+            orderItem.order = order
+            order.items.append(orderItem)
 
             for mod in cartItem.selectedModifiers {
                 let orderItemMod = OrderItemModifier(orderItem: orderItem, modifier: mod, price: mod.extraPrice)
                 modelContext.insert(orderItemMod)
+                orderItemMod.orderItem = orderItem
+                orderItem.modifiers.append(orderItemMod)
             }
         }
 
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            print("POSViewModel [Hold Order Save Error]: \(error.localizedDescription)")
+        }
         cart.removeAll()
         selectedCustomer = nil
         currentQueueNumber = ""
@@ -1065,6 +1135,8 @@ final class SampleDataSeeder {
                 let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
                 let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
 
+                // Use plain sha256 for seed users — verifyPIN supports legacy format.
+                // This avoids blocking the main thread with key-stretching on first launch.
                 let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: roleManager, isSynced: false, isDeleted: false, updatedAt: Date())
                 let user2 = User(id: seedUser2Id, username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: roleWaitstaff, isSynced: false, isDeleted: false, updatedAt: Date())
                 modelContext.insert(user1)
@@ -1081,6 +1153,14 @@ final class SampleDataSeeder {
     }
 
     static func autoSeedIfOutdated(modelContext: ModelContext) {
+        // M9 Safety: never auto-seed in production — only allowed in debug/developer mode
+        // This function is already guarded by developerModeEnabled in MainDashboardView,
+        // but we add a compile-time guard here as an extra layer of protection
+        #if !DEBUG
+        // In release builds, skip destructive re-seed — only seed missing roles/employees
+        seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
+        return
+        #endif
         seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
         let categories = (try? modelContext.fetch(FetchDescriptor<Category>())) ?? []
         if categories.isEmpty {
@@ -1407,6 +1487,7 @@ final class SampleDataSeeder {
                     updatedAt: orderDate
                 )
                 modelContext.insert(orderItem)
+                orderItem.order = order
                 order.items.append(orderItem)
             }
 

@@ -42,6 +42,11 @@ struct TableView: View {
     @State private var presetNameInput = ""
     
     @AppStorage("logged_in_email") private var loggedInEmail = "owner@alphapos.com"
+    /// Reads UserDefaults override first, then falls back to Config.plist LOCAL_SERVER_URL.
+    private var customerWebBaseUrl: String {
+        let ud = UserDefaults.standard.string(forKey: "dynamic_local_server_url") ?? ""
+        return ud.isEmpty ? AppConfig.shared.localServerURL : ud
+    }
     @State private var isLayoutManagerAuthorized = false
     // MARK: - Layout & View Mode
     @AppStorage("table_layout_mode") private var layoutModeRaw: String = "canvas"
@@ -217,7 +222,10 @@ struct TableView: View {
             }
             .navigationTitle("tab_tables".t)
         .apNavBar()
-        .onAppear { loadCachedFloorPlanImage() }
+        .onAppear {
+            loadCachedFloorPlanImage()
+            enforceTableLimit()
+        }
         .onChange(of: selectedFloor) { loadCachedFloorPlanImage() }
         .onChange(of: floorPlanImages) { loadCachedFloorPlanImage() }
             #if os(iOS) || os(visionOS)
@@ -262,7 +270,11 @@ struct TableView: View {
     
     @ViewBuilder
     private var floorPlanCanvas: some View {
-        let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
+        let floorTables = tables.filter { table in
+            (table.floor ?? 1) == selectedFloor && !table.isDeleted
+            && (selectedZone == "All" || table.zone == selectedZone)
+        }
+        let canvasSize = getCanvasSize()
         
         GeometryReader { viewport in
             ZStack(alignment: .topLeading) {
@@ -289,23 +301,41 @@ struct TableView: View {
                     Canvas { context, size in
                         let gridSize: CGFloat = 20
                         let path = Path { path in
-                            for x in stride(from: 0, to: 1500, by: gridSize) {
+                            for x in stride(from: 0, to: canvasSize.width, by: gridSize) {
                                 path.move(to: CGPoint(x: x, y: 0))
-                                path.addLine(to: CGPoint(x: x, y: 1200))
+                                path.addLine(to: CGPoint(x: x, y: canvasSize.height))
                             }
-                            for y in stride(from: 0, to: 1200, by: gridSize) {
+                            for y in stride(from: 0, to: canvasSize.height, by: gridSize) {
                                 path.move(to: CGPoint(x: 0, y: y))
-                                path.addLine(to: CGPoint(x: 1500, y: y))
+                                path.addLine(to: CGPoint(x: canvasSize.width, y: y))
                             }
                         }
                         let gridOpacity: CGFloat = isGridMode ? 0.25 : 0.12
                         context.stroke(path, with: .color(Color.appDivider.opacity(gridOpacity)), lineWidth: isGridMode ? 0.8 : 0.6)
                     }
-                    .frame(width: 1500, height: 1200)
+                    .frame(width: canvasSize.width, height: canvasSize.height)
                     .allowsHitTesting(false)
-                    
-                    // Render filtered tables
-                    ForEach(floorTables) { table in
+
+                    // Render filtered tables with Viewport Culling
+                    // C-9 FIX: Pre-compute visible tables outside ForEach identity.
+                    // Inline .filter{} inside ForEach runs on every parent re-render
+                    // (e.g. when any @Query table changes isSynced/updatedAt) causing
+                    // view identity thrashing for all table cards simultaneously.
+                    // Using a local let-binding forces SwiftUI to diff against a stable array.
+                    let visibleFloorTables = floorTables.filter { table in
+                        isTableVisible(
+                            table,
+                            viewportSize: viewport.size,
+                            zoomScale: zoomScale,
+                            gestureScale: gestureScale,
+                            panOffset: panOffset,
+                            activePanOffset: activePanOffset
+                        )
+                    }
+                    // C-1 FIX: Wrap each card in .equatable() so SwiftUI skips body
+                    // evaluation when InteractiveTableCardWrapper's == returns true.
+                    // This means @Query re-renders only reach cards whose data changed.
+                    ForEach(visibleFloorTables) { table in
                         InteractiveTableCardWrapper(
                             table: table,
                             isEditingLayout: isEditingLayout,
@@ -399,11 +429,10 @@ struct TableView: View {
                             onDragChanged: { val in handleDragChanged(value: val, for: table) },
                             onDragEnded: { val in handleDragEnded(value: val, for: table) }
                         )
-                        .opacity(selectedZone == "All" || table.zone == selectedZone ? 1.0 : 0.25)
-                        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: selectedZone)
+                        .equatable()
                     }
                 }
-                .frame(width: 1500, height: 1200)
+                .frame(width: canvasSize.width, height: canvasSize.height)
                 .background(Color.appSurface) // Unified workspace board background
                 .scaleEffect(zoomScale * gestureScale, anchor: .topLeading)
                 .offset(CGSize(width: panOffset.width + activePanOffset.width, height: panOffset.height + activePanOffset.height))
@@ -961,6 +990,97 @@ struct TableView: View {
         }
     }
     
+    private func getCanvasSize() -> CGSize {
+        let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
+        let maxX = floorTables.map { CGFloat($0.positionX) }.max() ?? 1500
+        let maxY = floorTables.map { CGFloat($0.positionY) }.max() ?? 1200
+        return CGSize(width: max(1500, maxX + 250), height: max(1200, maxY + 250))
+    }
+    
+    private func isTableVisible(
+        _ table: RestaurantTable,
+        viewportSize: CGSize,
+        zoomScale: CGFloat,
+        gestureScale: CGFloat,
+        panOffset: CGSize,
+        activePanOffset: CGSize
+    ) -> Bool {
+        let totalZoom = zoomScale * gestureScale
+        let totalOffsetX = panOffset.width + activePanOffset.width
+        let totalOffsetY = panOffset.height + activePanOffset.height
+        
+        let tableSize: CGFloat = 160 // Estimated bounding box size including chairs/padding
+        let halfSize = tableSize / 2
+        
+        // Calculate the table center in screen space
+        let screenCenterX = CGFloat(table.positionX) * totalZoom + totalOffsetX
+        let screenCenterY = CGFloat(table.positionY) * totalZoom + totalOffsetY
+        
+        // Bounds check
+        let minX = screenCenterX - halfSize * totalZoom
+        let maxX = screenCenterX + halfSize * totalZoom
+        let minY = screenCenterY - halfSize * totalZoom
+        let maxY = screenCenterY + halfSize * totalZoom
+        
+        return maxX >= 0 && minX <= viewportSize.width &&
+               maxY >= 0 && minY <= viewportSize.height
+    }
+    
+    private func enforceTableLimit() {
+        let descriptor = FetchDescriptor<RestaurantTable>(
+            predicate: #Predicate<RestaurantTable> { !$0.isDeleted }
+        )
+        guard let allTables = try? modelContext.fetch(descriptor) else { return }
+        
+        if allTables.count > 40 {
+            // Sort tables: real tables first, then test tables
+            let sortedTables = allTables.sorted { t1, t2 in
+                let t1IsTest = t1.tableNumber.hasPrefix("LT-") || t1.tableNumber.hasPrefix("LoadTest-")
+                let t2IsTest = t2.tableNumber.hasPrefix("LT-") || t2.tableNumber.hasPrefix("LoadTest-")
+                
+                if t1IsTest != t2IsTest {
+                    // Real tables first
+                    return !t1IsTest && t2IsTest
+                }
+                
+                // If both are test or both are real, sort by table number
+                // Try numeric sort first, fallback to alphabetical
+                let cleanT1 = t1.tableNumber.replacingOccurrences(of: "LT-", with: "").replacingOccurrences(of: "LoadTest-", with: "")
+                let cleanT2 = t2.tableNumber.replacingOccurrences(of: "LT-", with: "").replacingOccurrences(of: "LoadTest-", with: "")
+                if let n1 = Int(cleanT1),
+                   let n2 = Int(cleanT2) {
+                    return n1 < n2
+                }
+                return t1.tableNumber.localizedCompare(t2.tableNumber) == .orderedAscending
+            }
+            
+            // Keep the first 40 tables, mark the rest as deleted
+            let tablesToDelete = sortedTables.suffix(from: min(40, sortedTables.count))
+            
+            var didChange = false
+            for table in tablesToDelete {
+                // If the table was never synced to remote (isSynced == false) and has no active session,
+                // we can delete it physically. Otherwise soft delete to sync deletion.
+                let hasActiveSession = table.sessions.contains(where: { $0.isActive })
+                if !table.isSynced && !hasActiveSession {
+                    modelContext.delete(table)
+                } else {
+                    table.isDeleted = true
+                    table.isSynced = false
+                    table.updatedAt = Date()
+                }
+                didChange = true
+            }
+            
+            if didChange {
+                try? modelContext.save()
+                Task {
+                    await SyncEngine.shared.syncAll(modelContext: modelContext)
+                }
+            }
+        }
+    }
+    
     private func updateTablePosition(_ table: RestaurantTable, newPosition: CGPoint) {
         table.positionX = newPosition.x
         table.positionY = newPosition.y
@@ -982,10 +1102,11 @@ struct TableView: View {
         let newX = posX + value.translation.width / zoomScale
         let newY = posY + value.translation.height / zoomScale
         
+        let canvasSize = getCanvasSize()
         let minX: CGFloat = 16
-        let maxX: CGFloat = 1500 - tableSize.width - 16
+        let maxX: CGFloat = canvasSize.width - tableSize.width - 16
         let minY: CGFloat = 16
-        let maxY: CGFloat = 1200 - tableSize.height - 16
+        let maxY: CGFloat = canvasSize.height - tableSize.height - 16
         
         let clampedX = min(max(newX, minX), maxX)
         let clampedY = min(max(newY, minY), maxY)
@@ -1005,10 +1126,11 @@ struct TableView: View {
         let newX = posX + value.translation.width / zoomScale
         let newY = posY + value.translation.height / zoomScale
         
+        let canvasSize = getCanvasSize()
         let minX: CGFloat = 16
-        let maxX: CGFloat = 1500 - tableSize.width - 16
+        let maxX: CGFloat = canvasSize.width - tableSize.width - 16
         let minY: CGFloat = 16
-        let maxY: CGFloat = 1200 - tableSize.height - 16
+        let maxY: CGFloat = canvasSize.height - tableSize.height - 16
         
         let clampedX = min(max(newX, minX), maxX)
         let clampedY = min(max(newY, minY), maxY)
@@ -1339,11 +1461,19 @@ struct TableView: View {
         
         loadCachedFloorPlanImage()
         
-        // Rearrange tables
+        // Rearrange tables with 40-table system limit enforcement
+        let otherFloorsTablesCount = tables.filter { ($0.floor ?? 1) != selectedFloor && !$0.isDeleted }.count
+        let availableSlots = 40 - otherFloorsTablesCount
+        
         let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
         var matchedTableNumbers = Set<String>()
+        var processedCount = 0
         
         for item in items {
+            if processedCount >= availableSlots {
+                break
+            }
+            
             matchedTableNumbers.insert(item.tableNumber)
             if let existingTable = floorTables.first(where: { $0.tableNumber == item.tableNumber }) {
                 existingTable.positionX = item.positionX
@@ -1354,6 +1484,7 @@ struct TableView: View {
                 existingTable.zone = item.zone
                 existingTable.updatedAt = Date()
                 existingTable.isSynced = false
+                processedCount += 1
             } else {
                 let newTable = RestaurantTable(
                     tableNumber: item.tableNumber,
@@ -1365,6 +1496,7 @@ struct TableView: View {
                     zone: item.zone
                 )
                 modelContext.insert(newTable)
+                processedCount += 1
             }
         }
         
@@ -2299,6 +2431,13 @@ struct TableDetailView: View {
     @State private var showNoActiveShiftAlert = false
     
     @AppStorage("logged_in_email") private var loggedInEmail = "owner@alphapos.com"
+    @AppStorage("enable_web_ordering") private var enableWebOrdering = true
+    @AppStorage("offline_sync_mode") private var offlineSyncMode = false
+    /// Reads UserDefaults override first, then falls back to Config.plist LOCAL_SERVER_URL.
+    private var customerWebBaseUrl: String {
+        let ud = UserDefaults.standard.string(forKey: "dynamic_local_server_url") ?? ""
+        return ud.isEmpty ? AppConfig.shared.localServerURL : ud
+    }
     @State private var showingManagerPinSheet = false
     
     private func deleteTableWithAuth() {
@@ -2641,29 +2780,31 @@ struct TableDetailView: View {
                                     .background(Color.appSurfaceHigh)
                                     .cornerRadius(APRadius.sm)
                                     
-                                    // QR Code Link Row
-                                    HStack(spacing: 8) {
-                                        Text("https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&token=\(session.sessionToken.prefix(8))")
-                                            .font(.system(.caption2, design: .monospaced))
-                                            .foregroundColor(.appAccent)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                            .padding(8)
-                                            .background(Color.appSurfaceHigh)
-                                            .cornerRadius(APRadius.sm)
-                                        
-                                        Button(action: {
-                                            dynamicQRUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&token=\(session.sessionToken)"
-                                            showingQRPopover = true
-                                        }) {
-                                            Image(systemName: "qrcode")
-                                                .font(.subheadline)
+                                    if enableWebOrdering && !offlineSyncMode {
+                                        // QR Code Link Row
+                                        HStack(spacing: 8) {
+                                            Text("\(customerWebBaseUrl)/?table=\(table.tableNumber)&token=\(session.sessionToken.prefix(8))")
+                                                .font(.system(.caption2, design: .monospaced))
+                                                .foregroundColor(.appAccent)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
                                                 .padding(8)
-                                                .background(Color.appAccent)
-                                                .foregroundColor(.white)
+                                                .background(Color.appSurfaceHigh)
                                                 .cornerRadius(APRadius.sm)
+                                            
+                                            Button(action: {
+                                                dynamicQRUrl = "\(customerWebBaseUrl)/?table=\(table.tableNumber)&token=\(session.sessionToken)"
+                                                showingQRPopover = true
+                                            }) {
+                                                Image(systemName: "qrcode")
+                                                    .font(.subheadline)
+                                                    .padding(8)
+                                                    .background(Color.appAccent)
+                                                    .foregroundColor(.white)
+                                                    .cornerRadius(APRadius.sm)
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
                                         }
-                                        .buttonStyle(PlainButtonStyle())
                                     }
                                     
                                     // Session Action Buttons (Placed Side-by-Side to Fit Height)
@@ -3217,7 +3358,7 @@ struct InteractiveTableCard: View {
     }
 }
 
-struct InteractiveTableCardWrapper: View {
+struct InteractiveTableCardWrapper: View, Equatable {
     let table: RestaurantTable
     let isEditingLayout: Bool
     let activeDraggingTableId: UUID?
@@ -3229,6 +3370,57 @@ struct InteractiveTableCardWrapper: View {
     let onLongPress: () -> Void
     let onDragChanged: (DragGesture.Value) -> Void
     let onDragEnded: (DragGesture.Value) -> Void
+    
+    static func == (lhs: InteractiveTableCardWrapper, rhs: InteractiveTableCardWrapper) -> Bool {
+        // 1. Basic properties
+        guard lhs.table.id == rhs.table.id,
+              lhs.table.tableNumber == rhs.table.tableNumber,
+              lhs.table.status == rhs.table.status,
+              lhs.table.capacity == rhs.table.capacity,
+              lhs.table.isRound == rhs.table.isRound,
+              lhs.table.positionX == rhs.table.positionX,
+              lhs.table.positionY == rhs.table.positionY,
+              lhs.table.zone == rhs.table.zone,
+              lhs.table.floor == rhs.table.floor,
+              lhs.table.isDeleted == rhs.table.isDeleted,
+              lhs.table.joinedParent?.id == rhs.table.joinedParent?.id,
+              lhs.table.joinedChildren.count == rhs.table.joinedChildren.count,
+              lhs.isEditingLayout == rhs.isEditingLayout,
+              lhs.zoomScale == rhs.zoomScale,
+              lhs.isBouncing == rhs.isBouncing else {
+            return false
+        }
+        
+        // 2. Dragging state
+        let lhsIsDragging = lhs.activeDraggingTableId == lhs.table.id
+        let rhsIsDragging = rhs.activeDraggingTableId == rhs.table.id
+        guard lhsIsDragging == rhsIsDragging else { return false }
+        if lhsIsDragging {
+            guard lhs.dragTranslation == rhs.dragTranslation else { return false }
+        }
+        
+        // 3. Selection state
+        let lhsIsSelected = lhs.selectedTableId == lhs.table.id
+        let rhsIsSelected = rhs.selectedTableId == rhs.table.id
+        guard lhsIsSelected == rhsIsSelected else { return false }
+        
+        // 4. Item counts (badge)
+        let lhsLeader = lhs.table.joinedParent ?? lhs.table
+        let lhsActiveSession = lhsLeader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
+        let lhsItemCount = lhsActiveSession?.orders.reduce(0) { total, order in
+            total + order.items.reduce(0) { subtotal, item in subtotal + item.quantity }
+        } ?? 0
+
+        let rhsLeader = rhs.table.joinedParent ?? rhs.table
+        let rhsActiveSession = rhsLeader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
+        let rhsItemCount = rhsActiveSession?.orders.reduce(0) { total, order in
+            total + order.items.reduce(0) { subtotal, item in subtotal + item.quantity }
+        } ?? 0
+        
+        guard lhsItemCount == rhsItemCount else { return false }
+        
+        return true
+    }
     
     var body: some View {
         let isDragging = activeDraggingTableId == table.id

@@ -49,11 +49,13 @@ struct OrderItem: Codable, Identifiable, Hashable {
     var status: String         // "cooking", "ready", "served"
     let item_id: String?
     var notes: String?         // special instructions / add-on text
+    var servedBy: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name, quantity, price, status
         case item_id
         case notes
+        case servedBy = "served_by"
     }
 }
 

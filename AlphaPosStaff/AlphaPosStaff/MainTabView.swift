@@ -10,6 +10,7 @@ struct MainTabView: View {
     }
     
     @AppStorage("app_language") private var appLanguage = "en"
+    @AppStorage("logged_in_employee_name") private var loggedInEmployeeName = ""
     @State private var selectedTab = 0
     @State private var countTimer: Timer? = nil
 
@@ -45,8 +46,18 @@ struct MainTabView: View {
         .tint(.appAccent)
         .apColorScheme()
         .onAppear {
+            if let emp = loggedInEmployee {
+                loggedInEmployeeName = "\(emp.firstName) \(emp.lastName)"
+            }
             prefetchMenu()
             startCentralSyncPolling()
+        }
+        .onChange(of: loggedInEmployee) { newEmp in
+            if let emp = newEmp {
+                loggedInEmployeeName = "\(emp.firstName) \(emp.lastName)"
+            } else {
+                loggedInEmployeeName = ""
+            }
         }
         .onDisappear {
             countTimer?.invalidate()

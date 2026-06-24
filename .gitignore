@@ -2,6 +2,8 @@
 .env
 .env.*
 *.plist
+# Explicitly exclude Config.plist (contains Supabase URL, anon key, device secret)
+Config.plist
 !Config.plist.example
 !*.plist.example
 config.js
@@ -10,6 +12,7 @@ config.json
 secrets*
 
 # Database files
+backups/
 *.db
 *.db-shm
 *.db-wal

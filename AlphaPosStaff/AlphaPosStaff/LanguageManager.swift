@@ -30,6 +30,18 @@ final class LanguageManager {
             "en": "All items must be served before checkout.",
             "th": "ต้องเสิร์ฟรายการทั้งหมดก่อนชำระเงิน"
         ],
+        "checkout_blocked_unserved_title": [
+            "en": "Serve items first",
+            "th": "ต้องกดเสิร์ฟก่อน"
+        ],
+        "serve_before_checkout_action": [
+            "en": "Back to table",
+            "th": "กลับไปหน้าโต๊ะ"
+        ],
+        "finalizing_payment": [
+            "en": "Finalizing payment...",
+            "th": "กำลังบันทึกการชำระเงิน..."
+        ],
         "biometric_verified": [
             "en": "Biometric verified",
             "th": "ยืนยันชีวภาพสำเร็จ"

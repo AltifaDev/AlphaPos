@@ -624,10 +624,25 @@ struct MerchantAuthView: View {
 
         Task {
             do {
+                // บังคับ Online ก่อนทุกครั้ง — await ต้องอยู่ใน Task {} เท่านั้น
+                guard await NetworkManager.shared.isConnected() else {
+                    await MainActor.run {
+                        self.isLoading = false
+                        self.errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อล็อกอิน\nกรุณาตรวจสอบการเชื่อมต่อ"
+                    }
+                    return
+                }
                 let session = try await AuthService.shared.signIn(email: cleanEmail, password: cleanPassword)
+                let mId = UUID(uuidString: session.user.merchantId ?? "") ?? UUID()
+                
+                // Authenticate with Edge Function to obtain the JWT token and save it to the Keychain
+                try await MerchantAuthManager.shared.authenticate(
+                    merchantId: mId.uuidString.lowercased(),
+                    deviceSecret: AppConfig.shared.defaultDeviceSecret
+                )
+                
                 await MainActor.run {
                     isLoading = false
-                    let mId = UUID(uuidString: session.user.merchantId ?? "") ?? UUID()
                     activeMerchantId = mId.uuidString.lowercased()
                     loggedInEmail = cleanEmail
                     loggedInName = session.user.fullName ?? "Store Owner"
@@ -638,7 +653,7 @@ struct MerchantAuthView: View {
             } catch {
                 await MainActor.run {
                     isLoading = false
-                    errorMessage = "auth_error_invalid_credentials".t
+                    errorMessage = error.localizedDescription
                 }
             }
         }
@@ -670,14 +685,30 @@ struct MerchantAuthView: View {
         
         Task {
             do {
+                // บังคับ Online สำหรับ Sign Up — ต้องสร้างบัญชีบน server
+                guard await NetworkManager.shared.isConnected() else {
+                    await MainActor.run {
+                        isLoading = false
+                        errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อสมัครใช้งาน\nกรุณาตรวจสอบการเชื่อมต่อ"
+                    }
+                    return
+                }
                 _ = try await AuthService.shared.signUp(
                     email: email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
                     password: password,
                     userData: ["first_name": firstName, "last_name": lastName]
                 )
+                
+                let newMerchantUUID = UUID()
+                
+                // Authenticate new merchant to obtain and save JWT in Keychain
+                try await MerchantAuthManager.shared.authenticate(
+                    merchantId: newMerchantUUID.uuidString.lowercased(),
+                    deviceSecret: AppConfig.shared.defaultDeviceSecret
+                )
+                
                 await MainActor.run {
                     isLoading = false
-                    let newMerchantUUID = UUID()
                     seedNewMerchantData(merchantId: newMerchantUUID)
                     activeMerchantId = newMerchantUUID.uuidString.lowercased()
                     loggedInEmail = email
@@ -688,7 +719,7 @@ struct MerchantAuthView: View {
             } catch {
                 await MainActor.run {
                     isLoading = false
-                    errorMessage = "auth_error_signup_failed".t
+                    errorMessage = error.localizedDescription
                 }
             }
         }
@@ -698,6 +729,8 @@ struct MerchantAuthView: View {
         // Only seed if we don't have roles/employees seeded yet to avoid duplicates
         let existingEmployees = (try? modelContext.fetch(FetchDescriptor<Employee>())) ?? []
         guard existingEmployees.isEmpty else { return }
+
+
         
         // Seed default tables in memory/SwiftData container
         let t1 = RestaurantTable(id: UUID(), tableNumber: "1", capacity: 4, status: "vacant", qrCodeIdentifier: nil, positionX: 200, positionY: 200, floor: 1, isSynced: false, isDeleted: false, updatedAt: Date())
@@ -753,6 +786,8 @@ struct MerchantAuthView: View {
         let seedEmp2Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111102")!
         let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
         let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
+        // Use plain sha256 for seed users — verifyPIN supports the legacy format.
+        // Key-stretching is not needed here because seed data is demo-only.
         let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: roleManager, isSynced: false, isDeleted: false, updatedAt: Date())
         let user2 = User(id: seedUser2Id, username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: roleStaff, isSynced: false, isDeleted: false, updatedAt: Date())
         modelContext.insert(user1)

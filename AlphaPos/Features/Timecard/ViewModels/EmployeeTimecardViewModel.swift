@@ -98,8 +98,8 @@ final class EmployeeTimecardViewModel {
         let seedEmp2Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111102")!
         let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
         let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
-        let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.hashPIN("password"), pinCodeHash: SecurityHelper.hashPIN("1234"), role: managerRole, isSynced: false, isDeleted: false, updatedAt: Date())
-        let user2 = User(id: seedUser2Id, username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.hashPIN("password"), pinCodeHash: SecurityHelper.hashPIN("5678"), role: baristaRole, isSynced: false, isDeleted: false, updatedAt: Date())
+        let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: managerRole, isSynced: false, isDeleted: false, updatedAt: Date())
+        let user2 = User(id: seedUser2Id, username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: baristaRole, isSynced: false, isDeleted: false, updatedAt: Date())
         modelContext.insert(user1)
         modelContext.insert(user2)
 

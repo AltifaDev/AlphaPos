@@ -284,6 +284,12 @@ final class NetworkService {
         
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
             let errorMsg = String(data: data, encoding: .utf8) ?? "HTTP Request failed"
+            if errorMsg.contains("PGRST301") {
+                #if DEBUG
+                print("NetworkService: Detected JWT decryption error (PGRST301). Clearing token...")
+                #endif
+                MerchantAuthManager.shared.logout()
+            }
             throw NetworkError.serverError(errorMsg)
         }
         
@@ -839,31 +845,55 @@ final class NetworkService {
         // Do NOT filter by session_token here — orders created from the main POS app
         // (via SyncEngine) may have a different session_token or none at all.
         // Filtering by session_token causes those orders to be silently dropped.
+        // NOTE: We intentionally include "completed" so TableDetailView can detect
+        //       post-payment state and enter "still dining" mode if needed.
         let ordersData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
             URLQueryItem(name: "select", value: "*,order_items(*)"),
             URLQueryItem(name: "table_number", value: "eq.\(tableNumber)"),
-            URLQueryItem(name: "status", value: "neq.cancelled"),
+            URLQueryItem(name: "status", value: "in.(preparing,ready,served,completed)"),
             URLQueryItem(name: "order", value: "created_at.asc")
         ])
         let ordersArray = (try? JSONSerialization.jsonObject(with: ordersData) as? [[String: Any]]) ?? []
-        return parseOrders(ordersArray)
+        return try await parseOrders(ordersArray)
     }
     
-    private func parseOrders(_ jsonArray: [[String: Any]]) -> [Order] {
-        return jsonArray.map { dict in
-            let items = (dict["order_items"] as? [[String: Any]] ?? []).map { itemDict in
-                OrderItem(
-                    id: itemDict["id"] as? String ?? "",
-                    name: itemDict["item_name"] as? String ?? "",
-                    quantity: itemDict["quantity"] as? Int ?? 1,
-                    price: itemDict["price"] as? Double ?? 0.0,
-                    status: itemDict["status"] as? String ?? "cooking",
-                    item_id: itemDict["item_id"] as? String,
-                    notes: itemDict["notes"] as? String
-                )
+    private func parseOrderItems(_ jsonArray: [[String: Any]]) -> [OrderItem] {
+        jsonArray.map { itemDict in
+            OrderItem(
+                id: itemDict["id"] as? String ?? "",
+                name: itemDict["item_name"] as? String ?? "",
+                quantity: itemDict["quantity"] as? Int ?? 1,
+                price: itemDict["price"] as? Double ?? 0.0,
+                status: itemDict["status"] as? String ?? "cooking",
+                item_id: itemDict["item_id"] as? String,
+                notes: itemDict["notes"] as? String,
+                servedBy: itemDict["served_by"] as? String
+            )
+        }
+    }
+
+    private func fetchOrderItems(orderId: String) async throws -> [OrderItem] {
+        let itemsData = try await sendSupabaseRequest(method: "GET", endpoint: "order_items", queryItems: [
+            URLQueryItem(name: "select", value: "*"),
+            URLQueryItem(name: "order_id", value: "eq.\(orderId)"),
+            URLQueryItem(name: "order", value: "created_at.asc")
+        ])
+        let itemsArray = (try? JSONSerialization.jsonObject(with: itemsData) as? [[String: Any]]) ?? []
+        return parseOrderItems(itemsArray)
+    }
+
+    private func parseOrders(_ jsonArray: [[String: Any]]) async throws -> [Order] {
+        var parsed: [Order] = []
+
+        for dict in jsonArray {
+            let orderId = dict["id"] as? String ?? ""
+            var items = parseOrderItems(dict["order_items"] as? [[String: Any]] ?? [])
+            if items.isEmpty && !orderId.isEmpty {
+                items = try await fetchOrderItems(orderId: orderId)
             }
-            return Order(
-                id: dict["id"] as? String ?? "",
+
+            parsed.append(Order(
+                id: orderId,
                 orderNumber: dict["order_number"] as? String ?? "",
                 tableNumber: dict["table_number"] as? String ?? "",
                 total: dict["total"] as? Double ?? 0.0,
@@ -871,8 +901,10 @@ final class NetworkService {
                 createdAt: dict["created_at"] as? String ?? "",
                 items: items,
                 sessionToken: dict["session_token"] as? String
-            )
+            ))
         }
+
+        return parsed
     }
     
     func fetchAllActiveOrders() async throws -> [Order] {
@@ -883,29 +915,7 @@ final class NetworkService {
             URLQueryItem(name: "limit", value: "30")
         ])
         let jsonArray = (try? JSONSerialization.jsonObject(with: ordersData) as? [[String: Any]]) ?? []
-        return jsonArray.map { dict in
-            let items = (dict["order_items"] as? [[String: Any]] ?? []).map { itemDict in
-                OrderItem(
-                    id: itemDict["id"] as? String ?? "",
-                    name: itemDict["item_name"] as? String ?? "",
-                    quantity: itemDict["quantity"] as? Int ?? 1,
-                    price: itemDict["price"] as? Double ?? 0.0,
-                    status: itemDict["status"] as? String ?? "cooking",
-                    item_id: itemDict["item_id"] as? String,
-                    notes: itemDict["notes"] as? String
-                )
-            }
-            return Order(
-                id: dict["id"] as? String ?? "",
-                orderNumber: dict["order_number"] as? String ?? "",
-                tableNumber: dict["table_number"] as? String ?? "",
-                total: dict["total"] as? Double ?? 0.0,
-                status: dict["status"] as? String ?? "preparing",
-                createdAt: dict["created_at"] as? String ?? "",
-                items: items,
-                sessionToken: dict["session_token"] as? String
-            )
-        }
+        return try await parseOrders(jsonArray)
     }
     
     func fetchOrderById(_ orderId: String) async throws -> Order? {
@@ -915,16 +925,9 @@ final class NetworkService {
         ])
         let jsonArray = (try? JSONSerialization.jsonObject(with: ordersData) as? [[String: Any]]) ?? []
         guard let dict = jsonArray.first else { return nil }
-        
-        let items = (dict["order_items"] as? [[String: Any]] ?? []).map { itemDict in
-            OrderItem(
-                id: itemDict["id"] as? String ?? "",
-                name: itemDict["item_name"] as? String ?? "",
-                quantity: itemDict["quantity"] as? Int ?? 1,
-                price: itemDict["price"] as? Double ?? 0.0,
-                status: itemDict["status"] as? String ?? "cooking",
-                item_id: itemDict["item_id"] as? String
-            )
+        var items = parseOrderItems(dict["order_items"] as? [[String: Any]] ?? [])
+        if items.isEmpty {
+            items = try await fetchOrderItems(orderId: orderId)
         }
         return Order(
             id: dict["id"] as? String ?? "",
@@ -997,6 +1000,62 @@ final class NetworkService {
             queryItems: [URLQueryItem(name: "order_id", value: "eq.\(orderId)")],
             payload: ["status": "served"]
         )
+        await refreshAll()
+        return true
+    }
+
+    func serveOrderItem(itemId: String, orderId: String, servedBy: String? = nil) async throws -> Bool {
+        var payload: [String: Any] = ["status": "served"]
+        if let servedBy = servedBy {
+            payload["served_by"] = servedBy
+        }
+        _ = try await sendSupabaseRequest(
+            method: "PATCH",
+            endpoint: "order_items",
+            queryItems: [URLQueryItem(name: "id", value: "eq.\(itemId)")],
+            payload: payload
+        )
+
+        if let order = try await fetchOrderById(orderId) {
+            let isOrderServed = !order.items.isEmpty &&
+                order.items.allSatisfy { $0.status == "served" || $0.status == "cancelled" }
+            if isOrderServed && order.status != "served" {
+                _ = try await sendSupabaseRequest(
+                    method: "PATCH",
+                    endpoint: "orders",
+                    queryItems: [URLQueryItem(name: "id", value: "eq.\(orderId)")],
+                    payload: ["status": "served"]
+                )
+            }
+        }
+
+        await refreshAll()
+        return true
+    }
+    
+    func recallOrderItem(itemId: String, orderId: String) async throws -> Bool {
+        let payload: [String: Any] = [
+            "status": "cooking",
+            "served_by": NSNull()
+        ]
+        _ = try await sendSupabaseRequest(
+            method: "PATCH",
+            endpoint: "order_items",
+            queryItems: [URLQueryItem(name: "id", value: "eq.\(itemId)")],
+            payload: payload
+        )
+
+        if let order = try await fetchOrderById(orderId) {
+            if order.status == "served" {
+                _ = try await sendSupabaseRequest(
+                    method: "PATCH",
+                    endpoint: "orders",
+                    queryItems: [URLQueryItem(name: "id", value: "eq.\(orderId)")],
+                    payload: ["status": "preparing"]
+                )
+            }
+        }
+
         await refreshAll()
         return true
     }
@@ -1086,6 +1145,20 @@ final class NetworkService {
             "p_table_number": tableNumber
         ]
         _ = try await sendSupabaseRequest(method: "POST", endpoint: "rpc/complete_checkout", payload: payload)
+        return true
+    }
+
+    func updateTableStatus(tableNumber: String, status: String) async throws -> Bool {
+        let merchantId = self.activeMerchantId
+        guard !merchantId.isEmpty else {
+            throw NetworkError.serverError("No active merchant configured")
+        }
+        let queryItems = [
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "table_number", value: "eq.\(tableNumber)")
+        ]
+        let payload = ["status": status]
+        _ = try await sendSupabaseRequest(method: "PATCH", endpoint: "restaurant_tables", queryItems: queryItems, payload: payload)
         return true
     }
 
@@ -1448,6 +1521,25 @@ final class NetworkService {
                         self.tables[idx].sessionStartedAt = nil
                     }
                 }
+            } else if table == "order_items" {
+                guard let orderId = record["order_id"] as? String else { return }
+                
+                // Fetch the single order + items to mutate self.orders locally
+                Task {
+                    do {
+                        if let fetchedOrder = try await NetworkService.shared.fetchOrderById(orderId) {
+                            await MainActor.run {
+                                if let idx = self.orders.firstIndex(where: { $0.id == fetchedOrder.id }) {
+                                    self.orders[idx] = fetchedOrder
+                                } else {
+                                    self.orders.insert(fetchedOrder, at: 0)
+                                }
+                            }
+                        }
+                    } catch {
+                        print("NetworkService [Realtime fetchOrderById for order_items failed]: \(error)")
+                    }
+                }
             } else if table == "floor_plan_images" {
                 Task {
                     if let fetchedFloorPlans = try? await self.fetchFloorPlanImages() {
@@ -1541,6 +1633,8 @@ final class NetworkService {
         _ = try await sendSupabaseRequest(method: "DELETE", endpoint: "service_requests", queryItems: [merchantFilter])
         // 4. Reset all restaurant tables status to vacant
         _ = try await sendSupabaseRequest(method: "PATCH", endpoint: "restaurant_tables", queryItems: [merchantFilter], payload: ["status": "vacant"])
+        // 5. Delete all floor plan images
+        _ = try await sendSupabaseRequest(method: "DELETE", endpoint: "floor_plan_images", queryItems: [merchantFilter])
         return true
     }
 }

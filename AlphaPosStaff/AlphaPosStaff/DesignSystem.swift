@@ -143,8 +143,16 @@ extension Color {
     static var appAmber: Color {
         resolveColor(lightHex: "F59E0B", darkHex: "FF9F0A")
     }
+    /// PromptPay / QR purple
+    static var appPurple: Color {
+        resolveColor(lightHex: "5B5BD6", darkHex: "7C7CE8")
+    }
+    /// Success green (order ready status)
+    static var appGreen: Color {
+        resolveColor(lightHex: "22C55E", darkHex: "30D158")
+    }
 
-    // ── Text ─────────────────────────────────────────────────────────────────
+    // ── Text ──────────────────────────────────────────────────────────────
     static var textPrimary: Color {
         resolveColor(lightHex: "111827", darkHex: "FFFFFF")
     }
@@ -655,10 +663,10 @@ struct ShimmerEffect: ViewModifier {
                 GeometryReader { geo in
                     LinearGradient(
                         stops: [
-                            .init(color: .clear, location: max(0, phase - 0.3)),
-                            .init(color: .white.opacity(0.35), location: phase),
-                            .init(color: .clear, location: min(1, phase + 0.3))
-                        ],
+                            Gradient.Stop(color: .clear, location: max(0, phase - 0.3)),
+                            Gradient.Stop(color: .white.opacity(0.35), location: phase),
+                            Gradient.Stop(color: .clear, location: min(1, phase + 0.3))
+                        ].sorted { $0.location < $1.location },
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -965,10 +973,10 @@ struct GradientTitleText: View {
                 GeometryReader { geo in
                     LinearGradient(
                         stops: [
-                            .init(color: .clear, location: max(0, phase - 0.3)),
-                            .init(color: .white.opacity(0.4), location: phase),
-                            .init(color: .clear, location: min(1, phase + 0.3))
-                        ],
+                            Gradient.Stop(color: .clear, location: max(0, phase - 0.3)),
+                            Gradient.Stop(color: .white.opacity(0.4), location: phase),
+                            Gradient.Stop(color: .clear, location: min(1, phase + 0.3))
+                        ].sorted { $0.location < $1.location },
                         startPoint: .leading,
                         endPoint: .trailing
                     )

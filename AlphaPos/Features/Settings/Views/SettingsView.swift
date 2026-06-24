@@ -15,10 +15,14 @@ struct SettingsView: View {
     @EnvironmentObject private var lm: LocalizationManager
     
     // Account details
-    @AppStorage("is_logged_in") private var isLoggedIn = true
+    // N4: is_logged_in is no longer used as an auth gate (AppSessionManager uses Keychain JWT)
+    // kept as @AppStorage for backward-compat UI, but write-side must call signOutMerchant()
     @AppStorage("logged_in_email") private var loggedInEmail = "owner@alphapos.com"
     @AppStorage("logged_in_name") private var loggedInName = "Somchai Lertwit"
     @AppStorage("active_merchant_id") private var activeMerchantId = "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
+    @AppStorage("offline_sync_mode") private var offlineSyncMode = false
+    @State private var connectionText = "Checking..."
+    @State private var isCheckingConnection = false
     
     // Change password state
     @State private var showingChangePasswordSheet = false
@@ -188,6 +192,92 @@ struct SettingsView: View {
                     }
                     .padding(.horizontal)
                     
+                    // ── SECTION: CONNECTION & SYNC ───────────────────────
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(lm.languageCode == "th" ? "การเชื่อมต่อและซิงค์" : "Connectivity & Sync")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.appAccent)
+                            .tracking(1.0)
+                        
+                        VStack(spacing: 14) {
+                            Toggle(isOn: $offlineSyncMode) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Circle()
+                                            .fill(offlineSyncMode ? Color.orange : Color.appTeal)
+                                            .frame(width: 8, height: 8)
+                                        Text(offlineSyncMode 
+                                             ? (lm.languageCode == "th" ? "โหมดออฟไลน์ (ไม่ซิงค์กับคลาวด์)" : "Offline Mode (Local Only)")
+                                             : (lm.languageCode == "th" ? "โหมดออนไลน์ (ซิงค์อัตโนมัติ)" : "Online Mode (Auto-Sync)"))
+                                            .font(.body)
+                                            .foregroundColor(.textPrimary)
+                                    }
+                                    Text(offlineSyncMode 
+                                         ? (lm.languageCode == "th" ? "ข้อมูลเก็บในเครื่องเท่านั้น ไม่ซิงค์กับคลาวด์ เหมาะสำหรับช่วงอินเทอร์เน็ตมีปัญหา" : "Data saved locally. Cloud sync is disabled. Best for unstable internet.")
+                                         : (lm.languageCode == "th" ? "ข้อมูลจะซิงค์ขึ้น Supabase อัตโนมัติทุก 5 วินาที" : "Data synchronizes with Supabase automatically every 5 seconds."))
+                                        .font(.caption2)
+                                        .foregroundColor(offlineSyncMode ? .orange : .textSecondary)
+                                }
+                            }
+                            .tint(.appAccent)
+                            .onChange(of: offlineSyncMode) { _, newValue in
+                                APHaptic.trigger()
+                                UserDefaults.standard.set(true, forKey: "offline_mode_user_set")
+                                NetworkManager.shared.simulateOffline = newValue
+                                NetworkManager.shared.invalidateConnectivityCache()
+                                if newValue {
+                                    SyncEngine.shared.cancelPendingSync()
+                                } else {
+                                    NetworkManager.shared.simulateOffline = false
+                                    SyncEngine.shared.startRealtimeSync(modelContext: modelContext)
+                                    Task {
+                                        await SyncEngine.shared.syncAll(modelContext: modelContext)
+                                    }
+                                }
+                            }
+                            
+                            if !offlineSyncMode {
+                                Divider().background(Color.appDivider)
+                                
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(lm.languageCode == "th" ? "สถานะการเชื่อมต่อปัจจุบัน" : "Current Connection Status")
+                                            .font(.body)
+                                            .foregroundColor(.textPrimary)
+                                        Text(connectionText)
+                                            .font(.caption)
+                                            .foregroundColor(connectionText == "Online" || connectionText == "ออนไลน์" ? .appTeal : .appRose)
+                                    }
+                                    Spacer()
+                                    Button {
+                                        Task {
+                                            isCheckingConnection = true
+                                            NetworkManager.shared.invalidateConnectivityCache()
+                                            let connected = await NetworkManager.shared.isConnected()
+                                            connectionText = connected 
+                                                ? (lm.languageCode == "th" ? "ออนไลน์" : "Online")
+                                                : (lm.languageCode == "th" ? "ออฟไลน์" : "Offline")
+                                            isCheckingConnection = false
+                                        }
+                                    } label: {
+                                        if isCheckingConnection {
+                                            ProgressView()
+                                                .tint(.appAccent)
+                                        } else {
+                                            Image(systemName: "arrow.clockwise")
+                                                .font(.caption)
+                                                .foregroundColor(.appAccent)
+                                        }
+                                    }
+                                    .disabled(isCheckingConnection)
+                                }
+                            }
+                        }
+                        .apCard()
+                    }
+                    .padding(.horizontal)
+                    
                     // ── SECTION: SETTINGS DIRECTORY (TOPICS) ─────────────
                     VStack(alignment: .leading, spacing: 12) {
                         Text(L.Sections.general.t)
@@ -228,6 +318,12 @@ struct SettingsView: View {
             Button(lm.languageCode == "th" ? "ยกเลิก" : "Cancel", role: .cancel) { newOwnerPin = "" }
         } message: {
             Text(lm.languageCode == "th" ? "กรุณาระบุรหัส PIN 4 หลักเพื่อความปลอดภัยในการเข้าสู่ระบบโหมดเจ้าของร้าน" : "Please enter a 4-digit security PIN for accessing owner mode.")
+        }
+        .task {
+            let connected = await NetworkManager.shared.isConnected()
+            connectionText = connected 
+                ? (lm.languageCode == "th" ? "ออนไลน์" : "Online")
+                : (lm.languageCode == "th" ? "ออฟไลน์" : "Offline")
         }
     }
     
@@ -332,7 +428,6 @@ struct SettingsView: View {
     private func handleLogout() {
         APHaptic.trigger()
         withAnimation(.easeInOut(duration: 0.25)) {
-            isLoggedIn = false
             sessionManager.signOutMerchant(modelContext: modelContext)
         }
     }
@@ -348,7 +443,6 @@ struct SettingsView: View {
                 await MainActor.run {
                     clearLocalCacheSilently()
                     isDeletingAccount = false
-                    isLoggedIn = false
                     sessionManager.signOutMerchant(modelContext: modelContext)
                 }
             } catch {

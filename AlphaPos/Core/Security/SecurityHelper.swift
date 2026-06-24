@@ -2,9 +2,25 @@ import Foundation
 import CryptoKit
 
 struct SecurityHelper {
-    /// Number of PBKDF2-like iterations to slow down brute-force attacks.
-    /// OWASP 2023 recommends 600,000 iterations for SHA256.
-    private static let hashIterations = 600_000
+    nonisolated private static let hexDigits = Array("0123456789abcdef".utf8)
+
+    /// Produces the same lowercase hex as String(format:), without invoking the
+    /// formatter for every byte on every key-stretching round.
+    nonisolated private static func hexString<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 {
+        var output = [UInt8]()
+        output.reserveCapacity(64)
+        for byte in digest {
+            output.append(hexDigits[Int(byte >> 4)])
+            output.append(hexDigits[Int(byte & 0x0f)])
+        }
+        return String(decoding: output, as: UTF8.self)
+    }
+
+    /// Iterations for PIN key-stretching.
+    /// 4-digit PINs have only 10,000 possible values — 10,000 iterations adds
+    /// meaningful resistance against offline brute-force while keeping verify < 5ms
+    /// on iPhone/iPad (600K was causing ~300ms UI freeze on main thread).
+    private static let hashIterations = 10_000
     
     /// Generates a cryptographically random salt string.
     static func generateSalt(length: Int = 32) -> String {
@@ -22,18 +38,18 @@ struct SecurityHelper {
         for _ in 0..<hashIterations {
             let inputData = Data(hash.utf8)
             let digested = SHA256.hash(data: inputData)
-            hash = digested.compactMap { String(format: "%02x", $0) }.joined()
+            hash = hexString(digested)
         }
         return "iter:\(hashIterations):\(actualSalt):\(hash)"
     }
     
     /// Verifies a PIN against a stored hash string.
-    static func verifyPIN(_ pin: String, against storedHash: String) -> Bool {
+    nonisolated static func verifyPIN(_ pin: String, against storedHash: String) -> Bool {
         // Support legacy SHA256-only format (no salt, no iterations)
         if !storedHash.hasPrefix("iter:") {
             let inputData = Data(pin.utf8)
             let hashed = SHA256.hash(data: inputData)
-            let legacyHash = hashed.compactMap { String(format: "%02x", $0) }.joined()
+            let legacyHash = hexString(hashed)
             return constantTimeCompare(legacyHash, storedHash)
         }
         
@@ -48,7 +64,7 @@ struct SecurityHelper {
         for _ in 0..<iterations {
             let inputData = Data(hash.utf8)
             let digested = SHA256.hash(data: inputData)
-            hash = digested.compactMap { String(format: "%02x", $0) }.joined()
+            hash = hexString(digested)
         }
         return constantTimeCompare(hash, expectedHash)
     }
@@ -57,7 +73,7 @@ struct SecurityHelper {
     static func sha256(_ value: String) -> String {
         let inputData = Data(value.utf8)
         let hashed = SHA256.hash(data: inputData)
-        return hashed.compactMap { String(format: "%02x", $0) }.joined()
+        return hexString(hashed)
     }
     
     /// SHA256 hash with a salt (legacy).
@@ -66,7 +82,7 @@ struct SecurityHelper {
     }
     
     /// Constant-time comparison to prevent timing attacks.
-    static func constantTimeCompare(_ a: String, _ b: String) -> Bool {
+    nonisolated static func constantTimeCompare(_ a: String, _ b: String) -> Bool {
         guard a.count == b.count else { return false }
         let aBytes = [UInt8](a.utf8)
         let bBytes = [UInt8](b.utf8)

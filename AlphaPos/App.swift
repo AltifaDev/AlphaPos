@@ -3,98 +3,128 @@ import SwiftData
 import Combine
 import UIKit
 import UserNotifications
+import SQLite3
 
-final class AlphaPosAppDelegate: NSObject, UIApplicationDelegate {
+// MARK: - App Delegate
+// หมายเหตุ: ไม่ใช้ Remote APNs Push — iPad AlphaPos ใช้ InAppNotificationManager แทน
+// (ไม่ต้องการ Push Notifications capability ใน .entitlements)
+// iPhone AlphaPosStaff ยังคงใช้ Native Push ตามปกติ
+//
+// Local Notification (UNUserNotificationCenter) ใช้สำหรับ background notification
+// ไม่ใช่ Remote Push — ไม่ต้องการ Push Notifications capability เพิ่มเติม
+final class AlphaPosAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        application.registerForRemoteNotifications()
+        // ขอสิทธิ์ Local Notification (alert + sound + badge)
+        // ไม่ต้องการ Push Notifications capability — เป็นแค่ local notification
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+            #if DEBUG
+            if granted {
+                print("AlphaPos: Local notification permission granted")
+            } else {
+                print("AlphaPos: Local notification permission denied — \(error?.localizedDescription ?? "unknown")")
+            }
+            #endif
+        }
         return true
     }
 
-    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
-        Task { try? await NetworkManager.shared.registerPushDevice(token: token) }
+    // Foreground: suppress system banner — InAppNotificationManager banner ทำงานแทน
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([]) // ซ่อน system banner ตอน foreground
     }
 
-    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        #if DEBUG
-        print("APNs registration failed: \(error.localizedDescription)")
-        #endif
+    // User tap notification ตอน background → แอปเปิดขึ้นมา
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        completionHandler()
     }
 }
 
 @main
 struct AlphaPosApp: App {
     @UIApplicationDelegateAdaptor(AlphaPosAppDelegate.self) private var appDelegate
-    // Set up the SwiftData ModelContainer with all custom models
+    // Set up the SwiftData ModelContainer with versioned schema migration support.
+    // AlphaPosMigrationPlan handles upgrading from V1 (OrderItem.order: Optional)
+    // to V2 (OrderItem.order: required) by purging orphaned rows before schema upgrade.
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Role.self,
-            User.self,
-            RestaurantTable.self,
-            RestaurantWall.self,
-            TableSession.self,
-            Supplier.self,
-            InventoryItem.self,
-            InventoryTransaction.self,
-            Category.self,
-            MenuItem.self,
-            DeliveryPrice.self,
-            Recipe.self,
-            ModifierGroup.self,
-            MenuItemModifierGroup.self,
-            Modifier.self,
-            Order.self,
-            OrderItem.self,
-            OrderItemModifier.self,
-            Payment.self,
-            Employee.self,
-            EmployeeShift.self,
-            Timecard.self,
-            RegisterSession.self,
-            Branch.self,
-            PurchaseOrder.self,
-            PurchaseOrderItem.self,
-            Promotion.self,
-            PromotionBundleItem.self,
-            Printer.self,
-            PrintRoutingRule.self,
-            AuditLog.self,
-            Customer.self,
-            OrderDiscount.self,
-            OrderTaxLine.self,
-            Tip.self,
-            RefundTransaction.self,
-            CashMovement.self,
-            LoyaltyTransaction.self,
-            GiftCard.self,
-            MerchantDevice.self,
-            StaffSessionRecord.self,
-            SecurityPolicy.self,
-            FloorPlanImage.self,
-            TableLayoutPreset.self
+            Role.self, User.self, RestaurantTable.self, RestaurantWall.self,
+            TableSession.self, Supplier.self, InventoryItem.self,
+            InventoryTransaction.self, Category.self, MenuItem.self,
+            DeliveryPrice.self, Recipe.self, ModifierGroup.self,
+            MenuItemModifierGroup.self, Modifier.self, Order.self,
+            OrderItem.self, OrderItemModifier.self, Payment.self, Employee.self,
+            EmployeeShift.self, Timecard.self, RegisterSession.self,
+            Branch.self, PurchaseOrder.self, PurchaseOrderItem.self,
+            Promotion.self, PromotionBundleItem.self, Printer.self,
+            PrintRoutingRule.self, AuditLog.self, Customer.self,
+            OrderDiscount.self, OrderTaxLine.self, Tip.self,
+            RefundTransaction.self, CashMovement.self, LoyaltyTransaction.self,
+            GiftCard.self, MerchantDevice.self, StaffSessionRecord.self,
+            SecurityPolicy.self, FloorPlanImage.self, TableLayoutPreset.self,
+            CurrencyExchangeRate.self, TaxRate.self, ShiftReport.self, ReceiptTemplate.self
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         
+        // Locate default.store and run direct SQLite cleanup on orphaned OrderItems
+        // before initializing ModelContainer, allowing safe automatic migration.
+        let fm = FileManager.default
+        if let appSupportURL = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            // Ensure the Application Support directory is created first on physical devices
+            try? fm.createDirectory(at: appSupportURL, withIntermediateDirectories: true, attributes: nil)
+            
+            let storeURL = appSupportURL.appendingPathComponent("default.store")
+            if fm.fileExists(atPath: storeURL.path) {
+                var db: OpaquePointer?
+                if sqlite3_open(storeURL.path, &db) == SQLITE_OK {
+                    let deleteOrphanedItemsSQL = "DELETE FROM ZORDERITEM WHERE ZORDER IS NULL;"
+                    let deleteOrphanedModifiersSQL = "DELETE FROM ZORDERITEMMODIFIER WHERE ZORDERITEM NOT IN (SELECT Z_PK FROM ZORDERITEM) AND ZORDERITEM IS NOT NULL;"
+                    sqlite3_exec(db, deleteOrphanedItemsSQL, nil, nil, nil)
+                    sqlite3_exec(db, deleteOrphanedModifiersSQL, nil, nil, nil)
+                    sqlite3_close(db)
+                }
+            }
+        }
+
+        let modelConfiguration = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: false
+        )
+
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            return try ModelContainer(
+                for: schema,
+                configurations: [modelConfiguration]
+            )
         } catch {
-            // Only remove SwiftData store files, not all files in Application Support
-            let fm = FileManager.default
+            // Attempt recovery: remove only SwiftData store files, then retry.
             if let appSupportURL = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
                 let storeFiles = (try? fm.contentsOfDirectory(at: appSupportURL, includingPropertiesForKeys: nil)) ?? []
-                let swiftDataExtensions = [".store", ".sqlite"]
+                let swiftDataExtensions = [".store", ".store-shm", ".store-wal",
+                                           ".sqlite", ".sqlite-shm", ".sqlite-wal"]
                 for file in storeFiles {
                     if swiftDataExtensions.contains(where: { file.lastPathComponent.hasSuffix($0) }) {
                         try? fm.removeItem(at: file)
                     }
                 }
             }
-            
+
             do {
-                return try ModelContainer(for: schema, configurations: [modelConfiguration])
+                return try ModelContainer(
+                    for: schema,
+                    configurations: [modelConfiguration]
+                )
             } catch {
                 fatalError("Could not create ModelContainer after reset: \(error.localizedDescription)")
             }
@@ -107,6 +137,7 @@ struct AlphaPosApp: App {
 
     init() {
         _ = SyncEngine.shared
+        PrintService.shared.configure(modelContext: sharedModelContainer.mainContext)
     }
 
     var body: some Scene {

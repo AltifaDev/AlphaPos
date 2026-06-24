@@ -10,6 +10,7 @@ import UIKit
 final class AppSessionManager: ObservableObject {
     enum Route: Equatable {
         case splash
+        case firstLaunch   // ถามผู้ใช้ครั้งแรกว่าออฟไลน์หรือออนไลน์
         case merchantLogin
         case staffLock
         case dashboard
@@ -34,10 +35,29 @@ final class AppSessionManager: ObservableObject {
     func bootstrap(modelContext: ModelContext, force: Bool = false) async {
         guard force || !hasBootstrapped else { return }
         hasBootstrapped = true
+
+        // ── Migrate offline_sync_mode default ──────────────────────────────
+        // ตรวจว่าผ่าน first launch wizard แล้วหรือยัง
+        // ถ้ายัง → แสดง firstLaunch เพื่อให้เลือก online/offline
+        // ถ้าผ่านแล้วแต่ไม่เคย set offline_mode → reset เป็น false (online) ป้องกัน legacy bug
+        let hasCompletedFirstLaunch = UserDefaults.standard.bool(forKey: "has_completed_first_launch")
+        let userDidSetOfflineMode = UserDefaults.standard.bool(forKey: "offline_mode_user_set")
+        if !hasCompletedFirstLaunch {
+            // Install ใหม่ — ไปหน้าเลือก mode ก่อนเสมอ (แม้ JWT ยังหลือหรือไม่)
+            route = .firstLaunch
+            return
+        }
+        if !userDidSetOfflineMode {
+            // ผ่าน first launch แต่ flag เก่าค้าง → reset เป็น online (legacy migration)
+            UserDefaults.standard.set(false, forKey: "offline_sync_mode")
+        }
+        // ─────────────────────────────────────────────────────────────────
+
         route = .splash
         statusText = "Checking trusted device"
 
-        let merchantReady = MerchantAuthManager.shared.isAuthenticated || UserDefaults.standard.bool(forKey: "is_logged_in")
+        // Auth state is derived solely from Keychain JWT validity — not UserDefaults (tamper-resistant)
+        let merchantReady = MerchantAuthManager.shared.isAuthenticated
 
         if merchantReady {
             statusText = "Loading staff access"
@@ -56,13 +76,17 @@ final class AppSessionManager: ObservableObject {
     }
 
     func completeMerchantAuthentication(modelContext: ModelContext) {
-        UserDefaults.standard.set(true, forKey: "is_logged_in")
+        // Auth state persisted in Keychain by MerchantAuthManager — no UserDefaults needed
         seedStaffIfNeeded(modelContext: modelContext)
         unlockAsStoreOwner(modelContext: modelContext)
     }
 
+    /// เรียกจาก FirstLaunchModeView เมื่อ user เลือก mode แล้ว → ไปหน้า login
+    func completeFirstLaunch() {
+        route = .merchantLogin
+    }
+
     func unlockAsStoreOwner(modelContext: ModelContext) {
-        let deviceId = ensureCurrentDevice(modelContext: modelContext).id
         let sessionId = UUID()
         let ownerId = UUID(uuidString: "00000000-0000-0000-0000-000000000000") ?? UUID()
         
@@ -76,50 +100,64 @@ final class AppSessionManager: ObservableObject {
             permissions: PermissionService.permissions(forRoleName: "Store Manager"),
             startedAt: Date()
         )
-        
-        modelContext.insert(StaffSessionRecord(
-            id: sessionId,
-            deviceId: deviceId,
-            employeeId: ownerId,
-            roleName: "Store Owner"
-        ))
-        modelContext.insert(AuditLog(
-            employeeId: ownerId,
-            actionType: "store_owner_unlock",
-            details: "\(displayName) unlocked this register using merchant account"
-        ))
-        try? modelContext.save()
+
+        // Navigation is the critical path. Persist the audit/session on the next
+        // main-actor turn so SwiftUI can render the dashboard immediately.
         route = .dashboard
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            let deviceId = self.ensureCurrentDevice(modelContext: modelContext).id
+            modelContext.insert(StaffSessionRecord(
+                id: sessionId,
+                deviceId: deviceId,
+                employeeId: ownerId,
+                roleName: "Store Owner"
+            ))
+            modelContext.insert(AuditLog(
+                employeeId: ownerId,
+                actionType: "store_owner_unlock",
+                details: "\(displayName) unlocked this register using merchant account"
+            ))
+            try? modelContext.save()
+        }
     }
 
     func unlock(employee: Employee, modelContext: ModelContext) {
         let fullName = "\(employee.firstName) \(employee.lastName)".trimmingCharacters(in: .whitespacesAndNewlines)
         let role = employee.user?.role
+        let roleName = role?.name ?? "Staff"
+        let displayName = fullName.isEmpty ? employee.user?.username ?? "Staff" : fullName
+        let employeeId = employee.id
         let sessionId = UUID()
-        let deviceId = ensureCurrentDevice(modelContext: modelContext).id
 
         currentStaffSession = StaffSession(
             id: sessionId,
-            employeeId: employee.id,
-            displayName: fullName.isEmpty ? employee.user?.username ?? "Staff" : fullName,
-            roleName: role?.name ?? "Staff",
+            employeeId: employeeId,
+            displayName: displayName,
+            roleName: roleName,
             permissions: PermissionService.permissions(for: role),
             startedAt: Date()
         )
 
-        modelContext.insert(StaffSessionRecord(
-            id: sessionId,
-            deviceId: deviceId,
-            employeeId: employee.id,
-            roleName: role?.name ?? "Staff"
-        ))
-        modelContext.insert(AuditLog(
-            employeeId: employee.id,
-            actionType: "staff_unlock",
-            details: "\(fullName.isEmpty ? employee.user?.username ?? "Staff" : fullName) unlocked this register"
-        ))
-        try? modelContext.save()
         route = .dashboard
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            let deviceId = self.ensureCurrentDevice(modelContext: modelContext).id
+            modelContext.insert(StaffSessionRecord(
+                id: sessionId,
+                deviceId: deviceId,
+                employeeId: employeeId,
+                roleName: roleName
+            ))
+            modelContext.insert(AuditLog(
+                employeeId: employeeId,
+                actionType: "staff_unlock",
+                details: "\(displayName) unlocked this register"
+            ))
+            try? modelContext.save()
+        }
     }
 
     func lockStaffSession(modelContext: ModelContext? = nil, reason: String = "manual_lock") {
@@ -147,7 +185,7 @@ final class AppSessionManager: ObservableObject {
 
     func signOutMerchant(modelContext: ModelContext? = nil) {
         lockStaffSession(modelContext: modelContext, reason: "merchant_sign_out")
-        UserDefaults.standard.set(false, forKey: "is_logged_in")
+        // Keychain token cleared by MerchantAuthManager.logout() below
         MerchantAuthManager.shared.logout()
         route = .merchantLogin
     }

@@ -1,6 +1,16 @@
 import SwiftData
 import SwiftUI
 
+// MARK: - StaffLockView
+// ─────────────────────────────────────────────────────────────────────────────
+// Redesign v2:
+//   • Full-screen looping video background (staff_lock_bg.mp4)
+//   • Dark glassmorphism overlay — text always legible
+//   • Profile cards: larger, frosted glass, cinematic depth
+//   • Passcode entry: centered modal card with blur + glow
+//   • Smooth spring animations throughout
+// ─────────────────────────────────────────────────────────────────────────────
+
 struct StaffLockView: View {
     @Query(sort: \Employee.firstName) private var employees: [Employee]
     @AppStorage("logged_in_name") private var storeDisplayName = "AlphaPos Store"
@@ -15,7 +25,6 @@ struct StaffLockView: View {
     @State private var errorMessage = ""
     @State private var attempts = 0
     @State private var lockedUntil: Date?
-
     @State private var isShowingPasscode = false
     @State private var isOwnerPasscodeEntry = false
     @State private var shakeAttempts = 0
@@ -24,28 +33,45 @@ struct StaffLockView: View {
     private let passcodeLength = 4
     private let keypad = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "⌫"]
 
+    // MARK: - Body
+
     var body: some View {
         ZStack {
-            Color.appBackground.ignoresSafeArea()
-            ambientBackground
-            
+            // ── Layer 1: Video Background ──────────────────────────────────
+            LoopingVideoPlayer(videoName: "staff_lock_bg", videoExtension: "mp4")
+                .ignoresSafeArea()
+
+            // ── Layer 2: Scrim — dark gradient for legibility ──────────────
+            LinearGradient(
+                stops: [
+                    .init(color: Color.black.opacity(0.55), location: 0),
+                    .init(color: Color.black.opacity(0.30), location: 0.4),
+                    .init(color: Color.black.opacity(0.65), location: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            // ── Layer 3: Content ───────────────────────────────────────────
             Group {
                 if !isShowingPasscode {
                     profileSelectionView
                         .transition(.asymmetric(
-                            insertion: .opacity.combined(with: .scale(scale: 0.95)),
-                            removal: .opacity.combined(with: .scale(scale: 1.05))
+                            insertion: .opacity.combined(with: .scale(scale: 0.96)),
+                            removal:   .opacity.combined(with: .scale(scale: 1.04))
                         ))
                 } else {
                     passcodeEntryView
                         .transition(.asymmetric(
-                            insertion: .opacity.combined(with: .scale(scale: 1.05)),
-                            removal: .opacity.combined(with: .scale(scale: 0.95))
+                            insertion: .opacity.combined(with: .scale(scale: 1.04)),
+                            removal:   .opacity.combined(with: .scale(scale: 0.96))
                         ))
                 }
             }
+            .animation(.spring(response: 0.45, dampingFraction: 0.82), value: isShowingPasscode)
         }
-        .apColorScheme()
+        .preferredColorScheme(.dark)
         .onAppear {
             selectedEmployee = nil
             passcode = ""
@@ -55,6 +81,8 @@ struct StaffLockView: View {
         }
     }
 
+    // MARK: - Helpers
+
     private var activeEmployees: [Employee] {
         employees.filter { $0.resignedAt == nil && ($0.user?.isActive ?? true) }
     }
@@ -63,8 +91,6 @@ struct StaffLockView: View {
         if let lockedUntil, lockedUntil > Date() { return true }
         return false
     }
-
-    // MARK: - Helpers
 
     private func employeeDisplayName(_ employee: Employee) -> String {
         let name = "\(employee.firstName) \(employee.lastName)".trimmingCharacters(in: .whitespacesAndNewlines)
@@ -118,119 +144,72 @@ struct StaffLockView: View {
         }
     }
 
-    // MARK: - Subviews
-
-    private var ambientBackground: some View {
-        GeometryReader { geo in
-            ZStack {
-                Circle()
-                    .fill(Color(hex: "2D71F8").opacity(0.12))
-                    .frame(width: max(geo.size.width, geo.size.height) * 0.5)
-                    .blur(radius: 120)
-                    .offset(x: -geo.size.width * 0.2, y: -geo.size.height * 0.2)
-                
-                Circle()
-                    .fill(Color(hex: "FF416C").opacity(0.08))
-                    .frame(width: max(geo.size.width, geo.size.height) * 0.45)
-                    .blur(radius: 120)
-                    .offset(x: geo.size.width * 0.7, y: geo.size.height * 0.6)
-            }
-        }
-        .ignoresSafeArea()
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Profile Selection View
+    // ─────────────────────────────────────────────────────────────────────────
 
     private var profileSelectionView: some View {
-        VStack(spacing: 40) {
-            VStack(spacing: 8) {
-                HStack(spacing: 12) {
+        VStack(spacing: 0) {
+
+            // ── Header ─────────────────────────────────────────────────────
+            VStack(spacing: 10) {
+                // App badge
+                HStack(spacing: 10) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(APGradient.accent)
-                            .frame(width: 44, height: 44)
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color(hex: "2D71F8"), Color(hex: "6E3FFF")],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 48, height: 48)
+                            .shadow(color: Color(hex: "2D71F8").opacity(0.5), radius: 12, x: 0, y: 4)
                         Image(systemName: "bolt.fill")
-                            .font(.system(size: 22, weight: .black))
+                            .font(.system(size: 24, weight: .black))
                             .foregroundColor(.white)
                     }
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text("AlphaPos")
-                            .font(.title3.weight(.black))
-                            .foregroundColor(.textPrimary)
+                            .font(.system(size: 18, weight: .black, design: .rounded))
+                            .foregroundColor(.white)
                         Text(storeDisplayName)
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(.textSecondary)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.6))
                     }
                 }
-                .padding(.bottom, 12)
+                .padding(.top, 56)
+
+                Spacer().frame(height: 28)
 
                 Text("staff_lock_title".t)
-                    .font(.system(size: 34, weight: .black, design: .rounded))
-                    .foregroundColor(.textPrimary)
+                    .font(.system(size: 36, weight: .black, design: .rounded))
+                    .foregroundColor(.white)
+                    .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 2)
                     .multilineTextAlignment(.center)
 
                 Text("staff_lock_desc".t)
-                    .font(.subheadline)
-                    .foregroundColor(.textSecondary)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(.white.opacity(0.65))
                     .multilineTextAlignment(.center)
             }
-            .padding(.top, 40)
 
+            Spacer().frame(height: 40)
+
+            // ── Profile Grid ───────────────────────────────────────────────
             if activeEmployees.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "person.crop.circle.badge.exclamationmark")
-                        .font(.system(size: 54))
-                        .foregroundColor(.appRose)
-                    Text("No staff profiles are available on this device.")
-                        .font(.headline)
-                        .foregroundColor(.textPrimary)
-                    Text("Use the store account to finish staff setup.")
-                        .font(.subheadline)
-                        .foregroundColor(.textSecondary)
-                }
-                .padding(32)
-                .apCard()
-                .frame(maxWidth: 450)
+                emptyStateView
             } else {
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 24) {
-                        let columns = [
-                            GridItem(.adaptive(minimum: 140, maximum: 160), spacing: 28)
-                        ]
-                        
-                        LazyVGrid(columns: columns, spacing: 32) {
-                            ForEach(activeEmployees) { employee in
-                                ProfileGridButton(
-                                    employee: employee,
-                                    isSelected: selectedEmployee?.id == employee.id,
-                                    action: {
-                                        selectedEmployee = employee
-                                        passcode = ""
-                                        errorMessage = ""
-                                        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
-                                            isShowingPasscode = true
-                                        }
-                                    },
-                                    theme: themeForEmployee(employee),
-                                    initials: employeeInitials(employee),
-                                    displayName: employeeDisplayName(employee),
-                                    namespace: animationNamespace
-                                )
-                            }
-                        }
-                        .padding(.horizontal, 24)
-                    }
-                    .padding(.vertical, 8)
-                }
-                .frame(maxWidth: 760)
+                profileGrid
             }
 
             Spacer()
 
-            VStack(spacing: 16) {
+            // ── Bottom: Lockout + Store Account ───────────────────────────
+            VStack(spacing: 14) {
                 if let lockedUntil, lockedUntil > Date() {
-                    Label("Too many attempts. Try again at \(lockedUntil.formatted(date: .omitted, time: .shortened)).", systemImage: "clock.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(.appRose)
+                    lockoutBanner(until: lockedUntil)
                 }
 
                 Button {
@@ -242,144 +221,249 @@ struct StaffLockView: View {
                         isShowingPasscode = true
                     }
                 } label: {
-                    Label("use_store_account_btn".t, systemImage: "person.badge.key.fill")
-                        .font(.footnote.weight(.bold))
-                        .foregroundColor(.appAccent)
+                    HStack(spacing: 7) {
+                        Image(systemName: "person.badge.key.fill")
+                        Text("use_store_account_btn".t)
+                    }
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.white.opacity(0.75))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(
+                        Capsule()
+                            .fill(.ultraThinMaterial)
+                            .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                    )
                 }
                 .buttonStyle(.plain)
-                .padding(.bottom, 30)
+                .padding(.bottom, 36)
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 24)
     }
 
-    private var passcodeEntryView: some View {
-        VStack(spacing: 32) {
-            if isOwnerPasscodeEntry || selectedEmployee != nil {
-                let theme = isOwnerPasscodeEntry 
-                    ? ProfileTheme(colors: [Color(hex: "8A2387"), Color(hex: "E94057"), Color(hex: "F27121")], iconName: "crown.fill")
-                    : themeForEmployee(selectedEmployee!)
-                let initials = isOwnerPasscodeEntry
-                    ? String(storeDisplayName.split(separator: " ").prefix(2).compactMap { $0.first } ?? ["S", "O"]).uppercased()
-                    : employeeInitials(selectedEmployee!)
-                let displayName = isOwnerPasscodeEntry ? storeDisplayName : employeeDisplayName(selectedEmployee!)
-                let roleName = isOwnerPasscodeEntry ? "store_owner".t : (selectedEmployee!.user?.role?.name ?? "Staff")
-                
-                VStack(spacing: 14) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-                            .frame(width: 80, height: 80)
-                            .matchedGeometryEffect(
-                                id: isOwnerPasscodeEntry
-                                    ? "owner_profile"
-                                    : "employee-\(selectedEmployee!.id.uuidString)",
-                                in: animationNamespace
-                            )
-                            .shadow(color: theme.colors[0].opacity(0.3), radius: 8, x: 0, y: 4)
-                        
-                        VStack(spacing: 4) {
-                            Text(initials)
-                                .font(.system(size: 24, weight: .black, design: .rounded))
-                                .foregroundColor(.white)
-                            
-                            Image(systemName: theme.iconName)
-                                .font(.system(size: 13))
-                                .foregroundColor(.white.opacity(0.75))
+    private var profileGrid: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            let columns = [GridItem(.adaptive(minimum: 150, maximum: 175), spacing: 20)]
+            LazyVGrid(columns: columns, spacing: 22) {
+                ForEach(activeEmployees) { employee in
+                    GlassProfileButton(
+                        theme: themeForEmployee(employee),
+                        initials: employeeInitials(employee),
+                        displayName: employeeDisplayName(employee),
+                        roleName: employee.user?.role?.name ?? "Staff",
+                        namespace: animationNamespace,
+                        namespaceId: "employee-\(employee.id.uuidString)"
+                    ) {
+                        selectedEmployee = employee
+                        passcode = ""
+                        errorMessage = ""
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                            isShowingPasscode = true
                         }
                     }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                    )
-                    
-                    VStack(spacing: 4) {
-                        Text(displayName)
-                            .font(.system(size: 22, weight: .black, design: .rounded))
-                            .foregroundColor(.textPrimary)
-                            .lineLimit(1)
-                        
-                        Text(roleName)
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .foregroundColor(.textSecondary)
-                            .lineLimit(1)
-                    }
                 }
-                .padding(.top, 20)
-                
-                HStack(spacing: 16) {
-                    ForEach(0..<passcodeLength, id: \.self) { index in
-                        Circle()
-                            .fill(index < passcode.count ? Color.appAccent : Color.appSurfaceHigh)
-                            .frame(width: 16, height: 16)
-                            .scaleEffect(index < passcode.count ? 1.2 : 1.0)
-                            .overlay(
-                                Circle().stroke(Color.appBorderSubtle, lineWidth: 1)
-                            )
-                            .animation(.spring(response: 0.15, dampingFraction: 0.6), value: passcode.count)
-                    }
-                }
-                .modifier(Shake(animatableData: CGFloat(shakeAttempts)))
-                .padding(.vertical, 8)
-                
-                if !errorMessage.isEmpty {
-                    Text(errorMessage)
-                        .font(.caption.weight(.bold))
-                        .foregroundColor(.appRose)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                        .transition(.opacity.combined(with: .scale))
-                }
-                
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 20), count: 3), spacing: 16) {
-                    ForEach(keypad, id: \.self) { key in
-                        KeypadButton(key: key) {
-                            handleKey(key)
-                        }
-                        .disabled(isLockedOut)
-                    }
-                }
-                .frame(maxWidth: 320)
-                
-                Button {
-                    APHaptic.trigger()
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
-                        isShowingPasscode = false
-                    }
-                    passcode = ""
-                    errorMessage = ""
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                        if !isShowingPasscode {
-                            selectedEmployee = nil
-                            isOwnerPasscodeEntry = false
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.left.circle.fill")
-                        Text(LocalizationManager.shared.currentLanguage == .thai ? "เปลี่ยนโปรไฟล์พนักงาน" : "Switch Profile")
-                    }
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundColor(.appAccent)
-                }
-                .buttonStyle(.plain)
-                .padding(.bottom, 20)
             }
+            .padding(.horizontal, 12)
         }
-        .padding(24)
+        .frame(maxWidth: 800)
+    }
+
+    private var emptyStateView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "person.crop.circle.badge.exclamationmark")
+                .font(.system(size: 54))
+                .foregroundColor(.white.opacity(0.5))
+            Text("No staff profiles available")
+                .font(.headline)
+                .foregroundColor(.white)
+            Text("Use the store account to set up staff.")
+                .font(.subheadline)
+                .foregroundColor(.white.opacity(0.55))
+        }
+        .padding(40)
         .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color.appSurface.opacity(0.85))
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(.ultraThinMaterial)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(Color.appBorderSubtle, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
                 )
         )
-        .shadow(color: APShadow.card.color, radius: APShadow.card.radius, x: APShadow.card.x, y: APShadow.card.y)
-        .frame(maxWidth: 440)
+        .frame(maxWidth: 420)
     }
 
+    private func lockoutBanner(until: Date) -> some View {
+        Label(
+            "ล็อคชั่วคราว — ลองใหม่ได้เวลา \(until.formatted(date: .omitted, time: .shortened))",
+            systemImage: "clock.fill"
+        )
+        .font(.caption.weight(.semibold))
+        .foregroundColor(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(
+            Capsule()
+                .fill(Color.red.opacity(0.35))
+                .overlay(Capsule().stroke(Color.red.opacity(0.4), lineWidth: 1))
+        )
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Passcode Entry View
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private var passcodeEntryView: some View {
+        VStack {
+            Spacer()
+
+            VStack(spacing: 24) {
+                if isOwnerPasscodeEntry || selectedEmployee != nil {
+                    let theme: ProfileTheme = isOwnerPasscodeEntry
+                        ? ProfileTheme(
+                            colors: [Color(hex: "8A2387"), Color(hex: "E94057"), Color(hex: "F27121")],
+                            iconName: "crown.fill"
+                          )
+                        : themeForEmployee(selectedEmployee!)
+                    let initials = isOwnerPasscodeEntry
+                        ? String(storeDisplayName.split(separator: " ").prefix(2).compactMap { $0.first }).uppercased()
+                        : employeeInitials(selectedEmployee!)
+                    let displayName = isOwnerPasscodeEntry ? storeDisplayName : employeeDisplayName(selectedEmployee!)
+                    let roleName = isOwnerPasscodeEntry ? "store_owner".t : (selectedEmployee!.user?.role?.name ?? "Staff")
+
+                    // ── Profile Header ──────────────────────────────────────
+                    VStack(spacing: 12) {
+                        ZStack {
+                            // Glow halo
+                            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                                .fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .frame(width: 90, height: 90)
+                                .blur(radius: 18)
+                                .opacity(0.6)
+
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .frame(width: 88, height: 88)
+                                .matchedGeometryEffect(
+                                    id: isOwnerPasscodeEntry ? "owner_profile" : "employee-\(selectedEmployee!.id.uuidString)",
+                                    in: animationNamespace
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .stroke(Color.white.opacity(0.25), lineWidth: 1.5)
+                                )
+
+                            VStack(spacing: 5) {
+                                Text(initials)
+                                    .font(.system(size: 30, weight: .black, design: .rounded))
+                                    .foregroundColor(.white)
+                                Image(systemName: theme.iconName)
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.white.opacity(0.75))
+                            }
+                        }
+
+                        VStack(spacing: 3) {
+                            Text(displayName)
+                                .font(.system(size: 22, weight: .black, design: .rounded))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            Text(roleName)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.55))
+                        }
+                    }
+
+                    // ── PIN Dots ────────────────────────────────────────────
+                    HStack(spacing: 18) {
+                        ForEach(0..<passcodeLength, id: \.self) { index in
+                            ZStack {
+                                Circle()
+                                    .stroke(Color.white.opacity(0.25), lineWidth: 1.5)
+                                    .frame(width: 18, height: 18)
+                                Circle()
+                                    .fill(index < passcode.count
+                                          ? Color.white
+                                          : Color.white.opacity(0.08))
+                                    .frame(width: index < passcode.count ? 16 : 14,
+                                           height: index < passcode.count ? 16 : 14)
+                                    .shadow(color: Color.white.opacity(0.6), radius: index < passcode.count ? 6 : 0)
+                            }
+                            .animation(.spring(response: 0.15, dampingFraction: 0.6), value: passcode.count)
+                        }
+                    }
+                    .modifier(ShakeEffect(animatableData: CGFloat(shakeAttempts)))
+
+                    // ── Error ───────────────────────────────────────────────
+                    if !errorMessage.isEmpty {
+                        Text(errorMessage)
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(Color(hex: "FF6B6B"))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 20)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
+                    // ── Keypad ──────────────────────────────────────────────
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: 3),
+                        spacing: 14
+                    ) {
+                        ForEach(keypad, id: \.self) { key in
+                            GlassKeypadButton(key: key, disabled: isLockedOut) {
+                                handleKey(key)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: 300)
+
+                    // ── Back button ─────────────────────────────────────────
+                    Button {
+                        APHaptic.trigger()
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
+                            isShowingPasscode = false
+                        }
+                        passcode = ""
+                        errorMessage = ""
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            if !isShowingPasscode {
+                                selectedEmployee = nil
+                                isOwnerPasscodeEntry = false
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.left.circle.fill")
+                            Text(LocalizationManager.shared.currentLanguage == .thai
+                                 ? "เปลี่ยนโปรไฟล์พนักงาน"
+                                 : "Switch Profile")
+                        }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(32)
+            .frame(maxWidth: 400)
+            .background(
+                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 32, style: .continuous)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.35), radius: 30, x: 0, y: 16)
+            )
+
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // MARK: - Actions
+    // ─────────────────────────────────────────────────────────────────────────
 
     private func handleKey(_ key: String) {
         guard !isLockedOut else { return }
@@ -395,172 +479,192 @@ struct StaffLockView: View {
             guard passcode.count < passcodeLength else { return }
             passcode.append(key)
             if passcode.count == passcodeLength {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                    verifyPasscode()
-                }
+                verifyPasscode()
             }
         }
     }
 
     private func verifyPasscode() {
-        if isOwnerPasscodeEntry {
-            let ownerPin = UserDefaults.standard.string(forKey: "merchant_owner_pin") ?? "8888"
-            if passcode == ownerPin {
-                attempts = 0
-                lockedUntil = nil
-                passcode = ""
-                onUseStoreAccount()
+        let capturedPasscode = passcode
+        Task.detached(priority: .userInitiated) {
+            let isOwner = await MainActor.run { isOwnerPasscodeEntry }
+            if isOwner {
+                let ownerPin = UserDefaults.standard.string(forKey: "merchant_owner_pin") ?? "8888"
+                if capturedPasscode == ownerPin {
+                    await MainActor.run {
+                        attempts = 0; lockedUntil = nil; passcode = ""
+                        onUseStoreAccount()
+                    }
+                } else {
+                    await MainActor.run {
+                        withAnimation { shakeAttempts += 1 }
+                        attempts += 1; passcode = ""
+                        if attempts >= maxAttempts {
+                            lockedUntil = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60))
+                            errorMessage = "ล็อคชั่วคราว — พยายามหลายครั้งเกินไป"
+                        } else {
+                            errorMessage = LocalizationManager.shared.currentLanguage == .thai
+                                ? "รหัส PIN ของเจ้าของร้านไม่ถูกต้อง"
+                                : "Incorrect store owner passcode."
+                        }
+                    }
+                }
             } else {
-                withAnimation(.default) {
-                    shakeAttempts += 1
+                let (employeeId, storedHash) = await MainActor.run {
+                    (selectedEmployee?.id, selectedEmployee?.user?.pinCodeHash)
                 }
-                attempts += 1
-                passcode = ""
-                if attempts >= maxAttempts {
-                    lockedUntil = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60))
-                    errorMessage = "Too many failed attempts. This register is temporarily locked."
-                } else {
-                    errorMessage = LocalizationManager.shared.currentLanguage == .thai 
-                        ? "รหัส PIN ของเจ้าของร้านไม่ถูกต้อง" 
-                        : "Incorrect store owner passcode."
+                let verified = storedHash.map { SecurityHelper.verifyPIN(capturedPasscode, against: $0) } ?? false
+                guard let employeeId, verified else {
+                    await MainActor.run {
+                        withAnimation { shakeAttempts += 1 }
+                        attempts += 1; passcode = ""
+                        if attempts >= maxAttempts {
+                            lockedUntil = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60))
+                            errorMessage = "ล็อคชั่วคราว — พยายามหลายครั้งเกินไป"
+                        } else {
+                            errorMessage = attempts >= 3
+                                ? "รหัสผ่านผิด — โปรดติดต่อผู้จัดการ"
+                                : "รหัสผ่านไม่ถูกต้อง"
+                        }
+                    }
+                    return
+                }
+                await MainActor.run {
+                    guard let employee = employees.first(where: { $0.id == employeeId }) else {
+                        passcode = ""; errorMessage = "Staff profile unavailable."
+                        return
+                    }
+                    attempts = 0; lockedUntil = nil; passcode = ""
+                    onUnlock(employee)
                 }
             }
-        } else {
-            guard let employee = selectedEmployee,
-                  let storedHash = employee.user?.pinCodeHash,
-                  SecurityHelper.verifyPIN(passcode, against: storedHash) else {
-                withAnimation(.default) {
-                    shakeAttempts += 1
-                }
-                attempts += 1
-                passcode = ""
-                if attempts >= maxAttempts {
-                    lockedUntil = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60))
-                    errorMessage = "Too many failed attempts. This register is temporarily locked."
-                } else {
-                    errorMessage = attempts >= 3 ? "Passcode failed. Ask a manager to verify access." : "Incorrect passcode."
-                }
-                return
-            }
-
-            attempts = 0
-            lockedUntil = nil
-            passcode = ""
-            onUnlock(employee)
         }
     }
 }
 
-// MARK: - Helper Views
+// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Glass Profile Button
+// ─────────────────────────────────────────────────────────────────────────────
 
-private struct ProfileGridButton: View {
-    let employee: Employee
-    let isSelected: Bool
-    let action: () -> Void
+private struct GlassProfileButton: View {
     let theme: StaffLockView.ProfileTheme
     let initials: String
     let displayName: String
+    let roleName: String
     let namespace: Namespace.ID
-    
-    @State private var isHovered = false
+    let namespaceId: String
+    let action: () -> Void
+
     @State private var isPressed = false
-    
+
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 12) {
+            VStack(spacing: 14) {
                 ZStack {
+                    // Glow
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 110, height: 110)
+                        .blur(radius: 20)
+                        .opacity(0.5)
+
+                    // Card
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 125, height: 125)
-                        .matchedGeometryEffect(id: "employee-\(employee.id.uuidString)", in: namespace)
-                        .shadow(color: theme.colors[0].opacity(0.35), radius: isHovered ? 12 : 6, x: 0, y: isHovered ? 6 : 3)
-                    
-                    VStack(spacing: 8) {
+                        .frame(width: 110, height: 110)
+                        .matchedGeometryEffect(id: namespaceId, in: namespace)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .stroke(
+                                    LinearGradient(
+                                        colors: [Color.white.opacity(0.4), Color.white.opacity(0.05)],
+                                        startPoint: .topLeading, endPoint: .bottomTrailing
+                                    ),
+                                    lineWidth: 1.5
+                                )
+                        )
+
+                    VStack(spacing: 7) {
                         Text(initials)
-                            .font(.system(size: 38, weight: .black, design: .rounded))
+                            .font(.system(size: 36, weight: .black, design: .rounded))
                             .foregroundColor(.white)
-                            .shadow(color: .black.opacity(0.15), radius: 3, x: 0, y: 2)
-                        
+                            .shadow(color: .black.opacity(0.2), radius: 3, x: 0, y: 2)
                         Image(systemName: theme.iconName)
-                            .font(.system(size: 20, weight: .bold))
-                            .foregroundColor(.white.opacity(0.75))
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundColor(.white.opacity(0.8))
                     }
                 }
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(Color.white.opacity(isHovered ? 0.35 : 0.15), lineWidth: isHovered ? 2.5 : 1)
-                )
-                .scaleEffect(isPressed ? 0.92 : (isHovered ? 1.05 : 1.0))
-                
+                .scaleEffect(isPressed ? 0.93 : 1.0)
+                .animation(.spring(response: 0.25, dampingFraction: 0.65), value: isPressed)
+
                 VStack(spacing: 3) {
                     Text(displayName)
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundColor(.textPrimary)
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
                         .lineLimit(1)
-                    
-                    Text(employee.user?.role?.name ?? "Staff")
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundColor(.textSecondary)
+                    Text(roleName)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.55))
                         .lineLimit(1)
                 }
-                .frame(maxWidth: 135)
             }
+            .contentShape(Rectangle())
         }
-        .buttonStyle(PlainButtonStyle())
-        .onHover { hovering in
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
-                isHovered = hovering
-            }
-        }
+        .buttonStyle(.plain)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { _ in isPressed = true }
-                .onEnded { _ in isPressed = false }
+                .onChanged { _ in withAnimation { isPressed = true } }
+                .onEnded   { _ in withAnimation { isPressed = false } }
         )
     }
 }
 
-private struct KeypadButton: View {
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Glass Keypad Button
+// ─────────────────────────────────────────────────────────────────────────────
+
+private struct GlassKeypadButton: View {
     let key: String
+    let disabled: Bool
     let action: () -> Void
-    
+
     @State private var isPressed = false
-    
+
+    var isSpecial: Bool { key == "C" || key == "⌫" }
+
     var body: some View {
         Button(action: action) {
-            Text(key)
-                .font(.system(size: 26, weight: .bold, design: .rounded))
-                .foregroundColor(key == "C" || key == "⌫" ? .textSecondary : .textPrimary)
-                .frame(width: 70, height: 70)
-                .background(
-                    Circle()
-                        .fill(isPressed ? Color.appSurfaceHigh.opacity(0.8) : Color.appSurfaceHigh.opacity(0.3))
-                        .overlay(
-                            Circle()
-                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                        )
-                )
-                .scaleEffect(isPressed ? 0.90 : 1.0)
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(isSpecial
+                          ? Color.white.opacity(isPressed ? 0.06 : 0.04)
+                          : Color.white.opacity(isPressed ? 0.22 : 0.12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(Color.white.opacity(isSpecial ? 0.06 : 0.14), lineWidth: 1)
+                    )
+
+                if isSpecial {
+                    Image(systemName: key == "⌫" ? "delete.left" : "xmark")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.white.opacity(disabled ? 0.25 : 0.7))
+                } else {
+                    Text(key)
+                        .font(.system(size: 24, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white.opacity(disabled ? 0.25 : 1.0))
+                }
+            }
+            .frame(width: 84, height: 62)
         }
-        .buttonStyle(PlainButtonStyle())
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .scaleEffect(isPressed ? 0.92 : 1.0)
+        .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isPressed)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { _ in isPressed = true }
-                .onEnded { _ in isPressed = false }
+                .onChanged { _ in withAnimation { isPressed = true } }
+                .onEnded   { _ in withAnimation { isPressed = false } }
         )
-    }
-}
-
-// MARK: - Shake Animation Helper
-
-struct Shake: GeometryEffect {
-    var amount: CGFloat = 8
-    var shakesPerUnit = 3
-    var animatableData: CGFloat
-
-    func effectValue(size: CGSize) -> ProjectionTransform {
-        ProjectionTransform(CGAffineTransform(translationX:
-            amount * sin(animatableData * .pi * CGFloat(shakesPerUnit)),
-            y: 0))
     }
 }

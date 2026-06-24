@@ -29,12 +29,19 @@ struct TablesView: View {
     @State private var isAnimatedIn = false
     @State private var offlinePulse = false
     @State private var cachedFloorPlanImage: UIImage? = nil
-    
+    // Floor plan image loading state
+    @State private var isDownloadingFloorPlan = false
+    @State private var floorPlanDownloadError: String? = nil
+    @State private var cachedFloorPlanFilename: String? = nil  // track ชื่อไฟล์ที่ cache ไว้ล่าสุด
+    @State private var floorPlanDownloadTask: Task<Void, Never>? = nil  // guard ป้องกัน download ซ้ำ
+
     // Zoom & Pan gesture states for canvas mode (iPad-like interaction)
     @State private var zoomScale: CGFloat = 0.45
     @State private var gestureScale: CGFloat = 1.0
     @State private var panOffset: CGSize = .zero
     @State private var activePanOffset: CGSize = .zero
+    // H-1: Loading state while navigating to TableDetailView
+    @State private var loadingTableId: String? = nil
     @GestureState private var isZooming = false
     
     enum ViewMode: String, CaseIterable {
@@ -100,6 +107,27 @@ struct TablesView: View {
                     .background(Color.appBackground.ignoresSafeArea())
                 } else {
                     VStack(spacing: 0) {
+
+                        // H-7 FIX: Offline banner — shown when NetworkService cannot reach server
+                        if networkService.connectionError {
+                            HStack(spacing: 8) {
+                                Image(systemName: "wifi.slash")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.white)
+                                Text("ออฟไลน์ — ข้อมูลอาจไม่อัพเดต")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(.white)
+                                Spacer()
+                                Image(systemName: "exclamationmark.circle")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.appRose)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+
                     if isCompactHeight {
                         // ── Landscape iPhone: single compact toolbar row ──
                         HStack(spacing: APSpacing.sm) {
@@ -411,32 +439,7 @@ struct TablesView: View {
                             ScrollView {
                                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: APSpacing.md) {
                                     ForEach(Array(filteredTables.enumerated()), id: \.element.id) { index, table in
-                                        let directionOffset: CGFloat = (index % 2 == 0) ? -80 : 80
-                                        Group {
-                                            if table.status == "occupied" {
-                                                NavigationLink(destination: TableDetailView(table: table)) {
-                                                    tableCard(table: table)
-                                                }
-                                                .buttonStyle(.plain)
-                                            } else {
-                                                Button(action: {
-                                                    APHaptic.trigger()
-                                                    guestCount = 2
-                                                    selectedTable = table
-                                                }) {
-                                                    tableCard(table: table)
-                                                }
-                                                .buttonStyle(.plain)
-                                            }
-                                        }
-                                        .offset(x: isAnimatedIn ? 0 : directionOffset, y: isAnimatedIn ? 0 : 40)
-                                        .opacity(isAnimatedIn ? 1 : 0)
-                                        .transition(.asymmetric(
-                                            insertion: .opacity.combined(with: .scale(scale: 0.92)).combined(with: .offset(y: 20)),
-                                            removal: .opacity.combined(with: .scale(scale: 0.92))
-                                        ))
-                                        .animation(.spring(response: 0.45, dampingFraction: 0.82).delay(Double(index % 6) * 0.035), value: isAnimatedIn)
-                                        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: filteredTables)
+                                        gridCell(table: table, index: index)
                                     }
                                 }
                                 .padding(.horizontal, APSpacing.md)
@@ -465,6 +468,47 @@ struct TablesView: View {
                                                 .clipped()
                                                 .opacity(0.35)
                                                 .allowsHitTesting(false)
+                                        }
+
+                                        // Loading indicator while downloading floor plan
+                                        if isDownloadingFloorPlan {
+                                            VStack(spacing: 8) {
+                                                ProgressView()
+                                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                                    .scaleEffect(1.2)
+                                                Text("กำลังโหลดแผนผัง...")
+                                                    .font(.caption2)
+                                                    .foregroundColor(.white.opacity(0.85))
+                                            }
+                                            .padding(12)
+                                            .background(.ultraThinMaterial)
+                                            .cornerRadius(10)
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                            .allowsHitTesting(false)
+                                        }
+
+                                        // Error banner เมื่อโหลดรูปไม่สำเร็จ
+                                        if let errMsg = floorPlanDownloadError, !isDownloadingFloorPlan {
+                                            VStack(spacing: 6) {
+                                                Image(systemName: "photo.badge.exclamationmark")
+                                                    .font(.title3)
+                                                    .foregroundColor(.white.opacity(0.6))
+                                                Text(errMsg)
+                                                    .font(.caption2)
+                                                    .foregroundColor(.white.opacity(0.7))
+                                                    .multilineTextAlignment(.center)
+                                                Button("ลองอีกครั้ง") {
+                                                    floorPlanDownloadError = nil
+                                                    loadCachedFloorPlanImage()
+                                                }
+                                                .font(.caption2.bold())
+                                                .foregroundColor(.appAccent)
+                                            }
+                                            .padding(14)
+                                            .background(.ultraThinMaterial)
+                                            .cornerRadius(10)
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                            .allowsHitTesting(true)
                                         }
 
                                         CanvasBackgroundGrid()
@@ -549,6 +593,41 @@ struct TablesView: View {
                                     autoFitCanvas(viewportSize: viewport.size)
                                 }
                             }
+                            // Floating Zoom Controls
+                            .overlay(
+                                VStack(spacing: 0) {
+                                    Button(action: {
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                            zoomScale = min(2.0, zoomScale + 0.15)
+                                        }
+                                    }) {
+                                        Image(systemName: "plus")
+                                            .font(.system(size: 18, weight: .medium))
+                                            .foregroundColor(.primary)
+                                            .frame(width: 44, height: 44)
+                                    }
+                                    
+                                    Divider()
+                                        .frame(width: 30)
+                                        .background(Color.gray.opacity(0.3))
+                                    
+                                    Button(action: {
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                            zoomScale = max(0.2, zoomScale - 0.15)
+                                        }
+                                    }) {
+                                        Image(systemName: "minus")
+                                            .font(.system(size: 18, weight: .medium))
+                                            .foregroundColor(.primary)
+                                            .frame(width: 44, height: 44)
+                                    }
+                                }
+                                .background(.thinMaterial)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
+                                .padding(16),
+                                alignment: .bottomTrailing
+                            )
                             // Stretch canvas edge-to-edge, ignoring safe area on sides
                             .ignoresSafeArea(edges: isCompactHeight ? [.horizontal, .bottom] : [])
                         }
@@ -597,6 +676,11 @@ struct TablesView: View {
         }
         .onChange(of: selectedFloor) { _, newFloor in
             canvasTables = tables.filter { $0.floor == newFloor }
+            // Cancel task เก่าและ reset state เมื่อเปลี่ยน floor
+            floorPlanDownloadTask?.cancel()
+            floorPlanDownloadTask = nil
+            isDownloadingFloorPlan = false
+            floorPlanDownloadError = nil
             loadCachedFloorPlanImage()
             
             // Reset zone filter if not available on the new floor
@@ -617,34 +701,71 @@ struct TablesView: View {
     }
 
     private func loadCachedFloorPlanImage() {
-        if let floorPlan = networkService.floorPlanImages.first(where: { $0.floor == selectedFloor && !$0.isDeleted }), !floorPlan.imageFilename.isEmpty {
-            if let path = floorPlan.resolvedImagePath, let uiImage = UIImage(contentsOfFile: path) {
-                cachedFloorPlanImage = uiImage
-            } else {
-                // If not found locally, try to download from Storage
-                Task {
-                    do {
-                        let data = try await networkService.downloadFloorPlanMedia(fileName: floorPlan.imageFilename)
-                        if let downloadedImage = UIImage(data: data) {
-                            // Save locally for future use
-                            let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-                            let fileURL = docsURL.appendingPathComponent(floorPlan.imageFilename)
-                            try? data.write(to: fileURL)
-                            
-                            await MainActor.run {
-                                self.cachedFloorPlanImage = downloadedImage
-                            }
-                        }
-                    } catch {
-                        print("Failed to download floor plan image: \(error)")
-                        await MainActor.run {
-                            self.cachedFloorPlanImage = nil
-                        }
+        guard let floorPlan = networkService.floorPlanImages.first(where: { $0.floor == selectedFloor && !$0.isDeleted }),
+              !floorPlan.imageFilename.isEmpty else {
+            cachedFloorPlanImage = nil
+            cachedFloorPlanFilename = nil
+            isDownloadingFloorPlan = false
+            floorPlanDownloadError = nil
+            return
+        }
+
+        let filename = floorPlan.imageFilename
+
+        // ── Cache invalidation: ถ้า filename เปลี่ยน (รูปถูก update บน iPad) → ล้าง cache ──
+        if cachedFloorPlanFilename != filename {
+            cachedFloorPlanImage = nil
+            cachedFloorPlanFilename = nil
+            floorPlanDownloadError = nil
+        }
+
+        // ── ถ้ามีไฟล์ local ที่ filename ตรง → โหลดทันที ──
+        if let path = floorPlan.resolvedImagePath, let uiImage = UIImage(contentsOfFile: path) {
+            cachedFloorPlanImage = uiImage
+            cachedFloorPlanFilename = filename
+            isDownloadingFloorPlan = false
+            return
+        }
+
+        // ── Guard: ถ้ากำลัง download อยู่แล้ว → ไม่ spawn Task ซ้ำ ──
+        guard !isDownloadingFloorPlan else { return }
+
+        isDownloadingFloorPlan = true
+        floorPlanDownloadError = nil
+
+        // ── Cancel Task เก่า (ถ้ามี) ก่อน spawn ใหม่ ──
+        floorPlanDownloadTask?.cancel()
+        floorPlanDownloadTask = Task {
+            do {
+                let data = try await networkService.downloadFloorPlanMedia(fileName: filename)
+                guard !Task.isCancelled else { return }
+
+                if let downloadedImage = UIImage(data: data) {
+                    // บันทึกลง Documents เพื่อใช้ครั้งต่อไป
+                    let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                    let fileURL = docsURL.appendingPathComponent(filename)
+                    try? data.write(to: fileURL)
+
+                    await MainActor.run {
+                        self.cachedFloorPlanImage = downloadedImage
+                        self.cachedFloorPlanFilename = filename
+                        self.isDownloadingFloorPlan = false
+                        self.floorPlanDownloadError = nil
+                    }
+                } else {
+                    await MainActor.run {
+                        self.isDownloadingFloorPlan = false
+                        self.floorPlanDownloadError = "ไม่สามารถถอดรหัสรูปภาพได้"
                     }
                 }
+            } catch is CancellationError {
+                // Task ถูก cancel — ไม่ต้องทำอะไร
+            } catch {
+                await MainActor.run {
+                    self.isDownloadingFloorPlan = false
+                    self.floorPlanDownloadError = "โหลดแผนผังไม่สำเร็จ\nแตะเพื่อลองใหม่"
+                }
             }
-        } else {
-            cachedFloorPlanImage = nil
         }
     }
 
@@ -702,6 +823,52 @@ struct TablesView: View {
         }
     }
     
+    @ViewBuilder
+    private func gridCell(table: RestaurantTable, index: Int) -> some View {
+        let directionOffset: CGFloat = (index % 2 == 0) ? -80 : 80
+        Group {
+            if table.status == "occupied" {
+                // H-1: Show skeleton overlay while loading TableDetailView
+                NavigationLink(destination:
+                    TableDetailView(table: table)
+                        .onAppear { loadingTableId = nil }
+                ) {
+                    ZStack {
+                        tableCard(table: table)
+                        if loadingTableId == table.id {
+                            RoundedRectangle(cornerRadius: 14)
+                                .fill(Color.black.opacity(0.35))
+                            ProgressView()
+                                .tint(.white)
+                                .scaleEffect(1.2)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .simultaneousGesture(TapGesture().onEnded {
+                    loadingTableId = table.id
+                })
+            } else {
+                Button(action: {
+                    APHaptic.trigger()
+                    guestCount = 2
+                    selectedTable = table
+                }) {
+                    tableCard(table: table)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .offset(x: isAnimatedIn ? 0 : directionOffset, y: isAnimatedIn ? 0 : 40)
+        .opacity(isAnimatedIn ? 1 : 0)
+        .transition(.asymmetric(
+            insertion: .opacity.combined(with: .scale(scale: 0.92)).combined(with: .offset(y: 20)),
+            removal: .opacity.combined(with: .scale(scale: 0.92))
+        ))
+        .animation(.spring(response: 0.45, dampingFraction: 0.82).delay(Double(index % 6) * 0.035), value: isAnimatedIn)
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: filteredTables)
+    }
+
     // MARK: - Table Card Component
     
     private func tableCard(table: RestaurantTable) -> some View {

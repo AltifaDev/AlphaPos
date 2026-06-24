@@ -1,4 +1,14 @@
 import SwiftUI
+import Combine
+
+// MARK: - Mixed Payment Entry (Staff)
+struct StaffPaymentEntry: Identifiable {
+    let id = UUID()
+    var method: String = "cash"   // "cash" | "qr" | "card"
+    var amount: Double = 0.0
+    var amountText: String = ""
+    var cashReceived: Double = 0.0  // only for cash entries
+}
 
 struct BillingView: View {
     let table: RestaurantTable
@@ -6,15 +16,21 @@ struct BillingView: View {
     @AppStorage("app_language") private var appLanguage = "en"
     
     @State private var selectedMethod = "cash" // "cash", "qr", "card"
-    
+
     // Cash payment calculator states
-    @State private var cashReceived = ""
     @State private var paymentProcessing = false
     @State private var paymentSuccess = false
-    @State private var showingCashModal = false
-    @State private var showingQRModal = false
-    @State private var showingCardModal = false
-    
+
+    // H-3: Error display after failed checkout
+    @State private var checkoutErrorMessage: String? = nil
+
+    // ── Mixed Payment state ────────────────────────────────────────────
+    @State private var paymentEntries: [StaffPaymentEntry] = []
+    @State private var isMixedMode = false
+    @State private var activeEntryId: UUID? = nil    // which entry is being input
+    @State private var showingEntryModal = false
+    @State private var editingEntry: StaffPaymentEntry? = nil
+
     @Environment(\.dismiss) private var dismiss
     
     var subtotal: Double {
@@ -32,104 +48,418 @@ struct BillingView: View {
     var grandTotal: Double {
         subtotal + tax + serviceCharge
     }
+
+    private var isAllServed: Bool {
+        if !NetworkService.shared.kitchenWorkflowRequired { return true }
+        guard !orders.isEmpty else { return false }
+        return orders.allSatisfy { order in
+            order.status == "cancelled" ||
+            order.items.allSatisfy { $0.status == "served" || $0.status == "cancelled" }
+        }
+    }
     
     var body: some View {
         ZStack {
             Color.appBackground.ignoresSafeArea()
-            
+
             if paymentSuccess {
                 successState
+            } else if !isAllServed {
+                checkoutBlockedState
             } else {
                 VStack(spacing: 0) {
                     ScrollView {
                         VStack(spacing: APSpacing.md) {
-                            // Order items checklist
-                            VStack(alignment: .leading, spacing: APSpacing.sm) {
-                                Text("billing_summary".localized(for: appLanguage))
-                                    .font(.headline).fontWeight(.bold)
-                                    .foregroundColor(.textPrimary)
-                                
-                                Divider().background(Color.appDivider)
-                                
-                                ForEach(orders) { order in
-                                    ForEach(order.items) { item in
-                                        HStack {
-                                            Text("\(item.quantity)x \(item.name)")
-                                                .font(.subheadline).foregroundColor(.textPrimary)
-                                            Spacer()
-                                            Text("฿\(Int(item.price * Double(item.quantity)))")
-                                                .font(.subheadline).foregroundColor(.textSecondary)
-                                        }
-                                    }
-                                }
-                            }
-                            .apCard()
-                            
-                            // Financial Details
-                            VStack(spacing: APSpacing.sm) {
-                                receiptRow(label: "subtotal".localized(for: appLanguage), value: subtotal)
-                                receiptRow(label: "vat_label".localized(for: appLanguage), value: tax)
-                                receiptRow(label: "service_charge_label".localized(for: appLanguage), value: serviceCharge)
-                                
-                                Divider().background(Color.appDivider).padding(.vertical, 4)
-                                
-                                HStack {
-                                    Text("grand_total".localized(for: appLanguage))
-                                        .font(.title3).fontWeight(.black)
-                                        .foregroundColor(.textPrimary)
-                                    Spacer()
-                                    Text("฿\(Int(grandTotal))")
-                                        .font(.title3).fontWeight(.black)
-                                        .foregroundColor(.appRose)
-                                }
-                            }
-                            .apCard()
-                            
-                            // Payment selector
-                            VStack(alignment: .leading, spacing: APSpacing.md) {
-                                Text("select_payment_method".localized(for: appLanguage))
-                                    .font(.subheadline).fontWeight(.semibold)
-                                    .foregroundColor(.textSecondary)
-                                
-                                HStack(spacing: APSpacing.sm) {
-                                    paymentMethodButton(id: "cash", label: "cash".localized(for: appLanguage), icon: "banknote.fill")
-                                    paymentMethodButton(id: "qr", label: "PromptPay", icon: "qrcode")
-                                    paymentMethodButton(id: "card", label: "credit_card".localized(for: appLanguage), icon: "creditcard.fill")
-                                }
-                            }
-                            .padding(.vertical, APSpacing.sm)
-                            
-                            // Selected payment options
-                            if selectedMethod == "cash" {
-                                cashCalculatorView
-                            } else if selectedMethod == "qr" {
-                                qrSimulateView
-                            } else {
-                                cardSimulateView
-                            }
+                            orderSummaryCard
+                            financialSummaryCard
+                            mixedPaymentSection
                         }
                         .padding()
                     }
-                    
                 }
             }
         }
         .navigationTitle("checkout_title".localized(for: appLanguage))
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showingCashModal) {
-            StaffCashPaymentModalView(totalAmount: grandTotal) { received in
-                self.cashReceived = String(format: "%.2f", received)
-                self.processCheckout()
+        .sheet(item: $editingEntry) { entry in
+            StaffPaymentEntrySheet(
+                entry: entry,
+                remaining: remainingAfterOthers(excluding: entry.id),
+                appLanguage: appLanguage
+            ) { updated in
+                applyEntryUpdate(updated)
             }
         }
-        .sheet(isPresented: $showingQRModal) {
-            StaffQRPaymentModalView(totalAmount: grandTotal) {
-                self.processCheckout()
+        .onAppear {
+            initPaymentEntries()
+        }
+        // H-3: Show error alert when checkout fails
+        .alert("ชำระเงินไม่สำเร็จ", isPresented: Binding(
+            get: { checkoutErrorMessage != nil },
+            set: { if !$0 { checkoutErrorMessage = nil } }
+        )) {
+            Button("ลองใหม่", role: .cancel) { checkoutErrorMessage = nil }
+        } message: {
+            Text(checkoutErrorMessage ?? "")
+        }
+    }
+
+    // MARK: - Computed helpers
+
+    private var paidTotal: Double { paymentEntries.reduce(0) { $0 + $1.amount } }
+    private var remainingBalance: Double { max(0, grandTotal - paidTotal) }
+    private var isBalanced: Bool { abs(paidTotal - grandTotal) < 0.01 }
+    private var isOverpaid: Bool { paidTotal > grandTotal + 0.01 }
+
+    private func remainingAfterOthers(excluding id: UUID) -> Double {
+        let othersTotal = paymentEntries.filter { $0.id != id }.reduce(0) { $0 + $1.amount }
+        return max(0, grandTotal - othersTotal)
+    }
+
+    private func methodLabel(_ m: String) -> String {
+        switch m {
+        case "cash": return "เงินสด"
+        case "qr":   return "QR"
+        case "card": return "บัตร"
+        default:     return m
+        }
+    }
+    private func methodIcon(_ m: String) -> String {
+        switch m {
+        case "cash": return "banknote.fill"
+        case "qr":   return "qrcode"
+        case "card": return "creditcard.fill"
+        default:     return "dollarsign.circle"
+        }
+    }
+    private func methodColor(_ m: String) -> Color {
+        switch m {
+        case "cash": return .appTeal
+        case "qr":   return Color.appPurple
+        case "card": return Color.appRose
+        default:     return .appAccent
+        }
+    }
+
+    // MARK: - Init payment entries
+
+    private func initPaymentEntries() {
+        guard paymentEntries.isEmpty else { return }
+        paymentEntries = [StaffPaymentEntry(method: "cash", amount: grandTotal,
+                                            amountText: String(format: "%.2f", grandTotal))]
+    }
+
+    // MARK: - Order Summary Card
+
+    private var orderSummaryCard: some View {
+        VStack(alignment: .leading, spacing: APSpacing.sm) {
+            Text("billing_summary".localized(for: appLanguage))
+                .font(.headline).fontWeight(.bold).foregroundColor(.textPrimary)
+            Divider().background(Color.appDivider)
+            ForEach(orders) { order in
+                ForEach(order.items) { item in
+                    HStack {
+                        Text("\(item.quantity)x \(item.name)")
+                            .font(.subheadline).foregroundColor(.textPrimary)
+                        Spacer()
+                        Text("฿\(Int(item.price * Double(item.quantity)))")
+                            .font(.subheadline).foregroundColor(.textSecondary)
+                    }
+                }
             }
         }
-        .sheet(isPresented: $showingCardModal) {
-            StaffCreditCardPaymentModalView(totalAmount: grandTotal) {
-                self.processCheckout()
+        .apCard()
+    }
+
+    // MARK: - Financial Summary Card
+
+    private var financialSummaryCard: some View {
+        VStack(spacing: APSpacing.sm) {
+            receiptRow(label: "subtotal".localized(for: appLanguage), value: subtotal)
+            receiptRow(label: "vat_label".localized(for: appLanguage), value: tax)
+            receiptRow(label: "service_charge_label".localized(for: appLanguage), value: serviceCharge)
+            Divider().background(Color.appDivider).padding(.vertical, 4)
+            HStack {
+                Text("grand_total".localized(for: appLanguage))
+                    .font(.title3).fontWeight(.black).foregroundColor(.textPrimary)
+                Spacer()
+                Text("฿\(String(format: "%.2f", grandTotal))")
+                    .font(.title3).fontWeight(.black).foregroundColor(.appRose)
+            }
+        }
+        .apCard()
+    }
+
+    // MARK: - Mixed Payment Section
+
+    private var mixedPaymentSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+
+            HStack {
+                Text("ช่องทางการชำระเงิน")
+                    .font(.subheadline).fontWeight(.semibold).foregroundColor(.textSecondary)
+                Spacer()
+                if isBalanced {
+                    Label("ครบแล้ว", systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.bold)).foregroundColor(.appTeal)
+                } else if paidTotal > 0 {
+                    Text("คงเหลือ ฿\(String(format: "%.2f", remainingBalance))")
+                        .font(.caption.weight(.bold)).foregroundColor(.appRose)
+                }
+            }
+
+            if paymentEntries.count > 1 || (paidTotal > 0 && !isBalanced) {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 4).fill(Color.appSurfaceHigh)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(isOverpaid ? Color.appRose : isBalanced ? Color.appTeal : Color.appAccent)
+                            .frame(width: geo.size.width * min(1, CGFloat(grandTotal > 0 ? paidTotal / grandTotal : 0)))
+                            .animation(.spring(response: 0.45), value: paidTotal)
+                    }
+                }
+                .frame(height: 6)
+            }
+
+            ForEach(Array(paymentEntries.enumerated()), id: \.element.id) { idx, entry in
+                paymentEntryCard(entry: entry, index: idx)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal:   .scale(scale: 0.92).combined(with: .opacity)
+                    ))
+            }
+            .animation(.spring(response: 0.35, dampingFraction: 0.78), value: paymentEntries.count)
+
+            if paymentEntries.count < 3 && !isBalanced {
+                Button {
+                    APHaptic.trigger()
+                    addPaymentEntry()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus.circle.fill").font(.system(size: 15))
+                        Text("+ เพิ่มช่องทางการชำระเงิน")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .foregroundColor(.appAccent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                            .stroke(Color.appAccent.opacity(0.45),
+                                    style: StrokeStyle(lineWidth: 1.5, dash: [8, 4]))
+                    )
+                }
+            }
+
+            Button {
+                APHaptic.trigger()
+                processMixedCheckout()
+            } label: {
+                ZStack {
+                    if paymentProcessing {
+                        ProgressView().tint(.white)
+                    } else {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 16, weight: .bold))
+                            Text(isBalanced
+                                 ? "ยืนยันชำระเงิน  ฿\(String(format: "%.2f", grandTotal))"
+                                 : "ยืนยันชำระเงิน (ขาด ฿\(String(format: "%.2f", remainingBalance)))")
+                                .font(.system(size: 16, weight: .black))
+                        }
+                    }
+                }
+                .foregroundColor(isBalanced && !paymentProcessing ? .white : .textSecondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(
+                    Group {
+                        if isBalanced && !paymentProcessing {
+                            LinearGradient(colors: [Color.appTeal, Color.appTeal],
+                                           startPoint: .leading, endPoint: .trailing)
+                                .cornerRadius(APRadius.md)
+                        } else {
+                            Color.appSurfaceHigh
+                                .cornerRadius(APRadius.md)
+                        }
+                    }
+                )
+                .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
+            }
+            .disabled(!isBalanced || paymentProcessing)
+            .animation(.spring(response: 0.3), value: isBalanced)
+        }
+        .padding()
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
+        .shadow(color: .black.opacity(0.05), radius: 6, x: 0, y: 2)
+    }
+
+    // MARK: - Payment Entry Card
+
+    private func paymentEntryCard(entry: StaffPaymentEntry, index: Int) -> some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text("ช่องทางที่ \(index + 1)")
+                    .font(.caption.weight(.bold)).foregroundColor(.textSecondary)
+                Spacer()
+                if paymentEntries.count > 1 {
+                    Button {
+                        withAnimation(.spring(response: 0.3)) {
+                            paymentEntries.removeAll { $0.id == entry.id }
+                            if let lastIdx = paymentEntries.indices.last {
+                                let others = paymentEntries.dropLast().reduce(0) { $0 + $1.amount }
+                                let remain = max(0, grandTotal - others)
+                                paymentEntries[lastIdx].amount = remain
+                                paymentEntries[lastIdx].amountText = String(format: "%.2f", remain)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .foregroundColor(.appRose).font(.system(size: 16))
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                ForEach(["cash", "qr", "card"], id: \.self) { method in
+                    let isSelected = entry.method == method
+                    Button {
+                        APHaptic.trigger()
+                        updateEntryMethod(id: entry.id, method: method)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: methodIcon(method)).font(.system(size: 12))
+                            Text(methodLabel(method)).font(.system(size: 12, weight: .bold))
+                        }
+                        .foregroundColor(isSelected ? .white : .textSecondary)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(isSelected ? methodColor(method) : Color.appSurfaceHigh)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(isSelected ? Color.clear : Color.appBorderSubtle, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
+
+            Button {
+                editingEntry = entry
+            } label: {
+                HStack {
+                    Image(systemName: methodIcon(entry.method))
+                        .foregroundColor(methodColor(entry.method)).font(.system(size: 18))
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("฿\(String(format: "%.2f", entry.amount))")
+                            .font(.system(size: 26, weight: .black, design: .rounded))
+                            .foregroundColor(entry.amount > 0 ? methodColor(entry.method) : .textSecondary)
+                        if entry.method == "cash" && entry.cashReceived > 0 {
+                            Text("รับมา ฿\(String(format: "%.2f", entry.cashReceived)) · ทอน ฿\(String(format: "%.2f", entry.cashReceived - entry.amount))")
+                                .font(.caption).foregroundColor(.textSecondary)
+                        }
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold)).foregroundColor(.textSecondary)
+                }
+                .padding(12)
+                .background(Color.appSurfaceHigh)
+                .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(APSpacing.md)
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
+        .overlay(
+            RoundedRectangle(cornerRadius: APRadius.md)
+                .stroke(entry.amount > 0 ? methodColor(entry.method).opacity(0.25) : Color.appBorderSubtle, lineWidth: 1)
+        )
+    }
+
+    // MARK: - Entry management
+
+    private func addPaymentEntry() {
+        let remaining = remainingBalance
+        paymentEntries.append(StaffPaymentEntry(
+            method: "qr",
+            amount: remaining,
+            amountText: remaining > 0 ? String(format: "%.2f", remaining) : ""
+        ))
+    }
+
+    private func updateEntryMethod(id: UUID, method: String) {
+        guard let idx = paymentEntries.firstIndex(where: { $0.id == id }) else { return }
+        paymentEntries[idx].method = method
+    }
+
+    private func applyEntryUpdate(_ updated: StaffPaymentEntry) {
+        guard let idx = paymentEntries.firstIndex(where: { $0.id == updated.id }) else { return }
+        paymentEntries[idx] = updated
+        editingEntry = nil
+    }
+
+    // MARK: - Mixed Checkout
+
+    private func processMixedCheckout() {
+        // C-8 FIX: guard against double-tap — paymentProcessing acts as mutex
+        guard isAllServed, isBalanced, !paymentProcessing else { return }
+        paymentProcessing = true
+        checkoutErrorMessage = nil
+
+        Task {
+            do {
+                let activeOrders  = orders.filter { $0.status != "cancelled" }
+                let totalOrderAmt = activeOrders.map { $0.total }.reduce(0, +)
+                let primaryEntry  = paymentEntries[0]
+
+                // Upload secondary entries
+                for entry in paymentEntries.dropFirst() {
+                    guard entry.amount > 0 else { continue }
+                    _ = try await NetworkService.shared.uploadPayment(
+                        orderId: activeOrders.last?.id ?? "",
+                        amount:  entry.amount,
+                        method:  entry.method
+                    )
+                }
+
+                // Primary entry via completeCheckout RPC
+                for (idx, order) in activeOrders.enumerated() {
+                    let isLast     = idx == activeOrders.count - 1
+                    let proportion = totalOrderAmt > 0 ? order.total / totalOrderAmt : 1.0
+                    let orderAmt   = primaryEntry.amount * proportion
+
+                    if isLast {
+                        _ = try await NetworkService.shared.completeCheckout(
+                            paymentId:   UUID(),
+                            orderId:     order.id,
+                            amount:      orderAmt,
+                            method:      primaryEntry.method,
+                            tableNumber: table.tableNumber
+                        )
+                    } else {
+                        _ = try await NetworkService.shared.uploadPayment(
+                            orderId: order.id,
+                            amount:  orderAmt,
+                            method:  primaryEntry.method
+                        )
+                    }
+                }
+
+                await MainActor.run {
+                    paymentProcessing = false
+                    paymentSuccess     = true
+                    APHaptic.trigger()
+                    NotificationCenter.default.post(name: .checkoutCompleted, object: table.tableNumber)
+                }
+                await NetworkService.shared.refreshAll()
+
+            } catch {
+                // H-3 FIX: Show meaningful error to user instead of silently resetting
+                await MainActor.run {
+                    paymentProcessing = false
+                    checkoutErrorMessage = "เกิดข้อผิดพลาด: \(error.localizedDescription)\n\nกรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่"
+                }
             }
         }
     }
@@ -143,169 +473,38 @@ struct BillingView: View {
                 .font(.subheadline).foregroundColor(.textPrimary)
         }
     }
-    
-    private func paymentMethodButton(id: String, label: String, icon: String) -> some View {
-        let selected = selectedMethod == id
-        return Button(action: {
-            APHaptic.trigger()
-            selectedMethod = id
-            if id == "cash" {
-                showingCashModal = true
-            } else if id == "qr" {
-                showingQRModal = true
-            } else if id == "card" {
-                showingCardModal = true
+
+    // MARK: - Transaction success state
+
+    // MARK: - Checkout Blocked State
+
+    private var checkoutBlockedState: some View {
+        VStack(spacing: APSpacing.lg) {
+            Spacer()
+
+            ZStack {
+                Circle()
+                    .fill(Color.appAmber.opacity(0.14))
+                    .frame(width: 96, height: 96)
+                Image(systemName: "fork.knife.circle.fill")
+                    .font(.system(size: 62))
+                    .foregroundColor(.appAmber)
             }
-        }) {
-            VStack(spacing: APSpacing.sm) {
-                Image(systemName: icon)
-                    .font(.title2)
-                Text(label)
-                    .font(.caption).fontWeight(.bold)
+
+            VStack(spacing: APSpacing.xs) {
+                Text("checkout_blocked_unserved_title".localized(for: appLanguage))
+                    .font(.title3).fontWeight(.black).foregroundColor(.textPrimary)
+                    .multilineTextAlignment(.center)
+                Text("all_items_served_before_checkout".localized(for: appLanguage))
+                    .font(.subheadline).foregroundColor(.textSecondary)
+                    .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, APSpacing.md)
-            .background(selected ? APGradient.accent : LinearGradient(colors: [Color.appSurface], startPoint: .top, endPoint: .bottom))
-            .foregroundColor(selected ? .white : .textSecondary)
-            .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
-            .overlay(
-                RoundedRectangle(cornerRadius: APRadius.md)
-                    .stroke(selected ? Color.clear : Color.appBorderSubtle, lineWidth: 1)
-            )
+
+            Spacer()
         }
-        .buttonStyle(.plain)
-    }
-    
-    // MARK: - Cash Calculator
-    
-    private var cashCalculatorView: some View {
-        VStack(spacing: APSpacing.md) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("cash_payment".localized(for: appLanguage))
-                        .font(.headline).fontWeight(.bold)
-                        .foregroundColor(.textPrimary)
-                    Text("cash_payment_sub".localized(for: appLanguage))
-                        .font(.caption).foregroundColor(.textSecondary)
-                }
-                Spacer()
-                Image(systemName: "banknote.fill")
-                    .font(.title)
-                    .foregroundColor(.appTeal)
-            }
-            .padding()
-            .apCard()
-            
-            Button(action: {
-                showingCashModal = true
-            }) {
-                Label("open_cash_terminal".localized(for: appLanguage), systemImage: "keyboard")
-                    .apGradientButton(gradient: APGradient.accent)
-            }
-        }
-    }
-    
-    // MARK: - QR Simulation
-    
-    private var qrSimulateView: some View {
-        VStack(spacing: APSpacing.md) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("PromptPay QR")
-                        .font(.headline).fontWeight(.bold)
-                        .foregroundColor(.textPrimary)
-                    Text("scan_promptpay_sub".localized(for: appLanguage))
-                        .font(.caption).foregroundColor(.textSecondary)
-                }
-                Spacer()
-                Image(systemName: "qrcode")
-                    .font(.title)
-                    .foregroundColor(.appRose)
-            }
-            .padding()
-            .apCard()
-            
-            Button(action: {
-                showingQRModal = true
-            }) {
-                Label("Open QR Terminal", systemImage: "qrcode")
-                    .apGradientButton(gradient: APGradient.accent)
-            }
-        }
-    }
-    
-    // MARK: - Card Simulation
-    
-    private var cardSimulateView: some View {
-        VStack(spacing: APSpacing.md) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("credit_card".localized(for: appLanguage))
-                        .font(.headline).fontWeight(.bold)
-                        .foregroundColor(.textPrimary)
-                    Text("emv_simulator".localized(for: appLanguage))
-                        .font(.caption).foregroundColor(.textSecondary)
-                }
-                Spacer()
-                Image(systemName: "creditcard.fill")
-                    .font(.title)
-                    .foregroundColor(.appAccent)
-            }
-            .padding()
-            .apCard()
-            
-            Button(action: {
-                showingCardModal = true
-            }) {
-                Label("Open Card Reader", systemImage: "creditcard")
-                    .apGradientButton(gradient: APGradient.accent)
-            }
-        }
-    }
-    
-    // MARK: - Checkout flow logic
-    
-    private func processCheckout() {
-        paymentProcessing = true
-        
-        Task {
-            do {
-                // Submit payments for orders, using transactional RPC for the last one to close session atomically
-                for (index, order) in orders.enumerated() {
-                    let isLast = index == orders.count - 1
-                    if isLast {
-                        _ = try await NetworkService.shared.completeCheckout(
-                            paymentId: UUID(),
-                            orderId: order.id,
-                            amount: order.total,
-                            method: selectedMethod,
-                            tableNumber: table.tableNumber
-                        )
-                    } else {
-                        _ = try await NetworkService.shared.uploadPayment(
-                            orderId: order.id,
-                            amount: order.total,
-                            method: selectedMethod
-                        )
-                    }
-                }
-                
-                await MainActor.run {
-                    paymentProcessing = false
-                    paymentSuccess = true
-                    APHaptic.trigger()
-                }
-            } catch {
-                await MainActor.run {
-                    paymentProcessing = false
-                }
-            }
-        }
+        .padding(APSpacing.lg)
     }
 
-    
-    // MARK: - Transaction success state
-    
     private var successState: some View {
         VStack(spacing: APSpacing.xl) {
             Spacer()
@@ -354,6 +553,243 @@ struct BillingView: View {
             .padding()
         }
     }
+}
+
+// MARK: - Staff Payment Entry Sheet (Mixed Payment Input)
+// ─────────────────────────────────────────────────────────────────────────────
+// Opens as a .sheet for each payment entry — handles cash calc, QR confirm,
+// and card confirm. Returns an updated StaffPaymentEntry via onConfirm.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct StaffPaymentEntrySheet: View {
+    let entry:       StaffPaymentEntry
+    let remaining:   Double          // max allowed for this entry
+    let appLanguage: String
+    let onConfirm:   (StaffPaymentEntry) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var amountText:    String = ""
+    @State private var cashReceivedText: String = ""
+    @State private var localEntry:    StaffPaymentEntry
+    // H-6: FocusState for keyboard dismissal via Done toolbar button
+    @FocusState private var amountFieldFocused: Bool
+    @FocusState private var cashFieldFocused:   Bool
+
+    init(entry: StaffPaymentEntry, remaining: Double, appLanguage: String,
+         onConfirm: @escaping (StaffPaymentEntry) -> Void) {
+        self.entry       = entry
+        self.remaining   = remaining
+        self.appLanguage = appLanguage
+        self.onConfirm   = onConfirm
+        _localEntry      = State(initialValue: entry)
+        _amountText      = State(initialValue: entry.amount > 0 ? String(format: "%.2f", entry.amount) : "")
+        _cashReceivedText = State(initialValue: entry.cashReceived > 0 ? String(format: "%.2f", entry.cashReceived) : "")
+    }
+
+    private var parsedAmount: Double { Double(amountText) ?? 0 }
+    private var parsedCashReceived: Double { Double(cashReceivedText) ?? 0 }
+    private var change: Double { max(0, parsedCashReceived - parsedAmount) }
+    private var isOverAmount: Bool { parsedAmount > remaining + 0.01 }
+    private var canConfirm: Bool {
+        parsedAmount > 0 && !isOverAmount &&
+        (localEntry.method != "cash" || parsedCashReceived >= parsedAmount)
+    }
+
+    private func methodColor(_ m: String) -> Color {
+        switch m {
+        case "cash": return .appTeal
+        case "qr":   return Color.appPurple
+        case "card": return Color.appRose
+        default:     return .appAccent
+        }
+    }
+    private func methodIcon(_ m: String) -> String {
+        switch m {
+        case "cash": return "banknote.fill"
+        case "qr":   return "qrcode"
+        case "card": return "creditcard.fill"
+        default:     return "dollarsign.circle"
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.appBackground.ignoresSafeArea()
+
+                ScrollView {
+                    VStack(spacing: 18) {
+
+                        // Remaining balance chip
+                        HStack {
+                            Text("ยอดที่ต้องชำระในช่องทางนี้")
+                                .font(.caption).foregroundColor(.textSecondary)
+                            Spacer()
+                            Text("฿\(String(format: "%.2f", remaining))")
+                                .font(.caption.weight(.black))
+                                .foregroundColor(methodColor(localEntry.method))
+                        }
+                        .padding(10)
+                        .background(methodColor(localEntry.method).opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                        // Amount input
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("จำนวนเงินในช่องทางนี้")
+                                .font(.subheadline.weight(.semibold)).foregroundColor(.textSecondary)
+                            HStack {
+                                Text("฿").font(.system(size: 22, weight: .bold)).foregroundColor(.textSecondary)
+                                TextField("0.00", text: $amountText)
+                                    .font(.system(size: 32, weight: .black, design: .rounded))
+                                    .foregroundColor(isOverAmount ? .appRose : .textPrimary)
+                                    .keyboardType(.decimalPad)
+                                    .multilineTextAlignment(.trailing)
+                                    .focused($amountFieldFocused)
+                                    .toolbar { ToolbarItem(placement: .keyboard) { Button("เสร็จ") { amountFieldFocused = false; cashFieldFocused = false } } }
+                            }
+                            .padding(12)
+                            .background(Color.appSurfaceHigh)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                            // Quick amount buttons
+                            HStack(spacing: 8) {
+                                let quickAmounts: [Double] = [remaining, 100, 200, 500, 1000]
+                                ForEach(quickAmounts.filter { $0 > 0 }.prefix(4), id: \.self) { amt in
+                                    Button {
+                                        amountText = String(format: "%.2f", amt)
+                                        if localEntry.method == "cash" {
+                                            cashReceivedText = String(format: "%.2f", max(amt, parsedCashReceived))
+                                        }
+                                    } label: {
+                                        Text(amt == remaining ? "เต็มจำนวน" : "฿\(Int(amt))")
+                                            .font(.caption.weight(.bold))
+                                            .foregroundColor(.appAccent)
+                                            .padding(.horizontal, 10).padding(.vertical, 6)
+                                            .background(Color.appAccent.opacity(0.1))
+                                            .clipShape(Capsule())
+                                    }
+                                }
+                            }
+
+                            if isOverAmount {
+                                Label("เกินยอดคงเหลือ ฿\(String(format: "%.2f", remaining))",
+                                      systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption.weight(.bold)).foregroundColor(.appRose)
+                            }
+                        }
+                        .apCard()
+
+                        // Cash: received + change
+                        if localEntry.method == "cash" {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("รับเงินมา")
+                                    .font(.subheadline.weight(.semibold)).foregroundColor(.textSecondary)
+                                HStack {
+                                    Text("฿").font(.system(size: 20, weight: .bold)).foregroundColor(.textSecondary)
+                                    TextField("0.00", text: $cashReceivedText)
+                                        .font(.system(size: 28, weight: .black, design: .rounded))
+                                        .foregroundColor(.textPrimary)
+                                        .keyboardType(.decimalPad)
+                                        .multilineTextAlignment(.trailing)
+                                }
+                                .padding(12)
+                                .background(Color.appSurfaceHigh)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                                HStack(spacing: 8) {
+                                    ForEach([parsedAmount, parsedAmount + (100 - parsedAmount.truncatingRemainder(dividingBy: 100)),
+                                             500.0, 1000.0].filter { $0 >= parsedAmount }.prefix(4), id: \.self) { amt in
+                                        Button {
+                                            cashReceivedText = String(format: "%.2f", amt)
+                                        } label: {
+                                            Text("฿\(Int(amt))")
+                                                .font(.caption.weight(.bold))
+                                                .foregroundColor(.appTeal)
+                                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                                .background(Color.appTeal.opacity(0.1))
+                                                .clipShape(Capsule())
+                                        }
+                                    }
+                                }
+
+                                if parsedCashReceived > 0 && parsedCashReceived >= parsedAmount {
+                                    HStack {
+                                        Text("เงินทอน")
+                                            .font(.subheadline.weight(.semibold)).foregroundColor(.textSecondary)
+                                        Spacer()
+                                        Text("฿\(String(format: "%.2f", change))")
+                                            .font(.system(size: 22, weight: .black, design: .rounded))
+                                            .foregroundColor(.appTeal)
+                                    }
+                                    .padding(12)
+                                    .background(Color.appTeal.opacity(0.06))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                } else if parsedCashReceived > 0 {
+                                    Label("รับเงินน้อยกว่ายอดชำระ",
+                                          systemImage: "exclamationmark.circle.fill")
+                                        .font(.caption.weight(.bold)).foregroundColor(.appRose)
+                                }
+                            }
+                            .apCard()
+                        }
+
+                        // QR: just confirm
+                        if localEntry.method == "qr" {
+                            VStack(spacing: 10) {
+                                Image(systemName: "qrcode")
+                                    .font(.system(size: 44)).foregroundColor(Color.appPurple)
+                                Text("แสดง QR PromptPay ให้ลูกค้าสแกน")
+                                    .font(.subheadline).foregroundColor(.textSecondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(20)
+                            .apCard()
+                        }
+
+                        // Card: just confirm
+                        if localEntry.method == "card" {
+                            VStack(spacing: 10) {
+                                Image(systemName: "creditcard.fill")
+                                    .font(.system(size: 44)).foregroundColor(Color.appRose)
+                                Text("รูดบัตรหรือแตะบัตรที่เครื่อง EDC")
+                                    .font(.subheadline).foregroundColor(.textSecondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(20)
+                            .apCard()
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .navigationTitle("ใส่ยอดชำระ — ช่องทางที่ \(localEntry.method == "cash" ? "เงินสด" : localEntry.method == "qr" ? "QR" : "บัตร")")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("ยกเลิก") { dismiss() }.foregroundColor(.appAccent)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("ยืนยัน") {
+                        var confirmed = localEntry
+                        confirmed.amount       = parsedAmount
+                        confirmed.amountText   = amountText
+                        confirmed.cashReceived = localEntry.method == "cash" ? parsedCashReceived : 0
+                        onConfirm(confirmed)
+                    }
+                    .fontWeight(.bold)
+                    .foregroundColor(canConfirm ? .appTeal : .textSecondary)
+                    .disabled(!canConfirm)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Notification name
+extension Notification.Name {
+    static let checkoutCompleted = Notification.Name("AlphaPosStaff.CheckoutCompleted")
 }
 
 // MARK: - Staff Cash Payment Modal View
@@ -418,32 +854,26 @@ struct StaffCashPaymentModalView: View {
     private func startCheckoutDelay() {
         isProcessing = true
         APHaptic.trigger()
-        
-        if changeDue == 0.0 {
-            // Exact change: no delay, confirm immediately
-            onConfirm(cashReceived)
-            dismiss()
-        } else {
-            // Show success screen and hold for 3 seconds
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                showSuccessOverlay = true
-            }
-            
-            Task {
-                for _ in 0..<3 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    await MainActor.run {
-                        withAnimation {
-                            if delayRemaining > 1 {
-                                delayRemaining -= 1
-                            }
+
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.78)) {
+            showSuccessOverlay = true
+        }
+
+        Task {
+            let holdSeconds = changeDue == 0.0 ? 2 : 3
+            for _ in 0..<holdSeconds {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await MainActor.run {
+                    withAnimation {
+                        if delayRemaining > 1 {
+                            delayRemaining -= 1
                         }
                     }
                 }
-                await MainActor.run {
-                    onConfirm(cashReceived)
-                    dismiss()
-                }
+            }
+            await MainActor.run {
+                onConfirm(cashReceived)
+                dismiss()
             }
         }
     }
@@ -675,59 +1105,152 @@ struct StaffCashPaymentModalView: View {
     }
     
     private var successOverlayView: some View {
-        VStack(spacing: APSpacing.lg) {
-            Spacer()
-            
-            // Checkmark Animation
-            ZStack {
-                Circle()
-                    .fill(Color.appTeal.opacity(0.15))
-                    .frame(width: 100, height: 100)
-                
-                Circle()
-                    .stroke(Color.appTeal, lineWidth: 3)
-                    .frame(width: 100, height: 100)
-                    .scaleEffect(isProcessing ? 1.05 : 1.0)
-                    .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: isProcessing)
-                
-                Image(systemName: "checkmark")
-                    .font(.system(size: 44, weight: .bold))
-                    .foregroundColor(.appTeal)
-            }
-            
-            VStack(spacing: APSpacing.xs) {
-                Text("payment_successful_title".localized(for: appLanguage))
-                    .font(.title3)
-                    .fontWeight(.bold)
-                    .foregroundColor(.textPrimary)
-                
-                Text("cash".localized(for: appLanguage) + ": ฿\(String(format: "%.2f", cashReceived))")
-                    .font(.caption)
-                    .foregroundColor(.textSecondary)
-            }
-            
-            // Large Change Due Box
-            if changeDue > 0 {
-                VStack(spacing: 6) {
-                    Text("change_due".localized(for: appLanguage))
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color.appTeal.opacity(0.10),
+                    Color.appBackground,
+                    Color.appAccent.opacity(0.06)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: APSpacing.lg) {
+                AnimatedPaymentSuccessMark()
+
+                VStack(spacing: APSpacing.xs) {
+                    Text("payment_successful_title".localized(for: appLanguage))
+                        .font(.system(size: 27, weight: .black, design: .rounded))
+                        .foregroundColor(.textPrimary)
+                        .multilineTextAlignment(.center)
+
+                    Text("cash".localized(for: appLanguage) + ": ฿\(String(format: "%.2f", cashReceived))")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundColor(.textSecondary)
+                }
+
+                if changeDue > 0 {
+                    VStack(spacing: 8) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.uturn.left.circle.fill")
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundColor(.appTeal)
+                            Text("change_due".localized(for: appLanguage))
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .foregroundColor(.textSecondary)
+                        }
+
+                        Text(String(format: "฿%.2f", changeDue))
+                            .font(.system(size: 44, weight: .black, design: .rounded))
+                            .foregroundColor(.appTeal)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .contentTransition(.numericText())
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 18)
+                    .padding(.horizontal, 20)
+                    .background(
+                        RoundedRectangle(cornerRadius: 20)
+                            .fill(Color.appSurface.opacity(0.94))
+                            .shadow(color: Color.appTeal.opacity(0.18), radius: 22, x: 0, y: 14)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20)
+                            .stroke(Color.appTeal.opacity(0.28), lineWidth: 1)
+                    )
+                    .padding(.horizontal, 28)
+                }
+
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .tint(.appTeal)
+                        .scaleEffect(0.78)
+                    Text("finalizing_payment".localized(for: appLanguage))
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.textSecondary)
-                    
-                    Text(String(format: "฿%.2f", changeDue))
-                        .font(.system(size: 36, weight: .black))
-                        .foregroundColor(.appTeal)
-                        .shadow(color: Color.appTeal.opacity(0.2), radius: 10, x: 0, y: 5)
-                        .scaleEffect(1.05)
                 }
-                .padding(.vertical, 14)
-                .padding(.horizontal, 28)
-                .background(Color.appTeal.opacity(0.08))
-                .cornerRadius(APRadius.md)
-                .overlay(
-                    RoundedRectangle(cornerRadius: APRadius.md)
-                        .stroke(Color.appTeal.opacity(0.3), lineWidth: 1)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(Color.appSurface.opacity(0.78))
+                .clipShape(Capsule())
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 18)
+        }
+    }
+}
+
+private struct AnimatedPaymentSuccessMark: View {
+    @State private var started = false
+
+    private let particleAngles: [Double] = [0, 38, 82, 132, 185, 232, 286, 326]
+
+    var body: some View {
+        ZStack {
+            ForEach(Array(particleAngles.enumerated()), id: \.offset) { index, angle in
+                Circle()
+                    .fill(index.isMultiple(of: 2) ? Color.appTeal : Color.appAccent)
+                    .frame(width: index.isMultiple(of: 3) ? 8 : 6, height: index.isMultiple(of: 3) ? 8 : 6)
+                    .offset(x: started ? CGFloat(cos(angle * .pi / 180) * 78) : 0,
+                            y: started ? CGFloat(sin(angle * .pi / 180) * 78) : 0)
+                    .scaleEffect(started ? 0.9 : 0.1)
+                    .opacity(started ? 0.0 : 0.95)
+                    .animation(.easeOut(duration: 0.9).delay(0.18 + Double(index) * 0.025), value: started)
+            }
+
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [Color.appTeal.opacity(0.20), Color.appAccent.opacity(0.10)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
                 )
+                .frame(width: 138, height: 138)
+                .scaleEffect(started ? 1.08 : 0.76)
+                .shadow(color: Color.appTeal.opacity(started ? 0.24 : 0.05), radius: started ? 28 : 8, x: 0, y: 16)
+                .animation(.spring(response: 0.62, dampingFraction: 0.62).delay(0.02), value: started)
+
+            Circle()
+                .trim(from: 0, to: started ? 1 : 0)
+                .stroke(
+                    AngularGradient(colors: [.appTeal, .appAccent, .appTeal], center: .center),
+                    style: StrokeStyle(lineWidth: 6, lineCap: .round)
+                )
+                .frame(width: 126, height: 126)
+                .rotationEffect(.degrees(started ? 360 : -72))
+                .animation(.spring(response: 0.82, dampingFraction: 0.78).delay(0.08), value: started)
+
+            Circle()
+                .fill(Color.appSurface)
+                .frame(width: 94, height: 94)
+                .overlay(
+                    Image(systemName: "creditcard.fill")
+                        .font(.system(size: 30, weight: .bold))
+                        .foregroundStyle(APGradient.accent)
+                        .offset(y: started ? -18 : 0)
+                        .opacity(started ? 0 : 1)
+                        .animation(.easeInOut(duration: 0.28).delay(0.34), value: started)
+                )
+                .overlay(
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 46, weight: .black, design: .rounded))
+                        .foregroundColor(.appTeal)
+                        .scaleEffect(started ? 1 : 0.2)
+                        .opacity(started ? 1 : 0)
+                        .animation(.interpolatingSpring(stiffness: 220, damping: 13).delay(0.48), value: started)
+                )
+        }
+        .frame(width: 178, height: 178)
+        .onAppear {
+            started = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                started = true
             }
         }
     }

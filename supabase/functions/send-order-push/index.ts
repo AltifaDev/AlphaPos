@@ -32,9 +32,13 @@ async function providerToken(): Promise<string> {
     return cachedProviderToken.value;
   }
 
-  const keyId = Deno.env.get("APNS_KEY_ID")!;
-  const teamId = Deno.env.get("APNS_TEAM_ID")!;
-  const privateKey = Deno.env.get("APNS_PRIVATE_KEY")!.replaceAll("\\n", "\n");
+  const keyId = Deno.env.get("APNS_KEY_ID");
+  const teamId = Deno.env.get("APNS_TEAM_ID");
+  const privateKeyValue = Deno.env.get("APNS_PRIVATE_KEY");
+  if (!keyId || !teamId || !privateKeyValue) {
+    throw new Error("APNs credentials are not configured");
+  }
+  const privateKey = privateKeyValue.replaceAll("\\n", "\n");
   const header = base64url(JSON.stringify({ alg: "ES256", kid: keyId }));
   const claims = base64url(JSON.stringify({ iss: teamId, iat: now }));
   const signingInput = `${header}.${claims}`;
@@ -74,7 +78,6 @@ Deno.serve(async (req) => {
     if (orderError || !order) return new Response("Order not found", { status: 404, headers: corsHeaders });
 
     const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
-    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     
     let isAuthorized = false;
     if (bearer && serviceKey && bearer === serviceKey) {
@@ -101,7 +104,14 @@ Deno.serve(async (req) => {
       return Response.json({ delivered: 0 }, { headers: corsHeaders });
     }
 
-    const token = await providerToken();
+    let token: string;
+    try {
+      token = await providerToken();
+    } catch (error) {
+      return Response.json({
+        error: error instanceof Error ? error.message : "APNs credentials are not configured",
+      }, { status: 503, headers: corsHeaders });
+    }
     const production = Deno.env.get("APNS_ENVIRONMENT") === "production";
     const host = production ? "https://api.push.apple.com" : "https://api.sandbox.push.apple.com";
     const bundleIds: Record<string, string> = {

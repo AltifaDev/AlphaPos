@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>SUPABASE_URL</key>
-    <string>https://your-supabase-project.supabase.co</string>
+    <string>http://127.0.0.1:54321</string>
     <key>SUPABASE_ANON_KEY</key>
     <string>your-anon-key</string>
     <key>DEFAULT_MERCHANT_ID</key>

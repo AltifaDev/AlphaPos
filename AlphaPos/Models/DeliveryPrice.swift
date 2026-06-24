@@ -10,9 +10,9 @@ final class DeliveryPrice {
     var menuItem: MenuItem?
 
     // Offline-First Sync Metadata
-    var isSynced: Bool
-    var isDeleted: Bool
-    var updatedAt: Date
+    var isSynced: Bool = false
+    var isDeleted: Bool = false
+    var updatedAt: Date = Date()
 
     init(id: UUID = UUID(), brandName: String, price: Double, menuItem: MenuItem? = nil,
          isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {

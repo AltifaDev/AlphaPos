@@ -92,7 +92,9 @@ struct PermissionService {
                 .reportsView,
                 .payrollManage,
                 .staffManage,
-                .managerOverride
+                .managerOverride,
+                .settingsManage,   // แสดงแถบ "ตั้งค่า" ใน sidebar
+                .deviceManage      // แสดงแถบ "Integrations" ใน sidebar
             ]
         }
 

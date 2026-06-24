@@ -4,7 +4,6 @@ import SwiftData
 struct SecuritySettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage("require_face_scan") private var requireFaceScan = true
-    @AppStorage("offline_sync_mode") private var offlineSyncMode = true
     @AppStorage("passcode_max_attempts") private var passcodeMaxAttempts = 5
     @AppStorage("passcode_lockout_minutes") private var passcodeLockoutMinutes = 5
     @AppStorage("staff_session_timeout_minutes") private var staffSessionTimeoutMinutes = 15
@@ -103,21 +102,6 @@ struct SecuritySettingsView: View {
                             }
                             .tint(.appAccent)
                             .onChange(of: requireFaceScan) { APHaptic.trigger() }
-                            
-                            Divider()
-                                .background(Color.appDivider)
-                            
-                            Toggle(isOn: $offlineSyncMode) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Background Sync Engine")
-                                        .foregroundColor(.textPrimary)
-                                    Text("Replicate SwiftData models to server automatically.")
-                                        .font(.caption2)
-                                        .foregroundColor(.textSecondary)
-                                }
-                            }
-                            .tint(.appAccent)
-                            .onChange(of: offlineSyncMode) { APHaptic.trigger() }
                         }
                         .apCard()
                     }

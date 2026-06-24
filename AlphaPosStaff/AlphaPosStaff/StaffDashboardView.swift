@@ -273,6 +273,37 @@ struct StaffDashboardView: View {
                             .padding()
                             .apCard()
                             
+                            // Server Configuration Card
+                            VStack(alignment: .leading, spacing: APSpacing.sm) {
+                                Text("Server Configuration".uppercased())
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.appAccent)
+                                    .tracking(1.0)
+                                
+                                Divider().background(Color.appDivider)
+                                
+                                Text("Supabase Server URL")
+                                    .font(.caption)
+                                    .foregroundColor(.textSecondary)
+                                
+                                TextField("http://119.59.99.163", text: Binding(
+                                    get: { UserDefaults.standard.string(forKey: "dynamic_supabase_url") ?? AppConfig.supabaseURL.absoluteString },
+                                    set: { UserDefaults.standard.set($0, forKey: "dynamic_supabase_url") }
+                                ))
+                                .textFieldStyle(.roundedBorder)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                                .foregroundColor(.textPrimary)
+                                
+                                Text("Note: Changing server addresses requires restarting the app to take effect.")
+                                    .font(.caption2)
+                                    .foregroundColor(.textSecondary)
+                                    .italic()
+                            }
+                            .padding()
+                            .apCard()
+                            
                             // Sign Out
                             Button(action: {
                                 APHaptic.trigger()

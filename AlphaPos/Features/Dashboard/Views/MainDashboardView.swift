@@ -17,7 +17,9 @@ struct MainDashboardView: View {
     @AppStorage("enable_table_system") private var enableTableSystem = true
     @AppStorage("developer_mode_enabled") private var developerModeEnabled = false
     @AppStorage("staff_session_timeout_minutes") private var staffSessionTimeoutMinutes = 15
+    @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @State private var selectedTab: DashboardTab = .tables
+    @State private var navigationStackID = 0
     @State private var posTableSession: TableSession? = nil
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @Query(sort: \InventoryItem.name) private var inventoryItems: [InventoryItem]
@@ -30,6 +32,9 @@ struct MainDashboardView: View {
     
     private var visibleTabs: [DashboardTab] {
         DashboardTab.allCases.filter { tab in
+            if tab == .syncHealth && offlineSyncMode {
+                return false
+            }
             if tab == .tables {
                 return enableTableSystem && canAccess(tab)
             }
@@ -214,7 +219,10 @@ struct MainDashboardView: View {
         } detail: {
             NavigationStack {
                 detailContent
+                    .navigationTitle(" ")
+                    .navigationBarTitleDisplayMode(.inline)
             }
+            .id(navigationStackID)
         }
         .apColorScheme()
         .onReceive(timer) { _ in
@@ -263,6 +271,9 @@ struct MainDashboardView: View {
         }
         .onChange(of: sessionManager.currentStaffSession) { _, _ in
             ensureSelectedTabIsAllowed()
+        }
+        .onChange(of: selectedTab) { _, _ in
+            navigationStackID += 1
         }
     }
 
@@ -380,7 +391,11 @@ struct MainDashboardView: View {
         SidebarTabRow(tab: tab, isSelected: selectedTab == tab)
             .onTapGesture {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    selectedTab = tab
+                    if selectedTab == tab {
+                        navigationStackID += 1
+                    } else {
+                        selectedTab = tab
+                    }
                     columnVisibility = .detailOnly
                 }
             }
@@ -388,11 +403,11 @@ struct MainDashboardView: View {
 
     private var sidebarFooter: some View {
         HStack(spacing: 6) {
-            // Online status dot
+            // Online/Offline status dot
             Circle()
-                .fill(Color.appTeal)
+                .fill(offlineSyncMode ? Color.orange : Color.appTeal)
                 .frame(width: 6, height: 6)
-            Text(L.Dashboard.systemOnline.t)
+            Text(offlineSyncMode ? L.Dashboard.offlineMode.t : L.Dashboard.systemOnline.t)
                 .font(.system(size: 9))
                 .foregroundColor(.textSecondary)
 

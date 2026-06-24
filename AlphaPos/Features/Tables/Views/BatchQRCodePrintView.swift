@@ -8,6 +8,11 @@ struct BatchQRCodePrintView: View {
     @AppStorage("qr_custom_store_name") private var qrCustomStoreName = "AlphaPos Restaurant"
     @AppStorage("qr_custom_header") private var qrCustomHeader = "Scan to Order"
     @AppStorage("qr_custom_color") private var qrCustomColor = "#111115"
+    /// Reads UserDefaults override first, then falls back to Config.plist LOCAL_SERVER_URL.
+    private var customerWebBaseUrl: String {
+        let ud = UserDefaults.standard.string(forKey: "dynamic_local_server_url") ?? ""
+        return ud.isEmpty ? AppConfig.shared.localServerURL : ud
+    }
     
     @Environment(\.dismiss) private var dismiss
     
@@ -98,7 +103,7 @@ struct BatchQRCodePrintView: View {
             var temporaryCache: [UUID: UIImage] = [:]
             
             for table in tablesCopy {
-                let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(merchantId)"
+                let qrUrl = "\(customerWebBaseUrl)/?table=\(table.tableNumber)&merchant=\(merchantId)"
                 if let image = generateQRCodeSync(from: qrUrl) {
                     temporaryCache[table.id] = image
                 }
@@ -182,7 +187,7 @@ struct BatchQRCodePrintView: View {
                     .fontWeight(.bold)
                     .foregroundColor(Color(hex: qrCustomColor))
                 
-                let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
+                let qrUrl = "\(customerWebBaseUrl)/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
                 
                 if let qrImage = qrCodeCache[table.id] {
                     Image(uiImage: qrImage)
@@ -313,7 +318,7 @@ struct BatchQRCodePrintView: View {
                         let nameFont = UIFont.boldSystemFont(ofSize: 13)
                         tableName.draw(at: CGPoint(x: x + 20, y: y + 26), withAttributes: [.font: nameFont, .foregroundColor: themeColor])
                         
-                        let qrUrl = "https://alphapos.altifadev.workers.dev/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
+                        let qrUrl = "\(customerWebBaseUrl)/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
                         if let qrImage = generateQRCodeSync(from: qrUrl) {
                             qrImage.draw(in: CGRect(x: x + (colWidth - 100) / 2, y: y + 45, width: 100, height: 100))
                         }

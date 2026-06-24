@@ -493,6 +493,7 @@ struct APNavBarModifier: ViewModifier {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(background, for: .navigationBar)
             .toolbarColorScheme(resolvedColorScheme, for: .navigationBar)
+            .navigationBarBackButtonHidden(true)
         #else
         content
         #endif

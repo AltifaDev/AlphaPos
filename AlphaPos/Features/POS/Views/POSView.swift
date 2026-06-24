@@ -32,7 +32,7 @@ struct POSView: View {
     @State private var showNoteAlert = false
     @State private var noteText = ""
     @State private var itemToEditNote: UUID? = nil
-    @State private var editingNoteForOrderedItem: (menuItemId: String, status: String)? = nil
+    @State private var editingNoteForOrderedItem: (identity: String, status: String)? = nil
 
     enum ActivePaymentMethod: Identifiable {
         case cash
@@ -63,7 +63,8 @@ struct POSView: View {
 
     struct GroupedOrderedItem: Identifiable {
         let id: String
-        let menuItem: MenuItem
+        let identity: String
+        let displayName: String
         let quantity: Int
         let status: String
         let totalPrice: Double
@@ -78,31 +79,44 @@ struct POSView: View {
             .flatMap { $0.items }
             .filter { !$0.isDeleted }
 
-        var groups: [String: (item: MenuItem, qty: Int, status: String, price: Double, mods: [Modifier], notes: String)] = [:]
+        var groups: [String: (identity: String, name: String, qty: Int, status: String, price: Double, mods: [Modifier], notes: String)] = [:]
         for item in rawItems {
-            guard let menuItem = item.menuItem else { continue }
+            let identity = orderedItemIdentity(item)
+            let displayName = item.menuItem?.localizedName ?? item.itemName
+            guard !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             let mods = item.modifiers.compactMap { $0.modifier }
             let modKey = mods.map { $0.id.uuidString }.sorted().joined(separator: "-")
             let itemNotes = item.notes ?? ""
-            let key = "\(menuItem.id)-\(item.status)-\(modKey)-\(itemNotes)"
+            let key = "\(identity)-\(item.status)-\(modKey)-\(itemNotes)"
 
             if let existing = groups[key] {
-                groups[key] = (menuItem, existing.qty + item.quantity, item.status, existing.price + item.subtotal, existing.mods, itemNotes)
+                groups[key] = (identity, displayName, existing.qty + item.quantity, item.status, existing.price + item.subtotal, existing.mods, itemNotes)
             } else {
-                groups[key] = (menuItem, item.quantity, item.status, item.subtotal, mods, itemNotes)
+                groups[key] = (identity, displayName, item.quantity, item.status, item.subtotal, mods, itemNotes)
             }
         }
 
-        return groups.map { GroupedOrderedItem(id: $0.key, menuItem: $0.value.item, quantity: $0.value.qty, status: $0.value.status, totalPrice: $0.value.price, selectedModifiers: $0.value.mods, notes: $0.value.notes) }
+        return groups.map { GroupedOrderedItem(id: $0.key, identity: $0.value.identity, displayName: $0.value.name, quantity: $0.value.qty, status: $0.value.status, totalPrice: $0.value.price, selectedModifiers: $0.value.mods, notes: $0.value.notes) }
             .sorted(by: {
-                if $0.menuItem.name != $1.menuItem.name {
-                    return $0.menuItem.name < $1.menuItem.name
+                if $0.displayName != $1.displayName {
+                    return $0.displayName < $1.displayName
                 }
                 if $0.status != $1.status {
                     return $0.status < $1.status
                 }
                 return $0.id < $1.id
             })
+    }
+
+    private func orderedItemIdentity(_ item: OrderItem) -> String {
+        if let menuItem = item.menuItem {
+            return "menu:\(menuItem.id)"
+        }
+        let fallbackName = item.itemName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !fallbackName.isEmpty {
+            return "name:\(fallbackName.lowercased())"
+        }
+        return "order-item:\(item.id.uuidString)"
     }
 
     private var isAllServed: Bool {
@@ -185,6 +199,35 @@ struct POSView: View {
         viewModel.cartTotal + sessionOrderedTotal
     }
 
+    private var shouldShowPaymentActions: Bool {
+        if enableTableSystem {
+            if activeSession == nil {
+                return !viewModel.cart.isEmpty
+            }
+            return viewModel.cart.isEmpty && isAllServed
+        }
+        return !viewModel.cart.isEmpty
+    }
+
+    private func completePayment(methodName: String) {
+        if enableTableSystem, activeSession != nil {
+            completeCheckout(methodName: methodName)
+        } else {
+            completeDirectCheckout(methodName: methodName)
+        }
+    }
+
+    private func completeDirectCheckout(methodName: String) {
+        guard let order = viewModel.processCheckout(
+            tableSession: nil,
+            createPayment: true,
+            paymentMethod: methodName
+        ) else { return }
+
+        completedOrderForReceipt = order
+        APHaptic.trigger()
+    }
+
     private func completeCheckout(methodName: String) {
         guard let session = activeSession else { return }
 
@@ -250,6 +293,11 @@ struct POSView: View {
     }
 
     private func completeSplitCheckout(entries: [SplitPaymentEntry]) {
+        if !enableTableSystem || activeSession == nil {
+            completeDirectSplitCheckout(entries: entries)
+            return
+        }
+
         guard let session = activeSession else { return }
 
         let unpaidOrders = session.orders.filter { $0.payments.isEmpty }
@@ -313,17 +361,38 @@ struct POSView: View {
         APHaptic.trigger()
     }
 
+    private func completeDirectSplitCheckout(entries: [SplitPaymentEntry]) {
+        guard let order = viewModel.processCheckout(tableSession: nil, createPayment: false, dispatchPrint: false) else { return }
+
+        for entry in entries {
+            let payment = Payment(paymentMethod: entry.method, amount: entry.amount)
+            payment.order = order
+            modelContext.insert(payment)
+        }
+
+        order.isSynced = false
+        order.updatedAt = Date()
+        try? modelContext.save()
+
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+            await PrintService.shared.dispatchAll(order)
+        }
+
+        completedOrderForReceipt = order
+        APHaptic.trigger()
+    }
+
     private func deleteOrderedItem(_ orderedItem: GroupedOrderedItem) {
         guard let session = activeSession else { return }
-        let targetId = orderedItem.menuItem.id
+        let targetIdentity = orderedItem.identity
         let targetStatus = orderedItem.status
         for order in session.orders {
             if !order.isDeleted {
                 for item in order.items {
                     if !item.isDeleted {
-                        let itemId = item.menuItem?.id
                         let itemStatus = item.status
-                        if itemId == targetId && itemStatus == targetStatus {
+                        if orderedItemIdentity(item) == targetIdentity && itemStatus == targetStatus {
                             item.isDeleted = true
                             item.isSynced = false
                             item.updatedAt = Date()
@@ -339,7 +408,7 @@ struct POSView: View {
 
     private func editNoteForOrderedItemAction(_ orderedItem: GroupedOrderedItem) {
         noteText = orderedItem.notes
-        editingNoteForOrderedItem = (orderedItem.menuItem.id, orderedItem.status)
+        editingNoteForOrderedItem = (orderedItem.identity, orderedItem.status)
         showNoteAlert = true
         APHaptic.trigger()
     }
@@ -457,7 +526,7 @@ struct POSView: View {
                 } else if let orderedTarget = editingNoteForOrderedItem, let session = activeSession {
                     let rawItems = session.orders.filter { !$0.isDeleted }.flatMap { $0.items }.filter { !$0.isDeleted }
                     for item in rawItems {
-                        if item.menuItem?.id == orderedTarget.menuItemId && item.status == orderedTarget.status {
+                        if orderedItemIdentity(item) == orderedTarget.identity && item.status == orderedTarget.status {
                             item.notes = noteText
                             item.isSynced = false
                             item.updatedAt = Date()
@@ -486,15 +555,15 @@ struct POSView: View {
             switch paymentMethod {
             case .cash:
                 CashPaymentModalView(totalAmount: displayTotal) { cashReceived in
-                    completeCheckout(methodName: "Cash")
+                    completePayment(methodName: "Cash")
                 }
             case .qrCode:
                 QRPaymentModalView(totalAmount: displayTotal) {
-                    completeCheckout(methodName: "QR PromptPay")
+                    completePayment(methodName: "QR PromptPay")
                 }
             case .creditCard:
                 CreditCardPaymentModalView(totalAmount: displayTotal) {
-                    completeCheckout(methodName: "Credit Card")
+                    completePayment(methodName: "Credit Card")
                 }
             }
         }
@@ -781,33 +850,14 @@ struct POSView: View {
 
             Divider().background(Color.appDivider)
 
-            // Menu grid
-            let filtered = menuItems.filter { item in
-                let matchesCategory = viewModel.selectedCategory == nil || item.category?.id == viewModel.selectedCategory?.id
-                let matchesFavorite = !showFavoritesOnly || (item.isFavorite ?? false)
-
-                let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                let matchesSearch = query.isEmpty ||
-                    item.name.localizedCaseInsensitiveContains(query) ||
-                    (item.sku ?? "").localizedCaseInsensitiveContains(query) ||
-                    (item.barcode ?? "").localizedCaseInsensitiveContains(query)
-
-                return matchesCategory && matchesFavorite && matchesSearch
-            }
-            ScrollView {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: APSpacing.md)],
-                    spacing: APSpacing.md
-                ) {
-                    ForEach(filtered) { item in
-                        let count = viewModel.cart.filter { $0.item.id == item.id }.reduce(0) { $0 + $1.quantity }
-                        MenuItemCard(item: item, countInCart: count) { viewModel.selectItem(item) }
-                    }
-                }
-                .padding(APSpacing.md)
-            }
-            .offset(x: animateItems ? 0 : -80)
-            .opacity(animateItems ? 1 : 0)
+            // C-4 FIX: Use POSMenuGridView which owns its own @Query for categories + menuItems.
+            // This decouples cart updates from menu grid re-renders and vice versa.
+            POSMenuGridView(
+                searchQuery:       $searchQuery,
+                showFavoritesOnly: $showFavoritesOnly,
+                animateItems:      $animateItems,
+                viewModel:         viewModel
+            )
         }
         .frame(maxWidth: .infinity)
         .background(Color.appBackground)
@@ -1272,7 +1322,7 @@ struct POSView: View {
                 .background(Color.appSurface)
 
                 // Checkout / Payment CTAs
-                if enableTableSystem && activeSession != nil && viewModel.cart.isEmpty && isAllServed {
+                if shouldShowPaymentActions {
                     VStack(spacing: 8) {
                         HStack(spacing: 8) {
                             // 1. Cash Button
@@ -1361,8 +1411,8 @@ struct POSView: View {
                             }
                         }
                     }) {
-                        let btnLabel = viewModel.cart.isEmpty ? (enableTableSystem ? "Send to Kitchen" : "Checkout") : (enableTableSystem ? "Send to Kitchen (฿\(String(format: "%.2f", viewModel.cartTotal)))" : "Checkout & Pay (฿\(String(format: "%.2f", viewModel.cartTotal)))")
-                        Label(btnLabel, systemImage: enableTableSystem ? "flame.fill" : "creditcard.fill")
+                        let btnLabel = viewModel.cart.isEmpty ? "Send to Kitchen" : "Send to Kitchen (฿\(String(format: "%.2f", viewModel.cartTotal)))"
+                        Label(btnLabel, systemImage: "flame.fill")
                             .apGradientButton(
                                 gradient: viewModel.cart.isEmpty ? LinearGradient(colors: [Color.appSurface], startPoint: .leading, endPoint: .trailing) : APGradient.accent,
                                 shadow: APShadow.glow,
@@ -1410,6 +1460,61 @@ struct POSView: View {
         }
     }
 }
+
+// MARK: - POSMenuGridView (C-4 FIX)
+// ─────────────────────────────────────────────────────────────────────────────
+// Isolated child view that owns its own @Query for categories + menuItems.
+// This prevents cart updates (via POSViewModel) from re-rendering the menu grid
+// and prevents menu sync events from re-rendering the cart panel.
+//
+// Before: POSView had 3 @Query → any cart event rebuilt the entire 2,300-line view
+// After:  menuItems/categories @Query isolated here → cart ↔ menu renders decouple
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct POSMenuGridView: View {
+    @Query(sort: \Category.name)  private var categories:  [Category]
+    @Query(sort: \MenuItem.name)  private var menuItems:   [MenuItem]
+
+    @Binding var searchQuery:       String
+    @Binding var showFavoritesOnly: Bool
+    @Binding var animateItems:      Bool
+    let viewModel:                  POSViewModel   // @Observable — fine; only cart changes trigger this child
+
+    var body: some View {
+        let filtered = menuItems.filter { item in
+            let matchesCategory = viewModel.selectedCategory == nil
+                || item.category?.id == viewModel.selectedCategory?.id
+            let matchesFavorite = !showFavoritesOnly || (item.isFavorite ?? false)
+            let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            let matchesSearch = query.isEmpty
+                || item.name.localizedCaseInsensitiveContains(query)
+                || (item.sku ?? "").localizedCaseInsensitiveContains(query)
+                || (item.barcode ?? "").localizedCaseInsensitiveContains(query)
+            return matchesCategory && matchesFavorite && matchesSearch
+        }
+
+        ScrollView {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: APSpacing.md)],
+                spacing: APSpacing.md
+            ) {
+                ForEach(filtered) { item in
+                    let count = viewModel.cart
+                        .filter { $0.item.id == item.id }
+                        .reduce(0) { $0 + $1.quantity }
+                    MenuItemCard(item: item, countInCart: count) {
+                        viewModel.selectItem(item)
+                    }
+                }
+            }
+            .padding(APSpacing.md)
+        }
+        .offset(x: animateItems ? 0 : -80)
+        .opacity(animateItems ? 1 : 0)
+        .animation(.spring(response: 0.45, dampingFraction: 0.82), value: animateItems)
+    }
+}
+
 
 // MARK: - Menu Item Card Button Style
 
@@ -1690,7 +1795,7 @@ private struct OrderedItemRow: View {
         VStack(alignment: .leading, spacing: 6) {
             // Row 1: Name and Badge
             HStack(alignment: .top) {
-                Text(groupedItem.menuItem.localizedName)
+                Text(groupedItem.displayName)
                     .font(.footnote)
                     .fontWeight(.semibold)
                     .foregroundColor(groupedItem.status == "cancelled" ? .textTertiary : .textPrimary)

@@ -1060,6 +1060,8 @@ enum AppLocalization {
         "no_templates_placeholder": ["en": "No receipt templates defined yet.", "th": "ยังไม่มีการกำหนดเทมเพลตใบเสร็จ", "zh": "尚未定义收据模板。", "ja": "レシートテンプレートがまだ定義されていません。", "ko": "정의된 영수증 템플릿이 없습니다.", "id": "Belum ada templat struk yang ditentukan.", "ms": "Tiada templat resit ditakrifkan lagi."],
         "receipt_templates_section": ["en": "Templates", "th": "เทมเพลตทั้งหมด", "zh": "模板", "ja": "テンプレート", "ko": "템플릿", "id": "Templat", "ms": "Templat"],
         "receipt_templates_title": ["en": "Receipt Templates", "th": "ตั้งค่าเทมเพลตใบเสร็จ", "zh": "收据模板", "ja": "レシートテンプレート", "ko": "영수증 템플릿", "id": "Templat Struk", "ms": "Templat Resit"],
+        "template_tab_edit": ["en": "Template Settings", "th": "ตั้งค่าเทมเพลต", "zh": "设置", "ja": "設定", "ko": "설정", "id": "Pengaturan", "ms": "Tetapan"],
+        "template_tab_preview": ["en": "Live Preview", "th": "ดูตัวอย่างใบเสร็จ", "zh": "实时预览", "ja": "ライブプレビュー", "ko": "실시간 미리보기", "id": "Pratinjau Struk", "ms": "Pratonton Resit"],
         "save_changes_btn": ["en": "Save Changes", "th": "บันทึกการเปลี่ยนแปลง", "zh": "保存修改", "ja": "変更を保存", "ko": "변경 사항 저장", "id": "Simpan Perubahan", "ms": "Simpan Perubahan"],
         "save_new_template_btn": ["en": "Save Template", "th": "บันทึกเทมเพลต", "zh": "保存模板", "ja": "テンプレートを保存", "ko": "템플릿 저장", "id": "Simpan Templat", "ms": "Simpan Templat"],
         "save_rate_btn": ["en": "Save Rate", "th": "บันทึกอัตราแลกเปลี่ยน", "zh": "保存汇率", "ja": "レートを保存", "ko": "환율 저장", "id": "Simpan Nilai", "ms": "Simpan Kadar"],

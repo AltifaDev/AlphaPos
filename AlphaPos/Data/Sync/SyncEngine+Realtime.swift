@@ -1,0 +1,287 @@
+import Foundation
+import SwiftData
+import Combine
+import UIKit
+import os
+
+// MARK: - Supabase Realtime WebSocket Client (methods)
+// NOTE: Stored properties (webSocketTask, config, anonKey, syncLock, etc.)
+// are declared in SyncEngine.swift (the main class file).
+extension SyncEngine {
+
+    func startRealtimeSync(modelContext: ModelContext) {
+        self.cachedModelContext = modelContext
+        guard webSocketTask == nil else { return }
+
+        let baseRealtimeURL = config.supabaseURL.absoluteString
+            .replacingOccurrences(of: "https://", with: "wss://")
+            .replacingOccurrences(of: "http://", with: "ws://")
+        let wsURLString = "\(baseRealtimeURL)/realtime/v1/websocket?apikey=\(anonKey)&vsn=1.0.0"
+        guard let url = URL(string: wsURLString) else { return }
+
+        let wsSessionConfig = URLSessionConfiguration.default
+        wsSessionConfig.timeoutIntervalForRequest = 30
+        wsSessionConfig.timeoutIntervalForResource = 60
+        let session = URLSession(configuration: wsSessionConfig)
+        let task = session.webSocketTask(with: url)
+        self.webSocketTask = task
+        task.resume()
+
+        // Keep all ModelContext and connection state on MainActor.
+        realtimeListenTask?.cancel()
+        realtimeListenTask = Task { [weak self] in
+            guard let self else { return }
+            await self.listenToWebSocket(modelContext: modelContext)
+        }
+
+        // Join realtime topic
+        joinRealtimeTopic()
+
+        // Keep-alive heartbeat every 20 seconds (invalidate any existing timer first)
+        startHeartbeat()
+
+    }
+
+    func listenToWebSocket(modelContext: ModelContext) async {
+        while !Task.isCancelled, let task = webSocketTask {
+            do {
+                let message = try await task.receive()
+                switch message {
+                case .string(let text):
+                    self.handleWebSocketMessage(text, modelContext: modelContext)
+                case .data(let data):
+                    if let text = String(data: data, encoding: .utf8) {
+                        self.handleWebSocketMessage(text, modelContext: modelContext)
+                    }
+                @unknown default:
+                    break
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                print("SyncEngine WebSocket error: \(error.localizedDescription)")
+                self.webSocketTask = nil
+                self.heartbeatTimer?.invalidate()
+                self.heartbeatTimer = nil
+
+                // Exponential backoff: 2s → 4s → 8s → 16s → 30s max
+                let delay = min(maxReconnectDelay, pow(2.0, Double(reconnectAttempt)) * 1.0)
+                // Add jitter (±25%) to prevent thundering herd
+                let jitter = delay * Double.random(in: -0.25...0.25)
+                let finalDelay = max(1.0, delay + jitter)
+                reconnectAttempt += 1
+
+                #if DEBUG
+                print("SyncEngine: Reconnecting in \(String(format: "%.1f", finalDelay))s (attempt \(reconnectAttempt))")
+                #endif
+
+                try? await Task.sleep(for: .seconds(finalDelay))
+                if !Task.isCancelled {
+                    self.startRealtimeSync(modelContext: modelContext)
+                }
+                return
+            }
+        }
+    }
+
+    func joinRealtimeTopic() {
+        let rawMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = rawMerchantId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? config.defaultMerchantId.lowercased() : rawMerchantId.lowercased()
+
+        let accessToken = MerchantAuthManager.shared.currentToken ?? anonKey
+        let joinPayload: [String: Any] = [
+            "topic": "realtime:public",
+            "event": "phx_join",
+            "payload": [
+                "config": [
+                    "postgres_changes": [
+                        ["event": "*", "schema": "public", "table": "orders", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "order_items", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "table_sessions", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "service_requests", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "restaurant_tables", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "merchants", "filter": "id=eq.\(merchantId)"]
+                    ]
+                ],
+                "access_token": accessToken
+            ],
+            "ref": "1"
+        ]
+
+        if let data = try? JSONSerialization.data(withJSONObject: joinPayload, options: []),
+           let jsonString = String(data: data, encoding: .utf8) {
+            Task { [weak self] in
+                do {
+                    try await self?.webSocketTask?.send(.string(jsonString))
+                    print("SyncEngine: Successfully sent join payload for postgres changes (merchant-scoped).")
+                } catch {
+                    print("SyncEngine: Failed to send join payload: \(error)")
+                }
+            }
+        }
+    }
+
+    func startHeartbeat() {
+        // Invalidate any existing heartbeat timer to prevent leak
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: true) { [weak self] timer in
+            Task { @MainActor [weak self] in
+            guard let self, let task = self.webSocketTask else {
+                timer.invalidate()
+                return
+            }
+            let heartbeat: [String: Any] = [
+                "topic": "phoenix",
+                "event": "heartbeat",
+                "payload": [:],
+                "ref": "heartbeat"
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: heartbeat, options: []),
+               let jsonString = String(data: data, encoding: .utf8) {
+                do {
+                    try await task.send(.string(jsonString))
+                } catch {
+                    print("SyncEngine heartbeat failed: \(error)")
+                }
+            }
+            }
+        }
+    }
+
+    func handleWebSocketMessage(_ text: String, modelContext: ModelContext) {
+        guard let data = text.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let event = json["event"] as? String else { return }
+
+        // Supabase Realtime V1 sends postgres change events with event name "postgres_changes".
+        // Also handle system events and detect changes from payload for robustness.
+        let isPostgresChange: Bool
+        if event == "postgres_changes" {
+            isPostgresChange = true
+        } else if event == "phx_reply" || event == "system" || event == "phx_close" {
+            // Handle connection lifecycle events
+            if event == "phx_reply" {
+                if let payload = json["payload"] as? [String: Any],
+                   let status = payload["status"] as? String {
+                    if status == "ok" {
+                        reconnectAttempt = 0
+                    }
+                    #if DEBUG
+                    print("SyncEngine [Realtime]: phx_reply status = \(status)")
+                    #endif
+                }
+            }
+            isPostgresChange = false
+        } else {
+            // Catch any other events that contain postgres change data in payload
+            if let payload = json["payload"] as? [String: Any],
+               let _ = payload["data"] as? [String: Any] {
+                isPostgresChange = true
+            } else {
+                isPostgresChange = false
+            }
+        }
+
+        guard isPostgresChange else { return }
+
+        // Guard against circular sync: if we are currently pushing data, skip pull
+        guard !isCurrentlySyncing else {
+            #if DEBUG
+            print("SyncEngine [Realtime]: Skipping pull — currently syncing (avoiding circular sync).")
+            #endif
+            return
+        }
+
+        // ── Extract changed table name for smart routing ──────────────────
+        // Supabase Realtime V1 embeds the changed table in:
+        //   payload.data.table  (postgres_changes events)
+        // We use this to pull ONLY the endpoints that actually need refreshing,
+        // which avoids unnecessary pullRestaurantTables calls when only a session changed.
+        let changedTable: String? = {
+            if let payload = json["payload"] as? [String: Any],
+               let data    = payload["data"]    as? [String: Any],
+               let tbl     = data["table"]      as? String {
+                return tbl
+            }
+            return nil
+        }()
+
+        // H-9 FIX: Double-check merchant_id in the changed record to prevent
+        // processing events that accidentally broadcast across tenants.
+        // Supabase RLS + join filter should handle this, but we verify defensively.
+        let activeMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id")
+            ?? config.defaultMerchantId
+        if let payload    = json["payload"]  as? [String: Any],
+           let data       = payload["data"]  as? [String: Any],
+           let record     = data["record"]   as? [String: Any],
+           let recMerchId = record["merchant_id"] as? String,
+           !recMerchId.isEmpty,
+           recMerchId.lowercased() != activeMerchantId.lowercased() {
+            #if DEBUG
+            print("SyncEngine [Realtime]: Dropped event — merchant_id mismatch (got \(recMerchId), expected \(activeMerchantId))")
+            #endif
+            return
+        }
+
+        // ── Debounce: per-event-type delay ───────────────────────────────
+        // C-6 FIX: Use shorter delay for status-critical events so table cards
+        // reflect open/close session changes immediately.
+        //   table_sessions / orders  → 0.2s  (user sees status change ~instantly)
+        //   restaurant_tables        → 0.5s  (layout shift less jarring when batched)
+        //   default / full pull      → 0.8s  (multiple endpoints — batch saves network)
+        let debounceDelay: Double = {
+            switch changedTable {
+            case "table_sessions", "orders", "order_items": return 0.2
+            case "restaurant_tables":                        return 0.5
+            default:                                         return 0.8
+            }
+        }()
+        realtimeDebounceWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            let capturedTable = changedTable
+            Task {
+                #if DEBUG
+                print("SyncEngine [Realtime]: Debounced pull — changed table: \(capturedTable ?? "unknown")")
+                #endif
+                self.isCurrentlySyncing = true
+
+                // ── Smart routing: pull only what changed ─────────────────
+                // table_sessions / orders → only status-relevant pulls
+                //   (no pullRestaurantTables — avoids layout re-render churn)
+                // restaurant_tables       → only layout pull
+                //   (pullActiveSessions will reconcile status afterwards)
+                // service_requests        → only service requests
+                // nil / other             → full pull (safe fallback)
+                switch capturedTable {
+                case "table_sessions":
+                    // C-6 FIX: Use 0.2s debounce for status-critical session events
+                    // (was 0.8s — 4× slower response for session open/close)
+                    await self.pullActiveSessions(modelContext)
+                case "orders", "order_items":
+                    await self.pullCustomerOrders(modelContext)
+                    await self.pullActiveSessions(modelContext)
+                case "service_requests":
+                    await self.syncServiceRequests()
+                case "restaurant_tables":
+                    // Layout change — pull tables then reconcile session status
+                    await self.pullRestaurantTables(modelContext)
+                    await self.pullActiveSessions(modelContext)
+                default:
+                    // Unknown / composite event — full pull
+                    await self.pullRestaurantTables(modelContext)
+                    await self.pullCustomerOrders(modelContext)
+                    await self.pullActiveSessions(modelContext)
+                    await self.syncServiceRequests()
+                }
+
+                self.isCurrentlySyncing = false
+            }
+        }
+        realtimeDebounceWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + debounceDelay, execute: workItem)
+    }
+
+
+}

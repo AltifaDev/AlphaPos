@@ -500,7 +500,7 @@ struct LoginView: View {
                 // Premium Animated Header
                 VStack(spacing: APSpacing.md) {
                     // Grid icon with glow
-                    Image(systemName: "square.grid.3x3.topline.filled")
+                    Image(systemName: "square.grid.3x3.fill")
                         .font(.system(size: 36, weight: .semibold))
                         .foregroundStyle(
                             LinearGradient(
