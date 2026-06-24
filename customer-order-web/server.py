@@ -524,6 +524,26 @@ def supabase_post(endpoint, payload, queue_on_fail=True):
         return False
 
 
+def supabase_delete(endpoint, query):
+    try:
+        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+            raise RuntimeError("Supabase URL/key not configured")
+        url = f"{SUPABASE_URL}/rest/v1/{endpoint}?{query}"
+        req = urllib.request.Request(url, method="DELETE")
+        req.add_header("apikey", SUPABASE_ANON_KEY)
+        req.add_header("Authorization", f"Bearer {SUPABASE_ANON_KEY}")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("x-merchant-id", MERCHANT_ID)
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            success = resp.getcode() in (200, 202, 204)
+            if success:
+                log_event("info", "supabase.delete.ok", endpoint=endpoint)
+            return success
+    except Exception as e:
+        log_event("warning", "supabase.delete.failed", str(e), endpoint=endpoint)
+        return False
+
+
 def flush_pending_supabase_writes(limit=50):
     try:
         with closing(get_db_connection()) as conn:
@@ -1678,13 +1698,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 "guest_count": guest_count
             }
             order_synced = supabase_post("orders", supabase_order)
-            if order_synced:
-                with closing(get_db_connection()) as conn:
-                    with conn:
-                        conn.execute("UPDATE orders SET is_synced = 1 WHERE id = ?", (order_id,))
+            supabase_items = []
             for item in items:
                 item_id_db = item.get("id")
-                supabase_item = {
+                supabase_items.append({
                     "id": item_id_db,
                     "order_id": order_id,
                     "item_name": item.get("name"),
@@ -1694,23 +1711,37 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     "item_id": item.get("item_id"),
                     "merchant_id": MERCHANT_ID,
                     "notes": item.get("notes") or ""
-                }
-                supabase_post("order_items", supabase_item)
+                })
+
+            items_synced = supabase_post("order_items", supabase_items, queue_on_fail=False)
+            if order_synced and items_synced:
+                with closing(get_db_connection()) as conn:
+                    with conn:
+                        conn.execute("UPDATE orders SET is_synced = 1 WHERE id = ?", (order_id,))
+            elif not items_synced:
+                if order_synced:
+                    supabase_delete("orders", f"id=eq.{urllib.parse.quote(order_id)}")
+                    enqueue_supabase_write("orders", supabase_order, "order_items sync failed; retrying complete order")
+                enqueue_supabase_write("order_items", supabase_items, "order_items sync failed; retrying complete order")
+
+            if items_synced:
+                for item in items:
+                    item_id_db = item.get("id")
                 
-                # Dual-write modifiers to Supabase
-                item_modifiers = item.get("modifiers", [])
-                for mod in item_modifiers:
-                    mod_id = mod.get("modifier_id")
-                    mod_price = mod.get("price")
-                    if mod_id:
-                        supabase_mod = {
-                            "id": str(uuid.uuid4()),
-                            "order_item_id": item_id_db,
-                            "modifier_id": mod_id,
-                            "price": mod_price,
-                            "merchant_id": MERCHANT_ID
-                        }
-                        supabase_post("order_item_modifiers", supabase_mod)
+                    # Dual-write modifiers to Supabase only after base items are visible.
+                    item_modifiers = item.get("modifiers", [])
+                    for mod in item_modifiers:
+                        mod_id = mod.get("modifier_id")
+                        mod_price = mod.get("price")
+                        if mod_id:
+                            supabase_mod = {
+                                "id": str(uuid.uuid4()),
+                                "order_item_id": item_id_db,
+                                "modifier_id": mod_id,
+                                "price": mod_price,
+                                "merchant_id": MERCHANT_ID
+                            }
+                            supabase_post("order_item_modifiers", supabase_mod)
             
             # Response success
             response = {

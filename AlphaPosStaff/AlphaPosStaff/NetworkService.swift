@@ -1086,6 +1086,10 @@ final class NetworkService {
     }
 
     func uploadOrder(orderId: String, orderNumber: String, tableNumber: String, total: Double, items: [[String: Any]], sessionToken: String? = nil, guestCount: Int = 2) async throws -> Bool {
+        guard !items.isEmpty else {
+            throw NetworkError.serverError("Cannot upload an order without items")
+        }
+
         let merchantId = self.activeMerchantId
         var orderPayload: [String: Any] = [
             "id": orderId,
@@ -1100,8 +1104,7 @@ final class NetworkService {
         if let token = sessionToken, !token.isEmpty {
             orderPayload["session_token"] = token
         }
-        _ = try await sendSupabaseRequest(method: "POST", endpoint: "orders", payload: orderPayload)
-        
+
         let orderItems = items.map { item -> [String: Any] in
             return [
                 "id": item["id"] as? String ?? UUID().uuidString,
@@ -1114,8 +1117,18 @@ final class NetworkService {
                 "merchant_id": merchantId
             ]
         }
-        if !orderItems.isEmpty {
+
+        _ = try await sendSupabaseRequest(method: "POST", endpoint: "orders", payload: orderPayload)
+
+        do {
             _ = try await sendSupabaseRequest(method: "POST", endpoint: "order_items", payload: orderItems)
+        } catch {
+            try? await sendSupabaseRequest(
+                method: "DELETE",
+                endpoint: "orders",
+                queryItems: [URLQueryItem(name: "id", value: "eq.\(orderId)")]
+            )
+            throw error
         }
         await refreshAll()
         return true

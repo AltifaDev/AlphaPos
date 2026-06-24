@@ -134,16 +134,23 @@ struct POSView: View {
         }
     }
 
+    private func effectiveTaxRate(for item: OrderItem) -> Double {
+        item.menuItem?.taxRate ?? (UserDefaults.standard.object(forKey: "store_tax_rate") as? Double ?? 7.0)
+    }
+
+    private func isTaxInclusive(for item: OrderItem) -> Bool {
+        item.menuItem?.isTaxInclusive ?? true
+    }
+
     private var sessionOrderedTax: Double {
         guard let session = activeSession else { return 0.0 }
         let rawItems = session.orders.filter { !$0.isDeleted }.flatMap { $0.items }.filter { !$0.isDeleted }
         var totalTax = 0.0
         for item in rawItems {
-            guard let menuItem = item.menuItem else { continue }
             let modifierCost = item.modifiers.reduce(0.0) { $0 + $1.price }
             let lineTotal = (item.unitPrice + modifierCost) * Double(item.quantity)
-            let taxRate = menuItem.taxRate
-            if menuItem.isTaxInclusive ?? true {
+            let taxRate = effectiveTaxRate(for: item)
+            if isTaxInclusive(for: item) {
                 totalTax += lineTotal * (taxRate / (100 + taxRate))
             } else {
                 totalTax += lineTotal * (taxRate / 100)
@@ -166,13 +173,12 @@ struct POSView: View {
         let rawItems = session.orders.filter { !$0.isDeleted }.flatMap { $0.items }.filter { !$0.isDeleted }
         var totalAmount = 0.0
         for item in rawItems {
-            guard let menuItem = item.menuItem else { continue }
             let modifierCost = item.modifiers.reduce(0.0) { $0 + $1.price }
             let lineTotal = (item.unitPrice + modifierCost) * Double(item.quantity)
-            if menuItem.isTaxInclusive ?? true {
+            if isTaxInclusive(for: item) {
                 totalAmount += lineTotal
             } else {
-                let taxRate = menuItem.taxRate
+                let taxRate = effectiveTaxRate(for: item)
                 totalAmount += lineTotal * (1.0 + taxRate / 100)
             }
         }

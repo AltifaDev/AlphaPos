@@ -6,6 +6,11 @@ extension NetworkManager {
     // MARK: - API Upload Endpoints
 
     func uploadOrder(order: Order) async throws -> Bool {
+        let activeItems = order.items.filter { !$0.isDeleted }
+        guard !activeItems.isEmpty else {
+            throw NetworkError.serverError("Refusing to upload order \(order.orderNumber) without order items")
+        }
+
         let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         var orderPayload: [String: Any] = [
             "id": order.id.uuidString.lowercased(),
@@ -34,7 +39,7 @@ extension NetworkManager {
 
         // 2. Insert order items
         var itemsPayload: [[String: Any]] = []
-        for item in order.items {
+        for item in activeItems {
             var itemPayload: [String: Any] = [
                 "id": item.id.uuidString.lowercased(),
                 "order_id": order.id.uuidString.lowercased(),
@@ -391,5 +396,4 @@ extension NetworkManager {
         return true
     }
 }
-
 

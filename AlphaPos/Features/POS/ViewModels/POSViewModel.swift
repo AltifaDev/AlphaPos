@@ -380,6 +380,10 @@ final class POSViewModel {
         lastCheckoutError = "modelContext unavailable — cannot checkout"
         return nil
     }
+    guard !cart.isEmpty else {
+        lastCheckoutError = "cart is empty — cannot create an order without items"
+        return nil
+    }
     let activeBranch = fetchActiveBranch(context: modelContext)
 
     // 1. Create the Order
