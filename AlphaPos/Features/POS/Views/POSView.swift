@@ -57,6 +57,7 @@ struct POSView: View {
     // MARK: - Error Handling
     @State private var errorMessage: String? = nil
     @State private var showingErrorBanner = false
+    @State private var sentToKitchenVersion: Int = 0  // incremented after send-to-kitchen to force ordered-items re-render
 
 
     // MARK: - Grouped Ordered Items
@@ -72,10 +73,20 @@ struct POSView: View {
         let notes: String
     }
 
-    private var groupedOrderedItems: [GroupedOrderedItem] {
+    private var sessionOrdersForDisplay: [Order] {
         guard let session = activeSession else { return [] }
-        let rawItems = session.orders
-            .filter { !$0.isDeleted }
+        var orders = session.orders.filter { !$0.isDeleted }
+        if let recent = viewModel.recentlySubmittedTableOrder,
+           recent.tableSession?.id == session.id,
+           !recent.isDeleted,
+           !orders.contains(where: { $0.id == recent.id }) {
+            orders.append(recent)
+        }
+        return orders
+    }
+
+    private var groupedOrderedItems: [GroupedOrderedItem] {
+        let rawItems = sessionOrdersForDisplay
             .flatMap { $0.items }
             .filter { !$0.isDeleted }
 
@@ -126,8 +137,7 @@ struct POSView: View {
     }
 
     private var sessionOrderedSubtotal: Double {
-        guard let session = activeSession else { return 0.0 }
-        let rawItems = session.orders.filter { !$0.isDeleted }.flatMap { $0.items }.filter { !$0.isDeleted }
+        let rawItems = sessionOrdersForDisplay.flatMap { $0.items }.filter { !$0.isDeleted }
         return rawItems.reduce(0.0) { sum, item in
             let modifierCost = item.modifiers.reduce(0.0) { $0 + $1.price }
             return sum + (item.unitPrice + modifierCost) * Double(item.quantity)
@@ -143,8 +153,7 @@ struct POSView: View {
     }
 
     private var sessionOrderedTax: Double {
-        guard let session = activeSession else { return 0.0 }
-        let rawItems = session.orders.filter { !$0.isDeleted }.flatMap { $0.items }.filter { !$0.isDeleted }
+        let rawItems = sessionOrdersForDisplay.flatMap { $0.items }.filter { !$0.isDeleted }
         var totalTax = 0.0
         for item in rawItems {
             let modifierCost = item.modifiers.reduce(0.0) { $0 + $1.price }
@@ -164,13 +173,11 @@ struct POSView: View {
     }
 
     private var sessionOrderedDiscount: Double {
-        guard let session = activeSession else { return 0.0 }
-        return session.orders.filter { !$0.isDeleted }.reduce(0.0) { $0 + $1.discount }
+        sessionOrdersForDisplay.reduce(0.0) { $0 + $1.discount }
     }
 
     private var sessionOrderedTotal: Double {
-        guard let session = activeSession else { return 0.0 }
-        let rawItems = session.orders.filter { !$0.isDeleted }.flatMap { $0.items }.filter { !$0.isDeleted }
+        let rawItems = sessionOrdersForDisplay.flatMap { $0.items }.filter { !$0.isDeleted }
         var totalAmount = 0.0
         for item in rawItems {
             let modifierCost = item.modifiers.reduce(0.0) { $0 + $1.price }
@@ -390,10 +397,9 @@ struct POSView: View {
     }
 
     private func deleteOrderedItem(_ orderedItem: GroupedOrderedItem) {
-        guard let session = activeSession else { return }
         let targetIdentity = orderedItem.identity
         let targetStatus = orderedItem.status
-        for order in session.orders {
+        for order in sessionOrdersForDisplay {
             if !order.isDeleted {
                 for item in order.items {
                     if !item.isDeleted {
@@ -408,7 +414,7 @@ struct POSView: View {
             }
         }
         try? modelContext.save()
-        viewModel.syncFromSession(session)
+        viewModel.syncFromSession(activeSession)
         APHaptic.trigger()
     }
 
@@ -529,8 +535,8 @@ struct POSView: View {
                     if let idx = viewModel.cart.firstIndex(where: { $0.id == itemId }) {
                         viewModel.cart[idx].notes = noteText
                     }
-                } else if let orderedTarget = editingNoteForOrderedItem, let session = activeSession {
-                    let rawItems = session.orders.filter { !$0.isDeleted }.flatMap { $0.items }.filter { !$0.isDeleted }
+                } else if let orderedTarget = editingNoteForOrderedItem {
+                    let rawItems = sessionOrdersForDisplay.flatMap { $0.items }.filter { !$0.isDeleted }
                     for item in rawItems {
                         if orderedItemIdentity(item) == orderedTarget.identity && item.status == orderedTarget.status {
                             item.notes = noteText
@@ -539,7 +545,7 @@ struct POSView: View {
                         }
                     }
                     try? modelContext.save()
-                    viewModel.syncFromSession(session)
+                    viewModel.syncFromSession(activeSession)
                 }
                 noteText = ""
                 itemToEditNote = nil
@@ -633,6 +639,8 @@ struct POSView: View {
         }
         .onChange(of: activeSession) { _, newSession in
             viewModel.syncFromSession(newSession)
+            // Reset send-to-kitchen counter so the empty-state guard is lifted for the new session
+            sentToKitchenVersion = 0
             animateItems = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 withAnimation(.spring(response: 0.6, dampingFraction: 0.75, blendDuration: 0)) {
@@ -1206,7 +1214,11 @@ struct POSView: View {
                 }
 
                 // Cart list / empty
-                if viewModel.cart.isEmpty && groupedOrderedItems.isEmpty {
+                // Read sentToKitchenVersion HERE (outside the if/else) so SwiftUI tracks
+                // this state variable at the correct scope and re-evaluates the entire
+                // condition when it is incremented after a send-to-kitchen action.
+                let _ = sentToKitchenVersion
+                if viewModel.cart.isEmpty && groupedOrderedItems.isEmpty && sentToKitchenVersion == 0 {
                     VStack(spacing: APSpacing.md) {
                         Image(systemName: "cart.badge.questionmark")
                             .font(.system(size: 40))
@@ -1412,6 +1424,10 @@ struct POSView: View {
                     Button(action: {
                         verifyShiftAndExecute {
                             let order = viewModel.processCheckout(tableSession: enableTableSystem ? activeSession : nil)
+                            // Increment version so the cart panel re-evaluates groupedOrderedItems
+                            // immediately after the cart is cleared (SwiftData relationship change
+                            // may not propagate via @Binding alone when mutated from the ViewModel).
+                            if enableTableSystem && activeSession != nil { sentToKitchenVersion += 1 }
                             if !enableTableSystem, let order {
                                 completedOrderForReceipt = order
                             }

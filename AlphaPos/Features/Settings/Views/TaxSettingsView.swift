@@ -316,6 +316,7 @@ struct TaxSettingsView: View {
                     Text("บวกเพิ่มตอนคิดเงิน (Exclusive)").tag("exclusive")
                 }
                 .pickerStyle(.segmented)
+                .frame(maxWidth: 440)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -326,6 +327,7 @@ struct TaxSettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .frame(maxWidth: 440)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -336,6 +338,7 @@ struct TaxSettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .frame(maxWidth: 440)
             }
 
             ViewThatFits(in: .horizontal) {

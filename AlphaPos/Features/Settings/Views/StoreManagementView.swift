@@ -273,6 +273,53 @@ struct StoreManagementView: View {
                 .fontWeight(.bold)
                 .foregroundColor(.appAccent)
                 .tracking(1.0)
+
+            // ── Advanced Tax Info Banner ─────────────────────────────────
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "link.circle.fill")
+                    .font(.title3)
+                    .foregroundColor(Color(hex: "6366F1"))
+                    .padding(.top, 1)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Basic settings only — linked to Tax & Fees")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.textPrimary)
+
+                    Text("VAT rate, service charge, and tax mode are shared with **Tax & Fees**. Changes here update immediately.\n\nAdvanced settings — tax profile, price basis, rounding, channel rules, and item exemptions — are managed in **Settings → Tax & Fees**.")
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundColor(Color(hex: "10B981"))
+                        Text("VAT Rate · Service Charge · Tax Mode")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundColor(Color(hex: "10B981"))
+                    }
+
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.right.circle.fill")
+                            .font(.caption2)
+                            .foregroundColor(Color(hex: "6366F1"))
+                        Text("Tax Profile · Price Basis · Rounding · Channel Rules → Tax & Fees")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundColor(Color(hex: "6366F1"))
+                    }
+                }
+            }
+            .padding(14)
+            .background(Color(hex: "6366F1").opacity(0.06))
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color(hex: "6366F1").opacity(0.2), lineWidth: 1)
+            )
             
             VStack(spacing: 16) {
                 HStack(spacing: 16) {
@@ -387,6 +434,18 @@ struct StoreManagementView: View {
                         .cornerRadius(APRadius.md)
                         .onChange(of: storeReceiptFooter) { triggerSync() }
                 }
+
+                // ── Receipt Template override note ──────────────────────
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle")
+                        .font(.caption2)
+                        .foregroundColor(.textTertiary)
+                    Text("These are default messages. Individual Receipt Templates (Settings → Receipt Templates) override these values per template.")
+                        .font(.caption2)
+                        .foregroundColor(.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 2)
             }
             .apCard()
         }
@@ -394,177 +453,27 @@ struct StoreManagementView: View {
     
     // MARK: - Receipt Preview Panel
     private var receiptPreviewPanel: some View {
-        VStack(spacing: 12) {
-            Text("live_tax_invoice_preview".t)
-                .font(.caption)
-                .fontWeight(.bold)
-                .foregroundColor(.textSecondary)
-                .tracking(1.0)
-            
-            // Receipt Paper Container
-            VStack(spacing: 8) {
-                // Logo Placeholder/Render
-                if let logo = logoImage {
-                    Image(uiImage: logo)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 44, height: 44)
-                        .clipShape(Circle())
-                } else {
-                    Image(systemName: "storefront.fill")
-                        .font(.title2)
-                        .foregroundColor(.gray)
-                }
-                
-                // Store Profile Headers
-                Text(storeName)
-                    .font(.system(.body, design: .monospaced))
-                    .fontWeight(.bold)
-                    .multilineTextAlignment(.center)
-                
-                Text(storeAddress)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundColor(.gray)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                
-                VStack(spacing: 2) {
-                    Text(LocalizationManager.shared.t("phone_preview_lbl") + ": \(storePhone)")
-                    Text(LocalizationManager.shared.t("web_preview_lbl") + ": \(storeWebsite)")
-                }
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundColor(.gray)
-                
-                Text(L.Store.taxInvoiceHeader.t)
-                    .font(.system(.caption2, design: .monospaced))
-                    .fontWeight(.bold)
-                    .padding(.vertical, 4)
-                
-                HStack {
-                    Text(LocalizationManager.shared.t("tax_id_preview_lbl") + ": \(storeTaxId)")
-                    Spacer()
-                    Text(LocalizationManager.shared.t("branch_preview_lbl") + ": \(storeBranchCode)")
-                }
-                .font(.system(size: 9, design: .monospaced))
-                
-                Text("----------------------------------------")
-                    .foregroundColor(.gray)
-                    .font(.system(.caption, design: .monospaced))
-                
-                // Mock Order Items
-                VStack(spacing: 4) {
-                    HStack {
-                        Text("1 x Classic Pad Thai")
-                        Spacer()
-                        Text("120.00")
-                    }
-                    HStack {
-                        Text("1 x Traditional Thai Iced Tea")
-                        Spacer()
-                        Text("85.00")
-                    }
-                }
-                .font(.system(size: 10, design: .monospaced))
-                
-                Text("----------------------------------------")
-                    .foregroundColor(.gray)
-                    .font(.system(.caption, design: .monospaced))
-                
-                // Calculations based on Inclusive vs Exclusive
-                let rawSubtotal = 205.0
-                let serviceCharge = rawSubtotal * (storeServiceChargeRate / 100.0)
-                let pricingBase = rawSubtotal + serviceCharge
-                
-                let taxAmount: Double = {
-                    let isInclusive = storeTaxType == "inclusive"
-                    if isInclusive {
-                        return pricingBase * (storeTaxRate / (100.0 + storeTaxRate))
-                    } else {
-                        return pricingBase * (storeTaxRate / 100.0)
-                    }
-                }()
-                
-                let grandTotal: Double = {
-                    let isInclusive = storeTaxType == "inclusive"
-                    if isInclusive {
-                        return pricingBase
-                    } else {
-                        return pricingBase + taxAmount
-                    }
-                }()
-                
-                VStack(spacing: 4) {
-                    HStack {
-                        Text(L.Store.subtotalLbl.t)
-                        Spacer()
-                        Text(String(format: "%.2f", rawSubtotal))
-                    }
-                    
-                    if serviceCharge > 0 {
-                        HStack {
-                            Text(LocalizationManager.shared.t("service_charge_lbl") + String(format: " (%.0f%%)", storeServiceChargeRate))
-                            Spacer()
-                            Text(String(format: "%.2f", serviceCharge))
-                        }
-                    }
-                    
-                    HStack {
-                        Text(LocalizationManager.shared.t("vat_lbl") + String(format: " (%.1f%%) - %@", storeTaxRate, storeTaxType == "inclusive" ? "INCL" : "ADD"))
-                        Spacer()
-                        Text(String(format: "%.2f", taxAmount))
-                    }
-                    
-                    HStack {
-                        Text(L.Store.totalLbl.t)
-                            .fontWeight(.bold)
-                        Spacer()
-                        Text(String(format: "฿%.2f", grandTotal))
-                            .fontWeight(.bold)
-                    }
-                }
-                .font(.system(size: 10, design: .monospaced))
-                
-                Text("----------------------------------------")
-                    .foregroundColor(.gray)
-                    .font(.system(.caption, design: .monospaced))
-                
-                // Custom Messages
-                Text(storeReceiptHeader)
-                    .font(.system(size: 9, design: .monospaced))
-                    .multilineTextAlignment(.center)
-                
-                Text(storeReceiptFooter)
-                    .font(.system(size: 9, design: .monospaced))
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 2)
-                
-                // Mock Barcode
-                VStack(spacing: 2) {
-                    HStack(spacing: 2) {
-                        ForEach(0..<24, id: \.self) { i in
-                            Rectangle()
-                                .fill(Color.black)
-                                .frame(width: CGFloat([1, 2, 3, 1].randomElement() ?? 1), height: 32)
-                        }
-                    }
-                    Text("AP-STORE-TAX-\(storeBranchCode)")
-                        .font(.system(size: 8, design: .monospaced))
-                }
-                .padding(.top, 12)
-            }
-            .padding(16)
-            .background(Color.white)
-            .foregroundColor(.black)
-            .cornerRadius(APRadius.sm)
-            .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: 8)
-            .frame(width: 300)
-        }
-        .padding()
-        .background(Color.appSurface)
-        .cornerRadius(APRadius.md)
-        .overlay(
-            RoundedRectangle(cornerRadius: APRadius.md)
-                .stroke(Color.appBorderSubtle, lineWidth: 1)
+        // ใช้ ReceiptLivePreview component เดียวกันกับ Receipt Templates
+        // เพื่อให้ preview ทั้งสองหน้า consistent กัน
+        ReceiptLivePreview(
+            storeName:         storeName,
+            storeAddress:      storeAddress,
+            storePhone:        storePhone,
+            storeTaxId:        storeTaxId,
+            storeBranchCode:   storeBranchCode,
+            storeLogoPath:     storeLogoPath,
+            promptPayNumber:   promptPayNumber,
+            headerText:        storeReceiptHeader,
+            footerText:        storeReceiptFooter,
+            showTaxId:         true,
+            showCustomerInfo:  true,
+            paperWidth:        "80mm",
+            showLogo:          true,
+            showServiceCharge: true,
+            showTableInfo:     true,
+            showQRCode:        !promptPayNumber.isEmpty,
+            showItemModifiers: true,
+            showOrderType:     true
         )
     }
     

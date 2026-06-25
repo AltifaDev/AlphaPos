@@ -11,6 +11,7 @@ struct MainDashboardView: View {
     // รับ LocalizationManager จาก App.swift → trigger re-render เมื่อภาษาเปลี่ยน
     @EnvironmentObject private var lm: LocalizationManager
     @EnvironmentObject private var sessionManager: AppSessionManager
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @AppStorage("app_theme") private var appTheme = AppTheme.dark.rawValue
     @AppStorage("active_branch_id") private var activeBranchId = ""
@@ -19,7 +20,7 @@ struct MainDashboardView: View {
     @AppStorage("staff_session_timeout_minutes") private var staffSessionTimeoutMinutes = 15
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @State private var selectedTab: DashboardTab = .tables
-    @State private var navigationStackID = 0
+    @State private var navigationPath = NavigationPath()
     @State private var posTableSession: TableSession? = nil
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @Query(sort: \InventoryItem.name) private var inventoryItems: [InventoryItem]
@@ -217,12 +218,11 @@ struct MainDashboardView: View {
             sidebarContent
                 .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 260)
         } detail: {
-            NavigationStack {
+            NavigationStack(path: $navigationPath) {
                 detailContent
                     .navigationTitle(" ")
                     .navigationBarTitleDisplayMode(.inline)
             }
-            .id(navigationStackID)
         }
         .apColorScheme()
         .onReceive(timer) { _ in
@@ -273,7 +273,7 @@ struct MainDashboardView: View {
             ensureSelectedTabIsAllowed()
         }
         .onChange(of: selectedTab) { _, _ in
-            navigationStackID += 1
+            navigationPath = NavigationPath()
         }
     }
 
@@ -392,11 +392,14 @@ struct MainDashboardView: View {
             .onTapGesture {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     if selectedTab == tab {
-                        navigationStackID += 1
+                        navigationPath = NavigationPath()
                     } else {
+                        navigationPath = NavigationPath()
                         selectedTab = tab
                     }
-                    columnVisibility = .detailOnly
+                    if horizontalSizeClass == .compact {
+                        columnVisibility = .detailOnly
+                    }
                 }
             }
     }
@@ -601,7 +604,12 @@ struct MainDashboardView: View {
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.appRose.opacity(0.2), lineWidth: 1))
                 .onTapGesture {
-                    withAnimation { selectedTab = .inventory; columnVisibility = .detailOnly }
+                    withAnimation {
+                        selectedTab = .inventory
+                        if horizontalSizeClass == .compact {
+                            columnVisibility = .detailOnly
+                        }
+                    }
                 }
             }
         }

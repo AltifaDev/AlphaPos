@@ -404,8 +404,12 @@ extension SyncEngine {
                         existingOrder.tableSession = targetTableSession
                     }
 
-                    // Update order items
-                    if let remoteItems = remoteOrder["items"] as? [[String: Any]] {
+                    // Update order items. Do not treat an empty remote item payload as
+                    // authoritative for an existing order with local items: Supabase
+                    // realtime can deliver the orders event before the order_items batch
+                    // is visible, and deleting here makes the iPad appear to lose the order.
+                    if let remoteItems = remoteOrder["items"] as? [[String: Any]],
+                       !(remoteItems.isEmpty && !existingOrder.items.isEmpty && total > 0) {
                         let remoteItemIds = Set(remoteItems.compactMap { remoteItem -> UUID? in
                             if let idStr = remoteItem["id"] as? String {
                                 return UUID(uuidString: idStr)
@@ -539,6 +543,27 @@ extension SyncEngine {
                     continue
                 }
 
+                // FIX: retry inline ก่อนสร้าง Order — ถ้ายังไม่มี items หลัง retry ก็ยังสร้าง Order
+                // เพื่อป้องกัน order หายไปจาก SwiftData (เดิม: continue ทิ้ง order ทันที)
+                var effectiveItems = remoteOrder["items"] as? [[String: Any]] ?? []
+                if effectiveItems.isEmpty && total > 0 {
+                    #if DEBUG
+                    print("SyncEngine [Pull]: Order \(orderNumber) has no items yet — retrying fetch inline.")
+                    #endif
+                    // Retry up to 3 รอบ (0.8s, 1.5s, 2.0s) ก่อน fall through สร้าง Order
+                    for retryWait: UInt64 in [800_000_000, 1_500_000_000, 2_000_000_000] {
+                        try? await Task.sleep(nanoseconds: retryWait)
+                        if let freshOrders = try? await NetworkManager.shared.fetchCustomerOrders(),
+                           let match = freshOrders.first(where: { ($0["id"] as? String) == idString }),
+                           let freshItems = match["items"] as? [[String: Any]], !freshItems.isEmpty {
+                            effectiveItems = freshItems
+                            break
+                        }
+                    }
+                    // ไม่ continue — fall through เสมอเพื่อสร้าง Order ใน SwiftData
+                    // ถ้า items ยังว่าง iPhone self-healing polling จะ patch items ทีหลัง
+                }
+
                 // Create new Order
                 let newOrder = Order(
                     id: orderId,
@@ -554,7 +579,8 @@ extension SyncEngine {
                 modelContext.insert(newOrder)
 
                 // Map items
-                if let remoteItems = remoteOrder["items"] as? [[String: Any]] {
+                if !effectiveItems.isEmpty {
+                    let remoteItems = effectiveItems
                     for remoteItem in remoteItems {
                         let name = remoteItem["name"] as? String ?? "Unknown Item"
                         let qty = remoteItem["quantity"] as? Int ?? 1

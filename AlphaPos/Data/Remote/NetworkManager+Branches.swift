@@ -30,7 +30,8 @@ extension NetworkManager {
             "name": branch.name,
             "updated_at": NetworkManager.iso8601.string(from: branch.updatedAt)
         ]
-        if let location = branch.location { payload["location"] = location }
+        // NOTE: branches table has NO 'location' column in Supabase (PGRST204).
+        // location is stored in SwiftData only. Remove from payload to prevent schema cache error.
         if let phone = branch.phone { payload["phone"] = phone }
         _ = try await sendSupabaseRequest(
             method: "POST",

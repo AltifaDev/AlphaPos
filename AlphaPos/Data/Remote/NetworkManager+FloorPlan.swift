@@ -200,9 +200,21 @@ extension NetworkManager {
             payload["face_embedding"] = faceData.base64EncodedString()
         }
 
+        // Try PATCH first (update existing row by id) — avoids username uniqueness violation (23505)
+        // that occurs when two local employees share a username but have different UUIDs.
+        // PATCH on a non-existent id is a no-op (returns 0 rows), then fall through to POST/upsert.
+        let patchData = try? await sendSupabaseRequest(
+            method: "PATCH",
+            endpoint: "employees",
+            queryItems: [URLQueryItem(name: "id", value: "eq.\(employee.id.uuidString.lowercased())")],
+            payload: payload)
+        let patchedCount = (try? JSONSerialization.jsonObject(with: patchData ?? Data()) as? [[String: Any]])?.count ?? 0
+        if patchedCount > 0 { return true }
+
         _ = try await sendSupabaseRequest(
             method: "POST",
             endpoint: "employees",
+            // on_conflict "id" for new employees (PATCH returned 0 rows above)
             queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
             payload: payload
         )
@@ -272,9 +284,13 @@ extension NetworkManager {
         if let promptPayNumber = promptPayNumber { payload["promptpay_number"] = promptPayNumber }
 
         _ = try await sendSupabaseRequest(
-            method: "POST",
+            // Use PATCH (UPDATE) instead of POST (INSERT/UPSERT) for merchants.
+            // The anon role does NOT have INSERT privilege on merchants (42501 error).
+            // Merchant rows are created via admin/edge function — the iPad only needs to UPDATE its own row.
+            // RLS policy ensures each merchant can only PATCH their own row (id = auth.uid()).
+            method: "PATCH",
             endpoint: "merchants",
-            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+            queryItems: [URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())")],
             payload: payload
         )
         return true

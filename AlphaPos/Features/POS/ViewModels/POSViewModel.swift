@@ -61,6 +61,7 @@ final class POSViewModel {
     var currentQueueNumber: String = ""
     var currentBillNumber: String = ""
     var currentOrderDateString: String = ""
+    var recentlySubmittedTableOrder: Order?
 
     // L6: Checkout error state — nil means no error, non-nil contains error description
     var lastCheckoutError: String? = nil
@@ -79,6 +80,9 @@ final class POSViewModel {
 
     func syncFromSession(_ session: TableSession?) {
         if let session = session {
+            if recentlySubmittedTableOrder?.tableSession?.id != session.id {
+                recentlySubmittedTableOrder = nil
+            }
             guestCount = session.guestCount
             cashierName = session.cashierName
             selectedOrderType = "dine_in"
@@ -94,6 +98,7 @@ final class POSViewModel {
             }
             currentOrderDateString = DateFormatter.shortDateTimeFormat().string(from: session.startedAt)
         } else {
+            recentlySubmittedTableOrder = nil
             selectedOrderType = "take_out"
             currentBillNumber = "AP-NEW"
             if currentQueueNumber.isEmpty {
@@ -431,6 +436,7 @@ final class POSViewModel {
     // Explicitly update relationship in-memory
     if let session = tableSession {
         session.orders.append(order)
+        recentlySubmittedTableOrder = order
         session.isSynced = false
         session.updatedAt = Date()
     }

@@ -37,6 +37,18 @@ struct SettingsView: View {
     
     // Language Picker Sheet state
     @State private var showingLanguageSheet = false
+
+    // Settings sub-view sheet states
+    @State private var showingAppearanceSheet = false
+    @State private var showingTableSystemSheet = false
+    @State private var showingKDSSheet = false
+    @State private var showingPrinterSheet = false
+    @State private var showingSecuritySheet = false
+    @State private var showingStaffDevicesSheet = false
+    @State private var showingTaxSheet = false
+    @State private var showingReceiptTemplateSheet = false
+    @State private var showingCurrencySheet = false
+    @State private var showingSystemOpsSheet = false
     
     var body: some View {
         ZStack {
@@ -331,71 +343,221 @@ struct SettingsView: View {
     private var settingsDirectoryList: some View {
         VStack(spacing: 0) {
             // 1. Appearance & Theme
-            NavigationLink(destination: AppearanceSettingsView()) {
+            Button { showingAppearanceSheet = true } label: {
                 SettingsRowView(title: L.Sections.appearance.t, icon: "paintbrush.fill", color: .appAccent)
+            }
+            .buttonStyle(.plain)
+            .fullScreenCover(isPresented: $showingAppearanceSheet) {
+                NavigationStack {
+                    AppearanceSettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { showingAppearanceSheet = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                            }
+                        }
+                }
             }
             
             Divider().background(Color.appDivider).padding(.leading, 56)
             
             // 2. Table System & Web Ordering
-            NavigationLink(destination: TableSystemSettingsView()) {
+            Button { showingTableSystemSheet = true } label: {
                 SettingsRowView(title: L.Sections.tableSystem.t, icon: "tablecells.fill", color: .appTeal)
+            }
+            .buttonStyle(.plain)
+            .fullScreenCover(isPresented: $showingTableSystemSheet) {
+                NavigationStack {
+                    TableSystemSettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { showingTableSystemSheet = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                            }
+                        }
+                }
             }
             
             Divider().background(Color.appDivider).padding(.leading, 56)
             
             // 3. KDS Station Configuration
-            NavigationLink(destination: KDSSettingsView()) {
+            Button { showingKDSSheet = true } label: {
                 SettingsRowView(title: L.Sections.kds.t, icon: "flame.fill", color: .appAmber)
+            }
+            .buttonStyle(.plain)
+            .fullScreenCover(isPresented: $showingKDSSheet) {
+                NavigationStack {
+                    KDSSettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { showingKDSSheet = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                            }
+                        }
+                }
             }
             
             Divider().background(Color.appDivider).padding(.leading, 56)
             
             // 4. Printer Setup & Routing
-            NavigationLink(destination: PrinterSettingsView()) {
+            Button { showingPrinterSheet = true } label: {
                 SettingsRowView(title: L.Sections.printer.t, icon: "printer.fill", color: .indigo)
+            }
+            .buttonStyle(.plain)
+            .fullScreenCover(isPresented: $showingPrinterSheet) {
+                NavigationStack {
+                    PrinterSettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { showingPrinterSheet = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                            }
+                        }
+                }
             }
             
             Divider().background(Color.appDivider).padding(.leading, 56)
             
             // 5. Security & Replication
-            NavigationLink(destination: SecuritySettingsView()) {
+            Button { showingSecuritySheet = true } label: {
                 SettingsRowView(title: L.Sections.security.t, icon: "lock.shield.fill", color: .purple)
+            }
+            .buttonStyle(.plain)
+            .fullScreenCover(isPresented: $showingSecuritySheet) {
+                NavigationStack {
+                    SecuritySettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { showingSecuritySheet = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                            }
+                        }
+                }
             }
             
             Divider().background(Color.appDivider).padding(.leading, 56)
             
             // 6. Link Staff Devices
-            NavigationLink(destination: StaffDevicesSettingsView()) {
+            Button { showingStaffDevicesSheet = true } label: {
                 SettingsRowView(title: L.Sections.linkStaff.t, icon: "qrcode", color: .appAccent)
+            }
+            .buttonStyle(.plain)
+            .fullScreenCover(isPresented: $showingStaffDevicesSheet) {
+                NavigationStack {
+                    StaffDevicesSettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { showingStaffDevicesSheet = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                            }
+                        }
+                }
             }
             
             Divider().background(Color.appDivider).padding(.leading, 56)
             
             // 7. Taxes & Fees
-            NavigationLink(destination: TaxSettingsView()) {
+            Button { showingTaxSheet = true } label: {
                 SettingsRowView(title: L.Sections.taxRates.t, icon: "percent", color: .appAmber)
+            }
+            .buttonStyle(.plain)
+            .fullScreenCover(isPresented: $showingTaxSheet) {
+                NavigationStack {
+                    TaxSettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { showingTaxSheet = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                            }
+                        }
+                }
             }
             
             Divider().background(Color.appDivider).padding(.leading, 56)
             
             // 8. Receipt Templates
-            NavigationLink(destination: ReceiptTemplateSettingsView()) {
+            Button { showingReceiptTemplateSheet = true } label: {
                 SettingsRowView(title: L.Sections.receiptTemplates.t, icon: "doc.text.fill", color: .blue)
+            }
+            .buttonStyle(.plain)
+            .fullScreenCover(isPresented: $showingReceiptTemplateSheet) {
+                NavigationStack {
+                    ReceiptTemplateSettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { showingReceiptTemplateSheet = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                            }
+                        }
+                }
             }
             
             Divider().background(Color.appDivider).padding(.leading, 56)
             
             // 9. Currencies & Exchange
-            NavigationLink(destination: CurrencySettingsView()) {
+            Button { showingCurrencySheet = true } label: {
                 SettingsRowView(title: L.Sections.currencyExchange.t, icon: "dollarsign.circle.fill", color: .appTeal)
+            }
+            .buttonStyle(.plain)
+            .fullScreenCover(isPresented: $showingCurrencySheet) {
+                NavigationStack {
+                    CurrencySettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { showingCurrencySheet = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                            }
+                        }
+                }
             }
             
             Divider().background(Color.appDivider).padding(.leading, 56)
             
             // 10. System Operations & Data Seeding
-            NavigationLink(destination: SystemOpsSettingsView()) {
+            Button { showingSystemOpsSheet = true } label: {
                 SettingsRowView(title: L.Sections.systemOps.t, icon: "arrow.triangle.2.circlepath.circle.fill", color: .appRose)
+            }
+            .buttonStyle(.plain)
+            .fullScreenCover(isPresented: $showingSystemOpsSheet) {
+                NavigationStack {
+                    SystemOpsSettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { showingSystemOpsSheet = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                            }
+                        }
+                }
             }
         }
         .apCard()

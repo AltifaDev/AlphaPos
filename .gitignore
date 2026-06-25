@@ -54,3 +54,7 @@ opencode.json
 .dev.vars*
 !.dev.vars.example
 !.env.example
+
+# Local Claude desktop config
+claude_desktop_config.json
+

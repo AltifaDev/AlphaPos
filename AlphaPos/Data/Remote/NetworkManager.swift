@@ -217,6 +217,8 @@ final class NetworkManager {
             request.setValue(merchantId, forHTTPHeaderField: "x-merchant-id")
         }
         request.timeoutInterval = 5.0
+        // Note: fetchCustomerOrders uses a joined query with order_items(*) which
+        // can be slow. The per-request override below handles that case.
 
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
@@ -241,7 +243,7 @@ final class NetworkManager {
 
     // General request sender that performs actual HTTP queries to Supabase
     // `internal` so all extension files can issue requests without duplicating auth logic
-    func sendSupabaseRequest(method: String, endpoint: String, queryItems: [URLQueryItem]? = nil, payload: Any? = nil) async throws -> Data {
+    func sendSupabaseRequest(method: String, endpoint: String, queryItems: [URLQueryItem]? = nil, payload: Any? = nil, timeoutOverride: Double? = nil) async throws -> Data {
         if simulateOffline {
             throw NetworkError.offline
         }
@@ -269,8 +271,7 @@ final class NetworkManager {
             request.setValue(merchantId, forHTTPHeaderField: "x-merchant-id")
         }
 
-        request.timeoutInterval = 5.0
-
+        request.timeoutInterval = timeoutOverride ?? 5.0
         // Enable upsert for POST with on_conflict parameter
         if method == "POST" {
             request.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
@@ -283,13 +284,34 @@ final class NetworkManager {
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+        let httpStatusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+
+        guard (200...299).contains(httpStatusCode) else {
             let errorMsg = String(data: data, encoding: .utf8) ?? "HTTP Request failed"
-            if errorMsg.contains("PGRST301") {
+            let isAuthError = errorMsg.contains("PGRST301")
+                || httpStatusCode == 401
+                || httpStatusCode == 403
+            if isAuthError {
+                // Try to refresh the token once before giving up.
+                // PGRST301 = JWT decryption error (token expired or wrong key).
+                // Do NOT logout immediately — that makes all subsequent syncs use
+                // anonKey which has no merchant_id claim → RLS blocks order_items inserts.
+                let refreshed = await MerchantAuthManager.shared.tryRefresh()
+                if refreshed {
+                    // Retry the original request with the fresh token
+                    let newToken = MerchantAuthManager.shared.currentToken ?? anonKey
+                    request.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
+                    let (retryData, retryResponse) = (try? await URLSession.shared.data(for: request))
+                        ?? (Data(), URLResponse())
+                    if let retryHTTP = retryResponse as? HTTPURLResponse,
+                       (200...299).contains(retryHTTP.statusCode) {
+                        return retryData
+                    }
+                }
+                // Refresh failed or retry still failed — log but do NOT logout
                 #if DEBUG
-                print("NetworkManager: Detected JWT decryption error (PGRST301). Clearing token...")
+                print("NetworkManager: Auth error (\(httpStatusCode)) — token refresh attempted. errorMsg: \(errorMsg.prefix(200))")
                 #endif
-                MerchantAuthManager.shared.logout()
             }
             throw NetworkError.serverError(errorMsg)
         }
@@ -302,28 +324,47 @@ final class NetworkManager {
         let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
             URLQueryItem(name: "select", value: "*,order_items(*),payments(*)"),
-            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)")
-        ])
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            // Only fetch active/recent orders — reduces payload size and join cost significantly.
+            // "completed" is included so POS can show settled orders in the same session.
+            URLQueryItem(name: "status", value: "in.(preparing,ready,served,completed)"),
+            URLQueryItem(name: "is_deleted", value: "eq.false"),
+            URLQueryItem(name: "order", value: "created_at.desc"),
+            URLQueryItem(name: "limit", value: "50")
+        ], timeoutOverride: 15.0)
 
         guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw NetworkError.invalidResponse
         }
 
+        func fetchDirectOrderItems(orderId: String) async throws -> [[String: Any]] {
+            let itemsData = try await sendSupabaseRequest(method: "GET", endpoint: "order_items", queryItems: [
+                URLQueryItem(name: "select", value: "*"),
+                URLQueryItem(name: "order_id", value: "eq.\(orderId)"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "order", value: "created_at.asc")
+            ])
+            return (try? JSONSerialization.jsonObject(with: itemsData) as? [[String: Any]]) ?? []
+        }
+
         // Map from snake_case database columns to camelCase client names expected by SyncEngine
-        return jsonArray.map { dict in
+        var mappedOrders: [[String: Any]] = []
+        for dict in jsonArray {
             var mapped = dict
             mapped["orderNumber"] = dict["order_number"]
             mapped["tableNumber"] = dict["table_number"]
             mapped["createdAt"] = dict["created_at"]
 
             // Map items
-            if let items = dict["order_items"] as? [[String: Any]] {
-                mapped["items"] = items.map { itemDict in
+            var items = dict["order_items"] as? [[String: Any]] ?? []
+            if items.isEmpty, let orderId = dict["id"] as? String, !orderId.isEmpty {
+                items = (try? await fetchDirectOrderItems(orderId: orderId)) ?? []
+            }
+            mapped["items"] = items.map { itemDict in
                     var mappedItem = itemDict
                     mappedItem["name"] = itemDict["item_name"]
                     mappedItem["itemId"] = itemDict["item_id"]
                     return mappedItem
-                }
             }
 
             // Map payments
@@ -335,7 +376,8 @@ final class NetworkManager {
                     return mappedPay
                 }
             }
-            return mapped
+            mappedOrders.append(mapped)
         }
+        return mappedOrders
     }
 }

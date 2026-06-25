@@ -239,8 +239,52 @@ final class MerchantAuthManager {
         #endif
     }
     
-    // MARK: - Private
-    
+    /// Force-refresh the token regardless of expiry state.
+    /// Returns true if a valid token is now available, false otherwise.
+    /// Used by NetworkManager when a 401/403/PGRST301 error is received
+    /// to recover in-flight requests without logging the user out.
+    @discardableResult
+    func tryRefresh() async -> Bool {
+        let config = AppConfig.shared
+        guard let token = currentToken ?? KeychainManager.shared.retrieve(forKey: keychainTokenKey) else {
+            // No token at all — try re-auth with stored credentials
+            guard let mid = KeychainManager.shared.retrieve(forKey: keychainMerchantIdKey),
+                  let sec = KeychainManager.shared.retrieve(forKey: keychainDeviceSecretKey) else {
+                return false
+            }
+            return (try? await authenticate(merchantId: mid, deviceSecret: sec)) != nil
+        }
+
+        // Attempt token refresh via Edge Function
+        let refreshURL = URL(string: config.supabaseURL.absoluteString + "/functions/v1/refresh-token")!
+        var req = URLRequest(url: refreshURL)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(config.supabaseAnonKey, forHTTPHeaderField: "apikey")
+        req.setValue("Bearer \(config.supabaseAnonKey)", forHTTPHeaderField: "Authorization")
+        req.setValue(token, forHTTPHeaderField: "X-Merchant-Token")
+        req.timeoutInterval = 10.0
+
+        if let (data, resp) = try? await URLSession.shared.data(for: req),
+           let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let newToken = json["access_token"] as? String,
+           let expiresIn = json["expires_in"] as? Int {
+            let newExpiry = Date().timeIntervalSince1970 + Double(expiresIn)
+            KeychainManager.shared.save(newToken, forKey: keychainTokenKey)
+            KeychainManager.shared.save(String(newExpiry), forKey: keychainExpiryKey)
+            NotificationCenter.default.post(name: .merchantTokenDidRefresh, object: nil)
+            return true
+        }
+
+        // Refresh failed — fall back to re-auth with stored credentials
+        guard let mid = KeychainManager.shared.retrieve(forKey: keychainMerchantIdKey),
+              let sec = KeychainManager.shared.retrieve(forKey: keychainDeviceSecretKey) else {
+            return false
+        }
+        return (try? await authenticate(merchantId: mid, deviceSecret: sec)) != nil
+    }
+
     /// Schedule a timer to auto-refresh the token before it expires.
     private func scheduleAutoRefresh() {
         refreshTimer?.invalidate()

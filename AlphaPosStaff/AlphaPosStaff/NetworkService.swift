@@ -268,7 +268,10 @@ final class NetworkService {
         let merchantId = activeMerchantId.isEmpty ? AppConfig.defaultMerchantId : activeMerchantId
         request.setValue(merchantId, forHTTPHeaderField: "x-merchant-id")
         
-        request.timeoutInterval = 5.0
+        // Joined queries (select with nested relations like order_items(*)) can be
+        // slower than simple selects — 15 s gives enough headroom on slow WiFi/3G
+        // while still catching genuine outages within a reasonable window.
+        request.timeoutInterval = 15.0
         
         // Enable upsert for POST with on_conflict parameter
         if method == "POST" {
@@ -888,6 +891,8 @@ final class NetworkService {
         for dict in jsonArray {
             let orderId = dict["id"] as? String ?? ""
             var items = parseOrderItems(dict["order_items"] as? [[String: Any]] ?? [])
+            // Fallback: joined query อาจไม่มี items ถ้า PostgREST cache หรือ replication lag
+            // fetch order_items แยกทันที (ไม่ต้อง sleep เพราะ uploadOrder ส่ง concurrent แล้ว)
             if items.isEmpty && !orderId.isEmpty {
                 items = try await fetchOrderItems(orderId: orderId)
             }
@@ -910,9 +915,10 @@ final class NetworkService {
     func fetchAllActiveOrders() async throws -> [Order] {
         let ordersData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
             URLQueryItem(name: "select", value: "*,order_items(*)"),
-            URLQueryItem(name: "status", value: "in.(preparing,ready,served,completed)"),
+            // ไม่ fetch completed — ลด payload และป้องกัน orders เก่า occupy ใน limit
+            URLQueryItem(name: "status", value: "in.(preparing,ready,served)"),
             URLQueryItem(name: "order", value: "created_at.desc"),
-            URLQueryItem(name: "limit", value: "30")
+            URLQueryItem(name: "limit", value: "100")
         ])
         let jsonArray = (try? JSONSerialization.jsonObject(with: ordersData) as? [[String: Any]]) ?? []
         return try await parseOrders(jsonArray)
@@ -1439,9 +1445,19 @@ final class NetworkService {
                             if statusLower == "preparing" || statusLower == "ready" {
                                 if !notifiedOrderIds.contains(notificationKey) {
                                     self.markOrderAsNotified(key: notificationKey)
-                                    let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "📝 New Order \(orderNumber)"
-                                    let body = "Table \(tableNumber)"
-                                    NotificationManager.shared.notify(title: title, body: body, type: .order, deduplicationKey: notificationKey, userInfo: ["table_number": tableNumber, "type": "order", "order_id": id])
+                                    // Delay notification until items are fetched so the body
+                                    // shows item names instead of blank "Table X:".
+                                    // Items arrive 1-3s after the order INSERT event.
+                                    Task {
+                                        try? await Task.sleep(nanoseconds: 2_500_000_000)
+                                        if let fetched = try? await NetworkService.shared.fetchOrderById(id) {
+                                            let itemsSummary = fetched.items.isEmpty
+                                                ? "Table \(tableNumber)"
+                                                : fetched.items.prefix(3).map { "\($0.quantity)× \($0.name)" }.joined(separator: ", ")
+                                            let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "🧾 New Order \(orderNumber)"
+                                            NotificationManager.shared.notify(title: title, body: itemsSummary, type: .order, deduplicationKey: notificationKey, userInfo: ["table_number": tableNumber, "type": "order", "order_id": id])
+                                        }
+                                    }
                                 }
                             }
                         } else if type == "UPDATE" {
@@ -1460,12 +1476,28 @@ final class NetworkService {
                     // Fetch the single order + items to mutate self.orders locally
                     Task {
                         do {
-                            if let fetchedOrder = try await NetworkService.shared.fetchOrderById(id) {
+                            // When the iPad sends an order it POSTs orders first, then order_items.
+                            // Delay 2.0 s on INSERT (increased from 1.2 s) to cover slow networks
+                            // and server load. The retry loop below handles persistent race conditions.
+                            if type == "INSERT" {
+                                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            }
+                            // Retry up to 4 times (2s, 2s, 3s, 3s) until items arrive
+                            var fetchedOrder = try await NetworkService.shared.fetchOrderById(id)
+                            let retryDelays: [UInt64] = [2_000_000_000, 2_000_000_000, 3_000_000_000, 3_000_000_000]
+                            if type == "INSERT" {
+                                for delay in retryDelays {
+                                    guard let order = fetchedOrder, order.items.isEmpty else { break }
+                                    try? await Task.sleep(nanoseconds: delay)
+                                    fetchedOrder = try? await NetworkService.shared.fetchOrderById(id)
+                                }
+                            }
+                            if let order = fetchedOrder {
                                 await MainActor.run {
-                                    if let idx = self.orders.firstIndex(where: { $0.id == fetchedOrder.id }) {
-                                        self.orders[idx] = fetchedOrder
+                                    if let idx = self.orders.firstIndex(where: { $0.id == order.id }) {
+                                        self.orders[idx] = order
                                     } else {
-                                        self.orders.insert(fetchedOrder, at: 0)
+                                        self.orders.insert(order, at: 0)
                                     }
                                 }
                             }
@@ -1540,12 +1572,29 @@ final class NetworkService {
                 // Fetch the single order + items to mutate self.orders locally
                 Task {
                     do {
-                        if let fetchedOrder = try await NetworkService.shared.fetchOrderById(orderId) {
+                        // INSERT event arrives before the batch order_items POST completes.
+                        // Wait 1.2 s (เพิ่มจาก 0.8s) เพื่อให้ batch POST order_items เสร็จก่อน
+                        if type == "INSERT" {
+                            try? await Task.sleep(nanoseconds: 1_200_000_000)
+                        }
+                        // Retry loop: รอให้ items มาถึงก่อน insert/update self.orders
+                        var fetchedOrder = try await NetworkService.shared.fetchOrderById(orderId)
+                        let retryDelays: [UInt64] = [1_500_000_000, 2_000_000_000, 2_500_000_000]
+                        if type == "INSERT" {
+                            for delay in retryDelays {
+                                guard let order = fetchedOrder, order.items.isEmpty else { break }
+                                try? await Task.sleep(nanoseconds: delay)
+                                fetchedOrder = try? await NetworkService.shared.fetchOrderById(orderId)
+                            }
+                        }
+                        if let order = fetchedOrder {
                             await MainActor.run {
-                                if let idx = self.orders.firstIndex(where: { $0.id == fetchedOrder.id }) {
-                                    self.orders[idx] = fetchedOrder
+                                if let idx = self.orders.firstIndex(where: { $0.id == order.id }) {
+                                    self.orders[idx] = order
                                 } else {
-                                    self.orders.insert(fetchedOrder, at: 0)
+                                    // order_items event มาถึงก่อน orders event (หรือ order ไม่อยู่ใน limit)
+                                    // ให้เพิ่ม order เข้า self.orders เสมอ เพื่อให้ onChange ใน TableDetailView fire
+                                    self.orders.insert(order, at: 0)
                                 }
                             }
                         }

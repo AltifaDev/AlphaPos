@@ -12,65 +12,73 @@ extension NetworkManager {
         }
 
         let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+
+        // ── Build order payload ───────────────────────────────────────────────
         var orderPayload: [String: Any] = [
-            "id": order.id.uuidString.lowercased(),
-            "order_number": order.orderNumber,
-            "table_number": order.tableSession?.table?.tableNumber ?? "",
-            "total": order.total,
-            "status": order.status,
-            "created_at": NetworkManager.iso8601.string(from: order.createdAt),
-            "updated_at": NetworkManager.iso8601.string(from: order.updatedAt),
-            "merchant_id": merchantId,
-            "delivery_brand": order.deliveryBrand ?? "",
-            "delivery_gp": order.deliveryGP,
-            "delivery_ad_fee": order.deliveryAdFee,
+            "id":                    order.id.uuidString.lowercased(),
+            "order_number":          order.orderNumber,
+            "table_number":          order.tableSession?.table?.tableNumber ?? "",
+            "total":                 order.total,
+            "status":                order.status,
+            "created_at":            NetworkManager.iso8601.string(from: order.createdAt),
+            "updated_at":            NetworkManager.iso8601.string(from: order.updatedAt),
+            "merchant_id":           merchantId,
+            "delivery_brand":        order.deliveryBrand ?? "",
+            "delivery_gp":           order.deliveryGP,
+            "delivery_ad_fee":       order.deliveryAdFee,
             "delivery_ad_fee_is_pct": order.deliveryAdFeeIsPct,
-            "delivery_other_fee": order.deliveryOtherFee
+            "delivery_other_fee":    order.deliveryOtherFee,
+            "guest_count":           order.guestCount
         ]
-        orderPayload["guest_count"] = order.guestCount
         if let sessionToken = order.tableSession?.sessionToken {
             orderPayload["session_token"] = sessionToken
         }
 
-        // 1. Insert order record
-        _ = try await sendSupabaseRequest(method: "POST", endpoint: "orders",
-            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
-            payload: orderPayload)
-
-        // 2. Insert order items
+        // ── Build items payload ──────────────────────────────────────────────
         var itemsPayload: [[String: Any]] = []
         for item in activeItems {
             var itemPayload: [String: Any] = [
-                "id": item.id.uuidString.lowercased(),
-                "order_id": order.id.uuidString.lowercased(),
+                "id":        item.id.uuidString.lowercased(),
+                "order_id":  order.id.uuidString.lowercased(),
                 "item_name": item.menuItem?.name ?? (item.itemName.isEmpty ? "Unknown Item" : item.itemName),
-                "quantity": item.quantity,
-                "price": item.unitPrice,
-                "status": item.status,
+                "quantity":  item.quantity,
+                "price":     item.unitPrice,
+                "status":    item.status,
                 "merchant_id": merchantId,
-                "created_at": NetworkManager.iso8601.string(from: Date())
+                "created_at":  NetworkManager.iso8601.string(from: Date()),
+                "notes":     NSNull(),
+                "served_by": NSNull()
             ]
-            if let servedBy = item.servedBy {
-                itemPayload["served_by"] = servedBy
-            } else {
-                itemPayload["served_by"] = NSNull()
-            }
-            if let itemId = item.menuItem?.id {
-                itemPayload["item_id"] = itemId.lowercased()
-            } else {
-                itemPayload["item_id"] = NSNull()
-            }
-            if let branchId = order.branch?.id {
-                itemPayload["branch_id"] = branchId.uuidString.lowercased()
-            }
+            if let notes = item.notes, !notes.isEmpty { itemPayload["notes"] = notes }
+            if let servedBy = item.servedBy            { itemPayload["served_by"] = servedBy }
+            if let itemId = item.menuItem?.id           { itemPayload["item_id"] = itemId.lowercased() }
+            if let branchId = order.branch?.id          { itemPayload["branch_id"] = branchId.uuidString.lowercased() }
             itemsPayload.append(itemPayload)
         }
-        if !itemsPayload.isEmpty {
-            _ = try await sendSupabaseRequest(method: "POST", endpoint: "order_items",
-                queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
-                payload: itemsPayload)
-        }
 
+        // ── ATOMIC RPC call (มาตรฐานสากล — Single Transaction) ───────────────
+        // แทนที่จะส่ง POST orders + POST order_items แยก (partial commit ได้)
+        // ใช้ create_order_atomic RPC ที่ Postgres รัน BEGIN…COMMIT เดียว
+        // → ถ้า items fail → order ก็ rollback อัตโนมัติ (ไม่มี orphan order)
+        // → idempotent: ON CONFLICT DO UPDATE → retry ปลอดภัย
+        let rpcPayload: [String: Any] = [
+            "p_order": orderPayload,
+            "p_items": itemsPayload
+        ]
+
+        let data = try await sendSupabaseRequest(
+            method:          "POST",
+            endpoint:        "rpc/create_order_atomic",
+            payload:         rpcPayload,
+            timeoutOverride: 15.0
+        )
+
+        // ตรวจสอบ response { "order_id": "...", "items_count": N, "status": "ok" }
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let status = json["status"] as? String, status == "ok" {
+            return true
+        }
+        // RPC return ค่าอื่น — ถือว่าสำเร็จถ้าไม่มี HTTP error (sendSupabaseRequest throw แล้ว)
         return true
     }
 
@@ -396,4 +404,3 @@ extension NetworkManager {
         return true
     }
 }
-

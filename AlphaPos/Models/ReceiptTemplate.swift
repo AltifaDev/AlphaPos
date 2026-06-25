@@ -5,6 +5,8 @@ import SwiftData
 final class ReceiptTemplate {
     @Attribute(.unique) var id: UUID
     var name: String
+    /// "receipt" | "kitchen" | "bar" | "sticker"
+    var templateType: String
     var headerText: String?
     var footerText: String?
     var logoUrl: String?
@@ -20,6 +22,8 @@ final class ReceiptTemplate {
     var showQRCode: Bool
     var showItemModifiers: Bool
     var showOrderType: Bool
+    /// Sticker label size: "40x30" | "50x25" | "62x29"
+    var stickerSize: String
 
     // Offline-First Sync Metadata
     var isSynced: Bool
@@ -30,6 +34,7 @@ final class ReceiptTemplate {
     init(
         id: UUID = UUID(),
         name: String,
+        templateType: String = "receipt",
         headerText: String? = nil,
         footerText: String? = nil,
         logoUrl: String? = nil,
@@ -43,6 +48,7 @@ final class ReceiptTemplate {
         showQRCode: Bool = true,
         showItemModifiers: Bool = true,
         showOrderType: Bool = true,
+        stickerSize: String = "40x30",
         isSynced: Bool = false,
         isDeleted: Bool = false,
         updatedAt: Date = Date(),
@@ -50,6 +56,7 @@ final class ReceiptTemplate {
     ) {
         self.id = id
         self.name = name
+        self.templateType = templateType
         self.headerText = headerText
         self.footerText = footerText
         self.logoUrl = logoUrl
@@ -63,6 +70,7 @@ final class ReceiptTemplate {
         self.showQRCode = showQRCode
         self.showItemModifiers = showItemModifiers
         self.showOrderType = showOrderType
+        self.stickerSize = stickerSize
         self.isSynced = isSynced
         self.isDeleted = isDeleted
         self.updatedAt = updatedAt

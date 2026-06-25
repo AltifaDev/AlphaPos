@@ -4,33 +4,40 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MARK: - ReceiptTemplateSettingsView
+// MARK: - ReceiptTemplateSettingsView  (v3 — Full Redesign)
+// Layout: 3-column iPad | Type sidebar | Settings panel | Live preview
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct ReceiptTemplateSettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \ReceiptTemplate.name) private var templates: [ReceiptTemplate]
 
+    // ── Selection ────────────────────────────────────────────────────────────
+    @State private var selectedType:     PrintDocType = .receipt
     @State private var selectedTemplate: ReceiptTemplate? = nil
-    @State private var isCreatingNew = false
-    @State private var compactSection = "editor"
+    @State private var isCreatingNew     = false
+    @State private var compactSection    = "editor"   // "editor" | "preview"
 
-    // ── Form State ────────────────────────────────────────────────────────────
-    @State private var name               = ""
-    @State private var headerText         = ""
-    @State private var footerText         = ""
-    @State private var showTaxId          = true
-    @State private var showCustomerInfo   = true
-    @State private var isDefault          = false
-    @State private var paperWidth         = "80mm"
-    @State private var showLogo           = true
-    @State private var showServiceCharge  = true
-    @State private var showTableInfo      = true
-    @State private var showQRCode         = true
-    @State private var showItemModifiers  = true
-    @State private var showOrderType      = true
+    // ── Form State (mirrors ReceiptTemplate fields) ───────────────────────────
+    @State private var name              = ""
+    @State private var headerText        = ""
+    @State private var footerText        = ""
+    @State private var isDefault         = false
+    @State private var paperWidth        = "80mm"
+    // Receipt-specific
+    @State private var showLogo          = true
+    @State private var showTaxId         = true
+    @State private var showCustomerInfo  = true
+    @State private var showQRCode        = true
+    @State private var showServiceCharge = true
+    // Shared (kitchen/bar/receipt)
+    @State private var showTableInfo     = true
+    @State private var showOrderType     = true
+    @State private var showItemModifiers = true
+    // Sticker-specific
+    @State private var stickerSize       = "40x30"
 
-    // ── Store info ────────────────────────────────────────────────────────────
+    // ── Store info (AppStorage) ───────────────────────────────────────────────
     @AppStorage("store_name")        private var storeName       = "AlphaPos Restaurant"
     @AppStorage("store_phone")       private var storePhone      = "02-123-4567"
     @AppStorage("store_address")     private var storeAddress    = "123 Sukhumvit Rd, Bangkok"
@@ -39,92 +46,515 @@ struct ReceiptTemplateSettingsView: View {
     @AppStorage("store_logo_path")   private var storeLogoPath   = ""
     @AppStorage("promptpay_number")  private var promptPayNumber = ""
 
-    private var activeTemplates: [ReceiptTemplate] { templates.filter { !$0.isDeleted } }
+    // ── Computed ──────────────────────────────────────────────────────────────
+    private var templatesForType: [ReceiptTemplate] {
+        templates.filter { !$0.isDeleted && $0.templateType == selectedType.rawValue }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Print Document Types
+    // ─────────────────────────────────────────────────────────────────────────
+
+    enum PrintDocType: String, CaseIterable {
+        case receipt = "receipt"
+        case kitchen = "kitchen"
+        case bar     = "bar"
+        case sticker = "sticker"
+
+        var label: String {
+            switch self {
+            case .receipt: return "Receipt"
+            case .kitchen: return "Kitchen"
+            case .bar:     return "Bar"
+            case .sticker: return "Sticker"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .receipt: return "doc.text.fill"
+            case .kitchen: return "flame.fill"
+            case .bar:     return "cup.and.saucer.fill"
+            case .sticker: return "tag.fill"
+            }
+        }
+        var accentHex: String {
+            switch self {
+            case .receipt: return "6366F1"
+            case .kitchen: return "EF4444"
+            case .bar:     return "3B82F6"
+            case .sticker: return "10B981"
+            }
+        }
+        var description: String {
+            switch self {
+            case .receipt: return "Tax invoice · Customer receipt"
+            case .kitchen: return "Kitchen order ticket (ESC/POS)"
+            case .bar:     return "Beverage station ticket (ESC/POS)"
+            case .sticker: return "Cup label · TSPL 40×30 mm"
+            }
+        }
+        var previewType: ReceiptLivePreview.PreviewType {
+            switch self {
+            case .receipt: return .receipt
+            case .kitchen: return .kitchen
+            case .bar:     return .bar
+            case .sticker: return .sticker
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Body
+    // ─────────────────────────────────────────────────────────────────────────
 
     var body: some View {
         GeometryReader { proxy in
-            let isCompact = proxy.size.width < 950
+            let isCompact = proxy.size.width < 900
 
             ZStack {
                 Color.appBackground.ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    if isCompact {
-                        Picker("Receipt Section", selection: $compactSection) {
-                            Text("template_tab_edit".t).tag("editor")
-                            Text("template_tab_preview".t).tag("preview")
-                        }
-                        .pickerStyle(.segmented)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
-                        .padding(.bottom, 8)
-                    }
-
-                    if isCompact {
-                        compactLayout
-                    } else {
-                        regularLayout
-                    }
+                if isCompact {
+                    compactLayout
+                } else {
+                    regularLayout
                 }
             }
         }
+        .navigationBarTitleDisplayMode(.inline)
         .navigationTitle("receipt_templates_title".t)
-        .apNavBar(background: Color.appBackground)
         .onAppear {
-            if let first = activeTemplates.first { selectTemplate(first) }
-            else { setupNewTemplateForm() }
+            autoSelectTemplate()
+        }
+        .onChange(of: selectedType) { _, _ in
+            autoSelectTemplate()
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Regular Layout (iPad — 3 columns)
+    // ─────────────────────────────────────────────────────────────────────────
 
     private var regularLayout: some View {
-        HStack(alignment: .top, spacing: 20) {
-            // ── LEFT: List + Editor ───────────────────────────────────────
-            VStack(alignment: .leading, spacing: 16) {
-                listHeader
-                HStack(alignment: .top, spacing: 16) {
-                    templateSidebar.frame(width: 200)
-                    Rectangle().fill(Color.appDivider).frame(width: 1)
-                    editorPanel.frame(maxWidth: .infinity)
+        HStack(alignment: .top, spacing: 0) {
+
+            // ── Col 1: Type Selector (fixed 130pt) ───────────────────────────
+            typeSelectorColumn
+                .frame(width: 130)
+
+            Divider().background(Color.appDivider)
+
+            // ── Col 2: Template List + Settings (flexible) ───────────────────
+            VStack(alignment: .leading, spacing: 0) {
+                templateListHeader
+                    .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 8)
+                Divider().background(Color.appDivider)
+                HStack(alignment: .top, spacing: 0) {
+                    templateListPanel
+                        .frame(width: 180)
+                    Divider().background(Color.appDivider)
+                    settingsPanel
+                        .frame(maxWidth: .infinity)
                 }
+                .frame(maxHeight: .infinity)
             }
-            .padding()
-            .apCard()
             .frame(maxWidth: .infinity)
 
-            // ── RIGHT: Live Preview ───────────────────────────────────────
-            previewColumn
-                .frame(width: 340)
+            Divider().background(Color.appDivider)
+
+            // ── Col 3: Live Preview (fixed 380pt) ────────────────────────────
+            livePreviewColumn
+                .frame(width: 380)
         }
-        .padding()
+        .background(Color.appBackground)
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Compact Layout (segmented picker)
+    // ─────────────────────────────────────────────────────────────────────────
 
     private var compactLayout: some View {
         VStack(spacing: 0) {
-            if compactSection == "editor" {
-                VStack(alignment: .leading, spacing: 16) {
-                    listHeader
-                    HStack(alignment: .top, spacing: 16) {
-                        templateSidebar.frame(width: 200)
-                        Rectangle().fill(Color.appDivider).frame(width: 1)
-                        editorPanel.frame(maxWidth: .infinity)
+            // Type + section picker row
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(PrintDocType.allCases, id: \.self) { type in
+                        typeChip(type, compact: true)
                     }
                 }
-                .padding()
-                .apCard()
-                .frame(maxWidth: .infinity)
-            } else {
-                HStack {
-                    Spacer()
-                    previewColumn
-                        .frame(width: 360)
-                    Spacer()
+                .padding(.horizontal, 16)
+            }
+            .padding(.vertical, 10)
+            .background(Color.appSurface)
+
+            Picker("Section", selection: $compactSection) {
+                Text("Settings").tag("editor")
+                Text("Preview").tag("preview")
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16).padding(.vertical, 8)
+
+            Divider().background(Color.appDivider)
+
+            if compactSection == "editor" {
+                VStack(spacing: 0) {
+                    templateListHeader
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                    Divider().background(Color.appDivider)
+                    settingsPanel.frame(maxWidth: .infinity)
                 }
+            } else {
+                livePreviewColumn
             }
         }
-        .padding()
     }
 
-    private var previewColumn: some View {
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Col 1: Type Selector
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private var typeSelectorColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("PRINT TYPE")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(.textTertiary)
+                .tracking(1.2)
+                .padding(.horizontal, 12).padding(.top, 16).padding(.bottom, 8)
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 4) {
+                    ForEach(PrintDocType.allCases, id: \.self) { type in
+                        typeChip(type, compact: false)
+                    }
+                }
+                .padding(.horizontal, 8).padding(.bottom, 16)
+            }
+
+            Spacer()
+        }
+        .background(Color.appSurface)
+    }
+
+    @ViewBuilder
+    private func typeChip(_ type: PrintDocType, compact: Bool) -> some View {
+        let isSelected = selectedType == type
+        let accent = Color(hex: type.accentHex)
+
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) { selectedType = type }
+            APHaptic.trigger()
+        } label: {
+            if compact {
+                HStack(spacing: 6) {
+                    Image(systemName: type.icon)
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(type.label)
+                        .font(.system(size: 13, weight: isSelected ? .bold : .regular))
+                }
+                .foregroundColor(isSelected ? .white : .textSecondary)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(isSelected ? accent : Color.appSurfaceHigh)
+                .cornerRadius(20)
+            } else {
+                VStack(spacing: 6) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(isSelected ? accent : Color.appSurfaceHigh)
+                            .frame(width: 44, height: 44)
+                        Image(systemName: type.icon)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(isSelected ? .white : accent.opacity(0.8))
+                    }
+                    Text(type.label)
+                        .font(.system(size: 11, weight: isSelected ? .bold : .regular))
+                        .foregroundColor(isSelected ? .textPrimary : .textSecondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(isSelected ? accent.opacity(0.08) : Color.clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(isSelected ? accent.opacity(0.4) : Color.clear, lineWidth: 1.5)
+                )
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Col 2a: Template List
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private var templateListHeader: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(selectedType.label + " Templates")
+                    .font(.headline).foregroundColor(.textPrimary)
+                Text(selectedType.description)
+                    .font(.caption2).foregroundColor(.textSecondary)
+            }
+            Spacer()
+            Button { setupNewTemplateForm() } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 30, height: 30)
+                    .background(Color.appAccent)
+                    .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var templateListPanel: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 6) {
+                if templatesForType.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.largeTitle).foregroundColor(.textTertiary)
+                        Text("No \(selectedType.label) templates")
+                            .font(.caption).foregroundColor(.textSecondary)
+                            .multilineTextAlignment(.center)
+                        Button { setupNewTemplateForm() } label: {
+                            Label("Create First", systemImage: "plus")
+                                .font(.caption).fontWeight(.bold)
+                                .foregroundColor(.appAccent)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.vertical, 32).frame(maxWidth: .infinity)
+                } else {
+                    ForEach(templatesForType) { tmpl in
+                        templateRow(tmpl)
+                    }
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 12)
+        }
+    }
+
+    @ViewBuilder
+    private func templateRow(_ tmpl: ReceiptTemplate) -> some View {
+        let isSelected = selectedTemplate?.id == tmpl.id
+        Button { selectTemplate(tmpl) } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tmpl.name)
+                        .font(.subheadline)
+                        .fontWeight(isSelected ? .semibold : .regular)
+                        .foregroundColor(.textPrimary)
+                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        if tmpl.isDefault {
+                            Text("DEFAULT")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .background(Color.appAccent)
+                                .cornerRadius(4)
+                        }
+                        Text(tmpl.paperWidth)
+                            .font(.system(size: 9)).foregroundColor(.textTertiary)
+                    }
+                }
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.appAccent)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isSelected ? Color.appAccent.opacity(0.08) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? Color.appAccent.opacity(0.3) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(role: .destructive) { deleteTemplate(tmpl) } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Col 2b: Settings Panel (type-aware)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private var settingsPanel: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 20) {
+                // ── Identity ────────────────────────────────────────────────
+                settingsSectionHeader("IDENTITY")
+                cardGroup {
+                    fieldLabel("Template Name")
+                    TextField("e.g. Standard Receipt", text: $name).apTemplateTextField()
+                    apDivider
+                    fieldLabel("Paper Width")
+                    Picker("Paper Width", selection: $paperWidth) {
+                        if selectedType != .sticker {
+                            Text("80 mm Thermal").tag("80mm")
+                            Text("58 mm Thermal").tag("58mm")
+                        } else {
+                            Text("40 × 30 mm").tag("40x30")
+                            Text("50 × 25 mm").tag("50x25")
+                            Text("62 × 29 mm").tag("62x29")
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    apDivider
+                    Toggle(isOn: $isDefault) {
+                        toggleLabel("Set as Default",
+                                    sub: "Use this template when printing \(selectedType.label)")
+                    }.tint(.appAccent)
+                }
+
+                // ── Type-specific settings ───────────────────────────────────
+                switch selectedType {
+                case .receipt:  receiptSpecificSettings
+                case .kitchen:  kitchenBarSettings(stationType: "Kitchen")
+                case .bar:      kitchenBarSettings(stationType: "Bar")
+                case .sticker:  stickerSettings
+                }
+
+                // ── Save button ──────────────────────────────────────────────
+                Button { saveTemplate() } label: {
+                    Text(isCreatingNew ? "Create Template" : "Save Changes")
+                        .fontWeight(.bold)
+                }
+                .apGradientButton(
+                    gradient: APGradient.accent,
+                    shadow: APShadow.glow,
+                    disabled: name.isEmpty
+                )
+                .disabled(name.isEmpty)
+                .padding(.bottom, 24)
+            }
+            .padding(16)
+        }
+    }
+
+    // ── Receipt-specific settings ────────────────────────────────────────────
+    private var receiptSpecificSettings: some View {
+        Group {
+            settingsSectionHeader("HEADER & FOOTER")
+            cardGroup {
+                fieldLabel("Header Text")
+                TextField("e.g. Welcome to AlphaPos!", text: $headerText).apTemplateTextField()
+                apDivider
+                fieldLabel("Footer Text")
+                TextField("e.g. Follow us: @alphapos.cafe", text: $footerText).apTemplateTextField()
+            }
+
+            settingsSectionHeader("BRANDING & MEDIA")
+            cardGroup {
+                Toggle(isOn: $showLogo) {
+                    toggleLabel("Store Logo",
+                                sub: storeLogoPath.isEmpty
+                                    ? "⚠ No logo — set in Store Management"
+                                    : "✓ Logo configured")
+                }.tint(.appAccent)
+                apDivider
+                Toggle(isOn: $showQRCode) {
+                    toggleLabel("PromptPay QR",
+                                sub: promptPayNumber.isEmpty
+                                    ? "Set PromptPay number in Store Management"
+                                    : "PromptPay: \(maskedPromptPay)")
+                }.tint(.appAccent)
+            }
+
+            settingsSectionHeader("CONTENT VISIBILITY")
+            cardGroup {
+                Toggle(isOn: $showTaxId) {
+                    toggleLabel("Tax ID & Branch Code", sub: "TAX ID · BR: 00000")
+                }.tint(.appAccent)
+                apDivider
+                Toggle(isOn: $showCustomerInfo) {
+                    toggleLabel("Customer Info", sub: "Customer name · Tax exemption no.")
+                }.tint(.appAccent)
+                apDivider
+                Toggle(isOn: $showTableInfo) {
+                    toggleLabel("Table & Queue", sub: "Table number · Queue number")
+                }.tint(.appAccent)
+                apDivider
+                Toggle(isOn: $showOrderType) {
+                    toggleLabel("Order Type Badge", sub: "Dine-in / Take-out / Delivery")
+                }.tint(.appAccent)
+                apDivider
+                Toggle(isOn: $showItemModifiers) {
+                    toggleLabel("Item Modifiers", sub: "+ Extra Cheese · Sweet 50%")
+                }.tint(.appAccent)
+                apDivider
+                Toggle(isOn: $showServiceCharge) {
+                    toggleLabel("Service Charge Line", sub: "10% service charge row")
+                }.tint(.appAccent)
+            }
+        }
+    }
+
+    // ── Kitchen / Bar settings ────────────────────────────────────────────────
+    @ViewBuilder
+    private func kitchenBarSettings(stationType: String) -> some View {
+        settingsSectionHeader("\(stationType.uppercased()) TICKET OPTIONS")
+        cardGroup {
+            Toggle(isOn: $showTableInfo) {
+                toggleLabel("Show Table & Queue", sub: "Table number · Queue number")
+            }.tint(.appAccent)
+            apDivider
+            Toggle(isOn: $showOrderType) {
+                toggleLabel("Show Order Type", sub: "Dine-in / Take-out / Delivery")
+            }.tint(.appAccent)
+            apDivider
+            Toggle(isOn: $showItemModifiers) {
+                toggleLabel("Show Modifiers & Notes", sub: "Extra options · Special instructions")
+            }.tint(.appAccent)
+        }
+
+        settingsSectionHeader("HEADER & FOOTER")
+        cardGroup {
+            fieldLabel("Custom Header Text")
+            TextField("e.g. URGENT ORDER", text: $headerText).apTemplateTextField()
+            apDivider
+            fieldLabel("Custom Footer Text")
+            TextField("e.g. Please prepare ASAP", text: $footerText).apTemplateTextField()
+        }
+    }
+
+    // ── Sticker settings ──────────────────────────────────────────────────────
+    private var stickerSettings: some View {
+        Group {
+            settingsSectionHeader("LABEL OPTIONS")
+            cardGroup {
+                Toggle(isOn: $showTableInfo) {
+                    toggleLabel("Show Table Number", sub: "Printed on top-left of sticker")
+                }.tint(.appAccent)
+                apDivider
+                Toggle(isOn: $showItemModifiers) {
+                    toggleLabel("Show Modifiers", sub: "Up to 3 modifier lines")
+                }.tint(.appAccent)
+                apDivider
+                Toggle(isOn: $showOrderType) {
+                    toggleLabel("Show Queue Number", sub: "Printed bottom-right of sticker")
+                }.tint(.appAccent)
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Col 3: Live Preview Column
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private var livePreviewColumn: some View {
         ReceiptLivePreview(
             storeName:         storeName,
             storeAddress:      storeAddress,
@@ -143,187 +573,9 @@ struct ReceiptTemplateSettingsView: View {
             showTableInfo:     showTableInfo,
             showQRCode:        showQRCode,
             showItemModifiers: showItemModifiers,
-            showOrderType:     showOrderType
+            showOrderType:     showOrderType,
+            fixedPreviewType:  selectedType.previewType
         )
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // MARK: - Sub-Views
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private var listHeader: some View {
-        HStack {
-            Text("receipt_templates_section".t)
-                .font(.headline).foregroundColor(.textPrimary)
-            Spacer()
-            Button { setupNewTemplateForm() } label: {
-                Label("add_new_template_btn".t, systemImage: "plus")
-                    .font(.subheadline).fontWeight(.bold)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(Color.appAccent).cornerRadius(APRadius.md)
-            }
-        }
-    }
-
-    private var templateSidebar: some View {
-        ScrollView {
-            VStack(spacing: 10) {
-                if activeTemplates.isEmpty {
-                    VStack(spacing: 10) {
-                        Image(systemName: "doc.text.magnifyingglass")
-                            .font(.largeTitle).foregroundColor(.textTertiary)
-                        Text("no_templates_placeholder".t)
-                            .font(.caption).foregroundColor(.textSecondary)
-                    }
-                    .padding(.vertical, 40).frame(maxWidth: .infinity)
-                } else {
-                    ForEach(activeTemplates) { tmpl in templateRow(tmpl) }
-                }
-            }
-        }
-    }
-
-    private func templateRow(_ tmpl: ReceiptTemplate) -> some View {
-        let isSelected = selectedTemplate?.id == tmpl.id && !isCreatingNew
-        return Button { selectTemplate(tmpl) } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text(tmpl.name)
-                        .font(.body).fontWeight(.bold)
-                        .foregroundColor(isSelected ? .white : .textPrimary)
-                    Spacer()
-                    if tmpl.isDefault {
-                        Text("default_badge".t)
-                            .font(.system(size: 8)).fontWeight(.black).foregroundColor(.white)
-                            .padding(.horizontal, 6).padding(.vertical, 3)
-                            .background(Color.appTeal).cornerRadius(APRadius.sm)
-                    }
-                }
-                HStack(spacing: 6) {
-                    Image(systemName: tmpl.showLogo ? "photo.fill" : "printer.fill")
-                        .font(.system(size: 9))
-                    Text(tmpl.paperWidth)
-                        .font(.caption2)
-                }
-                .foregroundColor(isSelected ? .white.opacity(0.75) : .textTertiary)
-            }
-            .padding(12)
-            .background(isSelected ? Color.appAccent : Color.appSurfaceHigh)
-            .cornerRadius(APRadius.md)
-            .overlay(RoundedRectangle(cornerRadius: APRadius.md)
-                .stroke(isSelected ? Color.clear : Color.appBorderSubtle, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) { deleteTemplate(tmpl) } label: {
-                Label("delete".t, systemImage: "trash")
-            }
-        }
-    }
-
-    // ── Editor Panel ──────────────────────────────────────────────────────────
-    private var editorPanel: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                sectionHeader(isCreatingNew ? "create_template_header".t : "edit_template_header".t)
-
-                // Identity
-                cardGroup {
-                    fieldLabel("template_name_lbl".t)
-                    TextField("e.g. Standard 80mm", text: $name).apTemplateTextField()
-
-                    fieldLabel("Paper Width")
-                    Picker("Paper Width", selection: $paperWidth) {
-                        Text("80 mm Thermal").tag("80mm")
-                        Text("58 mm Thermal").tag("58mm")
-                    }.pickerStyle(SegmentedPickerStyle())
-
-                    apDivider
-                    Toggle(isOn: $isDefault) {
-                        toggleLabel("set_as_default_lbl".t, sub: "set_as_default_desc".t)
-                    }.tint(.appAccent)
-                }
-
-                // Header / Footer
-                sectionHeader("HEADER & FOOTER TEXT")
-                cardGroup {
-                    fieldLabel("header_text_lbl".t)
-                    TextField("e.g. Thank you for dining with us!", text: $headerText).apTemplateTextField()
-                    fieldLabel("footer_text_lbl".t)
-                    TextField("e.g. Follow us: @alphapos.cafe", text: $footerText).apTemplateTextField()
-                }
-
-                // Branding
-                sectionHeader("BRANDING & MEDIA")
-                cardGroup {
-                    Toggle(isOn: $showLogo) {
-                        toggleLabel("Store Logo",
-                                    sub: storeLogoPath.isEmpty
-                                        ? "⚠ No logo uploaded — set in Store Management"
-                                        : "✓ Logo configured in Store Management")
-                    }.tint(.appAccent)
-                    apDivider
-                    Toggle(isOn: $showQRCode) {
-                        toggleLabel("QR Code / Barcode",
-                                    sub: promptPayNumber.isEmpty
-                                        ? "PromptPay QR — set number in Store Management"
-                                        : "PromptPay: \(maskedPromptPay)")
-                    }.tint(.appAccent)
-                }
-
-                // Visibility
-                sectionHeader("SECTION VISIBILITY")
-                cardGroup {
-                    Toggle(isOn: $showTaxId) {
-                        toggleLabel("show_tax_id_lbl".t, sub: "Tax ID · Branch Code")
-                    }.tint(.appAccent)
-                    apDivider
-                    Toggle(isOn: $showCustomerInfo) {
-                        toggleLabel("show_customer_info_lbl".t, sub: "Customer name · Tax exemption no.")
-                    }.tint(.appAccent)
-                    apDivider
-                    Toggle(isOn: $showTableInfo) {
-                        toggleLabel("Table & Queue", sub: "Table number · Queue number")
-                    }.tint(.appAccent)
-                    apDivider
-                    Toggle(isOn: $showOrderType) {
-                        toggleLabel("Order Type", sub: "Dine-in / Take-out / Delivery badge")
-                    }.tint(.appAccent)
-                    apDivider
-                    Toggle(isOn: $showItemModifiers) {
-                        toggleLabel("Item Modifiers", sub: "e.g. + Extra Cheese · Sweet 50%")
-                    }.tint(.appAccent)
-                    apDivider
-                    Toggle(isOn: $showServiceCharge) {
-                        toggleLabel("Service Charge Line", sub: "10% service charge row")
-                    }.tint(.appAccent)
-                }
-
-                // Save
-                Button { saveTemplate() } label: {
-                    Text(isCreatingNew ? "save_new_template_btn".t : "save_changes_btn".t)
-                        .fontWeight(.bold)
-                }
-                .apGradientButton(gradient: APGradient.accent, shadow: APShadow.glow, disabled: name.isEmpty)
-                .disabled(name.isEmpty)
-
-                // Delete
-                if !isCreatingNew, let tmpl = selectedTemplate {
-                    Button { deleteTemplate(tmpl) } label: {
-                        HStack {
-                            Image(systemName: "trash")
-                            Text("Delete Template")
-                        }
-                        .font(.subheadline).fontWeight(.semibold).foregroundColor(.appRose)
-                        .frame(maxWidth: .infinity).padding(.vertical, 12)
-                        .overlay(RoundedRectangle(cornerRadius: APRadius.md)
-                            .stroke(Color.appRose.opacity(0.4), lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -346,7 +598,7 @@ struct ReceiptTemplateSettingsView: View {
                 .stroke(Color.appBorderSubtle, lineWidth: 1))
     }
 
-    private func sectionHeader(_ text: String) -> some View {
+    private func settingsSectionHeader(_ text: String) -> some View {
         Text(text).font(.caption).fontWeight(.bold)
             .foregroundColor(.appAccent).tracking(1.0)
     }
@@ -368,6 +620,13 @@ struct ReceiptTemplateSettingsView: View {
     // ─────────────────────────────────────────────────────────────────────────
     // MARK: - Actions
     // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Actions
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private func autoSelectTemplate() {
+        if let first = templatesForType.first { selectTemplate(first) }
+        else { setupNewTemplateForm() }
+    }
 
     private func selectTemplate(_ tmpl: ReceiptTemplate) {
         selectedTemplate   = tmpl
@@ -384,6 +643,7 @@ struct ReceiptTemplateSettingsView: View {
         showQRCode         = tmpl.showQRCode
         showItemModifiers  = tmpl.showItemModifiers
         showOrderType      = tmpl.showOrderType
+        stickerSize        = tmpl.stickerSize
         isCreatingNew      = false
         APHaptic.trigger()
     }
@@ -396,13 +656,14 @@ struct ReceiptTemplateSettingsView: View {
         showTaxId          = true
         showCustomerInfo   = true
         isDefault          = false
-        paperWidth         = "80mm"
+        paperWidth         = selectedType == .sticker ? "40x30" : "80mm"
         showLogo           = true
         showServiceCharge  = true
         showTableInfo      = true
         showQRCode         = true
         showItemModifiers  = true
         showOrderType      = true
+        stickerSize        = "40x30"
         isCreatingNew      = true
         APHaptic.trigger()
     }
@@ -413,6 +674,7 @@ struct ReceiptTemplateSettingsView: View {
         if isCreatingNew {
             let t = ReceiptTemplate(
                 name:              name,
+                templateType:      selectedType.rawValue,
                 headerText:        headerText.isEmpty ? nil : headerText,
                 footerText:        footerText.isEmpty ? nil : footerText,
                 showTaxId:         showTaxId,
@@ -424,7 +686,8 @@ struct ReceiptTemplateSettingsView: View {
                 showTableInfo:     showTableInfo,
                 showQRCode:        showQRCode,
                 showItemModifiers: showItemModifiers,
-                showOrderType:     showOrderType
+                showOrderType:     showOrderType,
+                stickerSize:       stickerSize
             )
             modelContext.insert(t)
             selectedTemplate = t
@@ -443,6 +706,7 @@ struct ReceiptTemplateSettingsView: View {
             t.showQRCode       = showQRCode
             t.showItemModifiers = showItemModifiers
             t.showOrderType    = showOrderType
+            t.stickerSize      = stickerSize
             t.isSynced         = false
             t.updatedAt        = Date()
         }
@@ -453,34 +717,30 @@ struct ReceiptTemplateSettingsView: View {
     private func deleteTemplate(_ tmpl: ReceiptTemplate) {
         tmpl.isDeleted = true
         try? modelContext.save()
-        if selectedTemplate?.id == tmpl.id {
-            if let next = activeTemplates.first(where: { $0.id != tmpl.id }) {
-                selectTemplate(next)
-            } else {
-                setupNewTemplateForm()
-            }
-        }
+        if selectedTemplate?.id == tmpl.id { autoSelectTemplate() }
+        APHaptic.trigger()
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MARK: - TextField Modifier
+// MARK: - TextField Style Extension
 // ─────────────────────────────────────────────────────────────────────────────
 
-private extension View {
+extension View {
+    /// Styled text field used in template editor panels
     func apTemplateTextField() -> some View {
         self
             .textFieldStyle(PlainTextFieldStyle())
             .padding(10)
             .background(Color.appSurfaceHigh)
-            .foregroundColor(.textPrimary)
+            .foregroundColor(Color.textPrimary)
             .cornerRadius(8)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.appBorderSubtle, lineWidth: 1))
+            .font(.body)
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MARK: - ReceiptLivePreview
+// MARK: - ReceiptL
 // Live preview แสดง pixel-accurate ตรงกับ ESCPOSBuilder
 // โหลดโลโก้จาก Documents จริง + generate PromptPay QR จาก CIQRCodeGenerator
 // ─────────────────────────────────────────────────────────────────────────────
@@ -508,6 +768,8 @@ struct ReceiptLivePreview: View {
     let showQRCode:        Bool
     let showItemModifiers: Bool
     let showOrderType:     Bool
+    /// Fixed preview type driven by parent (overrides selector when set)
+    var fixedPreviewType:   PreviewType = .receipt
 
     // Computed
     private var paperPx: CGFloat { paperWidth == "58mm" ? 272 : 340 }
@@ -517,6 +779,24 @@ struct ReceiptLivePreview: View {
     // Loaded assets
     @State private var logoImage:  UIImage? = nil
     @State private var qrImage:    UIImage? = nil
+
+    // ── Preview Type Selector ──────────────────────────────────────────────
+    enum PreviewType: String, CaseIterable {
+        case receipt = "Receipt"
+        case kitchen = "Kitchen"
+        case bar     = "Bar"
+        case sticker = "Sticker"
+        var icon: String {
+            switch self {
+            case .receipt: return "doc.text.fill"
+            case .kitchen: return "flame.fill"
+            case .bar:     return "cup.and.saucer.fill"
+            case .sticker: return "tag.fill"
+            }
+        }
+    }
+    // previewType driven by fixedPreviewType (no independent state needed)
+    private var previewType: PreviewType { fixedPreviewType }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -542,23 +822,36 @@ struct ReceiptLivePreview: View {
                 }
             }
 
+
             // Paper scroll
-            ScrollView {
-                VStack(spacing: 0) {
-                    paperTeeth(flip: false)
+            if previewType == .sticker {
+                // ── Sticker layout (40×30mm หรือ 50×25mm) ──────────────
+                stickerPreviewGrid
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        paperTeeth(flip: false)
 
-                    VStack(alignment: .leading, spacing: 0) {
-                        receiptBody
+                        VStack(alignment: .leading, spacing: 0) {
+                            switch previewType {
+                            case .receipt: receiptBody
+                            case .kitchen: kitchenTicketBody(stationLabel: "KITCHEN", accentHex: "EF4444")
+                            case .bar:     kitchenTicketBody(stationLabel: "BAR STATION", accentHex: "3B82F6")
+                            case .sticker: EmptyView()
+                            }
+                        }
+                        .padding(.horizontal, hPad)
+                        .background(Color(hex: "FCFCF9"))
+
+                        paperTeeth(flip: true)
                     }
-                    .padding(.horizontal, hPad)
-                    .background(Color(hex: "FCFCF9"))
-
-                    paperTeeth(flip: true)
+                    .frame(width: paperPx)
+                    .cornerRadius(4)
+                    .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
                 }
-                .frame(width: paperPx)
-                .cornerRadius(4)
-                .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
             }
+
+            // ─────────────────────────────────────────────────────────
 
             Text("Preview matches ESC/POS output • What you see is what prints")
                 .font(.system(size: 9)).foregroundColor(.textTertiary)
@@ -576,10 +869,217 @@ struct ReceiptLivePreview: View {
     // MARK: - Receipt Body
     // ─────────────────────────────────────────────────────────────────────────
 
+    // ─────────────────────────────────────────────────────────────────────
+    // MARK: - Kitchen / Bar Ticket Preview
+    // ─────────────────────────────────────────────────────────────────────
+
+    @ViewBuilder
+    private func kitchenTicketBody(stationLabel: String, accentHex: String) -> some View {
+        let accent = Color(hex: accentHex)
+
+        // ── Station Header ───────────────────────────────────────────────
+        VStack(spacing: 2) {
+            // Double-size station label (mimics ESC/POS DOUBLE_SIZE_ON)
+            Text("[ \(stationLabel) ]")
+                .font(.system(size: 18, weight: .black, design: .monospaced))
+                .foregroundColor(accent)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 14)
+
+            Rectangle()
+                .fill(accent.opacity(0.6))
+                .frame(height: 2)
+                .padding(.vertical, 4)
+
+            // Time + Order (เน้น urgency)
+            HStack {
+                Text("TIME : 14:32")
+                    .fontWeight(.bold)
+                Spacer()
+                Text("#AP-102546")
+                    .fontWeight(.bold)
+            }
+            .font(.system(size: 9, design: .monospaced))
+            .foregroundColor(.black)
+
+            if showTableInfo {
+                HStack {
+                    Text("TABLE: 08 (Zone A)")
+                    Spacer()
+                    Text("QUEUE: #32")
+                }
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(.black)
+            }
+        }
+        .padding(.bottom, 6)
+
+        monoDiv
+
+        // ── Items (ตัวใหญ่, bold, ไม่มี price) ──────────────────────────
+        let kitchenItems: [(name: String, qty: Int, mods: [String], note: String?)] = stationLabel.contains("BAR") ? [
+            ("Matcha Latte (Oat)",     2, ["Sweet 50% (x2)", "Oat Milk (+฿30)"], nil),
+            ("Iced Americano",         1, ["No Sugar", "Extra Shot"],             "น้ำแข็งน้อย"),
+            ("Strawberry Smoothie",    1, [],                                     nil),
+        ] : [
+            ("Premium Beef Burger",    2, ["Extra Cheese", "Medium Rare"],        nil),
+            ("Crispy French Fries",    1, ["Spicy Seasoning"],                   nil),
+            ("Tom Yum Soup (large)",   1, [],                                    "ไม่ใส่เห็ด"),
+        ]
+
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(kitchenItems.enumerated()), id: \.offset) { _, item in
+                VStack(alignment: .leading, spacing: 2) {
+                    // Item name — double-height style
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("x\(item.qty)")
+                            .font(.system(size: 16, weight: .black, design: .monospaced))
+                            .foregroundColor(accent)
+                        Text(item.name)
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                            .foregroundColor(.black)
+                    }
+                    // Modifiers
+                    ForEach(item.mods, id: \.self) { mod in
+                        Text("  >> \(mod)")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.black.opacity(0.65))
+                    }
+                    // Note
+                    if let note = item.note {
+                        Text("  ** \(note)")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(accent)
+                    }
+                }
+                .padding(.vertical, 2)
+
+                if item.name != kitchenItems.last?.name {
+                    Rectangle().fill(Color.black.opacity(0.12)).frame(height: 1)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+
+        monoDiv
+
+        // ── Footer ───────────────────────────────────────────────────────
+        Text(stationLabel.contains("BAR") ? "[ BEVERAGE STATION — PLEASE PREPARE ]"
+                                           : "[ KITCHEN — PLEASE PREPARE ]")
+            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+            .foregroundColor(accent.opacity(0.8))
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 8)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // MARK: - Sticker Label Preview (TSPL 40×30mm / 50×25mm)
+    // ─────────────────────────────────────────────────────────────────────
+
+    private var stickerPreviewGrid: some View {
+        // แสดง 3 sticker ตัวอย่าง (1 order × 3 items/cups)
+        let stickerItems: [(item: String, mods: [String], note: String?, cupIdx: Int, total: Int)] = [
+            ("Matcha Latte (Oat)",  ["Sweet 50%", "Oat Milk"],  nil,             1, 3),
+            ("Matcha Latte (Oat)",  ["Sweet 50%", "Oat Milk"],  nil,             2, 3),
+            ("Iced Americano",      ["No Sugar", "Extra Shot"], "น้ำแข็งน้อย", 3, 3),
+        ]
+
+        return VStack(spacing: 6) {
+            // Label size picker label
+            HStack {
+                Image(systemName: "tag.fill").font(.caption2).foregroundColor(.appAccent)
+                Text("40 × 30 mm  (TSPL / Label Printer)")
+                    .font(.system(size: 9)).foregroundColor(.textSecondary)
+                Spacer()
+            }
+
+            ForEach(Array(stickerItems.enumerated()), id: \.offset) { _, s in
+                stickerCard(
+                    itemName: s.item, mods: s.mods, note: s.note,
+                    table: "Table 08", queue: "AP-102546",
+                    cupIdx: s.cupIdx, totalCups: s.total,
+                    timeStr: "14:32"
+                )
+            }
+        }
+    }
+
+    private func stickerCard(
+        itemName: String, mods: [String], note: String?,
+        table: String, queue: String,
+        cupIdx: Int, totalCups: Int,
+        timeStr: String
+    ) -> some View {
+        VStack(spacing: 0) {
+            // Row 1: Table (left) + Cup counter (right)
+            HStack {
+                Text(table)
+                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                    .foregroundColor(.black)
+                Spacer()
+                Text("\(cupIdx)/\(totalCups)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.black)
+            }
+            .padding(.horizontal, 8).padding(.top, 6).padding(.bottom, 4)
+
+            // Divider bar
+            Rectangle().fill(Color.black).frame(height: 1.5)
+
+            // Row 2: Item name (ใหญ่)
+            Text(itemName)
+                .font(.system(size: itemName.count > 16 ? 12 : 14,
+                              weight: .black, design: .monospaced))
+                .foregroundColor(.black)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8).padding(.top, 5)
+
+            // Row 3+: Modifiers
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(mods.prefix(3), id: \.self) { mod in
+                    Text("- \(mod)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.black.opacity(0.75))
+                }
+                if let note = note {
+                    Text("* \(note)")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.black)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8).padding(.top, 2)
+
+            // Footer bar: เวลา + Queue
+            Rectangle().fill(Color.black.opacity(0.5)).frame(height: 1)
+                .padding(.top, 5)
+
+            HStack {
+                Text(timeStr)
+                    .font(.system(size: 8, design: .monospaced))
+                Spacer()
+                Text("Q: \(queue.prefix(12))")
+                    .font(.system(size: 8, design: .monospaced))
+            }
+            .foregroundColor(.black.opacity(0.7))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+        }
+        .background(Color.white)
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(Color.black.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 2]))
+        )
+        .cornerRadius(4)
+        .shadow(color: .black.opacity(0.08), radius: 3, x: 0, y: 2)
+        .frame(width: paperPx)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // MARK: - Receipt Body (existing)
+    // ─────────────────────────────────────────────────────────────────────
+
     @ViewBuilder
     private var receiptBody: some View {
-
-        // ── Custom header text ──────────────────────────────────────────
         if !headerText.isEmpty {
             Text(headerText)
                 .font(.system(size: 8, design: .monospaced)).italic()

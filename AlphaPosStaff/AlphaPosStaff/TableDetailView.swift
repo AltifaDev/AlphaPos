@@ -33,6 +33,7 @@ struct TableDetailView: View {
     @State private var orders: [Order] = []
     @State private var isLoading = false
     @State private var showingAddItemsSheet = false
+    @State private var emptyItemsPolling = false   // true while periodic refresh is running
     @State private var selectedCategory = "all"
     @State private var cartItems: [MenuItem: Int] = [:]
     @State private var showShiftGuard = false
@@ -132,6 +133,13 @@ struct TableDetailView: View {
 
     private var isPaidButDining: Bool {
         postPaymentStatus == .stillDining
+    }
+
+    /// Stable key array สำหรับ track item-level changes ใน onChange
+    /// แยกออกจาก inline expression เพื่อหลีกเลี่ยง compiler type-check timeout
+    private var tableOrderItemKeys: [String] {
+        let tableOrders = networkService.orders.filter { $0.tableNumber == table.tableNumber }
+        return tableOrders.flatMap { $0.items }.map { $0.id + $0.status }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -242,11 +250,68 @@ struct TableDetailView: View {
         }
         .onAppear {
             Task { await loadOrders() }
+            // Self-healing: if any active order still has empty items after the initial
+            // load (race between orders POST and order_items POST from the iPad app),
+            // retry loading once after 2 seconds.  This covers the case where the user
+            // opens TableDetailView during the brief window before order_items arrive.
+            Task {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let hasEmptyItemOrders = orders.contains { order in
+                    order.status != "completed" && order.status != "cancelled" && order.items.isEmpty
+                }
+                if hasEmptyItemOrders {
+                    await loadOrders()
+                }
+            }
+            // Persistent periodic refresh: if orders with empty items are still present
+            // after the initial self-healing pass, poll every 30s until items arrive or
+            // the view disappears. Handles the case where timeout/network errors prevented
+            // items from loading (e.g. 17-minute stale order with no items).
+            guard !emptyItemsPolling else { return }
+            emptyItemsPolling = true
+            Task {
+                defer { emptyItemsPolling = false }
+                // Phase 1: poll ถี่ (5s × 12 = 1 นาที) — รองรับกรณี iPad "Sync Failed"
+                // ที่ retry แล้วสำเร็จภายใน 1 นาที
+                for _ in 1...12 {
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    let stillMissing = orders.contains { o in
+                        o.status != "completed" && o.status != "cancelled" && o.items.isEmpty
+                    }
+                    guard stillMissing else { break }
+                    await loadOrders()
+                }
+                // Phase 2: poll ห่าง (15s × 8 = 2 นาที) — หลังจาก 1 นาทีแรก
+                for _ in 1...8 {
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                    let stillMissing = orders.contains { o in
+                        o.status != "completed" && o.status != "cancelled" && o.items.isEmpty
+                    }
+                    guard stillMissing else { break }
+                    await loadOrders()
+                }
+            }
         }
         // C-7 FIX: Filter onChange to only fire when orders for THIS table change.
         // Unfiltered onChange(orders) fires for every table — causes unnecessary
         // network round-trips when other tables' orders update.
-        .onChange(of: networkService.orders.filter { $0.tableNumber == table.tableNumber }) { _, _ in
+        .onChange(of: networkService.orders.filter { $0.tableNumber == table.tableNumber }) { _, newOrders in
+            Task { await loadOrders() }
+            // Self-healing: if the newly-received orders contain any active order with
+            // empty items (race window), schedule a reload 1.5 s later.
+            let needsRetry = newOrders.contains { o in
+                o.status != "completed" && o.status != "cancelled" && o.items.isEmpty
+            }
+            if needsRetry {
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    await loadOrders()
+                }
+            }
+        }
+        // BUG FIX: ติดตาม item-level changes — ใช้ computed property เพื่อหลีกเลี่ยง
+        // compiler type-check timeout (expression ซับซ้อนเกินไปสำหรับ inline closure)
+        .onChange(of: tableOrderItemKeys) { _, _ in
             Task { await loadOrders() }
         }
         // H-8 FIX: Invalidate stillDiningTimer when view disappears to prevent
@@ -266,8 +331,9 @@ struct TableDetailView: View {
         }
         .onChange(of: networkService.tables) { _, newTables in
             // Auto-dismiss when table becomes vacant after payment
-            let myTable = newTables.first(where: { $0.tableNumber == table.tableNumber })
-            let isNowVacant = myTable?.status == "vacant"
+            let targetNumber: String = table.tableNumber
+            let myTable: RestaurantTable? = newTables.first(where: { $0.tableNumber == targetNumber })
+            let isNowVacant: Bool = myTable?.status == "vacant"
             if isNowVacant && postPaymentStatus == nil {
                 // Table cleared remotely — dismiss with animation
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
