@@ -3,6 +3,19 @@ import { defaultMenuItems } from './js/data.js';
 import { fetchWithFallback, fetchWithRetry } from './js/api.js';
 import { clearCart, loadCart, saveCart } from './js/cart.js';
 import { hideStatusModal, showStatusModal, showToast } from './js/ui.js';
+import { OrderTracker } from './js/order-tracker.js';
+import { FeedbackSystem } from './js/feedback.js';
+import { waitTimeWidget } from './js/wait-time.js';
+import { AllergenFilter } from './js/allergen-filter.js';
+import { reservationSystem } from './js/reservation.js';
+import { reorderHistory } from './js/reorder-history.js';
+import { billView } from './js/bill-view.js';
+import { loyaltySystem } from './js/loyalty.js';
+
+
+
+
+
 
 // Debug Logger for Headless testing
 (function() {
@@ -101,6 +114,132 @@ function base64ToBlobUrl(base64Data, defaultMimeType = 'video/mp4') {
         console.error("Failed to convert base64 to Blob:", e);
         return base64Data.startsWith('data:') ? base64Data : `data:${mimeType};base64,${base64Data}`;
     }
+
+    // ========================================
+    // ENHANCED BILL VIEW
+    // ========================================
+
+    /**
+     * Show enhanced bill view with itemized breakdown, tip, and split options
+     */
+    showEnhancedBill() {
+        // Initialize bill view with supabase and translation
+        billView.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback));
+
+        // Gather order data from current session
+        const items = (this.cart || []).map(item => ({
+            name: this.getItemName ? this.getItemName(item) : item.name,
+            price: item.price,
+            quantity: item.quantity,
+            modifiers: item.selectedModifiers || []
+        }));
+
+        // Gather active discounts
+        const discounts = (this._appliedPromotions || []).map(p => ({
+            name: p.name || 'Discount',
+            type: p.discount_type === 'percentage' ? 'percent' : 'fixed',
+            value: p.discount_value || 0
+        }));
+
+        const orderData = {
+            items,
+            discounts,
+            tableNumber: this.tableNumber,
+            orderNumber: this._lastOrderNumber || ''
+        };
+
+        billView.showBill(orderData, {
+            loyaltyPointsEarn: 0,
+            loyaltyDiscount: 0
+        });
+    }
+
+    /**
+     * Show receipt after successful payment
+     */
+    showReceipt(paymentData) {
+        billView.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback));
+
+        const orderData = {
+            items: this._lastOrderItems || [],
+            discounts: [],
+            tableNumber: this.tableNumber,
+            orderNumber: this._lastOrderNumber || ''
+        };
+
+        billView.showReceipt(orderData, paymentData);
+    }
+
+    /**
+     * Close the session after payment and block further ordering
+     */
+    async closeSessionAfterPayment() {
+        try {
+            // 1. Close session via Supabase
+            if (this.supabase) {
+                try {
+                    const { error } = await this.supabase
+                        .from('table_sessions')
+                        .update({
+                            is_active: 0,
+                            ended_at: new Date().toISOString()
+                        })
+                        .eq('session_token', this.sessionToken)
+                        .eq('table_number', this.tableNumber);
+                    if (error) throw error;
+                    console.log("[Payment] Supabase session closed successfully");
+                } catch (e) {
+                    console.warn("[Payment] Supabase session close failed:", e);
+                }
+            }
+
+            // 2. Fallback: close session via local server
+            if (this.isLocalServerAvailable) {
+                try {
+                    const res = await fetch(`${this.localServerURL}/v1/sessions/close`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            table_number: this.tableNumber,
+                            session_token: this.sessionToken
+                        })
+                    });
+                    if (res.ok) {
+                        console.log("[Payment] Local server session closed successfully");
+                    }
+                } catch (e) {
+                    console.warn("[Payment] Local server session close failed:", e);
+                }
+            }
+
+            // 3. Clear all local state
+            this.sessionToken = null;
+            localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
+            this.cart = {};
+            this.saveCartToStorage();
+
+            // 4. Mark payment completed in location verifier (permanent block)
+            if (window.locationVerifier) {
+                window.locationVerifier.markPaymentCompleted();
+            }
+
+            // 5. Hide app UI
+            const appContainer = document.querySelector(".app-container");
+            const onboardingWizard = document.getElementById("onboardingWizard");
+            if (appContainer) appContainer.style.display = "none";
+            if (onboardingWizard) onboardingWizard.style.display = "none";
+
+            // 6. Show blocking screen
+            this.showBlockingState(
+                "paymentCompleteTitle",
+                "paymentCompleteDesc",
+                "pleaseOrderStaff"
+            );
+
+        } catch (e) {
+            console.error("[Payment] Error closing session:", e);
+        }
+    }
 }
 
 function createSafeElement(tag, attrs = {}, textContent = '') {
@@ -155,6 +294,9 @@ class AlphaPosApp {
 
         // App States
         this.currentCategory = "foods";
+        // Allergen & Dietary Filter
+        this.allergenFilter = new AllergenFilter();
+        window._allergenFilter = this.allergenFilter;
         this.searchQuery = "";
         this.cart = {}; // Format: { cartKey: { itemId, quantity, selectedModifiers: [], notes } }
         this.modifiersConfig = { groups: [], modifiers: [], links: [] };
@@ -442,6 +584,13 @@ class AlphaPosApp {
         await this.loadMenuFromServer();
         await this.loadModifiersConfig();
         await this.loadPromotions();
+
+        // Initialize loyalty system
+        if (this.supabase || this.localServerURL) {
+            await loyaltySystem.init(this.supabase, this.merchantId, this.localServerURL);
+            loyaltySystem.renderMiniWidget('loyaltyMiniContainer');
+        }
+
         this.renderCategories();
         this.renderMenuItems();
         this.updateCartUI();
@@ -449,6 +598,12 @@ class AlphaPosApp {
         // Start status polling
         this.startStatusPolling();
         this.setupAccessibilityHandlers();
+
+        // Initialize reorder history (after menu is loaded)
+        this.initReorderHistory();
+
+        // Initialize push notifications
+        this._initPushNotifications();
 
         // Initialize Theme from localStorage (Default: Light Mode)
         const savedTheme = localStorage.getItem("theme") || "light";
@@ -1418,6 +1573,18 @@ class AlphaPosApp {
                 console.error("Failed to load menu from local server:", localErr);
             }
         }
+
+        // Initialize allergen filter after menu is loaded
+        if (this.supabase) {
+            await this.allergenFilter.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback));
+            this.allergenFilter.renderFilters('dietaryFilterContainer');
+            // Initialize Customer Feedback System
+            this.feedbackSystem = new FeedbackSystem();
+            this.feedbackSystem.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback));
+
+            // Initialize Reservation System
+            reservationSystem.init(this.supabase, this.merchantId);
+        }
     }
 
 
@@ -1695,6 +1862,9 @@ class AlphaPosApp {
             }
         }
 
+        // Apply allergen & dietary filters
+        itemsToRender = this.allergenFilter.applyFilters(itemsToRender);
+
         // Show/hide empty state
         const emptyState = document.getElementById("searchEmptyState");
         if (emptyState) {
@@ -1802,6 +1972,7 @@ class AlphaPosApp {
                         </div>
                         <h3 class="featured-item-title">${escapeHtml(this.getItemName(item))}</h3>
                         <p class="featured-item-desc">${escapeHtml(this.getItemDesc(item))}</p>
+                        ${this.allergenFilter.renderBadges(item.id)}
                         <div class="featured-item-price-action" onclick="event.stopPropagation()">
                             <span class="featured-item-price">฿${item.price.toFixed(2)}</span>
                             <div class="featured-item-action">
@@ -1819,6 +1990,7 @@ class AlphaPosApp {
                         </div>
                         <h3 class="list-item-title">${escapeHtml(this.getItemName(item))}</h3>
                         <p class="list-item-desc">${escapeHtml(this.getItemDesc(item))}</p>
+                        ${this.allergenFilter.renderBadges(item.id)}
                         <div class="list-item-price-action">
                             <span class="list-item-price">฿${item.price.toFixed(2)}</span>
                             <div class="list-item-action" onclick="event.stopPropagation()">
@@ -2065,6 +2237,12 @@ class AlphaPosApp {
 
         // Render items inside drawer list
         this.renderDrawerCartList();
+
+        // Render loyalty earn preview in cart
+        const earnPreviewContainer = document.getElementById('loyaltyEarnPreview');
+        if (earnPreviewContainer && loyaltySystem.config?.loyalty_enabled) {
+            earnPreviewContainer.innerHTML = loyaltySystem.renderEarnPreview(total);
+        }
 
         // Show/hide floating cart bar
         const cartBar = document.getElementById("cartBar");
@@ -2387,6 +2565,12 @@ class AlphaPosApp {
             badgeEl.classList.add("hide");
         }
 
+        // Show/hide Track Order button
+        const trackBtn = document.getElementById('btnTrackOrder');
+        if (trackBtn) {
+            trackBtn.style.display = (activeCookingCount > 0 && this._lastOrderId) ? 'inline-flex' : 'none';
+        }
+
         if (activeItems.length === 0) {
             activeContainer.innerHTML = `<div class="empty-state">${this.translate('noActiveItems')}</div>`;
         } else {
@@ -2647,6 +2831,11 @@ class AlphaPosApp {
                     }, payload => {
                         console.log("Realtime order update received:", payload);
                         this._debouncedFetchHistory();
+                        // Trigger feedback when order is served
+                        if (payload.new && payload.new.status === 'served' && payload.new.table_number === this.tableNumber) {
+                            console.log("[Feedback] Order served — triggering feedback form");
+                            this._onOrderServed(payload.new.id);
+                        }
                     });
                 ch2.subscribe();
                 this.realtimeChannels.push(ch2);
@@ -2663,14 +2852,22 @@ class AlphaPosApp {
                         console.log("Realtime session update received:", payload);
                         const newRecord = payload.new;
                         if (newRecord && (newRecord.is_active === false || newRecord.is_active === 0) && newRecord.table_number === this.tableNumber) {
-                            // Session was closed by iPad POS — notify the customer
+                            // Session was closed by iPad POS — notify and block
                             console.warn("Session closed by POS for table:", this.tableNumber);
                             this.sessionToken = null;
                             localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
                             this.cart = {};
-                            this.saveCartToStorage(); // Clear cart on session close
+                            this.saveCartToStorage();
 
-                            this._showToast("Your session has been closed by the staff. Thank you!", 5000);
+                            if (window.locationVerifier) {
+                                window.locationVerifier.markPaymentCompleted();
+                            }
+
+                            this.showBlockingState(
+                                "sessionClosedTitle",
+                                "sessionClosedDesc",
+                                "pleaseOrderStaff"
+                            );
                         }
                     });
                 ch3.subscribe();
@@ -2714,17 +2911,18 @@ class AlphaPosApp {
                     this.sessionToken = null;
                     localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
 
-                    this._showToast("Your session has been closed by the staff. Thank you!", 5000);
+                    this.cart = {};
+                    this.saveCartToStorage();
 
-                    // Show onboarding wizard again
-                    const wizard = document.getElementById("onboardingWizard");
-                    wizard.style.opacity = "";
-                    wizard.style.transform = "";
-                    wizard.classList.add("active");
-                    document.getElementById("onboardingStep1").classList.add("active");
-                    document.getElementById("onboardingStep2").classList.remove("active");
-                    document.getElementById("onboardingStep3").classList.remove("active");
-                    this.currentOnboardingStep = 1;
+                    if (window.locationVerifier) {
+                        window.locationVerifier.markPaymentCompleted();
+                    }
+
+                    this.showBlockingState(
+                        "sessionClosedTitle",
+                        "sessionClosedDesc",
+                        "pleaseOrderStaff"
+                    );
                     return;
                 }
             }
@@ -2944,6 +3142,7 @@ class AlphaPosApp {
         };
 
         const orderId = generateUUID();
+        this._lastOrderId = orderId;
         const now = new Date();
         const yyyy = now.getFullYear();
         const mm = String(now.getMonth() + 1).padStart(2, '0');
@@ -3132,9 +3331,119 @@ class AlphaPosApp {
             this.renderMenuItems();
             this.updateCartUI();
             this.toggleCartDrawer(false);
+
+            // Save order to reorder history
+            reorderHistory.saveOrder({
+                id: orderId,
+                orderNumber: orderNum,
+                tableNumber: this.tableNumber,
+                items: orderItems,
+                total: total,
+                status: 'preparing',
+                createdAt: new Date().toISOString()
+            });
+
+            // Show estimated wait time after successful order 
+            this.showWaitTime();
+
+            // Prompt for push notifications (if not already granted)
+            this._promptPushAfterOrder();
+
+            // Earn loyalty points for this order
+            if (loyaltySystem.isLoggedIn && loyaltySystem.config?.loyalty_enabled) {
+                loyaltySystem.earnPointsForOrder(orderId, total);
+            }
         }
 
         this._submitInProgress = false;
+    }
+
+    /**
+     * Show the Order Progress Tracker panel for a given order ID.
+     */
+    showOrderTracker(orderId) {
+        if (!orderId) {
+            orderId = this._lastOrderId;
+        }
+        if (!orderId) {
+            console.warn('[OrderTracker] No order ID to track');
+            return;
+        }
+
+        // Destroy previous tracker if any
+        if (this._orderTracker) {
+            this._orderTracker.destroy();
+        }
+
+        this._orderTracker = new OrderTracker();
+        this._orderTracker.init(orderId, this.supabase, {
+            translate: (key, fallback) => this.translate(key, fallback),
+            merchantId: this.merchantId,
+            localServerURL: this.localServerURL
+        });
+
+        // Show the panel
+        const panel = document.getElementById('orderTrackerPanel');
+        if (panel) {
+            panel.classList.remove('hidden');
+            // Render the tracker
+            setTimeout(() => {
+                this._orderTracker.render('orderTrackerContent');
+            }, 100);
+        }
+    }
+
+    /**
+     * Hide the Order Progress Tracker panel.
+     */
+    hideOrderTracker() {
+        const panel = document.getElementById('orderTrackerPanel');
+        if (panel) {
+            panel.classList.add('hidden');
+        }
+        if (this._orderTracker) {
+            this._orderTracker.destroy();
+            this._orderTracker = null;
+        }
+    }
+
+    /**
+     * Show estimated wait time after order submission.
+     * Stores lastOrderId and triggers tracker display.
+     */
+    showWaitTime() {
+        if (!this._lastOrderId) return;
+
+        // Auto-show the tracker after a brief delay (let success modal dismiss)
+        setTimeout(() => {
+            this.showOrderTracker(this._lastOrderId);
+        }, 2500);
+    }
+
+    /**
+     * Trigger the customer feedback form.
+     * Called when:
+     * - Order status changes to "served" (via realtime)
+     * - User manually clicks "Leave Feedback" button
+     */
+    triggerFeedback(orderId) {
+        if (!this.feedbackSystem) return;
+
+        const oid = orderId || this._lastOrderId || null;
+        const tableNum = this.tableNumber || null;
+        const session = this.sessionToken || null;
+
+        // Delay slightly so it doesn't interrupt the user mid-action
+        setTimeout(() => {
+            this.feedbackSystem.showFeedbackForm(oid, tableNum, session);
+        }, 1000);
+    }
+
+    /**
+     * Called when a realtime order update shows status = "served"
+     */
+    _onOrderServed(orderId) {
+        this.triggerFeedback(orderId);
     }
 
     async loadPromotions() {
@@ -3513,6 +3822,166 @@ class AlphaPosApp {
 
         this.addToCart(itemId, 1, selectedModifiers, notes);
         this.closeProductDetailModal();
+    }
+
+    // ============================================================
+    // WAIT TIME WIDGET
+    // ============================================================
+
+    /**
+     * Show estimated wait time widget (called after order submission)
+     */
+    showWaitTime() {
+        // Initialize widget with app context
+        waitTimeWidget.init({
+            supabaseClient: this.supabase,
+            merchantId: this.merchantId,
+            localServerURL: this.localServerURL,
+            translateFn: (key, fallback) => this.translate(key, fallback)
+        });
+
+        // Render full widget in status view
+        const fullContainer = document.getElementById('waitTimeFullContainer');
+        if (fullContainer) {
+            fullContainer.classList.remove('hidden');
+            waitTimeWidget.renderFull('waitTimeFullContainer');
+        }
+
+        // Render mini badge in header
+        const miniContainer = document.getElementById('waitTimeMiniContainer');
+        if (miniContainer) {
+            miniContainer.classList.remove('hidden');
+            waitTimeWidget.renderMini('waitTimeMiniContainer');
+        }
+    }
+
+    /**
+     * Hide wait time widget (called when order is served/completed)
+     */
+    hideWaitTime() {
+        waitTimeWidget.destroy();
+
+        const fullContainer = document.getElementById('waitTimeFullContainer');
+        if (fullContainer) fullContainer.classList.add('hidden');
+
+        const miniContainer = document.getElementById('waitTimeMiniContainer');
+        if (miniContainer) miniContainer.classList.add('hidden');
+    }
+
+    // ============================================================
+    // PUSH NOTIFICATIONS
+    // ============================================================
+
+    /**
+     * Initialize push notification manager
+     */
+    async _initPushNotifications() {
+        try {
+            await pushManager.init();
+            // Listen for service worker messages (notification clicks)
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.addEventListener('message', (event) => {
+                    if (event.data && event.data.type === 'PUSH_NOTIFICATION_CLICK') {
+                        const orderId = event.data.orderId;
+                        if (orderId) {
+                            this.showOrderTracker(orderId);
+                        }
+                    }
+                });
+            }
+        } catch (err) {
+            console.warn('[Push] Init error:', err);
+        }
+    }
+
+    /**
+     * Prompt user for push notifications after order (with delay for UX)
+     */
+    _promptPushAfterOrder() {
+        if (!pushManager.isSupported) return;
+        if (pushManager.permission === 'granted') {
+            // Already granted — just subscribe for this order
+            pushManager.subscribe(this._lastOrderId);
+            return;
+        }
+        if (pushManager.permission === 'denied') return;
+
+        // Show custom prompt after 3 seconds (let order confirmation sink in)
+        setTimeout(() => {
+            pushManager.showPermissionPrompt();
+        }, 3000);
+    }
+
+    /**
+     * Called when user clicks "Enable Notifications" in custom prompt
+     */
+    async _enablePushNotifications() {
+        const granted = await pushManager.requestPermission();
+        if (granted && this._lastOrderId) {
+            pushManager.subscribe(this._lastOrderId);
+            this._showToast(this.translate('pushOrderConfirmed', 'Notifications enabled!'), 'success');
+        }
+    }
+
+    /**
+     * Called when user clicks "Maybe Later" in push prompt
+     */
+    _dismissPushPrompt() {
+        pushManager.hidePermissionPrompt();
+    }
+
+    // ============================================================
+    // REORDER HISTORY
+    // ============================================================
+
+    /**
+     * Initialize reorder history system
+     */
+    initReorderHistory() {
+        reorderHistory.init({
+            translate: (key, fallback) => this.translate(key, fallback),
+            menuItems: this.menuItems,
+            addToCart: (itemId, qty, mods, notes) => this.addToCart(itemId, qty, mods, notes),
+            showToast: (msg) => this._showToast(msg),
+            supabaseClient: this.supabase,
+            merchantId: this.merchantId
+        });
+
+        // Expose singleton for onclick handlers
+        window._reorderHistory = reorderHistory;
+
+        // Render quick reorder widget
+        reorderHistory.renderQuickReorder('reorderWidgetContainer');
+    }
+
+    /**
+     * Show the full order history panel
+     */
+    showOrderHistory() {
+        const panel = document.getElementById('orderHistoryPanel');
+        if (!panel) return;
+        panel.classList.remove('hidden');
+        reorderHistory.updateMenuItems(this.menuItems);
+        reorderHistory.renderHistoryView('orderHistoryContent');
+    }
+
+    /**
+     * Hide the order history panel
+     */
+    hideOrderHistory() {
+        const panel = document.getElementById('orderHistoryPanel');
+        if (panel) panel.classList.add('hidden');
+    }
+
+    // ========================
+    // Reservation System
+    // ========================
+    showReservation() {
+        reservationSystem.showReservationForm();
+    }
+
+    hideReservation() {
+        reservationSystem.hideReservationForm();
     }
 }
 
