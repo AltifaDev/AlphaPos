@@ -48,6 +48,21 @@ struct StaffDashboardView: View {
                 Color.appBackground.ignoresSafeArea()
                 
                 VStack(spacing: 0) {
+                    // Loading overlay สำหรับ timecard (แสดงเมื่อ isLoading = true)
+                    if isLoading {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .scaleEffect(0.75)
+                                .tint(.appAccent)
+                            Text("loading_summary".localized(for: appLanguage))
+                                .font(.caption.weight(.medium))
+                                .foregroundColor(.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(Color.appSurface)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                     ScrollView {
                         VStack(spacing: APSpacing.lg) {
                             
@@ -84,6 +99,76 @@ struct StaffDashboardView: View {
                             .padding()
                             .frame(maxWidth: .infinity)
                             .apCard()
+                            
+                            // Today's Summary Card — Quick access to DailySummaryView
+                            NavigationLink {
+                                DailySummaryView(employee: employee)
+                            } label: {
+                                HStack(spacing: APSpacing.md) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: APRadius.sm, style: .continuous)
+                                            .fill(
+                                                LinearGradient(
+                                                    colors: [Color.appAccent.opacity(0.2), Color.appPurple.opacity(0.15)],
+                                                    startPoint: .topLeading,
+                                                    endPoint: .bottomTrailing
+                                                )
+                                            )
+                                            .frame(width: 40, height: 40)
+                                        Image(systemName: "chart.bar.doc.horizontal.fill")
+                                            .font(.title3)
+                                            .foregroundColor(.appAccent)
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("todays_summary".localized(for: appLanguage))
+                                            .font(.headline).fontWeight(.bold)
+                                            .foregroundColor(.textPrimary)
+                                        Text("daily_summary".localized(for: appLanguage))
+                                            .font(.caption)
+                                            .foregroundColor(.textSecondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundColor(.textTertiary)
+                                }
+                                .padding()
+                                .apCard()
+            }
+                            
+                            // Tip Tracker Card
+                            NavigationLink {
+                                TipTrackerView(employee: employee)
+                            } label: {
+                                HStack(spacing: APSpacing.md) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: APRadius.sm, style: .continuous)
+                                            .fill(
+                                                LinearGradient(
+                                                    colors: [Color.appTeal.opacity(0.2), Color.appAmber.opacity(0.15)],
+                                                    startPoint: .topLeading,
+                                                    endPoint: .bottomTrailing
+                                                )
+                                            )
+                                            .frame(width: 40, height: 40)
+                                        Image(systemName: "banknote.fill")
+                                            .font(.title3)
+                                            .foregroundColor(.appTeal)
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("tip_tracker".localized(for: appLanguage))
+                                            .font(.headline).fontWeight(.bold)
+                                            .foregroundColor(.textPrimary)
+                                        Text("todays_tips".localized(for: appLanguage))
+                                            .font(.caption)
+                                            .foregroundColor(.textSecondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundColor(.textTertiary)
+                                }
+                                .padding()
+                                .apCard()
+                            }
                             
                             // Earnings & Hours Widgets
                             HStack(spacing: APSpacing.md) {
@@ -443,6 +528,8 @@ struct StaffDashboardView: View {
             } catch {
                 await MainActor.run {
                     self.isLoading = false
+                    self.statusMessage = "Could not load timecard data. Check connection."
+                    self.showStatusMessage    = true
                 }
             }
         }

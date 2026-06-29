@@ -132,7 +132,7 @@ struct TablesView: View {
                         // ── Landscape iPhone: single compact toolbar row ──
                         HStack(spacing: APSpacing.sm) {
                             // Stat badges (small)
-                            let vacant   = filteredTables.filter { $0.status == "vacant"   }.count
+                            let vacant   = filteredTables.filter { $0.status != "occupied" }.count
                             let occupied = filteredTables.filter { $0.status == "occupied" }.count
                             compactStatBadge(label: "vacant".localized(for: appLanguage),
                                              count: vacant,   color: .appTeal)
@@ -242,6 +242,7 @@ struct TablesView: View {
                                     .background(Color.white.opacity(0.18))
                                     .clipShape(Circle())
                              }
+                            .accessibilityLabel(appTheme == AppTheme.dark.rawValue ? "switch_to_light_mode".localized(for: appLanguage) : "switch_to_dark_mode".localized(for: appLanguage))
                             
                             Button(action: { Task { await loadTables() } }) {
                                 Image(systemName: "arrow.clockwise")
@@ -250,6 +251,7 @@ struct TablesView: View {
                                     .background(Color.white.opacity(0.18))
                                     .clipShape(Circle())
                             }
+                            .accessibilityLabel("refresh_tables".localized(for: appLanguage))
                         }
                         .padding(.horizontal, APSpacing.md)
                         .padding(.vertical, APSpacing.xs)
@@ -286,7 +288,7 @@ struct TablesView: View {
                             Spacer()
 
                             // Stat badges inline in header
-                            let vacant   = filteredTables.filter { $0.status == "vacant"   }.count
+                            let vacant   = filteredTables.filter { $0.status != "occupied" }.count
                             let occupied = filteredTables.filter { $0.status == "occupied" }.count
                             headerStatBadge(count: vacant,   color: .appTeal, icon: "circle.fill")
                             headerStatBadge(count: occupied, color: .appRose, icon: "circle.fill")
@@ -321,6 +323,7 @@ struct TablesView: View {
                                     .background(Color.appAccent.opacity(0.08))
                                     .clipShape(Circle())
                             }
+                            .accessibilityLabel(appTheme == AppTheme.dark.rawValue ? "switch_to_light_mode".localized(for: appLanguage) : "switch_to_dark_mode".localized(for: appLanguage))
                             // Refresh
                             Button(action: { Task { await loadTables() } }) {
                                 Image(systemName: "arrow.clockwise")
@@ -330,6 +333,7 @@ struct TablesView: View {
                                     .background(Color.appAccent.opacity(0.08))
                                     .clipShape(Circle())
                             }
+                            .accessibilityLabel("refresh_tables".localized(for: appLanguage))
                         }
                         .padding(.horizontal, APSpacing.md)
                         .padding(.vertical, 9)
@@ -517,7 +521,14 @@ struct TablesView: View {
 
                                         
                                         ForEach(Array(canvasTables.enumerated()), id: \.element.id) { index, table in
-                                            let statusColor = table.status == "occupied" ? Color.appRose : Color.appTeal
+                                            let statusColor: Color = {
+                                                switch table.status.lowercased() {
+                                                case "occupied": return Color.appRose
+                                                case "reserved": return Color.appAmber
+                                                case "cleaning": return Color.appAccent
+                                                default: return Color.appTeal
+                                                }
+                                            }()
                                             
                                             Group {
                                                 if table.status == "occupied" {

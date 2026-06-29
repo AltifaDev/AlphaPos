@@ -146,21 +146,29 @@ import UIKit
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
-        let type = userInfo["type"] as? String
         
-        if type == "order" || type == "service_request" {
-            NotificationCenter.default.post(
-                name: .openAlertsNotification,
-                object: nil,
-                userInfo: userInfo
-            )
-        } else if type == "table_status" {
-            if let tableNumber = userInfo["table_number"] as? String {
+        // Route through DeepLinkRouter for all notification taps
+        if let destination = DeepLinkRouter.parseUserInfo(userInfo) {
+            DispatchQueue.main.async {
+                DeepLinkRouter.shared.navigate(to: destination)
+            }
+        } else {
+            // Fallback: legacy behavior for unrecognized payloads
+            let type = userInfo["type"] as? String
+            if type == "order" || type == "service_request" {
                 NotificationCenter.default.post(
-                    name: .openTableNotification,
+                    name: .openAlertsNotification,
                     object: nil,
-                    userInfo: ["table_number": tableNumber]
+                    userInfo: userInfo
                 )
+            } else if type == "table_status" {
+                if let tableNumber = userInfo["table_number"] as? String {
+                    NotificationCenter.default.post(
+                        name: .openTableNotification,
+                        object: nil,
+                        userInfo: ["table_number": tableNumber]
+                    )
+                }
             }
         }
         

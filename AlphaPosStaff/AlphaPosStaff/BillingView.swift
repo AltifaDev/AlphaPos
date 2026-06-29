@@ -853,7 +853,7 @@ struct StaffCashPaymentModalView: View {
     
     private func startCheckoutDelay() {
         isProcessing = true
-        APHaptic.trigger()
+        APHaptic.success()  // payment success haptic
 
         withAnimation(.spring(response: 0.45, dampingFraction: 0.78)) {
             showSuccessOverlay = true

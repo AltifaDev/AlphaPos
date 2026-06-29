@@ -57,6 +57,13 @@ struct TableDetailView: View {
     @State private var serveFailedCount: Int = 0
     @State private var showServePartialFailAlert = false
 
+    // ── Order Timeline ────────────────────────────────────────────────────────
+    @State private var selectedOrderForTimeline: Order? = nil
+
+    // ── Split Bill ────────────────────────────────────────────────────────────
+    @State private var showSplitBill = false
+    @State private var loadOrdersError: String? = nil
+
     @Environment(\.dismiss) private var dismiss
 
     // Design tokens
@@ -170,6 +177,31 @@ struct TableDetailView: View {
                 infoBanner
                 Divider().background(Color.appDivider)
 
+                // Error banner เมื่อ loadOrders ล้มเหลว (แยกจาก empty state)
+                if let errMsg = loadOrdersError {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.appAmber)
+                        Text(errMsg)
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.textPrimary)
+                            .lineLimit(2)
+                        Spacer()
+                        Button {
+                            loadOrdersError = nil
+                            Task { await loadOrders() }
+                        } label: {
+                            Text("retry".localized(for: appLanguage))
+                                .font(.caption.bold())
+                                .foregroundColor(.appAccent)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.appAmber.opacity(0.12))
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
                 // Post-payment dining banner
                 if let status = postPaymentStatus, status != .left {
                     postPaymentBanner(status)
@@ -208,6 +240,18 @@ struct TableDetailView: View {
         }
         .sheet(isPresented: $showingAddItemsSheet) {
             AddItemsToOrderSheet(table: currentTable, cartItems: $cartItems)
+        }
+        .sheet(item: $selectedOrderForTimeline) { order in
+            OrderTimelineView(order: order)
+        }
+        .sheet(isPresented: $showSplitBill) {
+            if let firstOrder = activeOrders.first {
+                SplitBillView(
+                    orderId: firstOrder.id,
+                    orderItems: activeOrders.flatMap { $0.items },
+                    totalAmount: activeOrders.reduce(0) { $0 + $1.total }
+                )
+            }
         }
         .fullScreenCover(isPresented: $showShiftGuard) {
             ShiftGuardOverlay()
@@ -543,6 +587,9 @@ struct TableDetailView: View {
                 let allServed = !order.items.isEmpty &&
                     order.items.allSatisfy { $0.status == "served" || $0.status == "cancelled" }
                 orderStatusBadge(allServed ? "served" : order.status)
+                    .onTapGesture {
+                        selectedOrderForTimeline = order
+                    }
 
                 // Serve-all button (only if not all served)
                 if !allServed && !isServingAll {
@@ -723,6 +770,25 @@ struct TableDetailView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                             }
                             .transition(.scale.combined(with: .opacity))
+
+                            // ── Split Bill ────────────────────────────────────
+                            Button {
+                                showSplitBill = true
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "rectangle.split.3x1.fill")
+                                        .font(.system(size: 14, weight: .bold))
+                                    Text("split_bill".localized(for: appLanguage))
+                                        .font(.system(size: 14, weight: .bold))
+                                }
+                                .foregroundColor(Color(hex: "6366F1"))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 13)
+                                .background(Color(hex: "6366F1").opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .overlay(RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color(hex: "6366F1").opacity(0.25), lineWidth: 1))
+                            }
                         }
                     }
                 }
@@ -985,7 +1051,9 @@ struct TableDetailView: View {
                 }
             }
         } catch {
-            print("TableDetailView: failed to load orders — \(error)")
+            await MainActor.run {
+                loadOrdersError = "load_orders_failed".localized(for: "th") + "\n\(error.localizedDescription)"
+            }
         }
     }
 
@@ -1140,14 +1208,15 @@ struct EnterpriseOrderItemRow: View {
                         if isServing {
                             ProgressView().scaleEffect(0.7).tint(.gray)
                         } else {
-                            Image(systemName: "arrow.uturn.backward")
+                    Image(systemName: "arrow.uturn.backward")
                                 .font(.system(size: 11, weight: .bold))
                                 .foregroundColor(.gray)
                         }
                     }
-                    .frame(width: 28, height: 28)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
                     .background(Color(.systemGroupedBackground))
-                    .clipShape(Circle())
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
                 .disabled(isServing)
@@ -1498,10 +1567,27 @@ struct AddItemsToOrderSheet: View {
 
     private func menuItemRow(_ item: MenuItem) -> some View {
         HStack(spacing: 12) {
-            // Emoji / category icon
+            // Emoji / category icon / Product Image
             ZStack {
                 RoundedRectangle(cornerRadius: 8).fill(royalBlue.opacity(0.08)).frame(width: 38, height: 38)
-                Text(item.emoji ?? "🍽").font(.system(size: 20))
+                
+                if let urlStr = item.image_url, !urlStr.isEmpty, let url = URL(string: urlStr) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable()
+                                .aspectRatio(contentMode: .fill)
+                        case .failure, .empty:
+                            Text(item.emoji ?? "🍽").font(.system(size: 20))
+                        @unknown default:
+                            Text(item.emoji ?? "🍽").font(.system(size: 20))
+                        }
+                    }
+                    .frame(width: 38, height: 38)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    Text(item.emoji ?? "🍽").font(.system(size: 20))
+                }
             }
 
             VStack(alignment: .leading, spacing: 2) {

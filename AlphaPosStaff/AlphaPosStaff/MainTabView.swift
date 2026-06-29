@@ -1,9 +1,11 @@
 import SwiftUI
+import Combine
 
 struct MainTabView: View {
     @Binding var loggedInEmployee: Employee?
     
     private var networkService: NetworkService { NetworkService.shared }
+    @StateObject private var deepLinkRouter = DeepLinkRouter.shared
     
     private var requestsCount: Int {
         networkService.serviceRequests.filter { $0.status == "pending" }.count
@@ -13,38 +15,68 @@ struct MainTabView: View {
     @AppStorage("logged_in_employee_name") private var loggedInEmployeeName = ""
     @State private var selectedTab = 0
     @State private var countTimer: Timer? = nil
+    
+    // Deep link presentation state
+    @State private var showOrderTimeline = false
+    @State private var deepLinkOrder: Order? = nil
+    @State private var showTableDetail = false
+    @State private var deepLinkTableNumber: String? = nil
 
     var body: some View {
-        TabView(selection: $selectedTab) {
+        ZStack(alignment: .top) {
+            TabView(selection: $selectedTab) {
             TablesView()
                 .tabItem {
                     Label("tables".localized(for: appLanguage), systemImage: "table.furniture")
                 }
                 .tag(0)
             
+            QuickOrderView()
+                .tabItem {
+                    Label("quick_order".localized(for: appLanguage), systemImage: "bag.fill.badge.plus")
+                }
+                .tag(1)
+            
             NotificationListView()
                 .tabItem {
                     Label("alerts".localized(for: appLanguage), systemImage: "bell.badge.fill")
                 }
-                .badge(networkService.activeAlertsCount)
-                .tag(1)
+            .badge(networkService.activeAlertsCount)
+                .tag(2)
+            
+            ShiftScheduleView()
+                .tabItem {
+                    Label("schedule".localized(for: appLanguage), systemImage: "calendar.badge.clock")
+                }
+                .tag(3)
             
             if let emp = loggedInEmployee {
                 TimecardView(employee: emp)
                     .tabItem {
                         Label("clock_in_out".localized(for: appLanguage), systemImage: "clock.badge.checkmark.fill")
                     }
-                    .tag(2)
+                    .tag(4)
                 
                 StaffDashboardView(employee: emp, loggedInEmployee: $loggedInEmployee)
                     .tabItem {
                         Label("my_account".localized(for: appLanguage), systemImage: "person.crop.circle.fill")
                     }
-                    .tag(3)
+                    .tag(5)
             }
         }
         .tint(.appAccent)
         .apColorScheme()
+            
+            // Offline banner overlay
+            if OfflineCache.shared.isOffline {
+                VStack {
+                    OfflineBannerView(queueCount: OfflineCache.shared.queuedOrderCount)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    Spacer()
+                }
+                .animation(.easeInOut(duration: 0.3), value: OfflineCache.shared.isOffline)
+            }
+        }
         .onAppear {
             if let emp = loggedInEmployee {
                 loggedInEmployeeName = "\(emp.firstName) \(emp.lastName)"
@@ -63,13 +95,96 @@ struct MainTabView: View {
             countTimer?.invalidate()
             countTimer = nil
         }
+        // MARK: - Legacy Notification Handlers (backward compatibility)
         .onReceive(NotificationCenter.default.publisher(for: .openAlertsNotification)) { _ in
-            self.selectedTab = 1
+            self.selectedTab = 2
         }
         .onReceive(NotificationCenter.default.publisher(for: .openTableNotification)) { _ in
             self.selectedTab = 0
         }
+        // MARK: - Deep Link Router Navigation
+        .onReceive(deepLinkRouter.$pendingDestination.compactMap { $0 }) { destination in
+            handleDeepLink(destination)
+        }
+        .onReceive(deepLinkRouter.$presentOrderId.compactMap { $0 }) { orderId in
+            // Find the order in network service data and present timeline
+            if let order = findOrder(byId: orderId) {
+                deepLinkOrder = order
+                showOrderTimeline = true
+            }
+        }
+        .onReceive(deepLinkRouter.$presentTableNumber.compactMap { $0 }) { tableNumber in
+            deepLinkTableNumber = tableNumber
+            showTableDetail = true
+        }
+        // MARK: - Deep Link Sheets
+        .sheet(isPresented: $showOrderTimeline, onDismiss: {
+            deepLinkRouter.clearOrderPresentation()
+            deepLinkOrder = nil
+        }) {
+            if let order = deepLinkOrder {
+                // ไม่ใส่ NavigationStack ซ้อน — OrderTimelineView มี NavigationStack ของตัวเองอยู่แล้ว
+                OrderTimelineView(order: order)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                showOrderTimeline = false
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .apColorScheme()
+            }
+        }
+        .sheet(isPresented: $showTableDetail, onDismiss: {
+            deepLinkRouter.clearTablePresentation()
+            deepLinkTableNumber = nil
+        }) {
+            if let tableNum = deepLinkTableNumber,
+               let table = findTable(byNumber: tableNum) {
+                // ไม่ใส่ NavigationStack ซ้อน — TableDetailView ถูกออกแบบให้อยู่ใน stack ของ parent
+                TableDetailView(table: table)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                showTableDetail = false
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .apColorScheme()
+            }
+        }
     }
+    
+    // MARK: - Deep Link Handler
+    
+    private func handleDeepLink(_ destination: DeepLinkDestination) {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            selectedTab = destination.targetTab
+        }
+        
+        #if DEBUG
+        print("MainTabView: Deep link → tab \(destination.targetTab) for \(destination)")
+        #endif
+    }
+    
+    // MARK: - Data Lookup Helpers
+    
+    private func findOrder(byId orderId: String) -> Order? {
+        // Search in all orders from NetworkService
+        return networkService.orders.first { $0.id == orderId }
+    }
+    
+    private func findTable(byNumber tableNumber: String) -> RestaurantTable? {
+        return networkService.tables.first { $0.tableNumber == tableNumber }
+    }
+    
+    // MARK: - Existing Helpers
     
     private func prefetchMenu() {
         Task {

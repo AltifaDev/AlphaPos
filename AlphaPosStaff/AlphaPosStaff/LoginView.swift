@@ -40,7 +40,15 @@ struct LoginView: View {
     @State private var errorMessage: String? = nil
     @State private var isStoreIdCopied = false
 
+    // ── Computed ─────────────────────────────────────────────────────────
+    private var uuidIsValid: Bool {
+        let trimmed = manualStoreId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let uuidRegex = #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"#
+        return trimmed.range(of: uuidRegex, options: .regularExpression) != nil
+    }
+
     var body: some View {
+
         ZStack {
             Color.appBackground.ignoresSafeArea()
             
@@ -436,23 +444,36 @@ struct LoginView: View {
                 .cornerRadius(APRadius.md)
                 .overlay(
                     RoundedRectangle(cornerRadius: APRadius.md)
-                        .stroke(Color.appBorderSubtle, lineWidth: 1)
+                        .stroke(uuidIsValid || manualStoreId.isEmpty ? Color.appBorderSubtle : Color.appRose.opacity(0.6), lineWidth: 1.5)
                 )
                 .padding(.horizontal, APSpacing.lg)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            
+
+            // Inline UUID validation hint
+            if !manualStoreId.isEmpty && !uuidIsValid {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.caption)
+                        .foregroundColor(.appRose)
+                    Text("invalid_uuid_format".localized(for: appLanguage))
+                        .font(.caption)
+                        .foregroundColor(.appRose)
+                }
+                .padding(.horizontal, APSpacing.lg)
+            }
+
             Button(action: {
                 let cleaned = manualStoreId.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !cleaned.isEmpty {
+                if !cleaned.isEmpty && uuidIsValid {
                     completePairing(with: cleaned)
                     showingManualInputSheet = false
                 }
             }) {
                 Text("link_shop".localized(for: appLanguage))
-                    .apGradientButton(gradient: APGradient.accent, disabled: manualStoreId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .apGradientButton(gradient: APGradient.accent, disabled: !uuidIsValid)
             }
-            .disabled(manualStoreId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(!uuidIsValid)
             .padding(.horizontal, APSpacing.lg)
             
             Spacer()
@@ -887,8 +908,8 @@ struct LoginView: View {
                 // Fallback to local mocks if server offline
                 await MainActor.run {
                     self.employees = [
-                        Employee(id: "11111111-1111-1111-1111-111111111111", firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, username: "somchai", role: "Manager", pinCode: "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4", faceEmbedding: nil, faceRegisteredAt: nil),
-                        Employee(id: "22222222-2222-2222-2222-222222222222", firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, username: "somsri", role: "Barista", pinCode: "fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9", faceEmbedding: nil, faceRegisteredAt: nil)
+                        Employee(id: "11111111-1111-1111-1111-111111111111", firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, username: "somchai", role: "Store Manager", faceRegisteredAt: nil),
+                        Employee(id: "22222222-2222-2222-2222-222222222222", firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, username: "somsri", role: "Waitstaff", faceRegisteredAt: nil)
                     ]
                     self.isLoading = false
                 }
@@ -958,7 +979,8 @@ struct LoginView: View {
     }
     
     private func startBiometricScan(for employee: Employee) {
-        guard let embedding = employee.faceEmbedding, !embedding.isEmpty else {
+        // faceEmbedding is no longer stored on the client — use faceRegisteredAt to indicate enrollment
+        guard employee.faceRegisteredAt != nil else {
             bioScannerMessage = "No face registered. Log in with PIN first and register your face in the Timecard tab."
             return
         }
@@ -1160,7 +1182,9 @@ struct PinEntryView: View {
                 if pinDigits.count == 4 {
                     Task {
                         do {
-                            let verified = try await NetworkService.shared.verifyPin(employeeId: employee.id, pinDigits: pinDigits, expectedPinHash: employee.pinCode)
+                            // SECURITY: do NOT pass expectedPinHash — employee.pinCode is no longer
+                            // fetched from the server. Verification always goes through the DB path.
+                            let verified = try await NetworkService.shared.verifyPin(employeeId: employee.id, pinDigits: pinDigits)
                             await MainActor.run {
                                 if verified {
                                     failedAttempts = 0

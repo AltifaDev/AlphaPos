@@ -1563,12 +1563,12 @@ final class LanguageManager {
             "th": "เสิร์ฟ"
         ],
         "order_ready": [
-            "en": "Order Ready",
-            "th": "อาหารพร้อมเสิร์ฟ"
+            "en": "Ready",
+            "th": "พร้อมเสิร์ฟ"
         ],
         "order_preparing": [
             "en": "Preparing",
-            "th": "กำลังเตรียมอาหาร"
+            "th": "กำลังเตรียม"
         ],
         "order_served": [
             "en": "Served",
@@ -1605,7 +1605,595 @@ final class LanguageManager {
         "go_back_btn": [
             "en": "Go Back",
             "th": "กลับ"
+        ],
+        // MARK: - Quick Order Mode
+        "quick_order": [
+            "en": "Quick Order",
+            "th": "สั่งด่วน"
+        ],
+        "select_order_type": [
+            "en": "Select order type",
+            "th": "เลือกประเภทออเดอร์"
+        ],
+        "takeaway": [
+            "en": "Takeaway",
+            "th": "สั่งกลับบ้าน"
+        ],
+        "delivery": [
+            "en": "Delivery",
+            "th": "เดลิเวอรี่"
+        ],
+        "walk_in": [
+            "en": "Walk-in",
+            "th": "ลูกค้า Walk-in"
+        ],
+        "your_cart": [
+            "en": "Your Cart",
+            "th": "ตะกร้าของคุณ"
+        ],
+        "queue_number": [
+            "en": "Queue Number",
+            "th": "หมายเลขคิว"
+        ],
+        "pay_now": [
+            "en": "Pay Now",
+            "th": "ชำระเลย"
+        ],
+        "pay_later": [
+            "en": "Pay Later",
+            "th": "ชำระทีหลัง"
+        ],
+        "order_submitted": [
+            "en": "Order Submitted!",
+            "th": "ส่งออเดอร์แล้ว!"
+        ],
+        "empty_cart_msg": [
+            "en": "Add items to start",
+            "th": "เพิ่มรายการเพื่อเริ่ม"
+        ],
+        "new_order": [
+            "en": "New Order",
+            "th": "ออเดอร์ใหม่"
+        ],
+        "select_payment": [
+            "en": "Select Payment Method",
+            "th": "เลือกวิธีชำระเงิน"
+        ],
+        "total_amount": [
+            "en": "Total Amount",
+            "th": "ยอดรวม"
+        ],
+        "submit_order": [
+            "en": "Submit Order",
+            "th": "ส่งออเดอร์"
+        ],
+        "items_label": [
+            "en": "items",
+            "th": "รายการ"
+        ],
+        "search_menu": [
+            "en": "Search menu...",
+            "th": "ค้นหาเมนู..."
+        ],
+        "all_categories": [
+            "en": "All",
+            "th": "ทั้งหมด"
+        ],
+        // MARK: - Offline Cache
+        "offline_banner": [
+            "en": "You're offline",
+            "th": "คุณออฟไลน์อยู่"
+        ],
+        "offline_banner_desc": [
+            "en": "Changes will sync when back online",
+            "th": "ข้อมูลจะซิงค์เมื่อกลับมาออนไลน์"
+        ],
+        "offline_queued": [
+            "en": "Queued",
+            "th": "อยู่ในคิว"
+        ],
+        "offline_syncing": [
+            "en": "Syncing...",
+            "th": "กำลังซิงค์..."
+        ],
+        "offline_cached_data": [
+            "en": "Showing cached data",
+            "th": "แสดงข้อมูลที่เก็บไว้"
+        ],
+        "offline_order_queued": [
+            "en": "Order queued for sync",
+            "th": "ออเดอร์อยู่ในคิวรอซิงค์"
+        ],
+        // MARK: - Order Timeline
+        "order_timeline": [
+            "en": "Order Timeline",
+            "th": "ไทม์ไลน์ออเดอร์"
+        ],
+        "order_placed": [
+            "en": "Order Placed",
+            "th": "สั่งออเดอร์แล้ว"
+        ],
+        "order_confirmed": [
+            "en": "Confirmed",
+            "th": "ยืนยันแล้ว"
+        ],
+        "order_picked_up": [
+            "en": "Picked Up",
+            "th": "รับแล้ว"
+        ],
+        "order_cancelled": [
+            "en": "Cancelled",
+            "th": "ยกเลิก"
+        ],
+        "estimated_time": [
+            "en": "Est. time remaining",
+            "th": "เวลาโดยประมาณ"
+        ],
+        "elapsed_time": [
+            "en": "Elapsed",
+            "th": "เวลาผ่านไป"
+        ],
+        "track_order": [
+            "en": "Track Order",
+            "th": "ติดตามออเดอร์"
+        ],
+        // MARK: - Deep Link Notifications
+        "notification_new_order": [
+            "en": "New Order",
+            "th": "ออเดอร์ใหม่"
+        ],
+        "notification_order_ready": [
+            "en": "Order Ready",
+            "th": "ออเดอร์พร้อม"
+        ],
+        "notification_table_update": [
+            "en": "Table Updated",
+            "th": "อัพเดทโต๊ะ"
+        ],
+        "notification_tap_to_view": [
+            "en": "Tap to view details",
+            "th": "แตะเพื่อดูรายละเอียด"
+        ],
+        "notification_shift_reminder": [
+            "en": "Shift Reminder",
+            "th": "แจ้งเตือนกะ"
+        ],
+        "notification_clock_reminder": [
+            "en": "Don't forget to clock in!",
+            "th": "อย่าลืมลงเวลาเข้างาน!"
+        ],
+        "schedule": [
+            "en": "Schedule",
+            "th": "ตารางเวร"
+        ],
+        "my_shifts": [
+            "en": "My Shifts",
+            "th": "กะของฉัน"
+        ],
+        "team_schedule": [
+            "en": "Team Schedule",
+            "th": "ตารางทีม"
+        ],
+        "next_shift": [
+            "en": "Next Shift",
+            "th": "กะถัดไป"
+        ],
+        "starts_in": [
+            "en": "Starts in",
+            "th": "เริ่มใน"
+        ],
+        "morning_shift": [
+            "en": "Morning",
+            "th": "กะเช้า"
+        ],
+        "afternoon_shift": [
+            "en": "Afternoon",
+            "th": "กะบ่าย"
+        ],
+        "evening_shift": [
+            "en": "Evening",
+            "th": "กะเย็น"
+        ],
+        "night_shift": [
+            "en": "Night",
+            "th": "กะดึก"
+        ],
+        "no_shifts": [
+            "en": "No shifts this week",
+            "th": "ไม่มีกะในสัปดาห์นี้"
+        ],
+        "this_week": [
+            "en": "This Week",
+            "th": "สัปดาห์นี้"
+        ],
+        // MARK: - Daily Summary
+        "daily_summary": [
+            "en": "Daily Summary",
+            "th": "สรุปประจำวัน"
+        ],
+        "orders_served": [
+            "en": "Orders Served",
+            "th": "ออเดอร์ที่เสิร์ฟ"
+        ],
+        "revenue_generated": [
+            "en": "Revenue",
+            "th": "ยอดขาย"
+        ],
+        "avg_prep_time": [
+            "en": "Avg Prep Time",
+            "th": "เวลาเตรียมเฉลี่ย"
+        ],
+        "tables_turned": [
+            "en": "Tables Turned",
+            "th": "โต๊ะที่ปิด"
+        ],
+        "tips_earned": [
+            "en": "Tips Earned",
+            "th": "ทิปที่ได้"
+        ],
+        "hourly_activity": [
+            "en": "Hourly Activity",
+            "th": "กิจกรรมรายชั่วโมง"
+        ],
+        "top_items_sold": [
+            "en": "Top Items",
+            "th": "รายการขายดี"
+        ],
+        "hours_worked": [
+            "en": "Hours Worked",
+            "th": "ชั่วโมงทำงาน"
+        ],
+        "day_streak": [
+            "en": "Day Streak",
+            "th": "ทำงานต่อเนื่อง"
+        ],
+        "todays_summary": [
+            "en": "Today's Summary",
+            "th": "สรุปวันนี้"
+        ],
+        // MARK: - Split Bill
+        "split_bill": [
+            "en": "Split Bill",
+            "th": "แบ่งบิล"
+        ],
+        "equal_split": [
+            "en": "Equal Split",
+            "th": "หารเท่า"
+        ],
+        "split_by_amount": [
+            "en": "By Amount",
+            "th": "ตามจำนวนเงิน"
+        ],
+        "split_by_item": [
+            "en": "By Item",
+            "th": "ตามรายการ"
+        ],
+        "number_of_people": [
+            "en": "Number of people",
+            "th": "จำนวนคน"
+        ],
+        "person_n": [
+            "en": "Person %d",
+            "th": "คนที่ %d"
+        ],
+        "remaining": [
+            "en": "Remaining",
+            "th": "คงเหลือ"
+        ],
+        "each_pays": [
+            "en": "Each pays",
+            "th": "คนละ"
+        ],
+        "paid": [
+            "en": "Paid",
+            "th": "จ่ายแล้ว"
+        ],
+        "unpaid": [
+            "en": "Unpaid",
+            "th": "ยังไม่จ่าย"
+        ],
+        "confirm_split": [
+            "en": "Confirm Split Payment",
+            "th": "ยืนยันการแยกจ่าย"
+        ],
+        "assign_items": [
+            "en": "Assign items",
+            "th": "กำหนดรายการ"
+        ],
+        // MARK: - Break Timer
+        "break_timer": [
+            "en": "Break Timer",
+            "th": "เวลาพัก"
+        ],
+        "short_break": [
+            "en": "Short Break",
+            "th": "พักสั้น"
+        ],
+        "meal_break": [
+            "en": "Meal Break",
+            "th": "พักทานอาหาร"
+        ],
+        "custom_break": [
+            "en": "Custom",
+            "th": "กำหนดเอง"
+        ],
+        "start_break": [
+            "en": "Start Break",
+            "th": "เริ่มพัก"
+        ],
+        "end_break": [
+            "en": "End Break",
+            "th": "หยุดพัก"
+        ],
+        "break_overtime": [
+            "en": "Break Overtime!",
+            "th": "เกินเวลาพัก!"
+        ],
+        "break_remaining": [
+            "en": "remaining",
+            "th": "เหลือ"
+        ],
+        "break_history": [
+            "en": "Break History",
+            "th": "ประวัติการพัก"
+        ],
+        "break_policy": [
+            "en": "Break Policy",
+            "th": "นโยบายการพัก"
+        ],
+        "minutes": [
+            "en": "min",
+            "th": "นาที"
+        ],
+        "select_break_type": [
+            "en": "Select break type",
+            "th": "เลือกประเภทการพัก"
+        ],
+        "tip_tracker": [
+            "en": "Tip Tracker",
+            "th": "ติดตามทิป"
+        ],
+        "todays_tips": [
+            "en": "Today's Tips",
+            "th": "ทิปวันนี้"
+        ],
+        "weekly_tips": [
+            "en": "Weekly Tips",
+            "th": "ทิปรายสัปดาห์"
+        ],
+        "monthly_tips": [
+            "en": "Monthly Tips",
+            "th": "ทิปรายเดือน"
+        ],
+        "cash_tips": [
+            "en": "Cash",
+            "th": "เงินสด"
+        ],
+        "card_tips": [
+            "en": "Card",
+            "th": "บัตร"
+        ],
+        "tip_goal": [
+            "en": "Daily Goal",
+            "th": "เป้าหมายวันนี้"
+        ],
+        "tip_pool": [
+            "en": "Tip Pool",
+            "th": "ทิปรวม"
+        ],
+        "your_share": [
+            "en": "Your Share",
+            "th": "ส่วนของคุณ"
+        ],
+        "avg_per_shift": [
+            "en": "Avg per shift",
+            "th": "เฉลี่ยต่อกะ"
+        ],
+        "set_goal": [
+            "en": "Set Goal",
+            "th": "ตั้งเป้า"
+        ],
+        "tip_history": [
+            "en": "Tip History",
+            "th": "ประวัติทิป"
+        ],
+        "messages": [
+            "en": "Messages",
+            "th": "ข้อความ"
+        ],
+        "team_chat": [
+            "en": "Team Chat",
+            "th": "แชทกลุ่ม"
+        ],
+        "direct_message": [
+            "en": "Direct Message",
+            "th": "ข้อความส่วนตัว"
+        ],
+        "quick_messages": [
+            "en": "Quick Messages",
+            "th": "ข้อความด่วน"
+        ],
+        "type_message": [
+            "en": "Type a message...",
+            "th": "พิมพ์ข้อความ..."
+        ],
+        "send": [
+            "en": "Send",
+            "th": "ส่ง"
+        ],
+        "online": [
+            "en": "Online",
+            "th": "ออนไลน์"
+        ],
+        "need_help": [
+            "en": "Need help at Table",
+            "th": "ต้องการช่วยที่โต๊ะ"
+        ],
+        "order_ready_pickup": [
+            "en": "Order ready for pickup",
+            "th": "ออเดอร์พร้อมรับ"
+        ],
+        "running_low": [
+            "en": "Running low on stock",
+            "th": "สินค้าใกล้หมด"
+        ],
+        "unread_messages": [
+            "en": "unread",
+            "th": "ยังไม่อ่าน"
+        ],
+        "no_messages_yet": [
+            "en": "No messages yet. Start a conversation!",
+            "th": "ยังไม่มีข้อความ เริ่มสนทนาเลย!"
+        ],
+        "search_staff": [
+            "en": "Search staff...",
+            "th": "ค้นหาพนักงาน..."
+        ],
+        "taking_break": [
+            "en": "Taking my break",
+            "th": "พักผ่อนอยู่"
+        ],
+        "back_from_break": [
+            "en": "Back from break",
+            "th": "กลับจากพัก"
+        ],
+        "customer_complaint": [
+            "en": "Customer complaint",
+            "th": "ลูกค้าร้องเรียน"
+        ],
+        "loading": [
+            "en": "Loading...",
+            "th": "กำลังโหลด..."
+        ],
+        "offline": [
+            "en": "Offline",
+            "th": "ออฟไลน์"
         ]
+        ,
+        // ── Error/Confirm keys เพิ่มจาก UX fix (2026-06-28) ──────────────────
+        "split_payment_failed": [
+            "en": "Payment Failed",
+            "th": "การชำระเงินล้มเหลว"
+        ],
+        "split_payment_error_msg": [
+            "en": "Could not save split payment. Please try again.",
+            "th": "บันทึกการแยกจ่ายไม่สำเร็จ กรุณาลองใหม่"
+        ],
+        "submit_order_failed": [
+            "en": "Order Failed",
+            "th": "ส่งออเดอร์ไม่สำเร็จ"
+        ],
+        "order_submit_error_msg": [
+            "en": "Could not submit order. Please check connection and try again.",
+            "th": "ส่งออเดอร์ไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่"
+        ],
+        "load_orders_failed": [
+            "en": "Could not load orders",
+            "th": "โหลดออเดอร์ไม่สำเร็จ"
+        ],
+        "confirm": [
+            "en": "Confirm",
+            "th": "ยืนยัน"
+        ],
+        "people": [
+            "en": "people",
+            "th": "คน"
+        ],
+        // ── Timecard localization keys (2026-06-28) ────────────────────────
+        "live_shift_in_progress": [
+            "en": "Live shift in progress",
+            "th": "กำลังทำงานอยู่"
+        ],
+        "ready_for_shift": [
+            "en": "Ready for your next shift",
+            "th": "พร้อมเริ่มกะงานใหม่"
+        ],
+        "shift_running_hint": [
+            "en": "Keep the shift running. Clock out only when work is complete.",
+            "th": "กะงานกำลังดำเนินอยู่ กด Clock out เมื่อทำงานเสร็จ"
+        ],
+        "verify_to_clock_in": [
+            "en": "Verify your identity, then clock in to start tracking time.",
+            "th": "ยืนยันตัวตน แล้วกด Clock in เพื่อเริ่มนับเวลา"
+        ],
+        "enroll_face": [
+            "en": "Enroll Face",
+            "th": "ลงทะเบียนใบหน้า"
+        ],
+        "update_face": [
+            "en": "Update Face",
+            "th": "อัปเดตใบหน้า"
+        ],
+        "adjustment": [
+            "en": "Adjustment",
+            "th": "ปรับเวลา"
+        ],
+        "verify_identity": [
+            "en": "Verify your identity...",
+            "th": "กำลังยืนยันตัวตน..."
+        ],
+        "enter_pin_to_verify": [
+            "en": "Enter PIN to verify",
+            "th": "ป้อน PIN เพื่อยืนยัน"
+        ],
+        // ── OrderStatusBadge localization (2026-06-28) ─────────────────────
+        "status_pending": ["en": "Pending", "th": "รอยืนยัน"],
+        "status_confirmed": ["en": "Confirmed", "th": "ยืนยันแล้ว"],
+        "status_preparing": ["en": "Preparing", "th": "กำลังเตรียม"],
+        "status_ready": ["en": "Ready", "th": "พร้อมเสิร์ฟ"],
+        "status_served": ["en": "Served", "th": "เสิร์ฟแล้ว"],
+        "status_completed": ["en": "Paid ✓", "th": "ชำระแล้ว ✓"],
+        "status_cancelled": ["en": "Cancelled", "th": "ยกเลิก"],
+        "status_cooking": ["en": "Cooking", "th": "กำลังปรุง"],
+        "status_queued": ["en": "Queued", "th": "รอคิว"],
+        // ── Accessibility labels (2026-06-28) ──────────────────────────────
+        "switch_to_light_mode": ["en": "Switch to light mode", "th": "เปลี่ยนเป็นโหมดสว่าง"],
+        "switch_to_dark_mode": ["en": "Switch to dark mode", "th": "เปลี่ยนเป็นโหมดมืด"],
+        "refresh_tables": ["en": "Refresh tables", "th": "รีเฟรชโต๊ะ"],
+        "close_sheet": ["en": "Close", "th": "ปิด"],
+        "remove_item": ["en": "Remove item", "th": "ลบรายการ"],
+        "serve_item": ["en": "Serve item", "th": "เสิร์ฟรายการ"],
+        "recall_item": ["en": "Recall item", "th": "ยกเลิกการเสิร์ฟ"],
+        "expand_notes": ["en": "Expand notes", "th": "ดูหมายเหตุ"],
+        // ── BreakTimerView localization (2026-06-28) ────────────────────────
+        "paused": ["en": "Paused", "th": "หยุดชั่วคราว"],
+        "resume_break": ["en": "Resume", "th": "กลับไปพัก"],
+        "pause_break": ["en": "Pause", "th": "หยุดชั่วคราว"],
+        "no_breaks_today": ["en": "No breaks yet today", "th": "ยังไม่มีพักวันนี้"],
+        "set_duration": ["en": "Set duration", "th": "ตั้งเวลา"],
+        "break_ending_soon_title": ["en": "⏰ Break ending soon", "th": "⏰ ใกล้หมดเวลาพัก"],
+        "break_ending_soon_body": ["en": "Your break time is up in 1 minute!", "th": "เวลาพักของคุณจะหมดใน 1 นาที!"],
+        "break_ended_title": ["en": "Break ended", "th": "หมดเวลาพักแล้ว"],
+        "break_ended_body": ["en": "Your break time is up. Please return to work.", "th": "หมดเวลาพักแล้ว กลับมาทำงานได้เลย"],
+        // ── DailySummaryView localization (2026-06-28) ─────────────────────
+        "on_duty": ["en": "On Duty", "th": "กำลังทำงาน"],
+        "keep_up_great_work": ["en": "Keep up the great work!", "th": "เยี่ยมมาก! ทำต่อไปนะ"],
+        "loading_summary": ["en": "Loading summary...", "th": "กำลังโหลดสรุป..."],
+        "no_activity_today": ["en": "No activity recorded yet today.", "th": "ยังไม่มีกิจกรรมวันนี้"],
+        // ── OrderTimelineView localization (2026-06-28) ─────────────────────
+        "in_progress_label": ["en": "In progress...", "th": "กำลังดำเนินการ..."],
+        "almost_ready_label": ["en": "Almost ready!", "th": "เกือบพร้อมแล้ว!"],
+        "approx_minutes": ["en": "~%d min", "th": "~%d นาที"],
+        // ── SplitBillView extra strings (2026-06-28) ─────────────────────
+        "over_by": ["en": "Over by ฿", "th": "เกิน ฿"],
+        "short_by": ["en": "Short by ฿", "th": "ขาด ฿"],
+        "n_items": ["en": "items", "th": "รายการ"],
+        // ── TablesView extra strings (2026-06-28) ──────────────────────────
+        "offline_data_may_be_delayed": ["en": "Offline — data may be delayed", "th": "ออฟไลน์ — ข้อมูลอาจล่าช้า"],
+        "loading_floor_plan": ["en": "กำลังโหลดแผนผัง...", "th": "กำลังโหลดแผนผัง..."],
+        "floor_first": ["en": "1st Floor", "th": "ชั้น 1"],
+        "floor_second": ["en": "2nd Floor", "th": "ชั้น 2"],
+        "floor_third": ["en": "3rd Floor", "th": "ชั้น 3"],
+        // ── StaffDashboardView extra strings (2026-06-28) ──────────────────
+        "server_configuration": ["en": "Server Configuration", "th": "การตั้งค่าเซิร์ฟเวอร์"],
+        "supabase_server_url": ["en": "Supabase Server URL", "th": "URL เซิร์ฟเวอร์ Supabase"],
+        "note_changing_server": ["en": "Note: Changing server requires re-pairing all devices.", "th": "หมายเหตุ: การเปลี่ยนเซิร์ฟเวอร์ต้องจับคู่อุปกรณ์ใหม่ทั้งหมด"],
+        // ── NotificationListView extra strings (2026-06-28) ────────────────
+        "and_conjunction": ["en": " & ", "th": " และ "]
+        ,
+        // ── LoginView (2026-06-28) ──────────────────────────────────────────
+        "invalid_uuid_format": ["en": "Invalid UUID format (e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)", "th": "รูปแบบ UUID ไม่ถูกต้อง (เช่น xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)"],
+        "load_shifts_failed": ["en": "Could not load shifts", "th": "โหลดกะงานไม่สำเร็จ"]
     ]
     
     func translate(_ key: String, lang: String) -> String {

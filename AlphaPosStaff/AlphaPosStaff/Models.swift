@@ -80,10 +80,10 @@ struct Employee: Codable, Identifiable, Hashable {
     let payRate: Double
     let username: String
     let role: String
-    let pinCode: String?
-    let faceEmbedding: String? // base64-encoded face template
-    let faceRegisteredAt: String? // ISO8601 timestamp
-    
+    /// faceRegisteredAt: non-nil means a face template has been saved server-side.
+    /// The embedding itself is NEVER fetched to the client.
+    let faceRegisteredAt: String?
+
     enum CodingKeys: String, CodingKey {
         case id
         case firstName = "first_name"
@@ -94,8 +94,6 @@ struct Employee: Codable, Identifiable, Hashable {
         case payRate = "pay_rate"
         case username
         case role
-        case pinCode = "pin_code"
-        case faceEmbedding = "face_embedding"
         case faceRegisteredAt = "face_registered_at"
     }
 }

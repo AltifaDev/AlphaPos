@@ -31,6 +31,14 @@ struct AlphaPosStaffApp: App {
     init() {
         UNUserNotificationCenter.current().delegate = NotificationManager.shared
         NotificationManager.shared.requestAuthorization()
+        
+        // Native URLCache setup for image caching (RAM 50MB, Disk 200MB)
+        let imageCache = URLCache(
+            memoryCapacity: 50 * 1024 * 1024,
+            diskCapacity: 200 * 1024 * 1024,
+            diskPath: "supabase_product_images"
+        )
+        URLCache.shared = imageCache
     }
     
     var body: some Scene {
@@ -47,7 +55,7 @@ struct AlphaPosStaffApp: App {
             .onAppear {
                 #if DEBUG
                 if loggedInEmployee == nil {
-                    loggedInEmployee = Employee(
+                    let somchai = Employee(
                         id: "11111111-1111-1111-1111-111111111111",
                         firstName: "Somchai",
                         lastName: "Suksabai",
@@ -57,10 +65,10 @@ struct AlphaPosStaffApp: App {
                         payRate: 25000.0,
                         username: "somchai",
                         role: "Manager",
-                        pinCode: "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
-                        faceEmbedding: nil,
                         faceRegisteredAt: nil
                     )
+                    loggedInEmployee = somchai
+                    UserDefaults.standard.set(somchai.id, forKey: "logged_in_employee_id")
                 }
                 #endif
                 
@@ -68,6 +76,13 @@ struct AlphaPosStaffApp: App {
                     let testURL = docsURL.appendingPathComponent("app_onappear.log")
                     let text = "App onAppear: loggedInEmployee = \(String(describing: loggedInEmployee))\n"
                     try? text.write(to: testURL, atomically: true, encoding: .utf8)
+                }
+            }
+            .onChange(of: loggedInEmployee) { newEmp in
+                if let emp = newEmp {
+                    UserDefaults.standard.set(emp.id, forKey: "logged_in_employee_id")
+                } else {
+                    UserDefaults.standard.set("", forKey: "logged_in_employee_id")
                 }
             }
             .overlay(alignment: .top) {

@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 enum AlertPriority: Int, Comparable {
     case low = 0
@@ -53,8 +54,10 @@ struct NotificationListView: View {
     @AppStorage("app_language") private var appLanguage = "en"
     
     @State private var isLoading = false
-    @State private var collapsedTables = Set<String>()
+    @State private var expandedTables = Set<String>()
     @State private var processingAlertIds = Set<String>()
+    @State private var readAlertIds = Set<String>()
+    @StateObject private var deepLinkRouter = DeepLinkRouter.shared
 
     private var alerts: [StaffAlert] {
         var list: [StaffAlert] = []
@@ -62,6 +65,21 @@ struct NotificationListView: View {
         // Map service requests
         for req in networkService.serviceRequests {
             let isActive = req.status == "pending"
+            
+            let table = networkService.tables.first(where: { $0.tableNumber == req.tableNumber })
+            let isTableOccupied = table?.status.lowercased() == "occupied"
+            
+            let belongsToSession: Bool
+            if isTableOccupied, let sessionStartedAtStr = table?.sessionStartedAt,
+               let sessionDate = isoStringToDate(sessionStartedAtStr),
+               let reqDate = isoStringToDate(req.createdAt) {
+                belongsToSession = reqDate >= sessionDate
+            } else {
+                belongsToSession = false
+            }
+            
+            guard isActive || belongsToSession else { continue }
+            
             let isBill = req.requestType.lowercased().contains("bill") || req.requestType.lowercased().contains("check")
             let priority: AlertPriority = isBill ? .high : .medium
             let date = isoStringToDate(req.createdAt) ?? Date()
@@ -86,9 +104,6 @@ struct NotificationListView: View {
             let date = isoStringToDate(order.createdAt) ?? Date()
             let activeSessionTokens = Set(networkService.tables.compactMap { $0.sessionToken })
             let isSessionActive = order.sessionToken.map { activeSessionTokens.contains($0) } ?? false
-            let isWithin24Hours = Date().timeIntervalSince(date) <= 86400
-            
-            guard isSessionActive || isWithin24Hours else { continue }
             
             let statusLower = order.status.lowercased()
             // Waiters need alerts for preparing/cooking and ready orders.
@@ -96,6 +111,9 @@ struct NotificationListView: View {
             guard statusLower != "cancelled" else { continue }
             
             let isActive = statusLower == "ready" || statusLower == "preparing" || statusLower == "cooking"
+            
+            guard isActive || isSessionActive else { continue }
+            
             let priority: AlertPriority = statusLower == "ready" ? .high : .medium
             
             let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
@@ -145,21 +163,15 @@ struct NotificationListView: View {
                 return lhsNewest > rhsNewest
             }
     }
-    
-    private var historyAlerts: [StaffAlert] {
-        alerts.filter { !$0.isActive }
-            .sorted { $0.timestamp > $1.timestamp }
-    }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
-                VStack(spacing: 0) {
-                    if isLoading && activeAlerts.isEmpty && historyAlerts.isEmpty {
+                                VStack(spacing: 0) {
+                    if isLoading && activeAlerts.isEmpty {
                         ProgressView().tint(.appAccent).frame(maxHeight: .infinity)
-                    } else if activeAlerts.isEmpty && historyAlerts.isEmpty {
+                    } else if activeAlerts.isEmpty {
                         VStack(spacing: APSpacing.md) {
                             Image(systemName: "bell.slash.fill")
                                 .font(.system(size: 48)).foregroundColor(.textTertiary)
@@ -171,47 +183,57 @@ struct NotificationListView: View {
                         }
                         .frame(maxHeight: .infinity)
                     } else {
-                        List {
-                            if !activeAlerts.isEmpty {
-                                Section {
-                                    ForEach(activeAlertsByTable, id: \.tableNumber) { group in
-                                        tableGroupCard(tableNumber: group.tableNumber, alerts: group.alerts)
-                                            .listRowBackground(Color.clear)
-                                            .listRowSeparator(.hidden)
-                                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                        ScrollViewReader { scrollProxy in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 12) {
+                                if !activeAlerts.isEmpty {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("active_alerts_section".localized(for: appLanguage))
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(.textSecondary)
+                                            .textCase(.uppercase)
+                                            .padding(.horizontal, 16)
+                                            .padding(.top, 8)
+                                        
+                                        ForEach(activeAlertsByTable, id: \.tableNumber) { group in
+                                            tableGroupCard(tableNumber: group.tableNumber, alerts: group.alerts)
+                                                .padding(.horizontal, 16)
+                                                .id("alert-group-\(group.tableNumber)")
+                                        }
                                     }
-                                } header: {
-                                    Text("active_alerts_section".localized(for: appLanguage))
-                                        .font(.subheadline).fontWeight(.bold)
-                                        .foregroundColor(.textSecondary)
-                                        .textCase(.uppercase)
                                 }
                             }
-                            
-                            if !historyAlerts.isEmpty {
-                                Section {
-                                    ForEach(historyAlerts) { alert in
-                                        alertRow(alert: alert)
-                                            .listRowBackground(Color.appSurface)
-                                            .listRowSeparator(.hidden)
-                                            .padding(.vertical, 4)
-                                    }
-                                } header: {
-                                    Text("resolved_history_section".localized(for: appLanguage))
-                                        .font(.subheadline).fontWeight(.bold)
-                                        .foregroundColor(.textSecondary)
-                                        .textCase(.uppercase)
-                                }
+                            .padding(.vertical, 8)
+                        }
+                        .onReceive(deepLinkRouter.$scrollToAlertId.compactMap { $0 }) { alertId in
+                            guard !alertId.isEmpty else { return }
+                            withAnimation(.easeInOut(duration: 0.4)) {
+                                scrollProxy.scrollTo("alert-\(alertId)", anchor: .center)
+                            }
+                            // Clear after scroll
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                deepLinkRouter.clearAlertScroll()
                             }
                         }
-                        .listStyle(.grouped)
-                        .scrollContentBackground(.hidden)
-                        .background(Color.appBackground)
+                        } // end ScrollViewReader
                     }
                 }
             }
             .navigationTitle("alerts".localized(for: appLanguage))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    NavigationLink {
+                        StaffMessagingView()
+                    } label: {
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                            .foregroundColor(.appAccent)
+                            .overlay(alignment: .topTrailing) {
+                                MessagingBadgeView(count: 0)
+                                    .offset(x: 8, y: -6)
+                            }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(action: loadRequests) {
                         Image(systemName: "arrow.clockwise")
@@ -226,7 +248,7 @@ struct NotificationListView: View {
     }
     
     private func tableGroupCard(tableNumber: String, alerts: [StaffAlert]) -> some View {
-        let isCollapsed = collapsedTables.contains(tableNumber)
+        let isCollapsed = !expandedTables.contains(tableNumber)
         
         let requestsCount = alerts.filter {
             if case .serviceRequest = $0.type { return true }
@@ -246,6 +268,12 @@ struct NotificationListView: View {
         let hasHighPriority = alerts.contains(where: { $0.priority == .high })
         let highlightColor = hasHighPriority ? Color.appRose : Color.appAccent
         
+        let unreadAlerts = alerts.filter { $0.isActive && !readAlertIds.contains($0.id) }
+        let hasUnread = !unreadAlerts.isEmpty
+        
+        let cardBgColor = hasUnread ? (hasHighPriority ? Color.appRose.opacity(0.06) : Color.appAccent.opacity(0.06)) : Color.appSurface
+        let cardStrokeColor = hasUnread ? (hasHighPriority ? Color.appRose.opacity(0.4) : Color.appAccent.opacity(0.4)) : (hasHighPriority ? Color.appRose.opacity(0.3) : Color.appBorderSubtle)
+        
         let actionText: String
         if readyCount > 0 && requestsCount > 0 {
             actionText = "serve_action".localized(for: appLanguage) + " & " + "resolve".localized(for: appLanguage)
@@ -260,10 +288,16 @@ struct NotificationListView: View {
                 Button(action: {
                     APHaptic.trigger()
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        if isCollapsed {
-                            collapsedTables.remove(tableNumber)
+                        if expandedTables.contains(tableNumber) {
+                            expandedTables.remove(tableNumber)
                         } else {
-                            collapsedTables.insert(tableNumber)
+                            expandedTables.insert(tableNumber)
+                            // Mark all active alerts for this table as read
+                            for alert in alerts {
+                                if alert.isActive {
+                                    readAlertIds.insert(alert.id)
+                                }
+                            }
                         }
                     }
                 }) {
@@ -273,8 +307,14 @@ struct NotificationListView: View {
                             .foregroundColor(.textSecondary)
                         
                         Text(String(format: "table_label".localized(for: appLanguage), tableNumber))
-                            .font(.headline).fontWeight(.black)
+                            .font(.system(size: 14, weight: .black))
                             .foregroundColor(.textPrimary)
+                        
+                        if hasUnread {
+                            Circle()
+                                .fill(hasHighPriority ? Color.appRose : Color.appAccent)
+                                .frame(width: 8, height: 8)
+                        }
                         
                         HStack(spacing: 4) {
                             if requestsCount > 0 {
@@ -357,7 +397,7 @@ struct NotificationListView: View {
                 }
             }
             .padding(.horizontal, APSpacing.md)
-            .padding(.vertical, APSpacing.md)
+            .padding(.vertical, APSpacing.sm)
             
             if !isCollapsed {
                 Divider()
@@ -377,11 +417,11 @@ struct NotificationListView: View {
                 .padding(.vertical, 4)
             }
         }
-        .background(Color.appSurface)
+        .background(cardBgColor)
         .cornerRadius(APRadius.md)
         .overlay(
             RoundedRectangle(cornerRadius: APRadius.md)
-                .stroke(hasHighPriority ? Color.appRose.opacity(0.3) : Color.appBorderSubtle, lineWidth: 1)
+                .stroke(cardStrokeColor, lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
     }
@@ -523,122 +563,8 @@ struct NotificationListView: View {
                 }
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
         .padding(.horizontal, APSpacing.md)
-    }
-    
-    private func alertRow(alert: StaffAlert) -> some View {
-        var iconName = "bell.fill"
-        var iconColor = Color.appAmber
-        var iconBgColor = Color.appAmber.opacity(0.15)
-        
-        switch alert.type {
-        case .serviceRequest(let req):
-            let isBill = req.requestType.lowercased().contains("bill") || req.requestType.lowercased().contains("check")
-            iconName = isBill ? "creditcard.fill" : "bell.fill"
-            iconColor = isBill ? .appRose : .appAmber
-            iconBgColor = (isBill ? Color.appRose : Color.appAmber).opacity(0.15)
-            
-        case .order(let order):
-            let statusLower = order.status.lowercased()
-            if statusLower == "ready" {
-                iconName = "fork.knife"
-                iconColor = .appAccent
-                iconBgColor = Color.appAccent.opacity(0.15)
-            } else if statusLower == "preparing" {
-                iconName = "hourglass"
-                iconColor = .appAmber
-                iconBgColor = Color.appAmber.opacity(0.15)
-            } else {
-                iconName = "checkmark.circle.fill"
-                iconColor = .appTeal
-                iconBgColor = Color.appTeal.opacity(0.15)
-            }
-        }
-        
-        return HStack(spacing: APSpacing.md) {
-            ZStack {
-                Circle()
-                    .fill(iconBgColor)
-                    .frame(width: 44, height: 44)
-                
-                Image(systemName: iconName)
-                    .foregroundColor(iconColor)
-            }
-            
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text(alert.title)
-                        .font(.subheadline).fontWeight(.black)
-                        .foregroundColor(.textPrimary)
-                    
-                    if alert.isActive {
-                        APBadge(text: alert.priority.labelKey.localized(for: appLanguage), color: alert.priority.color)
-                    }
-                }
-                
-                Text(alert.subtitle)
-                    .font(.caption)
-                    .foregroundColor(.textSecondary)
-                    .lineLimit(2)
-                
-                Text(alert.timestamp, style: .time)
-                    .font(.caption2)
-                    .foregroundColor(.textTertiary)
-            }
-            
-            Spacer()
-            
-            if alert.isActive {
-                switch alert.type {
-                case .serviceRequest(let req):
-                    Button(action: {
-                        resolveRequest(req: req)
-                    }) {
-                        Text("resolve".localized(for: appLanguage))
-                            .font(.caption).fontWeight(.bold)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .background(APGradient.positive)
-                            .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    
-                case .order(let order):
-                    if order.status.lowercased() == "ready" {
-                        Button(action: {
-                            serveOrder(order: order)
-                        }) {
-                            Text("serve_action".localized(for: appLanguage))
-                                .font(.caption).fontWeight(.bold)
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(APGradient.accent)
-                                .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            } else {
-                HStack(spacing: 4) {
-                    Image(systemName: "checkmark")
-                        .font(.caption2)
-                        .foregroundColor(.textTertiary)
-                    Text(resolvedLabel(for: alert))
-                        .font(.caption2).fontWeight(.medium)
-                        .foregroundColor(.textTertiary)
-                }
-            }
-        }
-        .padding(APSpacing.md)
-        .background(Color.appSurface)
-        .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
-        .overlay(
-            RoundedRectangle(cornerRadius: APRadius.md)
-                .stroke(Color.appBorderSubtle, lineWidth: 1)
-        )
     }
     
     private func resolvedLabel(for alert: StaffAlert) -> String {
