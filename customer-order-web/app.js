@@ -300,6 +300,7 @@ class AlphaPosApp {
         this.searchQuery = "";
         this.cart = {}; // Format: { cartKey: { itemId, quantity, selectedModifiers: [], notes } }
         this.modifiersConfig = { groups: [], modifiers: [], links: [] };
+        this.menuViewMode = localStorage.getItem('menuViewMode') || 'grid'; // 'list' | 'grid'
         this.tableNumber = "1"; // Default fallback
         this.sessionToken = null;
         this.selectedGuestCount = 2; // Default
@@ -2023,6 +2024,36 @@ class AlphaPosApp {
                 grid.appendChild(createItemHTML(item, index, false));
             }
         });
+
+        // Apply saved view mode (grid/list) after rendering
+        if (grid) {
+            grid.classList.toggle('grid-view', this.menuViewMode === 'grid');
+        }
+        // Sync toggle buttons
+        this.setMenuView(this.menuViewMode);
+    }
+
+    /**
+     * Switches menu list view between 'list' (1-col) and 'grid' (2-col)
+     */
+    setMenuView(mode) {
+        this.menuViewMode = mode;
+        localStorage.setItem('menuViewMode', mode);
+
+        const grid = document.getElementById('menuGrid');
+        if (grid) {
+            if (mode === 'grid') {
+                grid.classList.add('grid-view');
+            } else {
+                grid.classList.remove('grid-view');
+            }
+        }
+
+        // Update toggle button active state
+        const listBtn = document.getElementById('viewListBtn');
+        const gridBtn = document.getElementById('viewGridBtn');
+        if (listBtn) listBtn.classList.toggle('active', mode === 'list');
+        if (gridBtn) gridBtn.classList.toggle('active', mode === 'grid');
     }
 
     /**

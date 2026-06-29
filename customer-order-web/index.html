@@ -100,7 +100,13 @@
                 <button id="startOrderBtn" class="start-order-btn" onclick="app.confirmGuestCount()">
                     <span data-translate-key="startOrdering">Start Ordering</span>
                 </button>
+                <button class="service-capsule service-capsule-feedback anim-fade-in-up anim-delay-7" onclick="app.triggerFeedback()">
+                    <span class="service-icon" aria-hidden="true">⭐</span>
+                    <span class="service-label" data-translate-key="feedbackTitle">Leave Feedback</span>
+                </button>
             </div>
+
+            <!-- Feedback Modal (injected dynamically by js/feedback.js) -->
         </div>
 
         <!-- Step 3: Setup & Loading Screen -->
@@ -147,6 +153,11 @@
                 <h1 class="brand-title">AlphaPos</h1>
             </div>
             <div class="header-actions">
+                <div id="loyaltyMiniContainer" class="loyalty-mini-container"></div>
+                <button class="header-reserve-btn" onclick="app.showReservation()" aria-label="Reserve Table">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+                    <span data-translate-key="reserveTable">Reserve</span>
+                </button>
                 <div class="lang-dropdown" id="langDropdown">
                     <button class="lang-dropdown-toggle header-btn-white" onclick="app.toggleLangDropdown(event)">
                         <span id="langCurrentFlag">🇹🇭</span>
@@ -175,6 +186,7 @@
                     <span class="table-icon app-icon icon-table" aria-hidden="true"></span>
                     <span class="table-text">Table --</span>
                 </div>
+                <div class="wait-time-mini-container hidden" id="waitTimeMiniContainer"></div>
             </div>
         </header>
 
@@ -248,8 +260,18 @@
                 </div>
 
                 <!-- Featured Menu Section -->
+                <!-- Dietary & Allergen Filter Bar -->
+                <div id="dietaryFilterContainer" class="dietary-filter-container">
+                    <!-- Rendered dynamically by AllergenFilter -->
+                </div>
+
+                <!-- Quick Reorder Widget -->
+                <div id="reorderWidgetContainer" class="reorder-widget-container hidden">
+                    <!-- Rendered dynamically by ReorderHistory -->
+                </div>
+
                 <div id="featuredMenuSection" class="featured-menu-section">
-                    <h2 class="section-title-vertical" id="featuredMenuTitle" data-translate-key="featuredMenu">Featured Menu</h2>
+                    <h2 class="section-title
                     <div class="featured-menu-grid" id="featuredMenuGrid">
                         <!-- Featured items will be rendered dynamically -->
                     </div>
@@ -257,7 +279,17 @@
 
                 <!-- Menu Grid -->
                 <section class="menu-section">
-                    <h2 class="section-title-vertical" id="currentCategoryTitle" data-translate-key="menuTab">Menu</h2>
+                    <div class="menu-section-header">
+                        <h2 class="section-title-vertical" id="currentCategoryTitle" data-translate-key="menuTab">Menu</h2>
+                        <div class="view-toggle-group" id="viewToggleGroup">
+                            <button class="view-toggle-btn" id="viewListBtn" onclick="app.setMenuView('list')" aria-label="List view" title="List view">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                            </button>
+                            <button class="view-toggle-btn active" id="viewGridBtn" onclick="app.setMenuView('grid')" aria-label="Grid view" title="Grid view">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                            </button>
+                        </div>
+                    </div>
                     <div class="menu-grid" id="menuGrid">
                         <!-- Menu items will be rendered dynamically -->
                     </div>
@@ -274,6 +306,9 @@
             <div class="status-view-container anim-fade-in-up">
                 <div class="status-header anim-fade-in-down">
                     <div class="status-header-title-group">
+                        <!-- Wait Time Widget (full) -->
+                        <div class="wait-time-container hidden" id="waitTimeFullContainer"></div>
+                        
                         <h2 data-translate-key="sessionSummary">Session Summary</h2>
                         <p id="statusTableInfo" class="status-subtitle"></p>
                     </div>
@@ -286,6 +321,10 @@
                 <div class="status-body">
                     <div class="status-section anim-fade-in-up anim-delay-1">
                         <h3 data-translate-key="activeOrdersTracking">Active Orders Tracking</h3>
+                        <button class="btn-track-order" onclick="app.showOrderTracker()" id="btnTrackOrder" style="display:none;">
+                            <span class="track-icon">📍</span>
+                            <span data-translate-key="trackMyOrder">Track Order</span>
+                        </button>
                         <div id="activeOrdersList" class="status-list">
                             <div class="empty-state" data-translate-key="noActiveOrders">No active orders cooking.</div>
                         </div>
@@ -396,6 +435,9 @@
                         </div>
                     </div>
 
+                    <!-- Loyalty Earn Preview -->
+                    <div id="loyaltyEarnPreview"></div>
+
                     <!-- Action buttons based on status -->
                     <div class="action-buttons-group">
                         <button id="submitOrderBtn" class="primary-action-btn disabled" disabled onclick="app.submitOrder()">
@@ -463,8 +505,60 @@
     <!-- Notification Toast -->
     <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true">Order Sent Successfully!</div>
 
+
+    <!-- Enhanced Bill View / Receipt Panel -->
+    <div id="billViewPanel" class="hidden" role="dialog" aria-modal="true" aria-label="Bill view">
+    </div>
+
+    <!-- Order Progress Tracker Panel -->
+    <div id="orderTrackerPanel" class="order-tracker-panel hidden" role="dialog" aria-modal="true" aria-label="Order progress tracker">
+        <button class="tracker-close-btn" onclick="app.hideOrderTracker()" aria-label="Close tracker">✕</button>
+        <div id="orderTrackerContent">
+            <!-- OrderTracker renders here -->
+        </div>
+    </div>
+
+    <!-- Order History Panel -->
+    <div id="orderHistoryPanel" class="order-history-panel hidden" role="dialog" aria-modal="true" aria-label="Order history">
+        <div class="order-history-panel-header">
+            <h2 class="order-history-panel-title" data-translate-key="orderHistory">Order History</h2>
+            <button class="order-history-close-btn" onclick="app.hideOrderHistory()" aria-label="Close history">✕</button>
+        </div>
+        <div id="orderHistoryContent" class="order-history-panel-content">
+            <!-- ReorderHistory renders here -->
+        </div>
+    </div>
+
+    <!-- Toast: Order Submitted Successfully -->
+    <div id="orderSuccessToast" class="toast-overlay hide" role="alert" aria-live="polite">
+        <div class="toast-card success" id="orderSuccessToastCard">Order Sent Successfully!</div>
+    </div>
+
     <!-- Script imports -->
     <script src="config.js?v=21"></script>
+    <!-- Push Notification Permission Prompt -->
+    <div id="pushPermissionModal" class="push-permission-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Enable notifications">
+        <div class="push-permission-card">
+            <div class="push-permission-icon">
+                <span class="push-bell-ring">🔔</span>
+            </div>
+            <h3 class="push-permission-title" data-translate-key="pushTitle">Stay Updated</h3>
+            <p class="push-permission-desc" data-translate-key="pushDescription">Get notified when your order is ready — even if you close this tab</p>
+            <div class="push-permission-actions">
+                <button class="push-enable-btn" onclick="app._enablePushNotifications()">
+                    <span data-translate-key="pushEnable">Enable Notifications</span>
+                </button>
+                <button class="push-later-btn" onclick="app._dismissPushPrompt()">
+                    <span data-translate-key="pushLater">Maybe Later</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Allergen Detail Bottom Sheet -->
+    <div id="allergenDetailSheet" class="allergen-sheet" role="dialog" aria-modal="true" aria-label="Allergen information">
+    </div>
+
     <script src="hybrid-location.js?v=21"></script>
     <script type="module" src="app.js?v=21"></script>
 </body>
