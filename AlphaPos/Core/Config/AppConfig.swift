@@ -32,7 +32,7 @@ struct AppConfig {
         if let overriddenLocalURL = UserDefaults.standard.string(forKey: "dynamic_local_server_url"), !overriddenLocalURL.isEmpty {
             localServerURLString = overriddenLocalURL
         } else {
-            localServerURLString = plistLocalServerURL ?? "https://alphapos.altifadev.workers.dev"
+            localServerURLString = plistLocalServerURL ?? "http://119.59.99.163:8080"
         }
 
         return AppConfig(

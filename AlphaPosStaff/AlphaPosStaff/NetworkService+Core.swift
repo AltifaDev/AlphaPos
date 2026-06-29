@@ -12,6 +12,20 @@ import Observation
 import UIKit
 import CryptoKit
 
+enum NetworkError: Error, LocalizedError {
+    case offline
+    case serverError(String)
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .offline: return "No internet connection detected."
+        case .serverError(let msg): return "Server returned error: \(msg)"
+        case .invalidResponse: return "Received invalid response from server."
+        }
+    }
+}
+
 struct SyncResponse: Codable {
     let tables: [RestaurantTable]
     let requests: [ServiceRequest]
