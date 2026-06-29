@@ -138,6 +138,39 @@ struct AlphaPosApp: App {
     init() {
         _ = SyncEngine.shared
         PrintService.shared.configure(modelContext: sharedModelContainer.mainContext)
+        cleanupDuplicateSeedEmployees(sharedModelContainer.mainContext)
+        
+        // Configure high-performance native URLCache for image caching
+        let cache = URLCache(
+            memoryCapacity: 50 * 1024 * 1024, // 50 MB
+            diskCapacity: 200 * 1024 * 1024,  // 200 MB
+            diskPath: "supabase_product_images"
+        )
+        URLCache.shared = cache
+    }
+
+    private func cleanupDuplicateSeedEmployees(_ modelContext: ModelContext) {
+        let mockEmpIds = [
+            UUID(uuidString: "11111111-1111-1111-1111-111111111101")!,
+            UUID(uuidString: "11111111-1111-1111-1111-111111111102")!
+        ]
+        for id in mockEmpIds {
+            let descriptor = FetchDescriptor<Employee>(
+                predicate: #Predicate<Employee> { $0.id == id }
+            )
+            if let matches = try? modelContext.fetch(descriptor), !matches.isEmpty {
+                for emp in matches {
+                    if let user = emp.user {
+                        modelContext.delete(user)
+                    }
+                    modelContext.delete(emp)
+                }
+                #if DEBUG
+                print("AlphaPos: Cleaned up duplicate mock employee \(id)")
+                #endif
+            }
+        }
+        try? modelContext.save()
     }
 
     var body: some Scene {

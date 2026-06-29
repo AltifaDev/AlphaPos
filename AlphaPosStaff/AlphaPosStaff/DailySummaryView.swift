@@ -561,6 +561,8 @@ struct DailySummaryView: View {
         payRate: 80.0,
         username: "john",
         role: "Waiter",
+        pinCode: "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
+        faceEmbedding: nil,
         faceRegisteredAt: nil
     ))
 }

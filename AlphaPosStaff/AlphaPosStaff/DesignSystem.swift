@@ -151,6 +151,26 @@ extension Color {
     static var appGreen: Color {
         resolveColor(lightHex: "22C55E", darkHex: "30D158")
     }
+    /// Indigo accent for confirmed status
+    static var appIndigo: Color {
+        resolveColor(lightHex: "4F46E5", darkHex: "6366F1")
+    }
+    /// Brand dark green for Quick Order UI
+    static var brandGreenDark: Color {
+        resolveColor(lightHex: "0A5C36", darkHex: "2D8A6B")
+    }
+    /// Brand light green background
+    static var brandGreenLight: Color {
+        resolveColor(lightHex: "E8F5E9", darkHex: "1B3D2F")
+    }
+    /// Brand muted green for secondary buttons
+    static var brandGreenMuted: Color {
+        resolveColor(lightHex: "C8E6C9", darkHex: "122E22")
+    }
+    /// Brand bright accent green
+    static var brandGreenAccent: Color {
+        resolveColor(lightHex: "2ECC71", darkHex: "2ECC71")
+    }
 
     // ── Text ──────────────────────────────────────────────────────────────
     static var textPrimary: Color {
@@ -567,6 +587,24 @@ struct APHaptic {
         let generator = UIImpactFeedbackGenerator(style: .medium)
         generator.prepare()
         generator.impactOccurred()
+        #elseif os(macOS)
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .default)
+        #endif
+    }
+    static func success() {
+        #if os(iOS)
+        let generator = UINotificationFeedbackGenerator()
+        generator.prepare()
+        generator.notificationOccurred(.success)
+        #elseif os(macOS)
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .default)
+        #endif
+    }
+    static func error() {
+        #if os(iOS)
+        let generator = UINotificationFeedbackGenerator()
+        generator.prepare()
+        generator.notificationOccurred(.error)
         #elseif os(macOS)
         NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .default)
         #endif
