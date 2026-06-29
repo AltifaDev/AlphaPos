@@ -89,8 +89,10 @@ struct TCPTransport: PrinterTransport {
 struct EAAccessoryTransport: PrinterTransport {
     func deliver(data: Data, printer: Printer, logger: PrintLogger) async -> PrintResult {
         let supportedProtocols = PrinterBrand.allCases.flatMap { $0.mfiProtocols }
-        
-        if let configuredBrand = PrinterBrand(rawValue: printer.emulation) {
+
+        // Printer model does not have 'emulation' — derive brand from connection type or default to escpos
+        let emulationHint = "escpos"
+        if let configuredBrand = PrinterBrand(rawValue: emulationHint) {
             logger.append("    Configured brand: \(configuredBrand.displayName)")
             logger.append("    Brand hint: \(configuredBrand.connectionHint)")
 

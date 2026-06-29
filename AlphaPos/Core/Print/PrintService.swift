@@ -34,7 +34,7 @@ final class PrintService: ObservableObject {
     /// พิมพ์ใบเสร็จ → เครื่องพิมพ์ role = "receipt"
     func printReceipt(_ order: Order) async {
         guard let printers = activePrinters(forRole: "receipt"), !printers.isEmpty else { return }
-        let data = ESCPOSBuilder.buildReceipt(order: order)
+        let data = ESCPOSBuilder.buildReceipt(order: order, template: nil)
         for printer in printers {
             await sendToPrinter(printer, data: data)
         }
