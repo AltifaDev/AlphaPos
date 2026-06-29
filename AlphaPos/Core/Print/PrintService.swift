@@ -83,7 +83,8 @@ final class PrintService: ObservableObject {
                         tableLabel: tableLabel,
                         queueNumber: order.queueNumber ?? order.orderNumber,
                         cupIndex: cupIndex,
-                        totalCups: totalCups
+                        totalCups: totalCups,
+                        template: nil
                     )
                     await sendToPrinter(printer, data: data)
                     cupIndex += 1
