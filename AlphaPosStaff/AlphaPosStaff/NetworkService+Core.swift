@@ -16,7 +16,6 @@ enum NetworkError: Error, LocalizedError {
     case offline
     case serverError(String)
     case invalidResponse
-
     var errorDescription: String? {
         switch self {
         case .offline: return "No internet connection detected."

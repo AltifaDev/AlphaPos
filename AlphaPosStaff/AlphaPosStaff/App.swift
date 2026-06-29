@@ -31,14 +31,6 @@ struct AlphaPosStaffApp: App {
     init() {
         UNUserNotificationCenter.current().delegate = NotificationManager.shared
         NotificationManager.shared.requestAuthorization()
-        
-        // Configure high-performance native URLCache for image caching
-        let cache = URLCache(
-            memoryCapacity: 50 * 1024 * 1024, // 50 MB
-            diskCapacity: 200 * 1024 * 1024,  // 200 MB
-            diskPath: "supabase_product_images"
-        )
-        URLCache.shared = cache
     }
     
     var body: some Scene {
@@ -55,7 +47,7 @@ struct AlphaPosStaffApp: App {
             .onAppear {
                 #if DEBUG
                 if loggedInEmployee == nil {
-                    let somchai = Employee(
+                    loggedInEmployee = Employee(
                         id: "11111111-1111-1111-1111-111111111111",
                         firstName: "Somchai",
                         lastName: "Suksabai",
@@ -69,8 +61,6 @@ struct AlphaPosStaffApp: App {
                         faceEmbedding: nil,
                         faceRegisteredAt: nil
                     )
-                    loggedInEmployee = somchai
-                    UserDefaults.standard.set(somchai.id, forKey: "logged_in_employee_id")
                 }
                 #endif
                 
@@ -78,13 +68,6 @@ struct AlphaPosStaffApp: App {
                     let testURL = docsURL.appendingPathComponent("app_onappear.log")
                     let text = "App onAppear: loggedInEmployee = \(String(describing: loggedInEmployee))\n"
                     try? text.write(to: testURL, atomically: true, encoding: .utf8)
-                }
-            }
-            .onChange(of: loggedInEmployee) { newEmp in
-                if let emp = newEmp {
-                    UserDefaults.standard.set(emp.id, forKey: "logged_in_employee_id")
-                } else {
-                    UserDefaults.standard.set("", forKey: "logged_in_employee_id")
                 }
             }
             .overlay(alignment: .top) {
