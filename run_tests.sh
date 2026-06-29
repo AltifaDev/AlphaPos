@@ -57,6 +57,7 @@ SOURCES=(
     "$TESTS_DIR/TimecardTests.swift"
     "$TESTS_DIR/PayrollTests.swift"
     "$TESTS_DIR/LocalizationTests.swift"
+    "$TESTS_DIR/ExpenseTests.swift"
     "$TESTS_DIR/TestRunner.swift"
 )
 

@@ -85,7 +85,7 @@ struct TableView: View {
                         if outerGeo.size.width < 960 {
                             compactHeader(showsSidebarButton: isLandscape, width: outerGeo.size.width)
                         } else {
-                            wideHeader(showsSidebarButton: isLandscape)
+                            wideHeader(showsSidebarButton: isLandscape, width: outerGeo.size.width)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -2185,20 +2185,54 @@ struct TableView: View {
         .accessibilityLabel(isEditingLayout ? "table_exit_edit_mode_acc".t : "table_enter_edit_mode_acc".t)
     }
 
+    private func backToLoginButton(isCompact: Bool) -> some View {
+        Button {
+            APHaptic.trigger()
+            sessionManager.lockStaffSession(modelContext: modelContext)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.left")
+                    .font(.system(size: 12, weight: .bold))
+                if !isCompact {
+                    Text("table_back_to_login".t)
+                        .font(.system(size: 12, weight: .bold))
+                }
+            }
+            .foregroundColor(.textPrimary)
+            .frame(height: 34)
+            .padding(.horizontal, isCompact ? 11 : 12)
+            .background(Color.appSurfaceHigh.opacity(0.6))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.appBorderSubtle, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("table_back_to_login".t)
+    }
+
     @ViewBuilder
     private func compactHeader(showsSidebarButton: Bool, width: CGFloat) -> some View {
         VStack(spacing: 8) {
             if width < 600 {
                 // iPhone Layout:
-                // Row 1: Sidebar Toggle + Status Badges (no labels) + Quick Actions
+                // Row 1: Sidebar Toggle + Back Button (compact) + Status Badges (no labels) + Quick Actions
                 HStack(spacing: 0) {
                     if showsSidebarButton {
                         sidebarToggleButton
                         Spacer(minLength: 8)
                     }
+                    
+                    backToLoginButton(isCompact: true)
+                    
+                    Spacer(minLength: 8)
+                    
                     modernStatusWidget(showLabels: false)
                         .layoutPriority(1)
+                    
                     Spacer(minLength: 8)
+                    
                     quickActionsBar
                         .layoutPriority(1)
                 }
@@ -2214,71 +2248,67 @@ struct TableView: View {
                 }
             } else {
                 // iPad Portrait / Landscape with Sidebar Open Layout:
-                // Row 1: Sidebar Toggle + Title + Floor & Zone Pickers + Quick Actions
-                HStack(spacing: 0) {
+                // Row 1: Sidebar Toggle + Back Button + Title ── Spacer ── Quick Actions
+                HStack(alignment: .center, spacing: 10) {
                     if showsSidebarButton {
                         sidebarToggleButton
-                        Spacer(minLength: 10)
                     }
+                    
+                    backToLoginButton(isCompact: false)
                     
                     headerTitleView
                         .layoutPriority(3)
                     
-                    Spacer(minLength: 12)
-                    
-                    HStack(spacing: 12) {
-                        customFloorPicker
-                        customZonePicker
-                    }
-                    .layoutPriority(2)
-                    
-                    Spacer(minLength: 12)
+                    Spacer()
                     
                     quickActionsBar
                         .layoutPriority(1)
                 }
                 
-                // Row 2: Status Badges (Left Aligned, With Labels)
-                HStack {
-                    modernStatusWidget(showLabels: true)
+                // Row 2: Floor & Zone Pickers ── Spacer ── Status Badges (Responsive Labels)
+                HStack(alignment: .center, spacing: 12) {
+                    HStack(spacing: 12) {
+                        customFloorPicker
+                        customZonePicker
+                    }
+                    
                     Spacer()
+                    
+                    modernStatusWidget(showLabels: width >= 768)
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func wideHeader(showsSidebarButton: Bool) -> some View {
-        HStack(alignment: .center, spacing: 0) {
-            if showsSidebarButton {
-                sidebarToggleButton
-                Spacer(minLength: 12)
+    private func wideHeader(showsSidebarButton: Bool, width: CGFloat) -> some View {
+        VStack(spacing: 6) {
+            // Row 1: Sidebar Toggle + Back Button + Title ── Spacer ── Quick Actions
+            HStack(alignment: .center, spacing: 10) {
+                if showsSidebarButton {
+                    sidebarToggleButton
+                }
+                
+                backToLoginButton(isCompact: false)
+                
+                headerTitleView
+                
+                Spacer()
+                
+                quickActionsBar
             }
-
-            // ── Left: Page Title & Icon ──
-            headerTitleView
-                .layoutPriority(3)
-
-            Spacer(minLength: 16)
-
-            // ── Center-Left: Floor + Zone pickers ──
-            HStack(spacing: 12) {
-                customFloorPicker
-                customZonePicker
+            
+            // Row 2: Floor & Zone Pickers ── Spacer ── Status Badges
+            HStack(alignment: .center, spacing: 12) {
+                HStack(spacing: 12) {
+                    customFloorPicker
+                    customZonePicker
+                }
+                
+                Spacer()
+                
+                modernStatusWidget(showLabels: true)
             }
-            .layoutPriority(2)
-
-            Spacer(minLength: 16)
-
-            // ── Center-Right: Status badges ──
-            modernStatusWidget(showLabels: true)
-                .layoutPriority(1)
-
-            Spacer(minLength: 16)
-
-            // ── Right: Action buttons ──
-            quickActionsBar
-                .layoutPriority(1)
         }
         .frame(maxWidth: .infinity)
     }

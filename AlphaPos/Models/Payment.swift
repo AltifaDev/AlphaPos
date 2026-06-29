@@ -20,7 +20,7 @@ final class Payment {
     init(id: UUID = UUID(), order: Order? = nil, paymentMethod: String, amount: Double, transactionReference: String? = nil, status: String = "completed", paidAt: Date = Date(), tipAmount: Double = 0.0, isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
         self.id = id
         self.order = order
-        self.paymentMethod = paymentMethod
+        self.paymentMethod = paymentMethod.lowercased().replacingOccurrences(of: " ", with: "_")
         self.amount = amount
         self.transactionReference = transactionReference
         self.status = status

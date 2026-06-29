@@ -79,6 +79,15 @@ final class EmployeeTimecardViewModel {
         try? modelContext.save()
         showingScanner = false
         
+        // Enterprise Alert Triggers — notify master about clock in/out
+        let empName = "\(employee.firstName) \(employee.lastName)"
+        if scannerMode == .clockIn {
+            SyncEngine.shared.alertStaffClockIn(name: empName)
+        } else if let card = activeCard, let clockOut = card.clockOut {
+            let hoursWorked = clockOut.timeIntervalSince(card.clockIn) / 3600.0
+            SyncEngine.shared.alertStaffClockOut(name: empName, hoursWorked: hoursWorked)
+        }
+        
         // Trigger background sync task
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -94,8 +103,8 @@ final class EmployeeTimecardViewModel {
         modelContext.insert(baristaRole)
 
         // Fixed UUIDs — must match SampleDataSeeder constants so FK references stay valid after re-seed
-        let seedEmp1Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111101")!
-        let seedEmp2Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111102")!
+        let seedEmp1Id  = UUID(uuidString: "9a5767a4-6f30-4614-94d9-5ea85e282775")!
+        let seedEmp2Id  = UUID(uuidString: "193df239-104d-4e2d-b2e5-9f2b4ff30ddc")!
         let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
         let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
         let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: managerRole, isSynced: false, isDeleted: false, updatedAt: Date())

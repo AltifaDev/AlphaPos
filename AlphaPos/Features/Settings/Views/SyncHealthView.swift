@@ -67,6 +67,7 @@ struct SyncHealthView: View {
                 VStack(alignment: .leading, spacing: APSpacing.lg) {
                     summaryRow
                     queueGrid
+                    conflictResolutionLink
                     auditSection
                 }
                 .padding(APSpacing.lg)
@@ -144,6 +145,44 @@ struct SyncHealthView: View {
                 .apCard()
             }
         }
+    }
+
+    private var conflictResolutionLink: some View {
+        NavigationLink(destination: SyncConflictView()) {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(hex: "F59E0B").opacity(0.12))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(Color(hex: "F59E0B"))
+                }
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("conflict_nav_title".t)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.textPrimary)
+                    Text("conflict_nav_desc".t)
+                        .font(.system(size: 11))
+                        .foregroundColor(.textTertiary)
+                }
+                
+                Spacer()
+                
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12))
+                    .foregroundColor(.textTertiary)
+            }
+            .padding(14)
+            .background(Color.appSurface)
+            .cornerRadius(14)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color(hex: "F59E0B").opacity(0.2), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private var auditSection: some View {

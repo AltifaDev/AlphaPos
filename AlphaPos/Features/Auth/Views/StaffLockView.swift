@@ -334,15 +334,8 @@ struct StaffLockView: View {
                     // ── Profile Header ──────────────────────────────────────
                     VStack(spacing: 12) {
                         ZStack {
-                            // Glow halo
-                            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                                .fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-                                .frame(width: 90, height: 90)
-                                .blur(radius: 18)
-                                .opacity(0.6)
-
                             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                .fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .fill(.ultraThinMaterial)
                                 .frame(width: 88, height: 88)
                                 .matchedGeometryEffect(
                                     id: isOwnerPasscodeEntry ? "owner_profile" : "employee-\(selectedEmployee!.id.uuidString)",
@@ -350,17 +343,56 @@ struct StaffLockView: View {
                                 )
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                        .stroke(Color.white.opacity(0.25), lineWidth: 1.5)
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [Color.white.opacity(0.15), Color.white.opacity(0.05)],
+                                                startPoint: .topLeading, endPoint: .bottomTrailing
+                                            )
+                                        )
                                 )
+                                .overlay(alignment: .trailing) {
+                                    // Vertical tab book spine
+                                    VStack(spacing: 1.5) {
+                                        RoundedRectangle(cornerRadius: 1)
+                                            .fill(Color.white.opacity(0.85))
+                                            .frame(width: 5, height: 14)
+                                        RoundedRectangle(cornerRadius: 1)
+                                            .fill(Color.white.opacity(0.4))
+                                            .frame(width: 5, height: 14)
+                                        RoundedRectangle(cornerRadius: 1)
+                                            .fill(Color.white.opacity(0.25))
+                                            .frame(width: 5, height: 14)
+                                    }
+                                    .padding(.trailing, 5)
+                                }
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .stroke(Color.white.opacity(0.4), lineWidth: 1.0)
+                                )
+                                .shadow(color: Color.black.opacity(0.15), radius: 10, x: 0, y: 5)
 
-                            VStack(spacing: 5) {
-                                Text(initials)
-                                    .font(.system(size: 30, weight: .black, design: .rounded))
-                                    .foregroundColor(.white)
-                                Image(systemName: theme.iconName)
-                                    .font(.system(size: 14))
-                                    .foregroundColor(.white.opacity(0.75))
+                            // iOS Contacts style silhouette
+                            ZStack {
+                                Circle()
+                                    .stroke(Color.white.opacity(0.45), lineWidth: 1.5)
+                                    .frame(width: 44, height: 44)
+                                
+                                Circle()
+                                    .fill(
+                                        LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                                    )
+                                    .frame(width: 14, height: 14)
+                                    .offset(y: -4)
+                                
+                                Circle()
+                                    .fill(
+                                        LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                                    )
+                                    .frame(width: 28, height: 28)
+                                    .offset(y: 16)
                             }
+                            .frame(width: 44, height: 44)
+                            .clipShape(Circle())
                         }
 
                         VStack(spacing: 3) {
@@ -562,38 +594,68 @@ private struct GlassProfileButton: View {
         Button(action: action) {
             VStack(spacing: 14) {
                 ZStack {
-                    // Glow
-                    RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 110, height: 110)
-                        .blur(radius: 20)
-                        .opacity(0.5)
-
-                    // Card
+                    // Transparent Frosted Glass Card
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(.ultraThinMaterial)
                         .frame(width: 110, height: 110)
                         .matchedGeometryEffect(id: namespaceId, in: namespace)
                         .overlay(
                             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                .stroke(
+                                .fill(
                                     LinearGradient(
-                                        colors: [Color.white.opacity(0.4), Color.white.opacity(0.05)],
+                                        colors: [Color.white.opacity(0.15), Color.white.opacity(0.05)],
                                         startPoint: .topLeading, endPoint: .bottomTrailing
-                                    ),
-                                    lineWidth: 1.5
+                                    )
                                 )
                         )
+                        .overlay(alignment: .trailing) {
+                            // Vertical tab book spine (like the Contacts app icon)
+                            VStack(spacing: 2) {
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(Color.white.opacity(0.85))
+                                    .frame(width: 6, height: 18)
+                                
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(Color.white.opacity(0.4))
+                                    .frame(width: 6, height: 18)
+                                
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(Color.white.opacity(0.25))
+                                    .frame(width: 6, height: 18)
+                            }
+                            .padding(.trailing, 6)
+                        }
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .stroke(
+                                    Color.white.opacity(0.4),
+                                    lineWidth: 1.0
+                                )
+                        )
+                        .shadow(color: Color.black.opacity(0.15), radius: 12, x: 0, y: 6)
 
-                    VStack(spacing: 7) {
-                        Text(initials)
-                            .font(.system(size: 36, weight: .black, design: .rounded))
-                            .foregroundColor(.white)
-                            .shadow(color: .black.opacity(0.2), radius: 3, x: 0, y: 2)
-                        Image(systemName: theme.iconName)
-                            .font(.system(size: 17, weight: .bold))
-                            .foregroundColor(.white.opacity(0.8))
+                    // iOS Contacts style silhouette in center
+                    ZStack {
+                        Circle()
+                            .stroke(Color.white.opacity(0.45), lineWidth: 2)
+                            .frame(width: 52, height: 52)
+                        
+                        Circle()
+                            .fill(
+                                LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                            )
+                            .frame(width: 17, height: 17)
+                            .offset(y: -4)
+                        
+                        Circle()
+                            .fill(
+                                LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                            )
+                            .frame(width: 32, height: 32)
+                            .offset(y: 19)
                     }
+                    .frame(width: 52, height: 52)
+                    .clipShape(Circle())
                 }
                 .scaleEffect(isPressed ? 0.93 : 1.0)
                 .animation(.spring(response: 0.25, dampingFraction: 0.65), value: isPressed)

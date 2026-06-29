@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 
 @Model
-final class MerchantDevice {
+final class MerchantDevice: Identifiable {
     @Attribute(.unique) var id: UUID
     var deviceName: String
     var deviceType: String

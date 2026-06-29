@@ -99,7 +99,27 @@ extension SyncEngine {
                         ["event": "*", "schema": "public", "table": "table_sessions", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "service_requests", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "restaurant_tables", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "merchants", "filter": "id=eq.\(merchantId)"]
+                        ["event": "*", "schema": "public", "table": "merchants", "filter": "id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "menu_items", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "categories", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "modifiers", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "modifier_groups", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "employees", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "employee_shifts", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "inventory_items", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "customers", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "payments", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "promotions", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "expenses", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "suppliers", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "tax_rates", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "recipes", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "receipt_templates", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "table_layout_presets", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "currency_exchange_rates", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "users", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "refund_transactions", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "tips", "filter": "merchant_id=eq.\(merchantId)"]
                     ]
                 ],
                 "access_token": accessToken
@@ -164,8 +184,13 @@ extension SyncEngine {
             if event == "phx_reply" {
                 if let payload = json["payload"] as? [String: Any],
                    let status = payload["status"] as? String {
-                    if status == "ok" {
+                   if status == "ok" {
                         reconnectAttempt = 0
+                        // Enterprise Alert: WebSocket reconnected successfully after failures
+                        if self.consecutiveSyncFailures > 0 {
+                            self.alertConnectionRestored()
+                            self.consecutiveSyncFailures = 0
+                        }
                     }
                     #if DEBUG
                     print("SyncEngine [Realtime]: phx_reply status = \(status)")
@@ -248,16 +273,9 @@ extension SyncEngine {
                 self.isCurrentlySyncing = true
 
                 // ── Smart routing: pull only what changed ─────────────────
-                // table_sessions / orders → only status-relevant pulls
-                //   (no pullRestaurantTables — avoids layout re-render churn)
-                // restaurant_tables       → only layout pull
-                //   (pullActiveSessions will reconcile status afterwards)
-                // service_requests        → only service requests
-                // nil / other             → full pull (safe fallback)
+                // Pulls only the endpoints that actually need refreshing to optimize network usage.
                 switch capturedTable {
                 case "table_sessions":
-                    // C-6 FIX: Use 0.2s debounce for status-critical session events
-                    // (was 0.8s — 4× slower response for session open/close)
                     await self.pullActiveSessions(modelContext)
                 case "orders", "order_items":
                     await self.pullCustomerOrders(modelContext)
@@ -265,15 +283,82 @@ extension SyncEngine {
                 case "service_requests":
                     await self.syncServiceRequests()
                 case "restaurant_tables":
-                    // Layout change — pull tables then reconcile session status
                     await self.pullRestaurantTables(modelContext)
                     await self.pullActiveSessions(modelContext)
+                case "menu_items":
+                    await self.pullMenuItemsFromSupabase(modelContext)
+                case "categories":
+                    await self.pullCategoriesFromSupabase(modelContext)
+                case "modifiers":
+                    await self.pullModifiersFromSupabase(modelContext)
+                case "modifier_groups":
+                    await self.pullModifierGroupsFromSupabase(modelContext)
+                case "employees":
+                    await self.pullEmployees(modelContext)
+                case "employee_shifts":
+                    await self.pullEmployeeShifts(modelContext)
+                case "inventory_items":
+                    await self.pullInventoryItemsFromSupabase(modelContext)
+                case "customers":
+                    await self.pullCustomersFromSupabase(modelContext)
+                case "payments":
+                    await self.pullCompletedOrdersAndPayments(modelContext)
+                case "promotions":
+                    await self.pullPromotionsFromSupabase(modelContext)
+                    await self.pullPromotionBundleItemsFromSupabase(modelContext)
+                case "expenses":
+                    await self.pullExpensesFromSupabase(modelContext)
+                case "suppliers":
+                    await self.pullSuppliersFromSupabase(modelContext)
+                case "tax_rates":
+                    await self.pullTaxRatesFromSupabase(modelContext)
+                case "recipes":
+                    await self.pullRecipesFromSupabase(modelContext)
+                case "receipt_templates":
+                    await self.pullReceiptTemplatesFromSupabase(modelContext)
+                case "table_layout_presets":
+                    await self.pullTableLayoutPresetsFromSupabase(modelContext)
+                case "currency_exchange_rates":
+                    await self.pullCurrencyExchangeRatesFromSupabase(modelContext)
+                case "users":
+                    await self.pullUsersFromSupabase(modelContext)
+                case "refund_transactions":
+                    await self.pullRefundTransactionsFromSupabase(modelContext)
+                case "tips":
+                    await self.pullTipsFromSupabase(modelContext)
+                case "order_tax_lines":
+                    await self.pullOrderTaxLinesFromSupabase(modelContext)
+                case "order_item_modifiers":
+                    await self.pullOrderItemModifiersFromSupabase(modelContext)
                 default:
                     // Unknown / composite event — full pull
                     await self.pullRestaurantTables(modelContext)
+                    await self.pullRestaurantWallsFromSupabase(modelContext)
+                    await self.pullTableLayoutPresetsFromSupabase(modelContext)
                     await self.pullCustomerOrders(modelContext)
                     await self.pullActiveSessions(modelContext)
                     await self.syncServiceRequests()
+                    await self.pullEmployees(modelContext)
+                    await self.pullEmployeeShifts(modelContext)
+                    await self.pullMenuItemsFromSupabase(modelContext)
+                    await self.pullPromotionsFromSupabase(modelContext)
+                    await self.pullPromotionBundleItemsFromSupabase(modelContext)
+                    await self.pullRegisterSessions(modelContext)
+                    await self.pullCashMovements(modelContext)
+                    await self.pullShiftReportsFromSupabase(modelContext)
+                    await self.pullCustomersFromSupabase(modelContext)
+                    await self.pullGiftCardsFromSupabase(modelContext)
+                    await self.pullLoyaltyTransactionsFromSupabase(modelContext)
+                    await self.pullTaxRatesFromSupabase(modelContext)
+                    await self.pullCurrencyExchangeRatesFromSupabase(modelContext)
+                    await self.pullRecipesFromSupabase(modelContext)
+                    await self.pullExpensesFromSupabase(modelContext)
+                    await self.pullRefundTransactionsFromSupabase(modelContext)
+                    await self.pullOrderTaxLinesFromSupabase(modelContext)
+                    await self.pullTipsFromSupabase(modelContext)
+                    await self.pullOrderItemModifiersFromSupabase(modelContext)
+                    await self.pullUsersFromSupabase(modelContext)
+                    await self.pullReceiptTemplatesFromSupabase(modelContext)
                 }
 
                 self.isCurrentlySyncing = false

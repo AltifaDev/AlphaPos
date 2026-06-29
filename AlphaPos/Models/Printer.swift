@@ -13,6 +13,7 @@ final class Printer {
     var status: String // "online", "offline", "error", "unknown"
     var role: String // "receipt", "kitchen", "label"
     var isActive: Bool
+    var emulation: String // "escpos", "starprnt", "tspl"
     
     @Relationship(deleteRule: .cascade, inverse: \PrintRoutingRule.printer)
     var routingRules: [PrintRoutingRule] = []
@@ -33,6 +34,7 @@ final class Printer {
         status: String = "unknown",
         role: String = "kitchen",
         isActive: Bool = true,
+        emulation: String = "escpos",
         isSynced: Bool = false,
         isDeleted: Bool = false,
         updatedAt: Date = Date()
@@ -47,6 +49,7 @@ final class Printer {
         self.status = status
         self.role = role
         self.isActive = isActive
+        self.emulation = emulation
         self.isSynced = isSynced
         self.isDeleted = isDeleted
         self.updatedAt = updatedAt

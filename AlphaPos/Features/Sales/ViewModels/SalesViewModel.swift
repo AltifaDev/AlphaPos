@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 import SwiftUI
 
-@Observable
+@Observable @MainActor
 final class SalesViewModel {
     enum SummaryMode {
         case daily
@@ -132,23 +132,21 @@ final class SalesViewModel {
         employees: [Employee] = [],
         timecards: [Timecard] = []
     ) {
-        // Offload heavy computation to a background task to keep main thread responsive
-        // Results are published back on @MainActor via @Observable property assignments
-        Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return }
-            await self.runAnalytics(orders: orders, inventoryItems: inventoryItems,
-                                    employees: employees, timecards: timecards)
-        }
+        self.runAnalytics(
+            orders: orders,
+            inventoryItems: inventoryItems,
+            employees: employees,
+            timecards: timecards
+        )
     }
 
-    /// Internal: runs on background thread, then publishes results back
-    @MainActor
+    /// Internal: runs on the main actor to preserve SwiftData model context integrity
     private func runAnalytics(
         orders: [Order],
         inventoryItems: [InventoryItem],
         employees: [Employee],
         timecards: [Timecard]
-    ) async {
+    ) {
         let calendar = Calendar.current
 
         // 1. Filter completed orders for the selected period

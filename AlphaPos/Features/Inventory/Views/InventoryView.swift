@@ -19,7 +19,7 @@ struct InventoryView: View {
     @State private var viewModel = InventoryViewModel()
     @State private var searchText = ""
     @State private var debouncedSearchText = ""
-    @State private var selectedSection = 0 // 0: Raw Materials, 1: Products, 2: Recipes & BOM, 3: Suppliers, 4: Stock Audit
+    @State private var selectedSection = 0 // 0: Raw Materials, 1: Products, 2: Recipes & BOM, 3: Suppliers, 4: Stock Audit, 5: Expenses
     @State private var showingEditSheet = false
     @State private var showingMovementHistory = false
     @State private var showingAddSheet = false
@@ -30,6 +30,7 @@ struct InventoryView: View {
     @State private var showingBranchManager = false
     @State private var showingPOManager = false
     @State private var showingTransferSheet = false
+    @State private var showingDocumentScanner = false
 
     // High-Volume filters state
     @State private var statusFilter = "All" // "All", "Low Stock", "Out of Stock"
@@ -218,6 +219,11 @@ struct InventoryView: View {
                     exitSelectionMode()
                 }
             }
+            .sheet(isPresented: $showingDocumentScanner) {
+                StockDocumentScanSheet {
+                    showingDocumentScanner = false
+                }
+            }
             .sheet(isPresented: $showingCategoryManager) {
                 ManageCategoriesSheet()
             }
@@ -264,6 +270,7 @@ struct InventoryView: View {
             Text("inventory_recipes".t).tag(2)
             Text("inventory_suppliers".t).tag(3)
             Text("inventory_stock_audit".t).tag(4)
+            Text("inventory_expenses".t).tag(5)
         }
         .pickerStyle(.segmented)
         .padding(.horizontal, APSpacing.md)
@@ -291,6 +298,8 @@ struct InventoryView: View {
             SupplierManagerView()
         case 4:
             StockAuditView()
+        case 5:
+            ExpenseTrackerView()
         default:
             EmptyView()
         }
@@ -358,6 +367,14 @@ struct InventoryView: View {
                 if selectedSection == 0 && activeBranch != nil {
                     Button(action: { showingCategoryManager = true }) {
                         Label("จัดการหมวดหมู่", systemImage: "tag")
+                            .foregroundColor(.appTeal)
+                    }
+                }
+                
+                // AI Receipt Scanner
+                if selectedSection == 0 && activeBranch != nil {
+                    Button(action: { showingDocumentScanner = true }) {
+                        Label("stock_scan_title".t, systemImage: "sparkles.rectangle.stack")
                             .foregroundColor(.appTeal)
                     }
                 }

@@ -75,6 +75,7 @@ struct AppRootView: View {
         }
         .environmentObject(sessionManager)
         .environmentObject(lm)
+        .apColorScheme()
         .animation(.easeOut(duration: 0.12), value: sessionManager.route)
         .animation(.easeInOut(duration: 0.3), value: lm.isReloading)
         .task {

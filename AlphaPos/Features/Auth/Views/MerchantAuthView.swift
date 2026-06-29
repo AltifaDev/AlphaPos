@@ -34,6 +34,11 @@ struct MerchantAuthView: View {
     // Feedback States
     @State private var errorMessage = ""
     @State private var isLoading = false
+    @State private var authCardAppeared = false
+    @State private var glassPulse = false
+    @State private var logoFloat = false
+    @State private var cardFloat = false
+    @State private var buttonFloat = false
     
     // Password toggles & sheets
     @State private var showPassword = false
@@ -52,100 +57,128 @@ struct MerchantAuthView: View {
     
     var body: some View {
         ZStack {
-            // 1. Moving/Animated abstract background (White focus)
-            AnimatedWhiteBackgroundView()
+            // 1. Restaurant Kitchen image background
+            KitchenBackgroundView()
                 .ignoresSafeArea()
             
             // 2. Main Container
-            ScrollView {
-                VStack {
-                    Spacer(minLength: 40)
-                    
-                    // Brand Header
-                    HStack(spacing: 12) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(APGradient.accent)
-                                .frame(width: 44, height: 44)
-                                .shadow(color: Color.appAccent.opacity(0.3), radius: 8, x: 0, y: 3)
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: 22, weight: .black))
-                                .foregroundColor(.white)
-                        }
-                        
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("AlphaPos")
-                                .font(.system(size: 24, weight: .black, design: .rounded))
-                                .foregroundColor(Color(hex: "111827")) // Slate 900
-                            Text("auth_brand_sub".t)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(Color(hex: "6B7280")) // Slate 500
-                        }
-                    }
-                    .padding(.bottom, 24)
-                    
-                    // Glassmorphic Card Container
+            GeometryReader { geometry in
+                ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 0) {
-                        if authMode == "login" {
-                            loginForm
-                                .transition(.asymmetric(
-                                    insertion: .move(edge: .leading).combined(with: .opacity),
-                                    removal: .move(edge: .trailing).combined(with: .opacity)
-                                ))
-                        } else {
-                            signupForm
-                                .transition(.asymmetric(
-                                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                                    removal: .move(edge: .leading).combined(with: .opacity)
-                                ))
+                        Spacer(minLength: 20)
+                        
+                        // Brand Header
+                        HStack(spacing: 12) {
+                            ZStack {
+                                Circle()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [Color(hex: "FF9500"), Color(hex: "FF5E00")],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .frame(width: 44, height: 44)
+                                    .shadow(color: Color(hex: "FF5E00").opacity(logoFloat ? 0.45 : 0.25), radius: logoFloat ? 10 : 6, x: 0, y: 3)
+                                Image(systemName: "fork.knife")
+                                    .font(.system(size: 20, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 1) {
+                                HStack(spacing: 0) {
+                                    Text("Alpha")
+                                        .font(.system(size: 26, weight: .black, design: .rounded))
+                                        .foregroundColor(.white)
+                                    Text("Pos")
+                                        .font(.system(size: 26, weight: .black, design: .rounded))
+                                        .foregroundColor(Color(hex: "FF9500"))
+                                }
+                                Text("auth_brand_sub".t)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(Color(hex: "A7F3D0").opacity(0.95))
+                            }
                         }
+                        .offset(y: logoFloat ? -5 : 5)
+                        .padding(.bottom, 24)
+                        .scaleEffect(authCardAppeared ? 1 : 0.96)
+                        .opacity(authCardAppeared ? 1 : 0)
+                        
+                        // Frosted Glass / Glassmorphism modal container
+                        VStack(spacing: 0) {
+                            if authMode == "login" {
+                                loginForm
+                                    .transition(.asymmetric(
+                                        insertion: .move(edge: .leading).combined(with: .opacity),
+                                        removal: .move(edge: .trailing).combined(with: .opacity)
+                                    ))
+                            } else {
+                                signupForm
+                                    .transition(.asymmetric(
+                                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                                        removal: .move(edge: .leading).combined(with: .opacity)
+                                ))
+                            }
+                        }
+                        .padding(34)
+                        .frame(maxWidth: 500)
+                        .padding(.horizontal, 22)
+                        .frostedAuthPanel(isActive: glassPulse)
+                        .scaleEffect(authCardAppeared ? 1 : 0.94)
+                        .opacity(authCardAppeared ? 1 : 0)
+                        .offset(y: cardFloat ? -4 : 4)
+                        .offset(y: authCardAppeared ? 0 : 18)
+                        .animation(.spring(response: 0.5, dampingFraction: 0.82), value: authMode)
+                        .animation(.spring(response: 0.5, dampingFraction: 0.82), value: signupStep)
+                        
+                        Spacer(minLength: 20)
+                        
+                        // Footer Credits
+                        VStack(spacing: 4) {
+                            Text(L.Auth.sysOnlineSsl.t)
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(Color.white.opacity(0.55))
+                            Text(L.Auth.cloudEngineVer.t)
+                                .font(.system(size: 9))
+                                .foregroundColor(Color.white.opacity(0.4))
+                        }
+                        .padding(.bottom, 20)
                     }
-                    .padding(32)
-                    .frame(width: 480)
-                    .background(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(Color.white.opacity(0.85))
-                            .background(VisualEffectBlur(material: .systemThinMaterialLight))
-                            .shadow(color: Color.black.opacity(0.06), radius: 25, x: 0, y: 15)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                    .stroke(Color.white.opacity(0.6), lineWidth: 1.5)
-                            )
-                    )
-                    .animation(.spring(response: 0.5, dampingFraction: 0.82), value: authMode)
-                    .animation(.spring(response: 0.5, dampingFraction: 0.82), value: signupStep)
-                    
-                    Spacer(minLength: 40)
-                    
-                    // Footer Credits
-                    VStack(spacing: 4) {
-                        Text(L.Auth.sysOnlineSsl.t)
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(Color(hex: "9CA3AF"))
-                        Text(L.Auth.cloudEngineVer.t)
-                            .font(.system(size: 9))
-                            .foregroundColor(Color(hex: "D1D5DB"))
-                    }
-                    .padding(.bottom, 20)
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: geometry.size.height)
                 }
-                .frame(maxWidth: .infinity)
+            }
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.72, dampingFraction: 0.82).delay(0.08)) {
+                authCardAppeared = true
+            }
+            withAnimation(.easeInOut(duration: 3.2).repeatForever(autoreverses: true)) {
+                glassPulse = true
+            }
+            withAnimation(.easeInOut(duration: 4.5).repeatForever(autoreverses: true)) {
+                logoFloat = true
+            }
+            withAnimation(.easeInOut(duration: 5.5).repeatForever(autoreverses: true)) {
+                cardFloat = true
+            }
+            withAnimation(.easeInOut(duration: 6.2).repeatForever(autoreverses: true)) {
+                buttonFloat = true
             }
         }
         .sheet(isPresented: $showingForgotPasswordSheet) {
             forgotPasswordSheet
         }
-    }
-    
-    // MARK: - Login Form
+    }    // MARK: - Login Form
     private var loginForm: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(L.Auth.signInTitle.t)
                     .font(.system(size: 22, weight: .black, design: .rounded))
-                    .foregroundColor(Color(hex: "111827"))
+                    .foregroundColor(.white)
                 Text(L.Auth.signInDesc.t)
-                    .font(.system(size: 13))
-                    .foregroundColor(Color(hex: "6B7280"))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.white.opacity(0.7))
             }
             .padding(.bottom, 8)
             
@@ -157,98 +190,86 @@ struct MerchantAuthView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.emailLbl.t)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(hex: "4B5563"))
+                    .foregroundColor(.white.opacity(0.85))
                 
                 HStack {
-                    Image(systemName: "envelope.fill")
-                        .foregroundColor(focusedField == .email ? Color.appAccent : Color(hex: "9CA3AF"))
+                    Image(systemName: "envelope")
+                        .premiumAuthIconStyle(isFocused: focusedField == .email)
+                    TextField("", text: $email, prompt: Text("owner@myrestaurant.com").foregroundColor(.white.opacity(0.45)))
                         .font(.system(size: 14))
-                    TextField("owner@myrestaurant.com", text: $email)
-                        .font(.system(size: 14))
+                        .foregroundColor(.white)
                         .keyboardType(.emailAddress)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
                         .focused($focusedField, equals: .email)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .background(Color(hex: "F9FAFB"))
-                .cornerRadius(10)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(focusedField == .email ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .email ? 2 : 1)
-                )
-                .animation(.easeInOut(duration: 0.15), value: focusedField)
+                .premiumAuthInputStyle(isFocused: focusedField == .email)
             }
             
             // Password Input
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.passwordLbl.t)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(hex: "4B5563"))
+                    .foregroundColor(.white.opacity(0.85))
                 
                 HStack {
-                    Image(systemName: "lock.fill")
-                        .foregroundColor(focusedField == .password ? Color.appAccent : Color(hex: "9CA3AF"))
-                        .font(.system(size: 14))
+                    Image(systemName: "lock")
+                        .premiumAuthIconStyle(isFocused: focusedField == .password)
                     
                     if showPassword {
-                        TextField("Password", text: $password)
+                        TextField("", text: $password, prompt: Text("Password").foregroundColor(.white.opacity(0.45)))
                             .font(.system(size: 14))
+                            .foregroundColor(.white)
                             .focused($focusedField, equals: .password)
                             .autocapitalization(.none)
                             .disableAutocorrection(true)
                     } else {
-                        SecureField("••••••••••••", text: $password)
+                        SecureField("", text: $password, prompt: Text("••••••••••••").foregroundColor(.white.opacity(0.45)))
                             .font(.system(size: 14))
+                            .foregroundColor(.white)
                             .focused($focusedField, equals: .password)
                     }
                     
                     Button(action: {
+                        triggerHapticFeedback(.light)
                         showPassword.toggle()
                     }) {
-                        Image(systemName: showPassword ? "eye.slash.fill" : "eye.fill")
-                            .foregroundColor(Color(hex: "9CA3AF"))
+                        Image(systemName: showPassword ? "eye.slash" : "eye")
+                            .foregroundColor(Color.white.opacity(0.6))
                             .font(.system(size: 14))
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .background(Color(hex: "F9FAFB"))
-                .cornerRadius(10)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(focusedField == .password ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .password ? 2 : 1)
-                )
-                .animation(.easeInOut(duration: 0.15), value: focusedField)
+                .premiumAuthInputStyle(isFocused: focusedField == .password)
             }
             
             // Forgot Password Link
             HStack {
                 Spacer()
                 Button(action: {
+                    triggerHapticFeedback(.light)
                     showingForgotPasswordSheet = true
                 }) {
                     Text(L.Auth.forgotPassword.t)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Color.appAccent)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(Color(hex: "FF9500"))
                 }
                 .buttonStyle(.plain)
             }
             .padding(.top, -10)
             
-            // Remember checkbox (Dummy UI)
-            HStack {
-                Image(systemName: "checkmark.square.fill")
-                    .foregroundColor(Color.appAccent)
+            // Remember checkbox
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.square")
+                    .foregroundColor(Color(hex: "FF9500"))
+                    .font(.system(size: 14, weight: .semibold))
                 Text(L.Auth.rememberStore.t)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(hex: "4B5563"))
+                    .foregroundColor(.white.opacity(0.8))
             }
             .padding(.top, 2)
             
-            // Action Button
+            // Action Button (Primary Orange Gradient CTA)
             Button(action: handleLogin) {
                 HStack {
                     if isLoading {
@@ -261,31 +282,68 @@ struct MerchantAuthView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
-                .background(email.isEmpty || password.isEmpty ? Color(hex: "9CA3AF") : Color.appAccent)
-                .foregroundColor(.white)
-                .cornerRadius(10)
-                .shadow(color: Color.appAccent.opacity(email.isEmpty || password.isEmpty ? 0.0 : 0.25), radius: 10, x: 0, y: 5)
+                .background(
+                    Group {
+                        if email.isEmpty || password.isEmpty {
+                            Capsule()
+                                .fill(Color.orange.opacity(0.35))
+                        } else {
+                            Capsule()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color(hex: "FF9500"), Color(hex: "FF5E00")],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                        }
+                    }
+                )
+                .foregroundColor(email.isEmpty || password.isEmpty ? .white.opacity(0.6) : .white)
+                .shadow(color: Color(hex: "FF5E00").opacity(email.isEmpty || password.isEmpty ? 0.0 : 0.35), radius: 8, x: 0, y: 4)
             }
+            .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
             .disabled(email.isEmpty || password.isEmpty || isLoading)
             .padding(.top, 6)
             
-            // Mode switcher
-            HStack {
-                Spacer()
-                Text(L.Auth.noAccount.t)
-                    .font(.system(size: 12))
-                    .foregroundColor(Color(hex: "6B7280"))
+            // Mode switcher styled as a premium secondary button
+            VStack(spacing: 12) {
+                HStack {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(height: 1)
+                    Text("หรือ")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Color.white.opacity(0.6))
+                        .padding(.horizontal, 8)
+                    Rectangle()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(height: 1)
+                }
+                .padding(.vertical, 4)
+
                 Button(action: {
                     errorMessage = ""
-                    withAnimation { authMode = "signup" }
+                    triggerHapticFeedback(.light)
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) { authMode = "signup" }
                 }) {
                     Text(L.Auth.registerBtn.t)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(Color.appAccent)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                        .background(
+                            Capsule()
+                                .fill(Color.white.opacity(0.08))
+                        )
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.white.opacity(0.4), lineWidth: 1)
+                        )
+                        .shadow(color: Color.black.opacity(0.05), radius: 4, x: 0, y: 2)
                 }
-                Spacer()
+                .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
             }
-            .padding(.top, 4)
         }
     }
     
@@ -297,20 +355,20 @@ struct MerchantAuthView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L.Auth.createTitle.t)
                         .font(.system(size: 20, weight: .black, design: .rounded))
-                        .foregroundColor(Color(hex: "111827"))
+                        .foregroundColor(.white)
                     Text(signupStep == 1 ? "Step 1: Admin Account Setup" : "Step 2: Restaurant Details")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(Color.appAccent)
+                        .foregroundColor(Color(hex: "FF9500"))
                 }
                 Spacer()
                 
                 // Dots representing steps
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(signupStep >= 1 ? Color.appAccent : Color(hex: "D1D5DB"))
+                        .fill(signupStep >= 1 ? Color(hex: "FF9500") : Color.white.opacity(0.3))
                         .frame(width: 8, height: 8)
                     Circle()
-                        .fill(signupStep >= 2 ? Color.appAccent : Color(hex: "D1D5DB"))
+                        .fill(signupStep >= 2 ? Color(hex: "FF9500") : Color.white.opacity(0.3))
                         .frame(width: 8, height: 8)
                 }
             }
@@ -337,35 +395,31 @@ struct MerchantAuthView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Auth.firstName.t)
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Color(hex: "4B5563"))
-                    TextField("Somchai", text: $firstName)
-                        .font(.system(size: 14))
-                        .focused($focusedField, equals: .firstName)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 12)
-                        .background(Color(hex: "F9FAFB"))
-                        .cornerRadius(10)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .stroke(focusedField == .firstName ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .firstName ? 2 : 1)
-                        )
+                        .foregroundColor(.white.opacity(0.85))
+                    HStack {
+                        Image(systemName: "person")
+                            .premiumAuthIconStyle(isFocused: focusedField == .firstName)
+                        TextField("", text: $firstName, prompt: Text("Somchai").foregroundColor(.white.opacity(0.45)))
+                            .font(.system(size: 14))
+                            .foregroundColor(.white)
+                            .focused($focusedField, equals: .firstName)
+                    }
+                    .premiumAuthInputStyle(isFocused: focusedField == .firstName)
                 }
                 
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Auth.lastName.t)
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Color(hex: "4B5563"))
-                    TextField("Lertwit", text: $lastName)
-                        .font(.system(size: 14))
-                        .focused($focusedField, equals: .lastName)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 12)
-                        .background(Color(hex: "F9FAFB"))
-                        .cornerRadius(10)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .stroke(focusedField == .lastName ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .lastName ? 2 : 1)
-                        )
+                        .foregroundColor(.white.opacity(0.85))
+                    HStack {
+                        Image(systemName: "person")
+                            .premiumAuthIconStyle(isFocused: focusedField == .lastName)
+                        TextField("", text: $lastName, prompt: Text("Lertwit").foregroundColor(.white.opacity(0.45)))
+                            .font(.system(size: 14))
+                            .foregroundColor(.white)
+                            .focused($focusedField, equals: .lastName)
+                    }
+                    .premiumAuthInputStyle(isFocused: focusedField == .lastName)
                 }
             }
             
@@ -373,88 +427,110 @@ struct MerchantAuthView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.emailLbl.t)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(hex: "4B5563"))
-                TextField("email@example.com", text: $email)
-                    .font(.system(size: 14))
-                    .keyboardType(.emailAddress)
-                    .autocapitalization(.none)
-                    .disableAutocorrection(true)
-                    .focused($focusedField, equals: .email)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color(hex: "F9FAFB"))
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .email ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .email ? 2 : 1)
-                    )
+                    .foregroundColor(.white.opacity(0.85))
+                HStack {
+                    Image(systemName: "envelope")
+                        .premiumAuthIconStyle(isFocused: focusedField == .email)
+                    TextField("", text: $email, prompt: Text("email@example.com").foregroundColor(.white.opacity(0.45)))
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .keyboardType(.emailAddress)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .focused($focusedField, equals: .email)
+                }
+                .premiumAuthInputStyle(isFocused: focusedField == .email)
             }
             
             // Password Input
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.passwordLbl.t)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(hex: "4B5563"))
-                SecureField("Min 8 characters", text: $password)
-                    .font(.system(size: 14))
-                    .focused($focusedField, equals: .password)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color(hex: "F9FAFB"))
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .password ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .password ? 2 : 1)
-                    )
+                    .foregroundColor(.white.opacity(0.85))
+                HStack {
+                    Image(systemName: "lock")
+                        .premiumAuthIconStyle(isFocused: focusedField == .password)
+                    SecureField("", text: $password, prompt: Text("Min 8 characters").foregroundColor(.white.opacity(0.45)))
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .focused($focusedField, equals: .password)
+                }
+                .premiumAuthInputStyle(isFocused: focusedField == .password)
             }
             
             // Password Confirmation Input
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.confirmPassword.t)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(hex: "4B5563"))
-                SecureField("Re-enter password", text: $confirmPassword)
-                    .font(.system(size: 14))
-                    .focused($focusedField, equals: .confirmPassword)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color(hex: "F9FAFB"))
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .confirmPassword ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .confirmPassword ? 2 : 1)
-                    )
+                    .foregroundColor(.white.opacity(0.85))
+                HStack {
+                    Image(systemName: "lock.shield")
+                        .premiumAuthIconStyle(isFocused: focusedField == .confirmPassword)
+                    SecureField("", text: $confirmPassword, prompt: Text("Re-enter password").foregroundColor(.white.opacity(0.45)))
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .focused($focusedField, equals: .confirmPassword)
+                }
+                .premiumAuthInputStyle(isFocused: focusedField == .confirmPassword)
             }
             
-            // CTA Button to Step 2
+            // CTA Button to Step 2 (Primary Orange Gradient Capsule CTA)
             Button(action: validateAndGoToStep2) {
                 Text(L.Auth.continueStore.t)
                     .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(firstName.isEmpty || lastName.isEmpty || email.isEmpty || password.isEmpty ? .white.opacity(0.6) : .white)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(firstName.isEmpty || lastName.isEmpty || email.isEmpty || password.isEmpty ? Color(hex: "9CA3AF") : Color.appAccent)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
+                    .background(
+                        Group {
+                            if firstName.isEmpty || lastName.isEmpty || email.isEmpty || password.isEmpty {
+                                Capsule()
+                                    .fill(Color.orange.opacity(0.35))
+                            } else {
+                                Capsule()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [Color(hex: "FF9500"), Color(hex: "FF5E00")],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                            }
+                        }
+                    )
+                    .shadow(color: Color(hex: "FF5E00").opacity(firstName.isEmpty || lastName.isEmpty || email.isEmpty || password.isEmpty ? 0.0 : 0.35), radius: 8, x: 0, y: 4)
             }
+            .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
             .disabled(firstName.isEmpty || lastName.isEmpty || email.isEmpty || password.isEmpty)
             .padding(.top, 6)
             
-            // Mode switcher
+            // Mode switcher styled as a pill-shaped secondary button
             Button(action: {
                 errorMessage = ""
-                withAnimation { authMode = "login" }
+                triggerHapticFeedback(.light)
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) { authMode = "login" }
             }) {
-                HStack {
-                    Spacer()
+                HStack(spacing: 4) {
                     Text(L.Auth.alreadyHaveStore.t)
                         .font(.system(size: 12))
-                        .foregroundColor(Color(hex: "6B7280"))
+                        .foregroundColor(Color.white.opacity(0.6))
                     Text(L.Auth.signInBtn.t)
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(Color.appAccent)
-                    Spacer()
+                        .foregroundColor(Color(hex: "FF9500"))
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(
+                    Capsule()
+                        .fill(Color.white.opacity(0.08))
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.4), lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.05), radius: 4, x: 0, y: 2)
             }
+            .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
         }
     }
     
@@ -466,18 +542,16 @@ struct MerchantAuthView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.storeName.t)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(hex: "4B5563"))
-                TextField("Cafe Amazon", text: $shopName)
-                    .font(.system(size: 14))
-                    .focused($focusedField, equals: .shopName)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color(hex: "F9FAFB"))
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .shopName ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .shopName ? 2 : 1)
-                    )
+                    .foregroundColor(.white.opacity(0.85))
+                HStack {
+                    Image(systemName: "storefront")
+                        .premiumAuthIconStyle(isFocused: focusedField == .shopName)
+                    TextField("", text: $shopName, prompt: Text("Cafe Amazon").foregroundColor(.white.opacity(0.45)))
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .focused($focusedField, equals: .shopName)
+                }
+                .premiumAuthInputStyle(isFocused: focusedField == .shopName)
             }
             
             // Business Type & Currency
@@ -485,7 +559,7 @@ struct MerchantAuthView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Auth.businessType.t)
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Color(hex: "4B5563"))
+                        .foregroundColor(.white.opacity(0.85))
                     
                     Picker("Business Type", selection: $businessType) {
                         Text("business_type_restaurant".t).tag("Restaurant")
@@ -493,21 +567,23 @@ struct MerchantAuthView: View {
                         Text("business_type_bar".t).tag("Bar")
                     }
                     .pickerStyle(.menu)
+                    .tint(.white)
+                    .accentColor(.white)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
-                    .background(Color(hex: "F9FAFB"))
-                    .cornerRadius(10)
+                    .background(Color.white.opacity(0.12))
+                    .cornerRadius(12)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color(hex: "E5E7EB"), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.white.opacity(0.35), lineWidth: 1)
                     )
                 }
                 
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Auth.currency.t)
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Color(hex: "4B5563"))
+                        .foregroundColor(.white.opacity(0.85))
                     
                     Picker("Currency", selection: $currency) {
                         Text("THB (฿)").tag("THB")
@@ -515,14 +591,16 @@ struct MerchantAuthView: View {
                         Text("EUR (€)").tag("EUR")
                     }
                     .pickerStyle(.menu)
+                    .tint(.white)
+                    .accentColor(.white)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
-                    .background(Color(hex: "F9FAFB"))
-                    .cornerRadius(10)
+                    .background(Color.white.opacity(0.12))
+                    .cornerRadius(12)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color(hex: "E5E7EB"), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.white.opacity(0.35), lineWidth: 1)
                     )
                 }
             }
@@ -531,52 +609,61 @@ struct MerchantAuthView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.taxId.t)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(hex: "4B5563"))
-                TextField("13 digits ID", text: $taxId)
-                    .font(.system(size: 14))
-                    .keyboardType(.numberPad)
-                    .focused($focusedField, equals: .taxId)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color(hex: "F9FAFB"))
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .taxId ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .taxId ? 2 : 1)
-                    )
+                    .foregroundColor(.white.opacity(0.85))
+                HStack {
+                    Image(systemName: "doc.text")
+                        .premiumAuthIconStyle(isFocused: focusedField == .taxId)
+                    TextField("", text: $taxId, prompt: Text("13 digits ID").foregroundColor(.white.opacity(0.45)))
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .keyboardType(.numberPad)
+                        .focused($focusedField, equals: .taxId)
+                }
+                .premiumAuthInputStyle(isFocused: focusedField == .taxId)
             }
             
             // Contact Phone
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.contactPhone.t)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(hex: "4B5563"))
-                TextField("02-XXX-XXXX", text: $shopPhone)
-                    .font(.system(size: 14))
-                    .keyboardType(.phonePad)
-                    .focused($focusedField, equals: .shopPhone)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color(hex: "F9FAFB"))
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .shopPhone ? Color.appAccent.opacity(0.8) : Color(hex: "E5E7EB"), lineWidth: focusedField == .shopPhone ? 2 : 1)
-                    )
+                    .foregroundColor(.white.opacity(0.85))
+                HStack {
+                    Image(systemName: "phone")
+                        .premiumAuthIconStyle(isFocused: focusedField == .shopPhone)
+                    TextField("", text: $shopPhone, prompt: Text("02-XXX-XXXX").foregroundColor(.white.opacity(0.45)))
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .keyboardType(.phonePad)
+                        .focused($focusedField, equals: .shopPhone)
+                }
+                .premiumAuthInputStyle(isFocused: focusedField == .shopPhone)
             }
             
             // Action Buttons
             HStack(spacing: 12) {
-                Button(action: { withAnimation { signupStep = 1 } }) {
+                // Back Button (Secondary Arrow CTA)
+                Button(action: {
+                    triggerHapticFeedback(.light)
+                    withAnimation { signupStep = 1 }
+                }) {
                     Image(systemName: "arrow.left")
                         .font(.system(size: 14, weight: .bold))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 14)
-                        .background(Color(hex: "E5E7EB"))
-                        .foregroundColor(Color(hex: "4B5563"))
-                        .cornerRadius(10)
+                        .background(
+                            Capsule()
+                                .fill(Color.white.opacity(0.08))
+                        )
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.white.opacity(0.4), lineWidth: 1)
+                        )
+                        .foregroundColor(.white)
+                        .shadow(color: Color.black.opacity(0.05), radius: 4, x: 0, y: 2)
                 }
+                .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
                 
+                // Submit Button (Primary Orange Gradient Capsule CTA)
                 Button(action: handleSignUp) {
                     HStack {
                         if isLoading {
@@ -589,10 +676,27 @@ struct MerchantAuthView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(shopName.isEmpty || taxId.isEmpty || shopPhone.isEmpty ? Color(hex: "9CA3AF") : Color.appAccent)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
+                    .background(
+                        Group {
+                            if shopName.isEmpty || taxId.isEmpty || shopPhone.isEmpty {
+                                Capsule()
+                                    .fill(Color.orange.opacity(0.35))
+                            } else {
+                                Capsule()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [Color(hex: "FF9500"), Color(hex: "FF5E00")],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                            }
+                        }
+                    )
+                    .foregroundColor(shopName.isEmpty || taxId.isEmpty || shopPhone.isEmpty ? .white.opacity(0.6) : .white)
+                    .shadow(color: Color(hex: "FF5E00").opacity(shopName.isEmpty || taxId.isEmpty || shopPhone.isEmpty ? 0.0 : 0.35), radius: 8, x: 0, y: 4)
                 }
+                .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
                 .disabled(shopName.isEmpty || taxId.isEmpty || shopPhone.isEmpty || isLoading)
             }
             .padding(.top, 6)
@@ -602,15 +706,19 @@ struct MerchantAuthView: View {
     private var errorMessageBanner: some View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.red)
+                .foregroundColor(Color(hex: "FF453A"))
             Text(errorMessage)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.red)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.white)
             Spacer()
         }
         .padding(12)
-        .background(Color.red.opacity(0.1))
-        .cornerRadius(10)
+        .background(Color(hex: "FF453A").opacity(0.18))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color(hex: "FF453A").opacity(0.4), lineWidth: 1)
+        )
     }
     
     // MARK: - Logic Handlers
@@ -618,6 +726,7 @@ struct MerchantAuthView: View {
         errorMessage = ""
         guard !isLoading else { return }
         isLoading = true
+        triggerHapticFeedback(.medium)
 
         let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let cleanPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -628,6 +737,7 @@ struct MerchantAuthView: View {
                 guard await NetworkManager.shared.isConnected() else {
                     await MainActor.run {
                         self.isLoading = false
+                        self.triggerNotificationFeedback(.error)
                         self.errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อล็อกอิน\nกรุณาตรวจสอบการเชื่อมต่อ"
                     }
                     return
@@ -643,6 +753,7 @@ struct MerchantAuthView: View {
                 
                 await MainActor.run {
                     isLoading = false
+                    triggerNotificationFeedback(.success)
                     activeMerchantId = mId.uuidString.lowercased()
                     loggedInEmail = cleanEmail
                     loggedInName = session.user.fullName ?? "Store Owner"
@@ -653,6 +764,7 @@ struct MerchantAuthView: View {
             } catch {
                 await MainActor.run {
                     isLoading = false
+                    triggerNotificationFeedback(.error)
                     errorMessage = error.localizedDescription
                 }
             }
@@ -662,18 +774,22 @@ struct MerchantAuthView: View {
     private func validateAndGoToStep2() {
         errorMessage = ""
         if !email.contains("@") {
+            triggerNotificationFeedback(.warning)
             errorMessage = "auth_error_invalid_email".t
             return
         }
         if password.count < 8 {
+            triggerNotificationFeedback(.warning)
             errorMessage = "auth_error_short_password".t
             return
         }
         if password != confirmPassword {
+            triggerNotificationFeedback(.warning)
             errorMessage = "auth_error_mismatched_passwords".t
             return
         }
         
+        triggerHapticFeedback(.medium)
         withAnimation {
             signupStep = 2
         }
@@ -682,6 +798,7 @@ struct MerchantAuthView: View {
     private func handleSignUp() {
         errorMessage = ""
         isLoading = true
+        triggerHapticFeedback(.medium)
         
         Task {
             do {
@@ -689,6 +806,7 @@ struct MerchantAuthView: View {
                 guard await NetworkManager.shared.isConnected() else {
                     await MainActor.run {
                         isLoading = false
+                        triggerNotificationFeedback(.error)
                         errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อสมัครใช้งาน\nกรุณาตรวจสอบการเชื่อมต่อ"
                     }
                     return
@@ -709,6 +827,7 @@ struct MerchantAuthView: View {
                 
                 await MainActor.run {
                     isLoading = false
+                    triggerNotificationFeedback(.success)
                     seedNewMerchantData(merchantId: newMerchantUUID)
                     activeMerchantId = newMerchantUUID.uuidString.lowercased()
                     loggedInEmail = email
@@ -719,6 +838,7 @@ struct MerchantAuthView: View {
             } catch {
                 await MainActor.run {
                     isLoading = false
+                    triggerNotificationFeedback(.error)
                     errorMessage = error.localizedDescription
                 }
             }
@@ -782,8 +902,8 @@ struct MerchantAuthView: View {
 
         // Seed default Users
         // Fixed UUIDs — must match SampleDataSeeder constants so employeeId FK references stay valid after re-seed
-        let seedEmp1Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111101")!
-        let seedEmp2Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111102")!
+        let seedEmp1Id  = UUID(uuidString: "9a5767a4-6f30-4614-94d9-5ea85e282775")!
+        let seedEmp2Id  = UUID(uuidString: "193df239-104d-4e2d-b2e5-9f2b4ff30ddc")!
         let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
         let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
         // Use plain sha256 for seed users — verifyPIN supports the legacy format.
@@ -804,55 +924,85 @@ struct MerchantAuthView: View {
     }
 }
 
-// MARK: - Animated Fluid Pastel blobs Background
-struct AnimatedWhiteBackgroundView: View {
-    @State private var animate = false
+// MARK: - Premium Kitchen Background
+struct KitchenBackgroundView: View {
+    @State private var animateBlobs = false
     
     var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                // Pure clean white base canvas
-                Color.white
-                    .ignoresSafeArea()
-                
-                // Blob 1: Soft Indigo/Lavender
-                Circle()
-                    .fill(Color(hex: "EEF2FF")) // Very light slate blue
-                    .frame(width: geometry.size.width * 0.7, height: geometry.size.width * 0.7)
-                    .offset(x: animate ? -geometry.size.width * 0.2 : geometry.size.width * 0.2,
-                            y: animate ? -geometry.size.height * 0.15 : geometry.size.height * 0.15)
-                    .scaleEffect(animate ? 1.08 : 0.92)
-                    .opacity(0.85)
-                    .blur(radius: 80)
-                
-                // Blob 2: Soft Light Orchid/Purple
-                Circle()
-                    .fill(Color(hex: "FAF5FF")) // Very light purple
-                    .frame(width: geometry.size.width * 0.6, height: geometry.size.width * 0.6)
-                    .offset(x: animate ? geometry.size.width * 0.18 : -geometry.size.width * 0.18,
-                            y: animate ? geometry.size.height * 0.12 : -geometry.size.height * 0.12)
-                    .scaleEffect(animate ? 0.94 : 1.12)
-                    .opacity(0.9)
-                    .blur(radius: 70)
-                
-                // Blob 3: Soft Emerald/Teal Mint
-                Circle()
-                    .fill(Color(hex: "ECFDF5")) // Very light mint green
-                    .frame(width: geometry.size.width * 0.5, height: geometry.size.width * 0.5)
-                    .offset(x: animate ? -geometry.size.width * 0.1 : geometry.size.width * 0.15,
-                            y: animate ? geometry.size.height * 0.2 : -geometry.size.height * 0.1)
-                    .scaleEffect(animate ? 1.05 : 0.95)
-                    .opacity(0.75)
-                    .blur(radius: 65)
-            }
-            .onAppear {
-                withAnimation(.easeInOut(duration: 10.0).repeatForever(autoreverses: true)) {
-                    animate = true
+        ZStack {
+            // Video Kitchen base
+            LoopingVideoPlayer(videoName: "LoginBG", videoExtension: "mp4")
+                .ignoresSafeArea()
+            
+            // Motion Blobs (Drifting light leaks)
+            GeometryReader { geo in
+                ZStack {
+                    // Blob 1: Orange/Amber light leak (top-right to bottom-right)
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [Color(hex: "FF9500").opacity(0.35), Color.clear],
+                                center: .center,
+                                startRadius: 0,
+                                endRadius: 180
+                            )
+                        )
+                        .frame(width: 360, height: 360)
+                        .offset(
+                            x: animateBlobs ? geo.size.width * 0.15 : geo.size.width * 0.4,
+                            y: animateBlobs ? geo.size.height * 0.2 : geo.size.height * -0.1
+                        )
+                    
+                    // Blob 2: Mint Green light leak (bottom-left to top-left)
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [Color(hex: "A7F3D0").opacity(0.3), Color.clear],
+                                center: .center,
+                                startRadius: 0,
+                                endRadius: 180
+                            )
+                        )
+                        .frame(width: 360, height: 360)
+                        .offset(
+                            x: animateBlobs ? geo.size.width * -0.4 : geo.size.width * -0.2,
+                            y: animateBlobs ? geo.size.height * 0.3 : geo.size.height * 0.6
+                        )
+                    
+                    // Blob 3: Soft Gold/Yellow leak (center breathing)
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [Color(hex: "FFCC00").opacity(0.2), Color.clear],
+                                center: .center,
+                                startRadius: 0,
+                                endRadius: 150
+                            )
+                        )
+                        .frame(width: 300, height: 300)
+                        .scaleEffect(animateBlobs ? 1.15 : 0.9)
+                        .opacity(animateBlobs ? 0.85 : 0.6)
+                        .offset(
+                            x: animateBlobs ? geo.size.width * 0.1 : geo.size.width * -0.1,
+                            y: animateBlobs ? geo.size.height * 0.1 : geo.size.height * 0.2
+                        )
                 }
+                .blur(radius: 80)
+            }
+            .ignoresSafeArea()
+            
+            // Subtle dark overlay to ensure readability for text elements outside the glass panel
+            Color.black.opacity(0.12)
+                .ignoresSafeArea()
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 12.0).repeatForever(autoreverses: true)) {
+                animateBlobs = true
             }
         }
     }
 }
+
 
 // MARK: - Visual Effect Blur (UIKit bridge for premium blur depth)
 struct VisualEffectBlur: UIViewRepresentable {
@@ -868,6 +1018,119 @@ struct VisualEffectBlur: UIViewRepresentable {
     }
 }
 
+// MARK: - Frosted Glass Auth Modal
+private struct FrostedAuthPanelModifier: ViewModifier {
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                ZStack {
+                    // Frosted glass blur using SwiftUI material
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .fill(.ultraThinMaterial)
+
+                    // Highly translucent glass base tint layer (maximum transparency)
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.12),
+                                    Color.white.opacity(0.02)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+
+                    // Specular highlights and reflections (warm golden glow matching mockup)
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.35),
+                            Color.clear,
+                            Color(hex: "FF9500").opacity(isActive ? 0.08 : 0.02)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .overlay {
+                    // Thin white stroke
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .stroke(
+                            Color.white.opacity(0.45),
+                            lineWidth: 1.0
+                        )
+                }
+                // Soft shadow for depth
+                .shadow(color: Color.black.opacity(0.10), radius: 24, x: 0, y: 12)
+            }
+    }
+}
+
+private extension View {
+    func frostedAuthPanel(isActive: Bool) -> some View {
+        modifier(FrostedAuthPanelModifier(isActive: isActive))
+    }
+}
+
+// MARK: - Scale Button Style
+struct ScaleButtonStyle: ButtonStyle {
+    var floatAnimation: Bool = false
+    
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
+            .opacity(configuration.isPressed ? 0.9 : 1.0)
+            .offset(y: floatAnimation ? -2 : 2)
+            .animation(.spring(response: 0.25, dampingFraction: 0.65), value: configuration.isPressed)
+    }
+}
+
+// MARK: - Premium Auth Input Modifier
+struct PremiumAuthInputModifier: ViewModifier {
+    var isFocused: Bool
+    
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(Color.white.opacity(isFocused ? 0.18 : 0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(isFocused ? Color(hex: "FF9500") : Color.white.opacity(0.35), lineWidth: isFocused ? 1.5 : 1)
+            )
+            .scaleEffect(isFocused ? 1.015 : 1.0)
+            .shadow(color: isFocused ? Color(hex: "FF9500").opacity(0.2) : Color.black.opacity(0.0), radius: isFocused ? 8 : 0, x: 0, y: isFocused ? 3 : 0)
+    }
+}
+
+// MARK: - Premium Auth Icon Modifier
+struct PremiumAuthIconModifier: ViewModifier {
+    var isFocused: Bool
+    var activeColor: Color = Color(hex: "FF9500")
+    
+    func body(content: Content) -> some View {
+        content
+            .foregroundColor(isFocused ? activeColor : Color.white.opacity(0.6))
+            .font(.system(size: 14))
+            .scaleEffect(isFocused ? 1.15 : 1.0)
+            .rotationEffect(.degrees(isFocused ? 8 : 0))
+    }
+}
+
+extension View {
+    func premiumAuthInputStyle(isFocused: Bool) -> some View {
+        modifier(PremiumAuthInputModifier(isFocused: isFocused))
+    }
+    
+    func premiumAuthIconStyle(isFocused: Bool) -> some View {
+        modifier(PremiumAuthIconModifier(isFocused: isFocused))
+    }
+}
+
 // MARK: - Preview
 #Preview {
     MerchantAuthView()
@@ -876,6 +1139,18 @@ struct VisualEffectBlur: UIViewRepresentable {
 
 // MARK: - Extensions for Password Reset Modal
 extension MerchantAuthView {
+    private func triggerHapticFeedback(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
+        let generator = UIImpactFeedbackGenerator(style: style)
+        generator.prepare()
+        generator.impactOccurred()
+    }
+    
+    private func triggerNotificationFeedback(_ type: UINotificationFeedbackGenerator.FeedbackType) {
+        let generator = UINotificationFeedbackGenerator()
+        generator.prepare()
+        generator.notificationOccurred(type)
+    }
+
     private var forgotPasswordSheet: some View {
         VStack(spacing: 24) {
             HStack {
@@ -885,66 +1160,67 @@ extension MerchantAuthView {
                     resetEmail = ""
                     resetSuccessMessage = ""
                 }) {
-                    Image(systemName: "xmark.circle.fill")
+                    Image(systemName: "xmark.circle") // Outline close icon
                         .font(.title2)
-                        .foregroundColor(Color(hex: "9CA3AF"))
+                        .foregroundColor(Color.primary.opacity(0.6))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
             }
             
             VStack(spacing: 8) {
-                Image(systemName: "key.fill")
+                Image(systemName: "key") // Outline key icon
                     .font(.system(size: 44))
-                    .foregroundStyle(APGradient.accent)
+                    .foregroundColor(Color(hex: "FF9500"))
                 
                 Text(L.Auth.resetTitle.t)
                     .font(.system(size: 20, weight: .black, design: .rounded))
-                    .foregroundColor(Color(hex: "111827"))
+                    .foregroundColor(.primary)
                 
                 Text(L.Auth.resetDesc.t)
-                    .font(.system(size: 13))
-                    .foregroundColor(Color(hex: "6B7280"))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(Color.primary.opacity(0.7))
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
             
             if !resetSuccessMessage.isEmpty {
                 VStack(spacing: 12) {
-                    Image(systemName: "checkmark.circle.fill")
+                    Image(systemName: "checkmark.circle") // Outline checkmark
                         .font(.system(size: 36))
                         .foregroundColor(.green)
                     Text(resetSuccessMessage)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.green)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal)
                 }
                 .padding()
-                .background(Color.green.opacity(0.1))
+                .background(Color.green.opacity(0.08))
                 .cornerRadius(12)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Auth.emailLbl.t)
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Color(hex: "4B5563"))
+                        .foregroundColor(Color.primary.opacity(0.8))
                     
                     HStack {
-                        Image(systemName: "envelope.fill")
-                            .foregroundColor(Color(hex: "9CA3AF"))
+                        Image(systemName: "envelope") // Outline envelope
+                            .foregroundColor(Color.primary.opacity(0.5))
                             .font(.system(size: 14))
-                        TextField("owner@myrestaurant.com", text: $resetEmail)
+                        TextField("", text: $resetEmail, prompt: Text("owner@myrestaurant.com").foregroundColor(Color.primary.opacity(0.4)))
                             .font(.system(size: 14))
+                            .foregroundColor(.primary)
                             .keyboardType(.emailAddress)
                             .autocapitalization(.none)
                             .disableAutocorrection(true)
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
-                    .background(Color(hex: "F9FAFB"))
-                    .cornerRadius(10)
+                    .background(Color.primary.opacity(0.05))
+                    .cornerRadius(12)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color(hex: "E5E7EB"), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.primary.opacity(0.15), lineWidth: 1)
                     )
                 }
                 
@@ -954,18 +1230,34 @@ extension MerchantAuthView {
                             .tint(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
-                            .background(APGradient.accent)
-                            .cornerRadius(12)
+                            .background(Capsule().fill(Color(hex: "FF9500")))
                     } else {
                         Text(L.Auth.sendResetBtn.t)
                             .font(.system(size: 14, weight: .bold))
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
-                            .background(resetEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color(hex: "9CA3AF") : Color.appAccent)
-                            .cornerRadius(12)
+                            .background(
+                                Group {
+                                    if resetEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        Capsule()
+                                            .fill(Color.orange.opacity(0.4))
+                                    } else {
+                                        Capsule()
+                                            .fill(
+                                                LinearGradient(
+                                                    colors: [Color(hex: "FF9500"), Color(hex: "FF5E00")],
+                                                    startPoint: .leading,
+                                                    endPoint: .trailing
+                                                )
+                                            )
+                                    }
+                                }
+                            )
+                            .shadow(color: Color(hex: "FF5E00").opacity(resetEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.0 : 0.3), radius: 8, x: 0, y: 4)
                     }
                 }
+                .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
                 .disabled(resetEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSendingReset)
             }
             
@@ -979,17 +1271,20 @@ extension MerchantAuthView {
         let cleanResetEmail = resetEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !cleanResetEmail.isEmpty else { return }
         isSendingReset = true
+        triggerHapticFeedback(.medium)
         
         Task {
             do {
                 try await AuthService.shared.resetPassword(email: cleanResetEmail)
                 await MainActor.run {
                     isSendingReset = false
+                    triggerNotificationFeedback(.success)
                     resetSuccessMessage = String(format: "auth_reset_success_template".t, cleanResetEmail)
                 }
             } catch {
                 await MainActor.run {
                     isSendingReset = false
+                    triggerNotificationFeedback(.error)
                     resetSuccessMessage = "auth_reset_failed".t
                 }
             }

@@ -8,6 +8,8 @@ struct TaxSettingsView: View {
     @AppStorage("store_tax_rate") private var storeTaxRate = 7.0
     @AppStorage("store_tax_type") private var storeTaxType = "inclusive"
     @AppStorage("store_service_charge_rate") private var storeServiceChargeRate = 10.0
+    @AppStorage("enable_tax") private var enableTax = true
+    @AppStorage("enable_service_charge") private var enableServiceCharge = true
     @AppStorage("tax_profile_kind") private var profileKind = TaxProfile.restaurantVAT.rawValue
     @AppStorage("tax_price_basis") private var priceBasis = TaxPriceBasis.itemDefault.rawValue
     @AppStorage("tax_rounding_mode") private var roundingMode = TaxRoundingMode.perLine.rawValue
@@ -297,59 +299,81 @@ struct TaxSettingsView: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("นโยบายภาษีหลัก", icon: "checklist.checked")
 
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    defaultTaxField
-                    serviceChargeField
-                }
+            Toggle("เปิดใช้งานภาษีมูลค่าเพิ่ม (VAT)", isOn: $enableTax)
+                .tint(.appAccent)
+            
+            Toggle("เปิดใช้งานเซอร์วิสชาร์จ (Service Charge)", isOn: $enableServiceCharge)
+                .tint(.appAccent)
+            
+            Divider().background(Color.appDivider)
 
-                VStack(spacing: 12) {
-                    defaultTaxField
-                    serviceChargeField
-                }
-            }
+            if enableTax || enableServiceCharge {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        if enableTax { defaultTaxField }
+                        if enableServiceCharge { serviceChargeField }
+                    }
 
-            VStack(alignment: .leading, spacing: 8) {
-                fieldLabel("Tax Calculation")
-                Picker("Tax Calculation", selection: $storeTaxType) {
-                    Text("รวมในราคา (Inclusive)").tag("inclusive")
-                    Text("บวกเพิ่มตอนคิดเงิน (Exclusive)").tag("exclusive")
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 440)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                fieldLabel("Price Source")
-                Picker("Price Source", selection: $priceBasis) {
-                    ForEach(TaxPriceBasis.allCases) { basis in
-                        Text(basis.title).tag(basis.rawValue)
+                    VStack(spacing: 12) {
+                        if enableTax { defaultTaxField }
+                        if enableServiceCharge { serviceChargeField }
                     }
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 440)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                fieldLabel("Rounding")
-                Picker("Rounding", selection: $roundingMode) {
-                    ForEach(TaxRoundingMode.allCases) { mode in
-                        Text(mode.title).tag(mode.rawValue)
+            if enableTax {
+                VStack(alignment: .leading, spacing: 8) {
+                    fieldLabel("Tax Calculation")
+                    Picker("Tax Calculation", selection: $storeTaxType) {
+                        Text("รวมในราคา (Inclusive)").tag("inclusive")
+                        Text("บวกเพิ่มตอนคิดเงิน (Exclusive)").tag("exclusive")
                     }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 440)
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 440)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    fieldLabel("Price Source")
+                    Picker("Price Source", selection: $priceBasis) {
+                        ForEach(TaxPriceBasis.allCases) { basis in
+                            Text(basis.title).tag(basis.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 440)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    fieldLabel("Rounding")
+                    Picker("Rounding", selection: $roundingMode) {
+                        ForEach(TaxRoundingMode.allCases) { mode in
+                            Text(mode.title).tag(mode.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 440)
+                }
             }
 
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    taxToggle("คิดภาษีบน Service Charge", icon: "percent", isOn: $serviceChargeTaxable)
-                    taxToggle("อนุญาตสินค้ายกเว้นภาษี", icon: "tag.slash", isOn: $allowItemExemptions)
-                }
+            if enableTax || enableServiceCharge {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        if enableTax && enableServiceCharge {
+                            taxToggle("คิดภาษีบน Service Charge", icon: "percent", isOn: $serviceChargeTaxable)
+                        }
+                        if enableTax {
+                            taxToggle("อนุญาตสินค้ายกเว้นภาษี", icon: "tag.slash", isOn: $allowItemExemptions)
+                        }
+                    }
 
-                VStack(spacing: 10) {
-                    taxToggle("คิดภาษีบน Service Charge", icon: "percent", isOn: $serviceChargeTaxable)
-                    taxToggle("อนุญาตสินค้ายกเว้นภาษี", icon: "tag.slash", isOn: $allowItemExemptions)
+                    VStack(spacing: 10) {
+                        if enableTax && enableServiceCharge {
+                            taxToggle("คิดภาษีบน Service Charge", icon: "percent", isOn: $serviceChargeTaxable)
+                        }
+                        if enableTax {
+                            taxToggle("อนุญาตสินค้ายกเว้นภาษี", icon: "tag.slash", isOn: $allowItemExemptions)
+                        }
+                    }
                 }
             }
         }

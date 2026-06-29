@@ -226,6 +226,23 @@ extension NetworkManager {
         return true
     }
 
+    func fetchCompletedOrdersFromSupabase() async throws -> [[String: Any]] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let data = try await sendSupabaseRequest(
+            method: "GET",
+            endpoint: "orders",
+            queryItems: [
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "status", value: "eq.completed"),
+                URLQueryItem(name: "select", value: "*,order_items(*),payments(*)")
+            ]
+        )
+        guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw NetworkError.invalidResponse
+        }
+        return jsonArray
+    }
+
     func uploadTimecard(id: UUID, employeeId: UUID, employeeName: String, clockIn: Date, clockOut: Date?, status: String, breakDuration: Int = 0, overtimeMinutes: Int = 0, notes: String? = nil, clockInConfidence: Double? = nil, clockOutConfidence: Double? = nil, clockInSelfieUrl: String? = nil, clockOutSelfieUrl: String? = nil, shiftId: UUID? = nil, verifiedByUserId: UUID? = nil) async throws -> Bool {
         let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         var payload: [String: Any] = [

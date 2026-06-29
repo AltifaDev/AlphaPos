@@ -30,7 +30,8 @@ enum InventoryEnhancementTests {
             test_barcodeSearchMatch(),
             test_categoryFilter(),
             test_locationFilter(),
-            test_productTaxCalculation()
+            test_productTaxCalculation(),
+            test_fuzzyReceiptMatcher()
         ]
     }
     
@@ -232,5 +233,39 @@ enum InventoryEnhancementTests {
         return approxEqual(totalTax, 17.0) && approxEqual(totalAmount, 217.0)
             ? .success(name)
             : .failure(name, "Expected tax 17.0 and total 217.0, got tax \(totalTax) and total \(totalAmount)")
+    }
+    
+    private static func findBestMatch(for name: String, in items: [String]) -> String? {
+        let normalized = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if let exact = items.first(where: { $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) == normalized }) {
+            return exact
+        }
+        if let sub = items.first(where: { normalized.contains($0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)) || $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines).contains(normalized) }) {
+            return sub
+        }
+        return nil
+    }
+    
+    private static func test_fuzzyReceiptMatcher() -> TestResult {
+        let name = #function
+        let stockItems = ["Coffee Beans Meiji Premium", "Paper Cups Large", "Full Cream Fresh Milk"]
+        let scannedName1 = "Paper Cups Large (scanned)"
+        let scannedName2 = "Full Cream Fresh Milk"
+        let scannedName3 = "Coffee Beans Meiji"
+        let scannedName4 = "Chairs"
+        
+        let match1 = findBestMatch(for: scannedName1, in: stockItems)
+        let match2 = findBestMatch(for: scannedName2, in: stockItems)
+        let match3 = findBestMatch(for: scannedName3, in: stockItems)
+        let match4 = findBestMatch(for: scannedName4, in: stockItems)
+        
+        let success = match1 == "Paper Cups Large" &&
+                      match2 == "Full Cream Fresh Milk" &&
+                      match3 == "Coffee Beans Meiji Premium" &&
+                      match4 == nil
+        
+        return success
+            ? .success(name)
+            : .failure(name, "Receipt matching logic failed. Match1=\(String(describing: match1)), Match2=\(String(describing: match2)), Match3=\(String(describing: match3)), Match4=\(String(describing: match4))")
     }
 }

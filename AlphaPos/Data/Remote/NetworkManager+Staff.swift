@@ -205,6 +205,23 @@ extension NetworkManager {
         return true
     }
 
+    func fetchRegisterSessionsFromSupabase() async throws -> [[String: Any]] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let data = try await sendSupabaseRequest(
+            method: "GET",
+            endpoint: "register_sessions",
+            queryItems: [
+                URLQueryItem(name: "select", value: "*"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "is_deleted", value: "eq.false")
+            ]
+        )
+        guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw NetworkError.invalidResponse
+        }
+        return jsonArray
+    }
+
     func deleteRegisterSessionOnServer(id: UUID) async throws -> Bool {
         _ = try await sendSupabaseRequest(
             method: "DELETE",
@@ -249,5 +266,23 @@ extension NetworkManager {
             payload: payload
         )
         return true
+    }
+
+    func fetchEmployees() async throws -> [[String: Any]] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "employees", queryItems: [
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "is_deleted", value: "eq.false")
+        ])
+        return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+    }
+
+    func fetchEmployeeShifts() async throws -> [[String: Any]] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "employee_shifts", queryItems: [
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "is_deleted", value: "eq.false")
+        ])
+        return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
     }
 }

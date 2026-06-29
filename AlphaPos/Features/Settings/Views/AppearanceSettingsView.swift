@@ -62,6 +62,7 @@ struct AppearanceSettingsView: View {
         .navigationTitle(L.Sections.appearance.t)
         .navigationBarTitleDisplayMode(.inline)
         .apNavBar(background: Color.appBackground)
+        .apColorScheme()
     }
     
     private func selectTheme(_ theme: AppTheme) {

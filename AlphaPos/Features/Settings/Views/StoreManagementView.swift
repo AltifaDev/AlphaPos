@@ -16,6 +16,8 @@ struct StoreManagementView: View {
     @AppStorage("store_tax_rate") private var storeTaxRate = 7.0
     @AppStorage("store_tax_type") private var storeTaxType = "inclusive" // "inclusive", "exclusive"
     @AppStorage("store_service_charge_rate") private var storeServiceChargeRate = 10.0
+    @AppStorage("enable_tax") private var enableTax = true
+    @AppStorage("enable_service_charge") private var enableServiceCharge = true
     @AppStorage("store_receipt_header") private var storeReceiptHeader = "Welcome to AlphaPos!"
     @AppStorage("store_receipt_footer") private var storeReceiptFooter = "Thank you for dining with us!\nVAT Included."
     @AppStorage("store_logo_path") private var storeLogoPath = ""
@@ -353,54 +355,73 @@ struct StoreManagementView: View {
                     }
                 }
                 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("tax_calculation_mode".t)
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .foregroundColor(.textSecondary)
-                    Picker("Tax Calculation Mode", selection: $storeTaxType) {
-                        Text(L.Store.taxInclusiveOpt.t).tag("inclusive")
-                        Text(L.Store.taxExclusiveOpt.t).tag("exclusive")
+                Toggle("เปิดใช้งานภาษีมูลค่าเพิ่ม (VAT)", isOn: $enableTax)
+                    .tint(.appAccent)
+                    .onChange(of: enableTax) { triggerSync() }
+                
+                Toggle("เปิดใช้งานเซอร์วิสชาร์จ (Service Charge)", isOn: $enableServiceCharge)
+                    .tint(.appAccent)
+                    .onChange(of: enableServiceCharge) { triggerSync() }
+                
+                Divider()
+                    .background(Color.appDivider)
+
+                if enableTax {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("tax_calculation_mode".t)
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.textSecondary)
+                        Picker("Tax Calculation Mode", selection: $storeTaxType) {
+                            Text(L.Store.taxInclusiveOpt.t).tag("inclusive")
+                            Text(L.Store.taxExclusiveOpt.t).tag("exclusive")
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: storeTaxType) { triggerSync() }
                     }
-                    .pickerStyle(.segmented)
-                    .onChange(of: storeTaxType) { triggerSync() }
                 }
                 
-                HStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("default_tax_rate".t)
-                            .font(.caption)
-                            .fontWeight(.bold)
-                            .foregroundColor(.textSecondary)
-                        HStack {
-                            TextField("7.0", value: $storeTaxRate, format: .number)
-                                .textFieldStyle(PlainTextFieldStyle())
-                                .keyboardType(.decimalPad)
-                            Text("%").foregroundColor(.textSecondary)
+                if enableTax || enableServiceCharge {
+                    HStack(spacing: 16) {
+                        if enableTax {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("default_tax_rate".t)
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.textSecondary)
+                                HStack {
+                                    TextField("7.0", value: $storeTaxRate, format: .number)
+                                        .textFieldStyle(PlainTextFieldStyle())
+                                        .keyboardType(.decimalPad)
+                                    Text("%").foregroundColor(.textSecondary)
+                                }
+                                .padding(12)
+                                .background(Color.appSurfaceHigh)
+                                .foregroundColor(.textPrimary)
+                                .cornerRadius(APRadius.md)
+                                .onChange(of: storeTaxRate) { triggerSync() }
+                            }
                         }
-                        .padding(12)
-                        .background(Color.appSurfaceHigh)
-                        .foregroundColor(.textPrimary)
-                        .cornerRadius(APRadius.md)
-                        .onChange(of: storeTaxRate) { triggerSync() }
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("service_charge_percent".t)
-                            .font(.caption)
-                            .fontWeight(.bold)
-                            .foregroundColor(.textSecondary)
-                        HStack {
-                            TextField("10.0", value: $storeServiceChargeRate, format: .number)
-                                .textFieldStyle(PlainTextFieldStyle())
-                                .keyboardType(.decimalPad)
-                            Text("%").foregroundColor(.textSecondary)
+                        
+                        if enableServiceCharge {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("service_charge_percent".t)
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.textSecondary)
+                                HStack {
+                                    TextField("10.0", value: $storeServiceChargeRate, format: .number)
+                                        .textFieldStyle(PlainTextFieldStyle())
+                                        .keyboardType(.decimalPad)
+                                    Text("%").foregroundColor(.textSecondary)
+                                }
+                                .padding(12)
+                                .background(Color.appSurfaceHigh)
+                                .foregroundColor(.textPrimary)
+                                .cornerRadius(APRadius.md)
+                                .onChange(of: storeServiceChargeRate) { triggerSync() }
+                            }
                         }
-                        .padding(12)
-                        .background(Color.appSurfaceHigh)
-                        .foregroundColor(.textPrimary)
-                        .cornerRadius(APRadius.md)
-                        .onChange(of: storeServiceChargeRate) { triggerSync() }
                     }
                 }
                 

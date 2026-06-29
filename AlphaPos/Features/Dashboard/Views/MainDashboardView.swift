@@ -1,5 +1,7 @@
 // MainDashboardView.swift
-// AlphaPos — Premium Sidebar Navigation
+// AlphaPos — Enterprise Premium Sidebar Navigation (v3.0)
+// Redesigned: 5-group enterprise sidebar with Live Dashboard,
+// Notification Center, Customer CRM, Device Management, Organization
 
 import SwiftUI
 import SwiftData
@@ -19,7 +21,7 @@ struct MainDashboardView: View {
     @AppStorage("developer_mode_enabled") private var developerModeEnabled = false
     @AppStorage("staff_session_timeout_minutes") private var staffSessionTimeoutMinutes = 15
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
-    @State private var selectedTab: DashboardTab = .tables
+    @State private var selectedTab: DashboardTab = .dashboard
     @State private var navigationPath = NavigationPath()
     @State private var posTableSession: TableSession? = nil
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -46,45 +48,72 @@ struct MainDashboardView: View {
         }
     }
 
-    enum DashboardTab: String, CaseIterable, Identifiable {
-        // ── Group 1: Core Operations ─────────────────────────────────────
-        case inventory  = "Menus"               // Menus (renamed from Inventory)
-        case pos        = "Orders"               // Orders (renamed from POS)
-        case tables     = "Table Management"
-        case kitchen    = "Kitchen Display"
-        // ── Group 2: Management ──────────────────────────────────────────
-        case store      = "Stores"               // Stores (renamed)
-        case promotions = "Marketing"            // Marketing (renamed)
-        case cashDrawer = "Hot Actions"          // Hot Actions (renamed)
-        case reports    = "Reports"
-        case sales      = "Accounting"           // Accounting (renamed)
-        case loyalty    = "Loyalty"
-        case giftCards  = "Gift Cards"
-        case payroll    = "Payroll"
-        case timecard   = "Timecard"
-        // ── Group 3: System ──────────────────────────────────────────────
-        case syncHealth = "Integrations"         // Integrations (renamed)
-        case settings   = "Settings"
+    // MARK: - Enterprise Sidebar Tabs (5 Groups)
 
-        // Gift cards now live inside the unified Customer Value workspace.
-        // Keep the legacy case so previously persisted navigation remains valid,
-        // but expose only one destination in the sidebar.
+    enum DashboardTab: String, CaseIterable, Identifiable {
+        // ── Group 1: Overview ─────────────────────────────────────────────
+        case dashboard      = "Dashboard"            // NEW: Live KPI Dashboard
+        case notifications  = "Notifications"        // NEW: Unified Notification Center
+        // ── Group 2: Operations ───────────────────────────────────────────
+        case tables         = "Table Management"
+        case pos            = "Orders"
+        case kitchen        = "Kitchen Display"
+        case inventory      = "Menus"
+        // ── Group 3: Management ───────────────────────────────────────────
+        case cashDrawer     = "Hot Actions"
+        case payments       = "Payments"             // NEW: Payment Gateway
+        case reports        = "Reports"
+        case sales          = "Accounting"
+        case promotions     = "Marketing"
+        case loyalty        = "Loyalty"
+        case giftCards      = "Gift Cards"
+        // ── Group 4: People ───────────────────────────────────────────────
+        case customers      = "Customers"            // NEW: Customer CRM
+        case payroll        = "Payroll"
+        case timecard       = "Timecard"
+        // ── Group 5: Enterprise ───────────────────────────────────────────
+        case store          = "Stores"
+        case devices        = "Devices"              // NEW: Device Management
+        case organization   = "Organization"         // NEW: Tenant Management
+        // ── Group 6: System ───────────────────────────────────────────────
+        case syncHealth     = "Integrations"
+        case settings       = "Settings"
+
+        // Gift cards live inside unified Customer Value workspace.
+        // Keep legacy case so previously persisted navigation remains valid.
         static var allCases: [DashboardTab] {
-            [.inventory, .pos, .tables, .kitchen, .store, .promotions,
-             .cashDrawer, .reports, .sales, .loyalty, .payroll, .timecard,
+            [.dashboard, .notifications,
+             .tables, .pos, .kitchen, .inventory,
+             .cashDrawer, .payments, .reports, .sales, .promotions, .loyalty,
+             .customers, .payroll, .timecard,
+             .store, .devices, .organization,
              .syncHealth, .settings]
         }
 
         var id: String { rawValue }
 
-        // MARK: - Section grouping
-        enum SidebarSection { case operations, management, system }
+        // MARK: - Section grouping (6 groups)
+        enum SidebarSection: String, CaseIterable {
+            case overview    = "OVERVIEW"
+            case operations  = "OPERATIONS"
+            case management  = "MANAGEMENT"
+            case people      = "PEOPLE"
+            case enterprise  = "ENTERPRISE"
+            case system      = "SYSTEM"
+        }
+
         var section: SidebarSection {
             switch self {
-            case .inventory, .pos, .tables, .kitchen:
+            case .dashboard, .notifications:
+                return .overview
+            case .tables, .pos, .kitchen, .inventory:
                 return .operations
-            case .store, .promotions, .cashDrawer, .reports, .sales, .loyalty, .giftCards, .payroll, .timecard:
+            case .cashDrawer, .payments, .reports, .sales, .promotions, .loyalty, .giftCards:
                 return .management
+            case .customers, .payroll, .timecard:
+                return .people
+            case .store, .devices, .organization:
+                return .enterprise
             case .syncHealth, .settings:
                 return .system
             }
@@ -94,111 +123,146 @@ struct MainDashboardView: View {
         enum Badge { case beta, new, none }
         var badge: Badge {
             switch self {
-            case .kitchen: return .beta
-            case .sales:   return .new
-            default:       return .none
+            case .kitchen:       return .beta
+            case .dashboard:     return .new
+            case .notifications: return .new
+            case .customers:     return .new
+            case .devices:       return .new
+            case .organization:  return .new
+            case .payments:      return .new
+            default:             return .none
             }
         }
 
         /// ชื่อที่แปลแล้วตามภาษาปัจจุบัน
         var localizedName: String {
             switch self {
-            case .inventory:  return L.Nav.tabInventory.t    // "Menus"
-            case .pos:        return L.Nav.tabPOS.t          // "Orders"
-            case .tables:     return L.Nav.tabTables.t       // "Table Management"
-            case .kitchen:    return L.Nav.tabKitchen.t      // "Kitchen Display"
-            case .store:      return L.Nav.tabStore.t        // "Stores"
-            case .promotions: return L.Nav.tabPromotions.t   // "Marketing"
-            case .cashDrawer: return L.Nav.tabCashDrawer.t   // "Hot Actions"
-            case .reports:    return L.Nav.tabReports.t
-            case .sales:      return L.Nav.tabSales.t        // "Accounting"
-            case .loyalty:    return "customer_value_title".t
-            case .giftCards:  return L.Nav.tabGiftCards.t
-            case .payroll:    return L.Nav.tabPayroll.t
-            case .timecard:   return L.Nav.tabTimecard.t
-            case .syncHealth: return L.Nav.tabSyncHealth.t   // "Integrations"
-            case .settings:   return L.Nav.tabSettings.t
+            case .dashboard:     return "dashboard_nav".t
+            case .notifications: return "notifications_nav".t
+            case .tables:        return L.Nav.tabTables.t
+            case .pos:           return L.Nav.tabPOS.t
+            case .kitchen:       return L.Nav.tabKitchen.t
+            case .inventory:     return L.Nav.tabInventory.t
+            case .cashDrawer:    return L.Nav.tabCashDrawer.t
+            case .payments:      return "payments_nav".t
+            case .reports:       return L.Nav.tabReports.t
+            case .sales:         return L.Nav.tabSales.t
+            case .promotions:    return L.Nav.tabPromotions.t
+            case .loyalty:       return "customer_value_title".t
+            case .giftCards:     return L.Nav.tabGiftCards.t
+            case .customers:     return "customers_nav".t
+            case .payroll:       return L.Nav.tabPayroll.t
+            case .timecard:      return L.Nav.tabTimecard.t
+            case .store:         return L.Nav.tabStore.t
+            case .devices:       return "devices_nav".t
+            case .organization:  return "organization_nav".t
+            case .syncHealth:    return L.Nav.tabSyncHealth.t
+            case .settings:      return L.Nav.tabSettings.t
             }
         }
 
         var icon: String {
             switch self {
-            case .inventory:  return "fork.knife"                        // Menus
-            case .pos:        return "tray.full.fill"                    // Orders
-            case .tables:     return "tablecells.fill"                   // Table Management
-            case .kitchen:    return "display"                           // Kitchen Display
-            case .store:      return "chart.bar.fill"                    // Stores
-            case .promotions: return "megaphone.fill"                    // Marketing
-            case .cashDrawer: return "bolt.circle.fill"                  // Hot Actions
-            case .reports:    return "chart.bar.fill"                    // Reports
-            case .sales:      return "chart.bar.fill"                    // Accounting
-            case .loyalty:    return "person.crop.circle.badge.checkmark"
-            case .giftCards:  return "giftcard.fill"
-            case .payroll:    return "dollarsign.circle.fill"
-            case .timecard:   return "faceid"
-            case .syncHealth: return "puzzlepiece.extension.fill"        // Integrations
-            case .settings:   return "gearshape.fill"
+            case .dashboard:     return "square.grid.2x2.fill"           // Live Dashboard
+            case .notifications: return "bell.badge.fill"                // Notification Center
+            case .tables:        return "tablecells.fill"
+            case .pos:           return "tray.full.fill"
+            case .kitchen:       return "display"
+            case .inventory:     return "fork.knife"
+            case .cashDrawer:    return "bolt.circle.fill"
+            case .payments:      return "creditcard.and.123"
+            case .reports:       return "chart.bar.fill"
+            case .sales:         return "chart.line.uptrend.xyaxis"
+            case .promotions:    return "megaphone.fill"
+            case .loyalty:       return "person.crop.circle.badge.checkmark"
+            case .giftCards:     return "giftcard.fill"
+            case .customers:     return "person.2.fill"                  // Customer CRM
+            case .payroll:       return "dollarsign.circle.fill"
+            case .timecard:      return "faceid"
+            case .store:         return "building.2.fill"
+            case .devices:       return "ipad.and.iphone"               // Device Management
+            case .organization:  return "building.columns.fill"          // Organization
+            case .syncHealth:    return "puzzlepiece.extension.fill"
+            case .settings:      return "gearshape.fill"
             }
         }
 
         /// Accent gradient per tab for selected state
         var gradient: LinearGradient {
             switch self {
-            case .inventory:  return LinearGradient(colors: [Color(hex: "0EA5E9"), Color(hex: "6366F1")], startPoint: .leading, endPoint: .trailing)
-            case .pos:        return LinearGradient(colors: [Color.appAccent, Color(hex: "60A5FA")], startPoint: .leading, endPoint: .trailing)
-            case .tables:     return APGradient.accent
-            case .kitchen:    return LinearGradient(colors: [Color(hex: "F59E0B"), Color(hex: "FB923C")], startPoint: .leading, endPoint: .trailing)
-            case .store:      return LinearGradient(colors: [Color(hex: "F43F5E"), Color(hex: "FDA4AF")], startPoint: .leading, endPoint: .trailing)
-            case .promotions: return LinearGradient(colors: [Color(hex: "10B981"), Color(hex: "34D399")], startPoint: .leading, endPoint: .trailing)
-            case .cashDrawer: return LinearGradient(colors: [Color(hex: "F97316"), Color(hex: "EF4444")], startPoint: .leading, endPoint: .trailing)
-            case .reports:    return LinearGradient(colors: [Color(hex: "06B6D4"), Color(hex: "3B82F6")], startPoint: .leading, endPoint: .trailing)
-            case .sales:      return LinearGradient(colors: [Color(hex: "8B5CF6"), Color(hex: "D946EF")], startPoint: .leading, endPoint: .trailing)
-            case .loyalty:    return LinearGradient(colors: [Color(hex: "A78BFA"), Color(hex: "F59E0B")], startPoint: .leading, endPoint: .trailing)
-            case .giftCards:  return LinearGradient(colors: [Color(hex: "F59E0B"), Color(hex: "F97316")], startPoint: .leading, endPoint: .trailing)
-            case .payroll:    return LinearGradient(colors: [Color(hex: "A855F7"), Color(hex: "EC4899")], startPoint: .leading, endPoint: .trailing)
-            case .timecard:   return APGradient.positive
-            case .syncHealth: return LinearGradient(colors: [Color(hex: "22C55E"), Color(hex: "0EA5E9")], startPoint: .leading, endPoint: .trailing)
-            case .settings:   return LinearGradient(colors: [Color(hex: "9CA3AF"), Color(hex: "4B5563")], startPoint: .leading, endPoint: .trailing)
+            case .dashboard:     return LinearGradient(colors: [Color(hex: "6366F1"), Color(hex: "8B5CF6")], startPoint: .leading, endPoint: .trailing)
+            case .notifications: return LinearGradient(colors: [Color(hex: "EF4444"), Color(hex: "F97316")], startPoint: .leading, endPoint: .trailing)
+            case .tables:        return APGradient.accent
+            case .pos:           return LinearGradient(colors: [Color.appAccent, Color(hex: "60A5FA")], startPoint: .leading, endPoint: .trailing)
+            case .kitchen:       return LinearGradient(colors: [Color(hex: "F59E0B"), Color(hex: "FB923C")], startPoint: .leading, endPoint: .trailing)
+            case .inventory:     return LinearGradient(colors: [Color(hex: "0EA5E9"), Color(hex: "6366F1")], startPoint: .leading, endPoint: .trailing)
+            case .cashDrawer:    return LinearGradient(colors: [Color(hex: "F97316"), Color(hex: "EF4444")], startPoint: .leading, endPoint: .trailing)
+            case .payments:      return LinearGradient(colors: [Color(hex: "10B981"), Color(hex: "059669")], startPoint: .leading, endPoint: .trailing)
+            case .reports:       return LinearGradient(colors: [Color(hex: "06B6D4"), Color(hex: "3B82F6")], startPoint: .leading, endPoint: .trailing)
+            case .sales:         return LinearGradient(colors: [Color(hex: "8B5CF6"), Color(hex: "D946EF")], startPoint: .leading, endPoint: .trailing)
+            case .promotions:    return LinearGradient(colors: [Color(hex: "10B981"), Color(hex: "34D399")], startPoint: .leading, endPoint: .trailing)
+            case .loyalty:       return LinearGradient(colors: [Color(hex: "A78BFA"), Color(hex: "F59E0B")], startPoint: .leading, endPoint: .trailing)
+            case .giftCards:     return LinearGradient(colors: [Color(hex: "F59E0B"), Color(hex: "F97316")], startPoint: .leading, endPoint: .trailing)
+            case .customers:     return LinearGradient(colors: [Color(hex: "EC4899"), Color(hex: "F43F5E")], startPoint: .leading, endPoint: .trailing)
+            case .payroll:       return LinearGradient(colors: [Color(hex: "A855F7"), Color(hex: "EC4899")], startPoint: .leading, endPoint: .trailing)
+            case .timecard:      return APGradient.positive
+            case .store:         return LinearGradient(colors: [Color(hex: "F43F5E"), Color(hex: "FDA4AF")], startPoint: .leading, endPoint: .trailing)
+            case .devices:       return LinearGradient(colors: [Color(hex: "14B8A6"), Color(hex: "0EA5E9")], startPoint: .leading, endPoint: .trailing)
+            case .organization:  return LinearGradient(colors: [Color(hex: "6366F1"), Color(hex: "3B82F6")], startPoint: .leading, endPoint: .trailing)
+            case .syncHealth:    return LinearGradient(colors: [Color(hex: "22C55E"), Color(hex: "0EA5E9")], startPoint: .leading, endPoint: .trailing)
+            case .settings:      return LinearGradient(colors: [Color(hex: "9CA3AF"), Color(hex: "4B5563")], startPoint: .leading, endPoint: .trailing)
             }
         }
 
         var iconColor: Color {
             switch self {
-            case .inventory:  return Color(hex: "0EA5E9")
-            case .pos:        return Color(hex: "60A5FA")
-            case .tables:     return Color.appAccent
-            case .kitchen:    return Color(hex: "F59E0B")
-            case .store:      return Color(hex: "F43F5E")
-            case .promotions: return Color(hex: "10B981")
-            case .cashDrawer: return Color(hex: "F97316")
-            case .reports:    return Color(hex: "06B6D4")
-            case .sales:      return Color(hex: "8B5CF6")
-            case .loyalty:    return Color(hex: "A78BFA")
-            case .giftCards:  return Color(hex: "F59E0B")
-            case .payroll:    return Color(hex: "A855F7")
-            case .timecard:   return Color(hex: "34D399")
-            case .syncHealth: return Color(hex: "22C55E")
-            case .settings:   return Color(hex: "9CA3AF")
+            case .dashboard:     return Color(hex: "6366F1")
+            case .notifications: return Color(hex: "EF4444")
+            case .tables:        return Color.appAccent
+            case .pos:           return Color(hex: "60A5FA")
+            case .kitchen:       return Color(hex: "F59E0B")
+            case .inventory:     return Color(hex: "0EA5E9")
+            case .cashDrawer:    return Color(hex: "F97316")
+            case .payments:      return Color(hex: "10B981")
+            case .reports:       return Color(hex: "06B6D4")
+            case .sales:         return Color(hex: "8B5CF6")
+            case .promotions:    return Color(hex: "10B981")
+            case .loyalty:       return Color(hex: "A78BFA")
+            case .giftCards:     return Color(hex: "F59E0B")
+            case .customers:     return Color(hex: "EC4899")
+            case .payroll:       return Color(hex: "A855F7")
+            case .timecard:      return Color(hex: "34D399")
+            case .store:         return Color(hex: "F43F5E")
+            case .devices:       return Color(hex: "14B8A6")
+            case .organization:  return Color(hex: "6366F1")
+            case .syncHealth:    return Color(hex: "22C55E")
+            case .settings:      return Color(hex: "9CA3AF")
             }
         }
 
         var requiredPermission: AppPermission {
             switch self {
-            case .tables:     return .tablesManage
-            case .pos:        return .posSell
-            case .cashDrawer: return .cashDrawerManage
-            case .kitchen:    return .kitchenView
-            case .timecard:   return .posSell
-            case .inventory:  return .inventoryView
-            case .giftCards:  return .posSell
-            case .loyalty:    return .posSell
-            case .payroll:    return .payrollManage
-            case .sales:      return .reportsView
-            case .reports:    return .reportsView
-            case .promotions: return .discountApply
-            case .store:      return .settingsManage
-            case .syncHealth: return .deviceManage
-            case .settings:   return .settingsManage
+            case .dashboard:     return .dashboardView
+            case .notifications: return .notificationsManage
+            case .tables:        return .tablesManage
+            case .pos:           return .posSell
+            case .kitchen:       return .kitchenView
+            case .inventory:     return .inventoryView
+            case .cashDrawer:    return .cashDrawerManage
+            case .payments:      return .paymentsManage
+            case .reports:       return .reportsView
+            case .sales:         return .reportsView
+            case .promotions:    return .discountApply
+            case .loyalty:       return .posSell
+            case .giftCards:     return .posSell
+            case .customers:     return .customersView
+            case .payroll:       return .payrollManage
+            case .timecard:      return .posSell
+            case .store:         return .settingsManage
+            case .devices:       return .devicesView
+            case .organization:  return .organizationView
+            case .syncHealth:    return .devicesView
+            case .settings:      return .settingsManage
             }
         }
     }
@@ -247,7 +311,7 @@ struct MainDashboardView: View {
         }
         .onAppear {
             if !enableTableSystem && selectedTab == .tables {
-                selectedTab = .pos
+                selectedTab = .dashboard
             }
             ensureSelectedTabIsAllowed()
             if developerModeEnabled {
@@ -293,35 +357,20 @@ struct MainDashboardView: View {
                     .background(Color.appDivider)
                     .padding(.horizontal, APSpacing.md)
 
-                // ── Navigation items ─────────────────────────────────────────
+                // ── Navigation items (6 sections) ───────────────────────────
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: APSpacing.xs) {
-                        // ── Group 1: Core Operations ─────────────────────
-                        let opTabs  = visibleTabs.filter { $0.section == .operations }
-                        let mgtTabs = visibleTabs.filter { $0.section == .management }
-                        let sysTabs = visibleTabs.filter { $0.section == .system }
-
-                        ForEach(opTabs) { tab in sidebarRow(tab) }
-
-                        if !opTabs.isEmpty && !mgtTabs.isEmpty {
-                            Divider()
-                                .background(Color.appDivider)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 4)
+                        let sections: [DashboardTab.SidebarSection] = [.overview, .operations, .management, .people, .enterprise, .system]
+                        
+                        ForEach(sections, id: \.rawValue) { section in
+                            let sectionTabs = visibleTabs.filter { $0.section == section }
+                            if !sectionTabs.isEmpty {
+                                // Section header label
+                                sectionHeader(section.rawValue)
+                                
+                                ForEach(sectionTabs) { tab in sidebarRow(tab) }
+                            }
                         }
-
-                        // ── Group 2: Management ──────────────────────────
-                        ForEach(mgtTabs) { tab in sidebarRow(tab) }
-
-                        if !mgtTabs.isEmpty && !sysTabs.isEmpty {
-                            Divider()
-                                .background(Color.appDivider)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 4)
-                        }
-
-                        // ── Group 3: System ──────────────────────────────
-                        ForEach(sysTabs) { tab in sidebarRow(tab) }
                     }
                     .padding(.horizontal, APSpacing.sm)
                     .padding(.top, APSpacing.md)
@@ -339,6 +388,21 @@ struct MainDashboardView: View {
             }
         }
         .listStyle(.sidebar)
+    }
+    
+    // MARK: - Section Header
+    
+    private func sectionHeader(_ title: String) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(.textTertiary)
+                .tracking(1.2)
+            Spacer()
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 10)
+        .padding(.bottom, 2)
     }
 
     private func canAccess(_ tab: DashboardTab) -> Bool {
@@ -433,7 +497,7 @@ struct MainDashboardView: View {
                 }
             }
 
-            Text("v2.0")
+            Text("v3.0")
                 .font(.system(size: 8))
                 .foregroundColor(.textTertiary)
         }
@@ -617,28 +681,40 @@ struct MainDashboardView: View {
         .padding(.bottom, 4)
     }
 
-    // MARK: - Detail
+    // MARK: - Detail Content (maps tabs to views)
 
     @ViewBuilder
     private var detailContent: some View {
         ZStack {
             Color.appBackground.ignoresSafeArea()
             switch selectedTab {
-            case .tables:     TableView(selectedTab: $selectedTab, activeSession: $posTableSession, columnVisibility: $columnVisibility)
-            case .pos:        POSView(activeSession: $posTableSession, selectedTab: $selectedTab, columnVisibility: $columnVisibility)
-            case .cashDrawer: CashDrawerManagementView()
-            case .kitchen:    KitchenDisplayView()
-            case .timecard:   EmployeeTimecardView()
-            case .inventory:  InventoryView()
-            case .giftCards:  CustomerValueManagementView(initialSection: .giftCards)
-            case .loyalty:    CustomerValueManagementView(initialSection: .loyalty)
-            case .payroll:    PayrollDashboardView()
-            case .sales:      SalesDashboardView()
-            case .reports:    ReportsView()
-            case .promotions: PromotionsManagementView(columnVisibility: $columnVisibility)
-            case .store:      StoreManagementView()
-            case .syncHealth: SyncHealthView()
-            case .settings:   SettingsView()
+            // Overview
+            case .dashboard:     LiveDashboardView()
+            case .notifications: NotificationCenterView()
+            // Operations
+            case .tables:        TableView(selectedTab: $selectedTab, activeSession: $posTableSession, columnVisibility: $columnVisibility)
+            case .pos:           POSView(activeSession: $posTableSession, selectedTab: $selectedTab, columnVisibility: $columnVisibility)
+            case .kitchen:       KitchenDisplayView()
+            case .inventory:     InventoryView()
+            // Management
+            case .cashDrawer:    CashDrawerManagementView()
+            case .payments:      PaymentGatewayView()
+            case .reports:       ReportsView()
+            case .sales:         SalesDashboardView()
+            case .promotions:    PromotionsManagementView(columnVisibility: $columnVisibility)
+            case .loyalty:       CustomerValueManagementView(initialSection: .loyalty)
+            case .giftCards:     CustomerValueManagementView(initialSection: .giftCards)
+            // People
+            case .customers:     CustomerCRMView()
+            case .payroll:       PayrollDashboardView()
+            case .timecard:      EmployeeTimecardView()
+            // Enterprise
+            case .store:         StoreManagementView()
+            case .devices:       DeviceManagementView()
+            case .organization:  OrganizationManagementView()
+            // System
+            case .syncHealth:    SyncHealthView()
+            case .settings:      SettingsView()
             }
         }
     }
@@ -704,7 +780,6 @@ private struct SidebarTabRow: View {
             }
         }
         .overlay(
-            // Low Stock badge overlay
             lowStockBadge,
             alignment: .topTrailing
         )

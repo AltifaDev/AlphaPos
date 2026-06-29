@@ -179,6 +179,10 @@ final class AppSessionManager: ObservableObject {
             ))
             try? modelContext.save()
         }
+        // Enterprise Alert: notify Notification Center about locked session
+        if reason == "session_timeout", let session = currentStaffSession {
+            SyncEngine.shared.alertStaffSessionLocked(name: session.displayName, reason: "Session timeout")
+        }
         currentStaffSession = nil
         route = .staffLock
     }

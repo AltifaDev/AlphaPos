@@ -16,9 +16,6 @@ extension SyncEngine {
             let remoteItems = try await NetworkManager.shared.fetchMenuItemsFromSupabase()
             guard !remoteItems.isEmpty else { return }
 
-            // Prefetch images in background to warm the cache
-            prefetchImages(for: remoteItems)
-
             // Fetch existing local items and categories for O(1) lookup
             var __desclocalItems = FetchDescriptor<MenuItem>()
             __desclocalItems.fetchLimit = 500  // N3: prevent OOM
@@ -135,6 +132,9 @@ extension SyncEngine {
                 }
             }
 
+            // Prefetch images in background to populate URLCache
+            prefetchImages(remoteItems)
+
             if didChange {
                 try? modelContext.save()
                 #if DEBUG
@@ -149,15 +149,10 @@ extension SyncEngine {
         }
     }
 
-    private func prefetchImages(for remoteItems: [[String: Any]]) {
-        for remote in remoteItems {
-            for key in ["image_url", "image_url_2", "image_url_3"] {
-                if let urlStr = remote[key] as? String, !urlStr.isEmpty, let url = URL(string: urlStr) {
-                    var request = URLRequest(url: url)
-                    request.cachePolicy = .returnCacheDataElseLoad
-                    URLSession.shared.dataTask(with: request).resume()
-                }
-            }
+    private func prefetchImages(_ items: [[String: Any]]) {
+        for item in items {
+            guard let urlStr = item["image_url"] as? String, !urlStr.isEmpty, let url = URL(string: urlStr) else { continue }
+            URLSession.shared.dataTask(with: url).resume()
         }
     }
 

@@ -137,12 +137,32 @@ final class POSViewModel {
         cart.reduce(0.0) { $0 + $1.totalPrice }
     }
 
-    var cartTax: Double {
-        let taxType = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
+    private func getTaxRateAndInclusion(for item: MenuItem) -> (rate: Double, isInclusive: Bool) {
+        guard UserDefaults.standard.bool(forKey: "enable_tax") else {
+            return (0.0, true)
+        }
+        let priceBasis = UserDefaults.standard.string(forKey: "tax_price_basis") ?? "itemDefault"
         let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
-        let hasGlobalOverride = UserDefaults.standard.object(forKey: "store_tax_rate") != nil
-        var taxRate = hasGlobalOverride ? globalTaxRate : 7.0
+        let globalTaxType = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
         
+        switch priceBasis {
+        case "forceInclusive":
+            return (globalTaxRate, true)
+        case "forceExclusive":
+            return (globalTaxRate, false)
+        case "itemDefault":
+            let rate = item.taxRate
+            let isInclusive = item.isTaxInclusive ?? (globalTaxType == "inclusive")
+            return (rate, isInclusive)
+        default:
+            return (item.taxRate, item.isTaxInclusive ?? (globalTaxType == "inclusive"))
+        }
+    }
+
+    var cartTax: Double {
+        guard UserDefaults.standard.bool(forKey: "enable_tax") else {
+            return 0.0
+        }
         if selectedCustomer?.isTaxExempt == true {
             return 0.0 // No tax for tax-exempt customers
         }
@@ -150,24 +170,25 @@ final class POSViewModel {
         var totalTax = 0.0
         for cartItem in cart {
             let lineTotal = cartItem.totalPrice
-            let itemTaxRate = cartItem.item.taxRate
-            // Use global rate if set, otherwise fallback to item-specific taxRate
-            let rate = hasGlobalOverride ? taxRate : itemTaxRate
-            let isInclusive = taxType == "inclusive"
+            let (rate, isInclusive) = getTaxRateAndInclusion(for: cartItem.item)
 
             if isInclusive {
-                totalTax += lineTotal * (rate / (100 + rate))
+                totalTax += lineTotal * (rate / (100.0 + rate))
             } else {
-                totalTax += lineTotal * (rate / 100)
+                totalTax += lineTotal * (rate / 100.0)
             }
         }
 
         let serviceChargeTaxable = UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true
-        let serviceChargeTax = serviceChargeTaxable ? cartServiceCharge * (taxRate / 100.0) : 0.0
+        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
+        let serviceChargeTax = serviceChargeTaxable ? cartServiceCharge * (globalTaxRate / 100.0) : 0.0
         return totalTax + serviceChargeTax
     }
 
     var cartServiceCharge: Double {
+        guard UserDefaults.standard.bool(forKey: "enable_service_charge") else {
+            return 0.0
+        }
         if selectedOrderType == "take_out" || selectedOrderType == "delivery" {
             return 0.0
         }
@@ -185,31 +206,26 @@ final class POSViewModel {
     }
 
     var cartTotal: Double {
-        let taxType = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
-        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
-        let hasGlobalOverride = UserDefaults.standard.object(forKey: "store_tax_rate") != nil
-        var taxRate = hasGlobalOverride ? globalTaxRate : 7.0
-        
-        if selectedCustomer?.isTaxExempt == true {
-            taxRate = 0.0 // Override tax rate to 0 for tax-exempt customers
+        let taxEnabled = UserDefaults.standard.bool(forKey: "enable_tax")
+        if selectedCustomer?.isTaxExempt == true || !taxEnabled {
+            return max(0, cartSubtotal + cartServiceCharge - cartDiscount)
         }
 
         var totalAmount = 0.0
         for cartItem in cart {
             let lineTotal = cartItem.totalPrice
-            let itemTaxRate = cartItem.item.taxRate
-            let rate = hasGlobalOverride ? taxRate : itemTaxRate
-            let isInclusive = taxType == "inclusive"
+            let (rate, isInclusive) = getTaxRateAndInclusion(for: cartItem.item)
 
             if isInclusive {
                 totalAmount += lineTotal
             } else {
-                totalAmount += lineTotal * (1.0 + rate / 100)
+                totalAmount += lineTotal * (1.0 + rate / 100.0)
             }
         }
 
         let serviceChargeTaxable = UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true
-        let serviceChargeTax = serviceChargeTaxable ? cartServiceCharge * (taxRate / 100.0) : 0.0
+        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
+        let serviceChargeTax = serviceChargeTaxable ? cartServiceCharge * (globalTaxRate / 100.0) : 0.0
         return max(0, totalAmount + cartServiceCharge + serviceChargeTax - cartDiscount)
     }
 
@@ -561,8 +577,15 @@ final class POSViewModel {
 
     if dispatchPrint {
         let capturedOrder = order
+        let isPayment = createPayment
         Task {
-            await PrintService.shared.dispatchAll(capturedOrder)
+            if isPayment {
+                // Payment confirmed → receipt + any kitchen/bar printers with printOnPayment=true
+                await PrintService.shared.dispatchReceipt(capturedOrder)
+            } else {
+                // Sent to kitchen → kitchen/bar/sticker printers with printOnOrder=true, new items only
+                await PrintService.shared.dispatchKitchenOrder(capturedOrder)
+            }
         }
     }
 
@@ -1140,8 +1163,8 @@ final class SampleDataSeeder {
                 // Fixed UUIDs ensure that employeeId references stored in staff_sessions,
                 // audit_logs and timecards remain valid after a re-seed.
                 // DO NOT change these constants — they are the canonical seed identities.
-                let seedEmp1Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111101")!
-                let seedEmp2Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111102")!
+                let seedEmp1Id  = UUID(uuidString: "9a5767a4-6f30-4614-94d9-5ea85e282775")!
+                let seedEmp2Id  = UUID(uuidString: "193df239-104d-4e2d-b2e5-9f2b4ff30ddc")!
                 let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
                 let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
 
@@ -1157,9 +1180,36 @@ final class SampleDataSeeder {
                 modelContext.insert(emp1)
                 modelContext.insert(emp2)
             }
-
             try? modelContext.save()
         }
+    }
+
+    static func clearCatalogOnly(modelContext: ModelContext) {
+        if let items = try? modelContext.fetch(FetchDescriptor<RestaurantTable>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<MenuItem>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let categories = try? modelContext.fetch(FetchDescriptor<Category>()) {
+            for item in categories { modelContext.delete(item) }
+        }
+        if let groups = try? modelContext.fetch(FetchDescriptor<ModifierGroup>()) {
+            for item in groups { modelContext.delete(item) }
+        }
+        if let modifiers = try? modelContext.fetch(FetchDescriptor<Modifier>()) {
+            for item in modifiers { modelContext.delete(item) }
+        }
+        if let rels = try? modelContext.fetch(FetchDescriptor<MenuItemModifierGroup>()) {
+            for item in rels { modelContext.delete(item) }
+        }
+        if let items = try? modelContext.fetch(FetchDescriptor<InventoryItem>()) {
+            for item in items { modelContext.delete(item) }
+        }
+        if let recipes = try? modelContext.fetch(FetchDescriptor<Recipe>()) {
+            for item in recipes { modelContext.delete(item) }
+        }
+        try? modelContext.save()
     }
 
     static func autoSeedIfOutdated(modelContext: ModelContext) {
@@ -1174,7 +1224,7 @@ final class SampleDataSeeder {
         seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
         let categories = (try? modelContext.fetch(FetchDescriptor<Category>())) ?? []
         if categories.isEmpty {
-            seedAll(modelContext: modelContext)
+            seedCatalogOnly(modelContext: modelContext)
             return
         }
 
@@ -1192,12 +1242,12 @@ final class SampleDataSeeder {
             #if DEBUG
             print("SampleDataSeeder [AutoSeed]: Outdated or mismatched menu items detected. Re-seeding...")
             #endif
-            seedAll(modelContext: modelContext)
+            seedCatalogOnly(modelContext: modelContext)
         }
     }
 
-    static func seedAll(modelContext: ModelContext) {
-        clearAllData(modelContext: modelContext)
+    static func seedCatalogOnly(modelContext: ModelContext) {
+        clearCatalogOnly(modelContext: modelContext)
 
         // 1. Seed Tables
         let sampleTables = [
@@ -1402,10 +1452,12 @@ final class SampleDataSeeder {
         }
 
         try? modelContext.save()
+    }
 
-        // 8. Seed Mock Transactions (Orders, Payments, Timecards, Waste)
+    static func seedAll(modelContext: ModelContext) {
+        clearAllData(modelContext: modelContext)
+        seedCatalogOnly(modelContext: modelContext)
         seedMockTransactions(modelContext: modelContext)
-
         try? modelContext.save()
     }
 

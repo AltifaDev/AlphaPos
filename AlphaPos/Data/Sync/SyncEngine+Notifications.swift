@@ -124,8 +124,7 @@ extension SyncEngine {
             descriptor.fetchLimit = 500
             if let sessions = try? modelContext.fetch(descriptor), let activeShift = sessions.first {
                 let hoursOpen = Calendar.current.dateComponents([.hour], from: activeShift.openedAt, to: Date()).hour ?? 0
-                let isDifferentDay = !Calendar.current.isDate(activeShift.openedAt, inSameDayAs: Date())
-                if isDifferentDay || hoursOpen >= 16 {
+                if hoursOpen >= 24 {
                     self.triggerStaleShiftNotification(hoursOpen: hoursOpen)
                 }
             }
@@ -146,55 +145,97 @@ extension SyncEngine {
         print("SyncEngine: Initiating data synchronization...")
         #endif
 
+        // ─── Stage 1: Pushes (Sequential to respect foreign key & relationship constraints) ───
         await syncMerchant()
         await syncSecurityPolicies(modelContext)
         await syncRolePermissions(modelContext)
         await syncMerchantDevices(modelContext)
+        await syncUsers(modelContext)
         await syncEmployees(modelContext)
         await syncStaffSessions(modelContext)
         await syncAuditLogs(modelContext)
         await syncTables(modelContext)
         await syncTableSessions(modelContext)
         await syncFloorPlanImages(modelContext)
+        await syncRestaurantWalls(modelContext)
+        await syncTableLayoutPresets(modelContext)
         await syncEmployeeShifts(modelContext)
         await syncOrders(modelContext)
         await syncPayments(modelContext)
         await syncOrderDiscounts(modelContext)
+        await syncOrderTaxLines(modelContext)
+        await syncTips(modelContext)
+        await syncOrderItemModifiers(modelContext)
         await syncTimecards(modelContext)
+        await syncRegisterSessions(modelContext)
+        await syncCashMovements(modelContext)
+        await syncShiftReports(modelContext)
 
         await syncCategories(modelContext)
-        await pullCategoriesFromSupabase(modelContext)
         await syncModifierGroups(modelContext)
-        await pullModifierGroupsFromSupabase(modelContext)
         await syncModifiers(modelContext)
-        await pullModifiersFromSupabase(modelContext)
         await syncMenuItemModifierGroups(modelContext)
-        await pullMenuItemModifierGroupsFromSupabase(modelContext)
 
         await syncBranches(modelContext)
-        await pullBranchesFromSupabase(modelContext)
+        await syncSuppliers(modelContext)
         await syncInventoryItems(modelContext)
-        await pullInventoryItemsFromSupabase(modelContext)
         await syncInventoryTransactions(modelContext)
+        await syncRecipes(modelContext)
         await syncMenuItems(modelContext)
         await syncPromotions(modelContext)
+        await syncPromotionBundleItems(modelContext)
         await syncPurchaseOrders(modelContext)
         await syncDeliveryPrices(modelContext)
         await syncPrinters(modelContext)
         await syncPrintRoutingRules(modelContext)
+        await syncReceiptTemplates(modelContext)
         await syncCustomers(modelContext)
         await syncGiftCards(modelContext)
         await syncLoyaltyTransactions(modelContext)
+        await syncTaxRates(modelContext)
+        await syncCurrencyExchangeRates(modelContext)
+        await syncExpenses(modelContext)
+        await syncRefundTransactions(modelContext)
 
-        await pullRestaurantTables(modelContext)
-        await pullMenuItemsFromSupabase(modelContext)
-        await pullPromotionsFromSupabase(modelContext)
-        await pullCustomerOrders(modelContext)
-        await pullActiveSessions(modelContext)
-        await syncServiceRequests()
-        await pullCustomersFromSupabase(modelContext)
-        await pullGiftCardsFromSupabase(modelContext)
-        await pullLoyaltyTransactionsFromSupabase(modelContext)
+        // ─── Stage 2: Pulls (Concurrent using TaskGroup — parallel HTTP fetching) ───
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.pullCategoriesFromSupabase(modelContext) }
+            group.addTask { await self.pullModifierGroupsFromSupabase(modelContext) }
+            group.addTask { await self.pullModifiersFromSupabase(modelContext) }
+            group.addTask { await self.pullMenuItemModifierGroupsFromSupabase(modelContext) }
+            group.addTask { await self.pullBranchesFromSupabase(modelContext) }
+            group.addTask { await self.pullSuppliersFromSupabase(modelContext) }
+            group.addTask { await self.pullInventoryItemsFromSupabase(modelContext) }
+            group.addTask { await self.pullMenuItemsFromSupabase(modelContext) }
+            group.addTask { await self.pullPromotionsFromSupabase(modelContext) }
+            group.addTask { await self.pullPromotionBundleItemsFromSupabase(modelContext) }
+            group.addTask { await self.pullRestaurantTables(modelContext) }
+            group.addTask { await self.pullRestaurantWallsFromSupabase(modelContext) }
+            group.addTask { await self.pullTableLayoutPresetsFromSupabase(modelContext) }
+            group.addTask { await self.pullEmployees(modelContext) }
+            group.addTask { await self.pullEmployeeShifts(modelContext) }
+            group.addTask { await self.pullCustomerOrders(modelContext) }
+            group.addTask { await self.pullCompletedOrdersAndPayments(modelContext) }
+            group.addTask { await self.pullActiveSessions(modelContext) }
+            group.addTask { await self.pullRegisterSessions(modelContext) }
+            group.addTask { await self.pullCashMovements(modelContext) }
+            group.addTask { await self.pullShiftReportsFromSupabase(modelContext) }
+            group.addTask { await self.syncServiceRequests() }
+            group.addTask { await self.pullCustomersFromSupabase(modelContext) }
+            group.addTask { await self.pullGiftCardsFromSupabase(modelContext) }
+            group.addTask { await self.pullLoyaltyTransactionsFromSupabase(modelContext) }
+            group.addTask { await self.pullTaxRatesFromSupabase(modelContext) }
+            group.addTask { await self.pullCurrencyExchangeRatesFromSupabase(modelContext) }
+            group.addTask { await self.pullRecipesFromSupabase(modelContext) }
+            group.addTask { await self.pullExpensesFromSupabase(modelContext) }
+            group.addTask { await self.pullRefundTransactionsFromSupabase(modelContext) }
+            group.addTask { await self.pullOrderTaxLinesFromSupabase(modelContext) }
+            group.addTask { await self.pullTipsFromSupabase(modelContext) }
+            group.addTask { await self.pullOrderItemModifiersFromSupabase(modelContext) }
+            group.addTask { await self.pullUsersFromSupabase(modelContext) }
+            group.addTask { await self.pullReceiptTemplatesFromSupabase(modelContext) }
+        }
+
         await checkForDelayedOrders(modelContext: modelContext)
 
         let isStillConnected = await NetworkManager.shared.isConnected()
@@ -205,6 +246,20 @@ extension SyncEngine {
             if completedSuccessfully {
                 self.lastSyncedAt = Date()
                 self.isFirstSync = false
+                // Enterprise Alert: connection restored after previous failure
+                if self.consecutiveSyncFailures > 0 {
+                    self.alertConnectionRestored()
+                }
+                self.consecutiveSyncFailures = 0
+            } else if isStillConnected {
+                // Enterprise Alert: sync error
+                self.consecutiveSyncFailures += 1
+                self.alertSyncFailed(error: NSError(domain: "SyncEngine", code: -1, userInfo: [NSLocalizedDescriptionKey: "Data synchronization encountered errors"]), attempt: self.consecutiveSyncFailures)
+            } else {
+                // Enterprise Alert: offline
+                if self.syncStatus != .offline {
+                    self.alertWentOffline()
+                }
             }
         }
         #if DEBUG
@@ -237,6 +292,22 @@ extension SyncEngine {
             if try modelContext.fetchCount(FetchDescriptor<Customer>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
             if try modelContext.fetchCount(FetchDescriptor<GiftCard>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
             if try modelContext.fetchCount(FetchDescriptor<LoyaltyTransaction>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            // Previously missing models — added for complete sync coverage
+            if try modelContext.fetchCount(FetchDescriptor<Expense>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<Supplier>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<TaxRate>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<Recipe>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<ShiftReport>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<RefundTransaction>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<OrderTaxLine>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<Tip>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<RestaurantWall>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<ReceiptTemplate>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<TableLayoutPreset>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<CurrencyExchangeRate>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<User>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<OrderItemModifier>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
+            if try modelContext.fetchCount(FetchDescriptor<PromotionBundleItem>(predicate: #Predicate { !$0.isSynced })) > 0 { return true }
             return false
         } catch {
             encounteredSyncError = true

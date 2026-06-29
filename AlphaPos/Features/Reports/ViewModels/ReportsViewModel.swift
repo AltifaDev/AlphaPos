@@ -225,7 +225,7 @@ final class ReportsViewModel {
         let end = effectiveEndDate
 
         let filtered = orders.filter {
-            !$0.isDeleted && $0.status != "cancelled" &&
+            !$0.isDeleted && $0.status == "completed" &&
             $0.createdAt >= start && $0.createdAt < end
         }
 
@@ -256,8 +256,9 @@ final class ReportsViewModel {
         }
         var methodMap: [String: (amount: Double, count: Int)] = [:]
         for payment in relevantPayments {
-            let existing = methodMap[payment.paymentMethod] ?? (0, 0)
-            methodMap[payment.paymentMethod] = (existing.amount + payment.amount, existing.count + 1)
+            let normalizedMethod = payment.paymentMethod.lowercased().replacingOccurrences(of: " ", with: "_")
+            let existing = methodMap[normalizedMethod] ?? (0, 0)
+            methodMap[normalizedMethod] = (existing.amount + payment.amount, existing.count + 1)
         }
         paymentBreakdown = methodMap.map { key, value in
             PaymentMethodPoint(method: key, amount: value.amount, count: value.count)
@@ -274,7 +275,10 @@ final class ReportsViewModel {
 
         // Find the most recent session in the period
         let relevantSessions = sessions.filter {
-            !$0.isDeleted && $0.openedAt >= start && $0.openedAt < end
+            !$0.isDeleted && (
+                ($0.openedAt >= start && $0.openedAt < end) ||
+                ($0.closedAt != nil && $0.closedAt! >= start && $0.closedAt! < end)
+            )
         }.sorted { $0.openedAt > $1.openedAt }
 
         guard let session = relevantSessions.first else {
@@ -295,10 +299,11 @@ final class ReportsViewModel {
         totalCashOut = sessionMovements.filter { $0.movementType == "cash_out" || $0.movementType == "paid_out" }.reduce(0.0) { $0 + $1.amount }
 
         // Cash sales in the period
+        let sessionEnd = session.closedAt ?? Date()
         let periodPayments = payments.filter {
             !$0.isDeleted && $0.status == "completed" &&
-            $0.paymentMethod == "cash" &&
-            $0.paidAt >= start && $0.paidAt < end
+            $0.paymentMethod.lowercased().replacingOccurrences(of: " ", with: "_") == "cash" &&
+            $0.paidAt >= session.openedAt && $0.paidAt < sessionEnd
         }
         totalCashSales = periodPayments.reduce(0.0) { $0 + $1.amount }
 
@@ -321,7 +326,7 @@ final class ReportsViewModel {
         let end = effectiveEndDate
 
         let filteredOrders = orders.filter {
-            !$0.isDeleted && $0.status != "cancelled" &&
+            !$0.isDeleted && $0.status == "completed" &&
             $0.createdAt >= start && $0.createdAt < end
         }
 
@@ -356,7 +361,7 @@ final class ReportsViewModel {
         let end = effectiveEndDate
 
         let filteredOrders = orders.filter {
-            !$0.isDeleted && $0.status != "cancelled" &&
+            !$0.isDeleted && $0.status == "completed" &&
             $0.createdAt >= start && $0.createdAt < end
         }
 

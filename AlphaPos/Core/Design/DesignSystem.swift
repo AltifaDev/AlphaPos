@@ -82,34 +82,26 @@ extension Color {
         return AppTheme(rawValue: saved) ?? .dark
     }
 
-    /// Dynamic color helper resolving light/dark hex using native platform providers
     static func resolveColor(lightHex: String, darkHex: String) -> Color {
-        #if os(iOS)
-        return Color(UIColor { traitCollection in
-            let theme = currentTheme
-            if theme == .light {
-                return UIColor(hex: lightHex)
-            } else if theme == .dark {
-                return UIColor(hex: darkHex)
-            } else {
+        let theme = currentTheme
+        if theme == .light {
+            return Color(hex: lightHex)
+        } else if theme == .dark {
+            return Color(hex: darkHex)
+        } else {
+            #if os(iOS)
+            return Color(UIColor { traitCollection in
                 return traitCollection.userInterfaceStyle == .light ? UIColor(hex: lightHex) : UIColor(hex: darkHex)
-            }
-        })
-        #elseif os(macOS)
-        return Color(NSColor(name: nil) { appearance in
-            let theme = currentTheme
-            if theme == .light {
-                return NSColor(hex: lightHex)
-            } else if theme == .dark {
-                return NSColor(hex: darkHex)
-            } else {
+            })
+            #elseif os(macOS)
+            return Color(NSColor(name: nil) { appearance in
                 let isDark = appearance.name.rawValue.contains("Dark")
                 return isDark ? NSColor(hex: darkHex) : NSColor(hex: lightHex)
-            }
-        })
-        #else
-        return currentTheme == .light ? Color(hex: lightHex) : Color(hex: darkHex)
-        #endif
+            })
+            #else
+            return Color(hex: darkHex)
+            #endif
+        }
     }
 
     // ── Backgrounds ──────────────────────────────────────────────────────────

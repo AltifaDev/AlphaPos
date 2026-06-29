@@ -18,6 +18,10 @@ struct POSView: View {
     @Binding var columnVisibility: NavigationSplitViewVisibility
 
     @AppStorage("enable_table_system") private var enableTableSystem = true
+    
+    @AppStorage("payment_method_cash_enabled") private var cashEnabled = true
+    @AppStorage("payment_method_card_enabled") private var cardEnabled = true
+    @AppStorage("payment_method_qr_enabled") private var qrEnabled = true
 
     @State private var viewModel = POSViewModel()
     @State private var showNoActiveShiftAlert = false
@@ -144,32 +148,63 @@ struct POSView: View {
         }
     }
 
-    private func effectiveTaxRate(for item: OrderItem) -> Double {
-        item.menuItem?.taxRate ?? (UserDefaults.standard.object(forKey: "store_tax_rate") as? Double ?? 7.0)
-    }
-
-    private func isTaxInclusive(for item: OrderItem) -> Bool {
-        item.menuItem?.isTaxInclusive ?? true
+    private func getTaxRateAndInclusion(for item: MenuItem?) -> (rate: Double, isInclusive: Bool) {
+        guard UserDefaults.standard.bool(forKey: "enable_tax") else {
+            return (0.0, true)
+        }
+        guard let item = item else {
+            let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
+            let globalTaxType = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
+            return (globalTaxRate, globalTaxType == "inclusive")
+        }
+        let priceBasis = UserDefaults.standard.string(forKey: "tax_price_basis") ?? "itemDefault"
+        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
+        let globalTaxType = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
+        
+        switch priceBasis {
+        case "forceInclusive":
+            return (globalTaxRate, true)
+        case "forceExclusive":
+            return (globalTaxRate, false)
+        case "itemDefault":
+            let rate = item.taxRate
+            let isInclusive = item.isTaxInclusive ?? (globalTaxType == "inclusive")
+            return (rate, isInclusive)
+        default:
+            return (item.taxRate, item.isTaxInclusive ?? (globalTaxType == "inclusive"))
+        }
     }
 
     private var sessionOrderedTax: Double {
+        guard UserDefaults.standard.bool(forKey: "enable_tax") else {
+            return 0.0
+        }
         let rawItems = sessionOrdersForDisplay.flatMap { $0.items }.filter { !$0.isDeleted }
         var totalTax = 0.0
         for item in rawItems {
             let modifierCost = item.modifiers.reduce(0.0) { $0 + $1.price }
             let lineTotal = (item.unitPrice + modifierCost) * Double(item.quantity)
-            let taxRate = effectiveTaxRate(for: item)
-            if isTaxInclusive(for: item) {
-                totalTax += lineTotal * (taxRate / (100 + taxRate))
+            let (taxRate, isInclusive) = getTaxRateAndInclusion(for: item.menuItem)
+            
+            if isInclusive {
+                totalTax += lineTotal * (taxRate / (100.0 + taxRate))
             } else {
-                totalTax += lineTotal * (taxRate / 100)
+                totalTax += lineTotal * (taxRate / 100.0)
             }
         }
-        return totalTax
+        
+        let serviceChargeTaxable = UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true
+        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
+        let serviceChargeTax = serviceChargeTaxable ? sessionOrderedServiceCharge * (globalTaxRate / 100.0) : 0.0
+        return totalTax + serviceChargeTax
     }
 
     private var sessionOrderedServiceCharge: Double {
-        sessionOrderedSubtotal * 0.10
+        guard UserDefaults.standard.bool(forKey: "enable_service_charge") else {
+            return 0.0
+        }
+        let serviceChargeRate = UserDefaults.standard.object(forKey: "store_service_charge_rate") as? Double ?? 10.0
+        return sessionOrderedSubtotal * (serviceChargeRate / 100.0)
     }
 
     private var sessionOrderedDiscount: Double {
@@ -177,19 +212,28 @@ struct POSView: View {
     }
 
     private var sessionOrderedTotal: Double {
+        let taxEnabled = UserDefaults.standard.bool(forKey: "enable_tax")
+        guard taxEnabled else {
+            return max(0, sessionOrderedSubtotal + sessionOrderedServiceCharge - sessionOrderedDiscount)
+        }
         let rawItems = sessionOrdersForDisplay.flatMap { $0.items }.filter { !$0.isDeleted }
         var totalAmount = 0.0
         for item in rawItems {
             let modifierCost = item.modifiers.reduce(0.0) { $0 + $1.price }
             let lineTotal = (item.unitPrice + modifierCost) * Double(item.quantity)
-            if isTaxInclusive(for: item) {
+            let (taxRate, isInclusive) = getTaxRateAndInclusion(for: item.menuItem)
+            
+            if isInclusive {
                 totalAmount += lineTotal
             } else {
-                let taxRate = effectiveTaxRate(for: item)
-                totalAmount += lineTotal * (1.0 + taxRate / 100)
+                totalAmount += lineTotal * (1.0 + taxRate / 100.0)
             }
         }
-        return max(0, totalAmount + sessionOrderedServiceCharge - sessionOrderedDiscount)
+        
+        let serviceChargeTaxable = UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true
+        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
+        let serviceChargeTax = serviceChargeTaxable ? sessionOrderedServiceCharge * (globalTaxRate / 100.0) : 0.0
+        return max(0, totalAmount + sessionOrderedServiceCharge + serviceChargeTax - sessionOrderedDiscount)
     }
 
     private var displaySubtotal: Double {
@@ -244,8 +288,9 @@ struct POSView: View {
     private func completeCheckout(methodName: String) {
         guard let session = activeSession else { return }
 
+        var printOrders: [Order] = []
         var ordersToPay: [Order] = []
-        // 1. Create payment records for any unpaid orders in the session and mark them as completed
+        // 1. Create payment records for any unpaid orders in the session and mark them completed
         for order in session.orders {
             if order.status == "preparing" || order.status == "ready" {
                 order.status = "completed"
@@ -297,6 +342,15 @@ struct POSView: View {
 
         if let firstOrder = ordersToPay.first {
             completedOrderForReceipt = firstOrder
+        }
+        // Print receipt for every paid order in this session (parallel)
+        let capturedOrders = ordersToPay
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                for order in capturedOrders {
+                    group.addTask { await PrintService.shared.dispatchReceipt(order) }
+                }
+            }
         }
 
         // 4. Return to Table view by clearing activeSession
@@ -389,7 +443,8 @@ struct POSView: View {
 
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
-            await PrintService.shared.dispatchAll(order)
+            // Split checkout path — this is a payment confirmation (not send-to-kitchen)
+            await PrintService.shared.dispatchReceipt(order)
         }
 
         completedOrderForReceipt = order
@@ -467,9 +522,15 @@ struct POSView: View {
             } else if enableTableSystem && activeSession == nil {
                 tableRequiredState
             } else {
-                HStack(spacing: 0) {
-                    menuPanel
-                    cartPanel
+                VStack(spacing: 0) {
+                    if let activeShift = activeRegisterSessions.first, isShiftStale(activeShift) {
+                        staleShiftWarningBanner(activeShift)
+                    }
+                    
+                    HStack(spacing: 0) {
+                        menuPanel
+                        cartPanel
+                    }
                 }
             }
 
@@ -605,7 +666,7 @@ struct POSView: View {
                 staleSessionToClose = nil
                 showStartShiftSheet = true
             }, onCancel: {
-                selectedTab = .tables
+                // Stay on current page; warning banner remains visible
             })
         }
         .sheet(isPresented: $showSplitPayment) {
@@ -620,17 +681,8 @@ struct POSView: View {
                 animateItems = true
             }
             
-            // Check for stale/overnight shift first
-            if let activeShift = activeRegisterSessions.first {
-                let hoursOpen = Calendar.current.dateComponents([.hour], from: activeShift.openedAt, to: Date()).hour ?? 0
-                let isDifferentDay = !Calendar.current.isDate(activeShift.openedAt, inSameDayAs: Date())
-                
-                if isDifferentDay || hoursOpen >= 16 {
-                    staleSessionToClose = activeShift
-                    showStaleShiftCloseSheet = true
-                }
-            } else {
-                // No active shift, prompt to start a new one
+            // Prompt to start a new shift only if no active shift exists
+            if activeRegisterSessions.isEmpty {
                 showStartShiftSheet = true
             }
         }
@@ -1344,59 +1396,65 @@ struct POSView: View {
                     VStack(spacing: 8) {
                         HStack(spacing: 8) {
                             // 1. Cash Button
-                            Button(action: { verifyShiftAndExecute { activePayment = .cash } }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "banknote.fill")
-                                        .font(.system(size: 13))
-                                    Text("pos_cash".t)
-                                        .font(.system(size: 13, weight: .bold))
+                            if cashEnabled {
+                                Button(action: { verifyShiftAndExecute { activePayment = .cash } }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "banknote.fill")
+                                            .font(.system(size: 13))
+                                        Text("pos_cash".t)
+                                            .font(.system(size: 13, weight: .bold))
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 14)
+                                    .background(Color.appSurfaceHigh)
+                                    .foregroundColor(.textPrimary)
+                                    .cornerRadius(APRadius.md)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: APRadius.md)
+                                            .stroke(Color.appBorderSubtle, lineWidth: 1)
+                                    )
                                 }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(Color.appSurfaceHigh)
-                                .foregroundColor(.textPrimary)
-                                .cornerRadius(APRadius.md)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: APRadius.md)
-                                        .stroke(Color.appBorderSubtle, lineWidth: 1)
-                                )
                             }
 
                             // 2. QR Code Button
-                            Button(action: { verifyShiftAndExecute { activePayment = .qrCode } }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "qrcode")
-                                        .font(.system(size: 13))
-                                    Text("pos_qr_code".t)
-                                        .font(.system(size: 13, weight: .bold))
+                            if qrEnabled {
+                                Button(action: { verifyShiftAndExecute { activePayment = .qrCode } }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "qrcode")
+                                            .font(.system(size: 13))
+                                        Text("pos_qr_code".t)
+                                            .font(.system(size: 13, weight: .bold))
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 14)
+                                    .background(Color.appTeal)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(APRadius.md)
+                                    .shadow(color: Color.appTeal.opacity(0.3), radius: 8, x: 0, y: 0)
                                 }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(Color.appTeal)
-                                .foregroundColor(.white)
-                                .cornerRadius(APRadius.md)
-                                .shadow(color: Color.appTeal.opacity(0.3), radius: 8, x: 0, y: 0)
                             }
                         }
 
                         HStack(spacing: 8) {
                             // 3. Credit Card Button
-                            Button(action: { verifyShiftAndExecute { activePayment = .creditCard } }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "creditcard.fill")
-                                        .font(.system(size: 13))
-                                    Text("pos_card".t)
-                                        .font(.system(size: 13, weight: .bold))
+                            if cardEnabled {
+                                Button(action: { verifyShiftAndExecute { activePayment = .creditCard } }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "creditcard.fill")
+                                            .font(.system(size: 13))
+                                        Text("pos_card".t)
+                                            .font(.system(size: 13, weight: .bold))
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 14)
+                                    .background(Color.appSurfaceHigh)
+                                    .foregroundColor(.textPrimary)
+                                    .cornerRadius(APRadius.md)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: APRadius.md)
+                                            .stroke(Color.appBorderSubtle, lineWidth: 1)
+                                    )
                                 }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(Color.appSurfaceHigh)
-                                .foregroundColor(.textPrimary)
-                                .cornerRadius(APRadius.md)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: APRadius.md)
-                                        .stroke(Color.appBorderSubtle, lineWidth: 1)
-                                )
                             }
 
                             // 4. Split Pay Button
@@ -1477,9 +1535,66 @@ struct POSView: View {
         if activeRegisterSessions.isEmpty {
             showStartShiftSheet = true
             APHaptic.trigger()
+        } else if let activeShift = activeRegisterSessions.first, isShiftStale(activeShift) {
+            staleSessionToClose = activeShift
+            APHaptic.trigger()
         } else {
             action()
         }
+    }
+
+    private func isShiftStale(_ session: RegisterSession) -> Bool {
+        let hoursOpen = Calendar.current.dateComponents([.hour], from: session.openedAt, to: Date()).hour ?? 0
+        return hoursOpen >= 24
+    }
+
+    private func staleShiftWarningBanner(_ session: RegisterSession) -> some View {
+        HStack(spacing: APSpacing.md) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.appAmber)
+                .font(.system(size: 16, weight: .bold))
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(lm.currentLanguage == .thai ? "ตรวจพบกะทำงานเก่าค้างข้ามคืน" : "Overnight Shift Detected")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.textPrimary)
+                Text(lm.currentLanguage == .thai ? "กรุณาเคลียร์ยอดและปิดกะเก่าก่อนทำรายการขายถัดไป" : "Please reconcile and close the past shift before checkout.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.textSecondary)
+            }
+            
+            Spacer()
+            
+            Button {
+                staleSessionToClose = session
+                APHaptic.trigger()
+            } label: {
+                Text(lm.currentLanguage == .thai ? "เคลียร์ยอดกะเก่า" : "Reconcile")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.appAmber, Color.appAmber.opacity(0.85)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(APRadius.sm)
+                    .shadow(color: Color.appAmber.opacity(0.2), radius: 4, y: 2)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, APSpacing.md)
+        .padding(.vertical, 10)
+        .background(Color.appSurface)
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(Color.appBorderSubtle),
+            alignment: .bottom
+        )
     }
 }
 

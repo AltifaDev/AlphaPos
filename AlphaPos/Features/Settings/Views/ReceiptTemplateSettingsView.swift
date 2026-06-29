@@ -45,6 +45,8 @@ struct ReceiptTemplateSettingsView: View {
     @AppStorage("store_branch_code") private var storeBranchCode = "00000"
     @AppStorage("store_logo_path")   private var storeLogoPath   = ""
     @AppStorage("promptpay_number")  private var promptPayNumber = ""
+    @AppStorage("enable_tax")        private var enableTax       = true
+    @AppStorage("enable_service_charge") private var enableServiceCharge = true
 
     // ── Computed ──────────────────────────────────────────────────────────────
     private var templatesForType: [ReceiptTemplate] {
@@ -123,6 +125,17 @@ struct ReceiptTemplateSettingsView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle("receipt_templates_title".t)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button {
+                    saveTemplate()
+                } label: {
+                    Text(isCreatingNew ? "Create" : "Save")
+                        .fontWeight(.bold)
+                }
+                .disabled(name.isEmpty)
+            }
+        }
         .onAppear {
             autoSelectTemplate()
         }
@@ -746,6 +759,8 @@ extension View {
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct ReceiptLivePreview: View {
+    @AppStorage("enable_tax") private var enableTax = true
+    @AppStorage("enable_service_charge") private var enableServiceCharge = true
 
     // Store info
     let storeName:         String
@@ -1193,10 +1208,15 @@ struct ReceiptLivePreview: View {
         monoDiv
 
         // ── Totals ──────────────────────────────────────────────────────
+        let previewSubtotal = 780.00
+        let previewSC = (showServiceCharge && enableServiceCharge) ? 78.00 : 0.00
+        let previewDiscount = -39.00
+        let previewTotal = previewSubtotal + previewSC + previewDiscount
+        
         Group {
             totalRow("SUBTOTAL", value: "780.00")
-            if showServiceCharge { totalRow("SERVICE CHARGE (10%)", value: "78.00") }
-            totalRow("7% VAT (INCLUSIVE)", value: "59.36")
+            if showServiceCharge && enableServiceCharge { totalRow("SERVICE CHARGE (10%)", value: "78.00") }
+            if enableTax { totalRow("7% VAT (INCLUSIVE)", value: "59.36") }
             totalRow("DISCOUNT (PROMO)", value: "-39.00")
         }
         .font(.system(size: 8, design: .monospaced)).foregroundColor(.black)
@@ -1206,7 +1226,7 @@ struct ReceiptLivePreview: View {
         HStack {
             Text("GRAND TOTAL").fontWeight(.black)
             Spacer()
-            Text("฿878.00").fontWeight(.black)
+            Text(String(format: "฿%.2f", previewTotal)).fontWeight(.black)
         }
         .font(.system(.caption, design: .monospaced)).foregroundColor(.black)
 

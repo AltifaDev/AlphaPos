@@ -316,6 +316,27 @@ struct StartShiftRegisterSheet: View {
         let amount = Double(openingCashString) ?? 0.0
         let userId = users.first?.id ?? UUID()
         
+        // Auto-close any other active sessions to prevent duplicate open shifts
+        let descriptor = FetchDescriptor<RegisterSession>(
+            predicate: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted }
+        )
+        if let activeSessions = try? modelContext.fetch(descriptor) {
+            for session in activeSessions {
+                session.closedAt = Date()
+                session.expectedClosingCash = session.openingCash
+                session.actualClosingCash = session.openingCash
+                session.cashDiscrepancy = 0.0
+                session.closedByUserId = userId
+                session.isSynced = false
+                session.updatedAt = Date()
+                
+                let sessionToUpload = session
+                Task {
+                    _ = try? await NetworkManager.shared.uploadRegisterSession(sessionToUpload)
+                }
+            }
+        }
+        
         let newSession = RegisterSession(
             openedByUserId: userId,
             openedAt: Date(),
@@ -329,8 +350,16 @@ struct StartShiftRegisterSheet: View {
         modelContext.insert(newSession)
         try? modelContext.save()
         
+        // ── Auto-print Open Shift Slip ─────────────────────────────────
+        // พิมพ์อัตโนมัติเฉพาะเมื่อ "print_open_shift" = true ใน Settings
+        let capturedSession  = newSession
+        let capturedCashier  = users.first?.username ?? ""
         Task {
             _ = try? await NetworkManager.shared.uploadRegisterSession(newSession)
+            await PrintService.shared.printOpenShift(
+                session: capturedSession,
+                cashierName: capturedCashier
+            )
         }
         
         // Brief delay for feedback

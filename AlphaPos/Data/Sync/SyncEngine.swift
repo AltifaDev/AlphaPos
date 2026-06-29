@@ -70,8 +70,9 @@ final class SyncEngine: NSObject, ObservableObject {
 
     var notifiedRequestIds = Set<String>()
     var isFirstSync = true
+    var consecutiveSyncFailures = 0
 
-    // MARK: - Realtime WebSocket Stored Properties
+    // MARK: - Realtime WebSocket
     // Declared here (class body) so all extension files can access them.
     var webSocketTask: URLSessionWebSocketTask?
     var realtimeListenTask: Task<Void, Never>?
@@ -141,12 +142,24 @@ final class SyncEngine: NSObject, ObservableObject {
         return f
     }()
 
+    static let fallbackFormatters: [DateFormatter] = {
+        let formats = [
+            "yyyy-MM-dd HH:mm:ssZ",
+            "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd HH:mm:ss.SSSZ",
+            "yyyy-MM-dd HH:mm:ss"
+        ]
+        return formats.map { format in
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "en_US_POSIX")
+            df.timeZone = TimeZone(secondsFromGMT: 0)
+            df.dateFormat = format
+            return df
+        }
+    }()
+
     func parseISO8601Date(_ value: Any?, fallback defaultValue: Date = Date()) -> Date {
-        guard let stringValue = value as? String else { return defaultValue }
-        let cleanStr = stringValue.replacingOccurrences(of: " ", with: "T")
-        if let d = SyncEngine.iso8601WithFractionals.date(from: cleanStr) { return d }
-        if let d = SyncEngine.iso8601Standard.date(from: cleanStr) { return d }
-        return defaultValue
+        return parseISO8601DateOptional(value) ?? defaultValue
     }
 
     func parseISO8601DateOptional(_ value: Any?) -> Date? {
@@ -154,6 +167,12 @@ final class SyncEngine: NSObject, ObservableObject {
         let cleanStr = stringValue.replacingOccurrences(of: " ", with: "T")
         if let d = SyncEngine.iso8601WithFractionals.date(from: cleanStr) { return d }
         if let d = SyncEngine.iso8601Standard.date(from: cleanStr) { return d }
+        
+        for df in SyncEngine.fallbackFormatters {
+            let input = df.dateFormat.contains("'T'") ? cleanStr : stringValue
+            if let d = df.date(from: input) { return d }
+        }
+        
         return nil
     }
 

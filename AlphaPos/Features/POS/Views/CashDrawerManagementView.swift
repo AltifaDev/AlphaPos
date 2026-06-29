@@ -14,6 +14,7 @@ struct CashDrawerManagementView: View {
     @Query(sort: \CashMovement.updatedAt, order: .reverse) private var allCashMovements: [CashMovement]
     @Query(sort: \User.username) private var users: [User]
     @Query private var employees: [Employee]
+    @Query private var allRefunds: [RefundTransaction]
     
     @State private var openingCashString = "1000"
     @State private var openingNotes = ""
@@ -70,6 +71,41 @@ struct CashDrawerManagementView: View {
                 (movement.movementType == "cash_out" || movement.movementType == "paid_out")
             }
             .reduce(0.0) { $0 + $1.amount }
+    }
+    
+    private var cardSalesAmount: Double {
+        guard let session = activeSession else { return 0.0 }
+        return allPayments
+            .filter { payment in
+                !payment.isDeleted &&
+                payment.status == "completed" &&
+                ["card", "credit_card", "debit_card"].contains(payment.paymentMethod.lowercased()) &&
+                payment.paidAt >= session.openedAt
+            }
+            .reduce(0.0) { $0 + $1.amount }
+    }
+    
+    private var qrSalesAmount: Double {
+        guard let session = activeSession else { return 0.0 }
+        return allPayments
+            .filter { payment in
+                !payment.isDeleted &&
+                payment.status == "completed" &&
+                ["qr", "promptpay", "transfer", "bank_transfer"].contains(payment.paymentMethod.lowercased()) &&
+                payment.paidAt >= session.openedAt
+            }
+            .reduce(0.0) { $0 + $1.amount }
+    }
+
+    private var refundsAmount: Double {
+        guard let session = activeSession else { return 0.0 }
+        return allRefunds
+            .filter { refund in
+                !refund.isDeleted &&
+                refund.status == "completed" &&
+                refund.updatedAt >= session.openedAt
+            }
+            .reduce(0.0) { $0 + $1.refundAmount }
     }
     
     private var expectedCash: Double {
@@ -619,8 +655,29 @@ struct CashDrawerManagementView: View {
     
     private func openRegisterSession() {
         let amount = Double(openingCashString) ?? 0.0
-        // Use the first active user; do not fall back to random UUID — that breaks FK in Supabase
-        guard let userId = users.first?.id else { return }
+        // Use the first active user; fall back to a random UUID if not available to prevent silent failure on iPad
+        let userId = users.first?.id ?? UUID()
+
+        // Auto-close any other active sessions to prevent duplicate open shifts
+        let descriptor = FetchDescriptor<RegisterSession>(
+            predicate: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted }
+        )
+        if let activeSessions = try? modelContext.fetch(descriptor) {
+            for session in activeSessions {
+                session.closedAt = Date()
+                session.expectedClosingCash = session.openingCash
+                session.actualClosingCash = session.openingCash
+                session.cashDiscrepancy = 0.0
+                session.closedByUserId = userId
+                session.isSynced = false
+                session.updatedAt = Date()
+                
+                let sessionToUpload = session
+                Task {
+                    _ = try? await NetworkManager.shared.uploadRegisterSession(sessionToUpload)
+                }
+            }
+        }
 
         let newSession = RegisterSession(
             openedByUserId: userId,
@@ -683,11 +740,11 @@ struct CashDrawerManagementView: View {
         let report = ShiftReport(
             registerSession: session,
             reportType: "Z",
-            grossSales: cashSalesAmount, // Simplified for demonstration
-            netSales: cashSalesAmount,
+            grossSales: cashSalesAmount + cardSalesAmount + qrSalesAmount,
+            netSales: cashSalesAmount + cardSalesAmount + qrSalesAmount - refundsAmount,
             totalTax: 0,
             totalDiscounts: 0,
-            totalRefunds: 0,
+            totalRefunds: refundsAmount,
             cashExpected: expectedCash,
             cashActual: actual,
             overShort: discrepancy,
@@ -701,6 +758,29 @@ struct CashDrawerManagementView: View {
         zReportSession = session
         APHaptic.trigger()
         
+        // ── Auto-print Z-Report ────────────────────────────────────────
+        // พิมพ์อัตโนมัติเฉพาะเมื่อ "print_close_shift" = true ใน Settings
+        let capturedSession  = session
+        let capturedReport   = report
+        let capturedCashSales = cashSalesAmount
+        let capturedCardSales = cardSalesAmount
+        let capturedQRSales   = qrSalesAmount
+        let capturedRefunds   = refundsAmount
+        let capturedCashIn   = cashInAmount
+        let capturedCashOut  = cashOutAmount
+        Task {
+            await PrintService.shared.printZReport(
+                session:         capturedSession,
+                report:          capturedReport,
+                cashSales:       capturedCashSales,
+                cardSales:       capturedCardSales,
+                qrSales:         capturedQRSales,
+                totalRefunds:    capturedRefunds,
+                cashMovementsIn:  capturedCashIn,
+                cashMovementsOut: capturedCashOut
+            )
+        }
+
         Task {
             _ = try? await NetworkManager.shared.uploadRegisterSession(session)
             do {

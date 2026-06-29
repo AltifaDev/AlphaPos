@@ -140,13 +140,13 @@ struct AlphaPosApp: App {
         PrintService.shared.configure(modelContext: sharedModelContainer.mainContext)
         cleanupDuplicateSeedEmployees(sharedModelContainer.mainContext)
         
-        // Configure high-performance native URLCache for image caching
-        let cache = URLCache(
-            memoryCapacity: 50 * 1024 * 1024, // 50 MB
-            diskCapacity: 200 * 1024 * 1024,  // 200 MB
+        // Native URLCache setup for image caching (RAM 50MB, Disk 200MB)
+        let imageCache = URLCache(
+            memoryCapacity: 50 * 1024 * 1024,
+            diskCapacity: 200 * 1024 * 1024,
             diskPath: "supabase_product_images"
         )
-        URLCache.shared = cache
+        URLCache.shared = imageCache
     }
 
     private func cleanupDuplicateSeedEmployees(_ modelContext: ModelContext) {

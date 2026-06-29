@@ -9,6 +9,9 @@ struct PrinterSettingsView: View {
     @AppStorage("receipt_printer_enabled") private var receiptPrinterEnabled = true
     @AppStorage("kitchen_printer_enabled") private var kitchenPrinterEnabled = true
     @AppStorage("printer_ip") private var printerIP = "192.168.1.201"
+    // ── Shift auto-print toggles ──────────────────────────────────────────
+    @AppStorage("print_open_shift")  private var printOpenShift  = false
+    @AppStorage("print_close_shift") private var printCloseShift = true
     
     @Query(sort: \Printer.name) private var printersList: [Printer]
     @Query(sort: \Category.name) private var appCategories: [Category]
@@ -122,6 +125,67 @@ struct PrinterSettingsView: View {
                         .apCard()
                     }
                     .padding(.horizontal)
+
+                    // ── SECTION: SHIFT AUTO-PRINT ────────────────────────
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("SHIFT PRINTING")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.appAccent)
+                            .tracking(1.0)
+
+                        VStack(spacing: 0) {
+                            // Open Shift toggle
+                            HStack(spacing: 14) {
+                                Image(systemName: "lock.open.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.appTeal)
+                                    .frame(width: 32, height: 32)
+                                    .background(Color.appTeal.opacity(0.12))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Print Open Shift Slip")
+                                        .font(.body).foregroundColor(.textPrimary)
+                                    Text("Auto-print when shift starts")
+                                        .font(.caption).foregroundColor(.textSecondary)
+                                }
+                                Spacer()
+                                Toggle("", isOn: $printOpenShift)
+                                    .labelsHidden()
+                                    .tint(.appTeal)
+                            }
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 12)
+
+                            Divider().background(Color.appDivider).padding(.leading, 58)
+
+                            // Close Shift / Z-Report toggle
+                            HStack(spacing: 14) {
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.appRose)
+                                    .frame(width: 32, height: 32)
+                                    .background(Color.appRose.opacity(0.12))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Print Z-Report on Close Shift")
+                                        .font(.body).foregroundColor(.textPrimary)
+                                    Text("Auto-print Z-Report when shift ends")
+                                        .font(.caption).foregroundColor(.textSecondary)
+                                }
+                                Spacer()
+                                Toggle("", isOn: $printCloseShift)
+                                    .labelsHidden()
+                                    .tint(.appRose)
+                            }
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 12)
+                        }
+                        .apCard()
+                    }
+                    .padding(.horizontal)
                 }
                 .padding(.vertical)
             }
@@ -168,6 +232,7 @@ struct PrinterSettingsView: View {
         paperWidth: String,
         role: String,
         isActive: Bool,
+        emulation: String,
         selectedCategories: Set<String>
     ) {
         let printer: Printer
@@ -181,6 +246,7 @@ struct PrinterSettingsView: View {
             printer.paperWidth = paperWidth
             printer.role = role
             printer.isActive = isActive
+            printer.emulation = emulation
             printer.isSynced = false
             printer.updatedAt = Date()
         } else {
@@ -194,6 +260,7 @@ struct PrinterSettingsView: View {
                 status: "unknown",
                 role: role,
                 isActive: isActive,
+                emulation: emulation,
                 isSynced: false,
                 isDeleted: false,
                 updatedAt: Date()
@@ -264,7 +331,7 @@ struct PrinterSettingsView: View {
 struct PrinterConfigSheet: View {
     @Binding var isPresented: Bool
     var printerToEdit: Printer?
-    var onSave: (UUID?, String, String, String?, Int, String?, String, String, Bool, Set<String>) -> Void
+    var onSave: (UUID?, String, String, String?, Int, String?, String, String, Bool, String, Set<String>) -> Void
     var onDelete: ((UUID) -> Void)? = nil
     var appCategories: [Category]
     
@@ -276,10 +343,15 @@ struct PrinterConfigSheet: View {
     @State private var paperWidth: String = "80mm" // 80mm, 58mm, 40mm Sticker
     @State private var role: String = "kitchen" // receipt, kitchen, label
     @State private var isActive: Bool = true
+    @State private var emulation: String = "epson" // epson, star, generic, tspl
     @State private var selectedCategories = Set<String>()
     
     @State private var showingValidationAlert = false
     @State private var validationMessage = ""
+    
+    @State private var isTesting = false
+    @State private var showingTestResultAlert = false
+    @State private var testResultMessage = ""
     
     var body: some View {
         NavigationStack {
@@ -288,185 +360,10 @@ struct PrinterConfigSheet: View {
                 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        // ── SECTION: GENERAL SETTINGS ───────────────────────
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("PRINTER IDENTITY")
-                                .font(.caption)
-                                .fontWeight(.bold)
-                                .foregroundColor(.appAccent)
-                                .tracking(1.0)
-                            
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Printer Name")
-                                    .font(.caption)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.textSecondary)
-                                TextField("e.g. Kitchen Printer, Main Cashier", text: $name)
-                                    .textFieldStyle(PlainTextFieldStyle())
-                                    .padding()
-                                    .background(Color.appSurfaceHigh)
-                                    .foregroundColor(.textPrimary)
-                                    .cornerRadius(8)
-                            }
-                            
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Printer Role")
-                                    .font(.caption)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.textSecondary)
-                                Picker("Role", selection: $role) {
-                                    Text("Receipt (FOH)").tag("receipt")
-                                    Text("Kitchen (BOH)").tag("kitchen")
-                                    Text("Bar Station").tag("bar")
-                                    Text("Label Sticker").tag("label")
-                                }
-                                .pickerStyle(SegmentedPickerStyle())
-                            }
-                            
-                            Toggle("Printer Active Status", isOn: $isActive)
-                                .tint(.appAccent)
-                        }
-                        .apCard()
-                        
-                        // ── SECTION: CONNECTION SETTINGS ─────────────────────
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("CONNECTION INTERFACE")
-                                .font(.caption)
-                                .fontWeight(.bold)
-                                .foregroundColor(.appAccent)
-                                .tracking(1.0)
-                            
-                            Picker("Connection Type", selection: $connectionType) {
-                                Text("TCP/IP LAN").tag("network")
-                                Text("Bluetooth").tag("bluetooth")
-                                Text("USB direct").tag("usb")
-                            }
-                            .pickerStyle(SegmentedPickerStyle())
-                            
-                            if connectionType == "network" {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("IP Address")
-                                            .font(.caption)
-                                            .fontWeight(.bold)
-                                            .foregroundColor(.textSecondary)
-                                        TextField("192.168.1.X", text: $ipAddress)
-                                            .keyboardType(.numbersAndPunctuation)
-                                            .textFieldStyle(PlainTextFieldStyle())
-                                            .padding()
-                                            .background(Color.appSurfaceHigh)
-                                            .foregroundColor(.textPrimary)
-                                            .cornerRadius(8)
-                                    }
-                                    
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("Port")
-                                            .font(.caption)
-                                            .fontWeight(.bold)
-                                            .foregroundColor(.textSecondary)
-                                        TextField("9100", text: $portString)
-                                            .keyboardType(.numberPad)
-                                            .textFieldStyle(PlainTextFieldStyle())
-                                            .padding()
-                                            .background(Color.appSurfaceHigh)
-                                            .foregroundColor(.textPrimary)
-                                            .cornerRadius(8)
-                                    }
-                                }
-                            } else if connectionType == "bluetooth" {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("Bluetooth Accessory Name")
-                                        .font(.caption)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(.textSecondary)
-                                    TextField("e.g. Star TSP100-B101", text: $bluetoothName)
-                                        .textFieldStyle(PlainTextFieldStyle())
-                                        .padding()
-                                        .background(Color.appSurfaceHigh)
-                                        .foregroundColor(.textPrimary)
-                                        .cornerRadius(8)
-                                }
-                            } else {
-                                Text("Connect printer via USB-C or Lightning cable directly to the iPad. No additional networking parameters required.")
-                                    .font(.caption)
-                                    .foregroundColor(.textSecondary)
-                                    .padding(.top, 4)
-                            }
-                        }
-                        .apCard()
-                        
-                        // ── SECTION: MEDIA FORMAT ────────────────────────────
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("MEDIA SPECIFICATIONS")
-                                .font(.caption)
-                                .fontWeight(.bold)
-                                .foregroundColor(.appAccent)
-                                .tracking(1.0)
-                            
-                            Picker("Paper Width", selection: $paperWidth) {
-                                Text("80 mm Thermal").tag("80mm")
-                                Text("58 mm Thermal").tag("58mm")
-                                Text("40 mm Sticker").tag("40mm Sticker")
-                            }
-                            .pickerStyle(SegmentedPickerStyle())
-                        }
-                        .apCard()
-                        
-                        // ── SECTION: ROUTING RULES ───────────────────────────
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("CATEGORY ROUTING MAP")
-                                .font(.caption)
-                                .fontWeight(.bold)
-                                .foregroundColor(.appAccent)
-                                .tracking(1.0)
-                            
-                            Text("Map menu categories to this printer. If none are selected, all categories will default to printing here.")
-                                .font(.caption2)
-                                .foregroundColor(.textSecondary)
-                            
-                            if appCategories.isEmpty {
-                                Text("No categories registered in system database.")
-                                    .font(.caption)
-                                    .foregroundColor(.textSecondary)
-                                    .italic()
-                            } else {
-                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140))], alignment: .leading, spacing: 10) {
-                                    ForEach(appCategories) { category in
-                                        let slug = category.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-                                        let isSelected = selectedCategories.contains(slug)
-                                        Button(action: {
-                                            if isSelected {
-                                                selectedCategories.remove(slug)
-                                            } else {
-                                                selectedCategories.insert(slug)
-                                            }
-                                            APHaptic.trigger()
-                                        }) {
-                                            HStack {
-                                                Text(category.name)
-                                                    .font(.caption)
-                                                    .fontWeight(.semibold)
-                                                Spacer()
-                                                if isSelected {
-                                                    Image(systemName: "checkmark")
-                                                        .font(.caption2)
-                                                }
-                                            }
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 8)
-                                            .background(isSelected ? Color.appAccent : Color.appSurfaceHigh)
-                                            .foregroundColor(isSelected ? .white : .textPrimary)
-                                            .cornerRadius(6)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 6)
-                                                    .stroke(isSelected ? Color.clear : Color.appBorderSubtle, lineWidth: 1)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        .apCard()
+                        identitySection
+                        connectionSection
+                        mediaSection
+                        routingSection
                         
                         // ── ACTIONS ──────────────────────────────────────────
                         VStack(spacing: 12) {
@@ -474,6 +371,20 @@ struct PrinterConfigSheet: View {
                                 Text("Save Configuration")
                             }
                             .apGradientButton(gradient: APGradient.accent)
+                            
+                            Button(action: runTestPrint) {
+                                HStack {
+                                    if isTesting {
+                                        ProgressView()
+                                            .scaleEffect(0.8)
+                                            .padding(.trailing, 8)
+                                    }
+                                    Text(isTesting ? "Testing Connection..." : "Test Connection & Print")
+                                        .fontWeight(.bold)
+                                }
+                            }
+                            .disabled(isTesting)
+                            .padding(.vertical, 8)
                             
                             if let onDelete = onDelete, let printerId = printerToEdit?.id {
                                 Button(action: {
@@ -483,7 +394,7 @@ struct PrinterConfigSheet: View {
                                     Text("Delete Printer Connection")
                                         .foregroundColor(.appRose)
                                 }
-                                .padding(.vertical, 8)
+                                .padding(.vertical, 4)
                             }
                         }
                     }
@@ -497,6 +408,13 @@ struct PrinterConfigSheet: View {
                     Button("Cancel") { isPresented = false }
                         .foregroundColor(.textPrimary)
                 }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        validateAndSave()
+                    }
+                    .fontWeight(.bold)
+                    .foregroundColor(.appAccent)
+                }
             }
             .onAppear {
                 if let printer = printerToEdit {
@@ -508,6 +426,7 @@ struct PrinterConfigSheet: View {
                     paperWidth = printer.paperWidth
                     role = printer.role
                     isActive = printer.isActive
+                    emulation = printer.emulation
                     
                     selectedCategories = Set(printer.routingRules.filter { !$0.isDeleted }.compactMap { $0.categoryId })
                 }
@@ -517,6 +436,51 @@ struct PrinterConfigSheet: View {
             } message: {
                 Text(validationMessage)
             }
+            .alert(isTesting ? "Testing Connection" : "Connection Test Result", isPresented: $showingTestResultAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                ScrollView {
+                    Text(testResultMessage)
+                        .font(.system(.caption, design: .monospaced))
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .onChange(of: emulation) { oldValue, newValue in
+                if newValue == "generic" && connectionType == "usb" {
+                    connectionType = "network"
+                }
+            }
+        }
+    }
+    
+    private func runTestPrint() {
+        print("[Xcode Console] User tapped Test Connection & Print")
+        let portInt = Int(portString.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 9100
+        print("[Xcode Console] Configured inputs: connectionType=\(connectionType), ip=\(ipAddress), port=\(portInt), emulation=\(emulation), role=\(role)")
+        
+        let tempPrinter = Printer(
+            name: name.isEmpty ? "Test Printer" : name,
+            connectionType: connectionType,
+            ipAddress: ipAddress.isEmpty ? nil : ipAddress,
+            port: portInt,
+            bluetoothName: bluetoothName.isEmpty ? nil : bluetoothName,
+            paperWidth: paperWidth,
+            role: role,
+            isActive: isActive,
+            emulation: emulation
+        )
+        
+        print("[Xcode Console] Spawning print test task...")
+        isTesting = true
+        Task {
+            print("[Xcode Console] Executing PrintService.printTest...")
+            let result = await PrintService.shared.printTest(to: tempPrinter, previewType: role)
+            isTesting = false
+            print("[Xcode Console] PrintService.printTest finished. Success=\(result.success)")
+            testResultMessage = result.log.joined(separator: "\n")
+            showingTestResultAlert = true
+            print("[Xcode Console] Presenting test result alert.")
         }
     }
     
@@ -555,9 +519,272 @@ struct PrinterConfigSheet: View {
             paperWidth,
             role,
             isActive,
+            emulation,
             selectedCategories
         )
         isPresented = false
+    }
+}
+
+// ── EXTENSION: COMPILER OPTIMIZATIONS ───────────────────────────────────────
+extension PrinterConfigSheet {
+    @ViewBuilder
+    private var identitySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("PRINTER IDENTITY")
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.appAccent)
+                .tracking(1.0)
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Printer Brand / Emulation")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.textSecondary)
+                Picker("Emulation", selection: $emulation) {
+                    ForEach(PrinterBrand.allCases) { brand in
+                        Text(brand.displayName).tag(brand.rawValue)
+                    }
+                }
+                .pickerStyle(MenuPickerStyle())
+                .padding()
+                .background(Color.appSurfaceHigh)
+                .foregroundColor(.textPrimary)
+                .cornerRadius(8)
+            }
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Printer Name")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.textSecondary)
+                TextField("e.g. Kitchen Printer, Main Cashier", text: $name)
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .padding()
+                    .background(Color.appSurfaceHigh)
+                    .foregroundColor(.textPrimary)
+                    .cornerRadius(8)
+            }
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Printer Role")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.textSecondary)
+                Picker("Role", selection: $role) {
+                    Text("Receipt (FOH)").tag("receipt")
+                    Text("Kitchen (BOH)").tag("kitchen")
+                    Text("Bar Station").tag("bar")
+                    Text("Label Sticker").tag("label")
+                }
+                .pickerStyle(SegmentedPickerStyle())
+            }
+            
+            Toggle("Printer Active Status", isOn: $isActive)
+                .tint(.appAccent)
+        }
+        .apCard()
+    }
+    
+    @ViewBuilder
+    private var connectionSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("CONNECTION INTERFACE")
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.appAccent)
+                .tracking(1.0)
+            
+            if emulation == "generic" {
+                Picker("Connection Type", selection: $connectionType) {
+                    Text("TCP/IP LAN").tag("network")
+                    Text("Bluetooth").tag("bluetooth")
+                }
+                .pickerStyle(SegmentedPickerStyle())
+            } else {
+                Picker("Connection Type", selection: $connectionType) {
+                    Text("TCP/IP LAN").tag("network")
+                    Text("Bluetooth").tag("bluetooth")
+                    Text("USB direct").tag("usb")
+                }
+                .pickerStyle(SegmentedPickerStyle())
+            }
+            
+            if connectionType == "network" {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("IP Address")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.textSecondary)
+                        TextField("192.168.1.X", text: $ipAddress)
+                            .keyboardType(.numbersAndPunctuation)
+                            .textFieldStyle(PlainTextFieldStyle())
+                            .padding()
+                            .background(Color.appSurfaceHigh)
+                            .foregroundColor(.textPrimary)
+                            .cornerRadius(8)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Port")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.textSecondary)
+                        TextField("9100", text: $portString)
+                            .keyboardType(.numberPad)
+                            .textFieldStyle(PlainTextFieldStyle())
+                            .padding()
+                            .background(Color.appSurfaceHigh)
+                            .foregroundColor(.textPrimary)
+                            .cornerRadius(8)
+                    }
+                    
+                    Text("Recommended connection for local router setups. Ensure the printer and iPad are connected to the same local Wi-Fi router network.")
+                        .font(.caption2)
+                        .foregroundColor(.textSecondary)
+                        .padding(.top, 2)
+                }
+            } else if connectionType == "bluetooth" {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Bluetooth Accessory Name")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.textSecondary)
+                        TextField("e.g. Star TSP100-B101", text: $bluetoothName)
+                            .textFieldStyle(PlainTextFieldStyle())
+                            .padding()
+                            .background(Color.appSurfaceHigh)
+                            .foregroundColor(.textPrimary)
+                            .cornerRadius(8)
+                    }
+                    
+                    Text("Requires standard Bluetooth pairing inside iPad Settings first. Only MFi-certified Bluetooth printers are supported.")
+                        .font(.caption2)
+                        .foregroundColor(.textSecondary)
+                        .padding(.top, 2)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.appTeal)
+                        Text("MFi USB Direct Printing Enabled")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.appTeal)
+                    }
+                    
+                    Text("Connect your MFi-compatible printer (e.g. Star TSP143IIIU, Epson TM-m30) directly using a Lightning/USB data cable. No networking setup needed.")
+                        .font(.caption2)
+                        .foregroundColor(.textSecondary)
+                }
+                .padding(10)
+                .background(Color.appTeal.opacity(0.1))
+                .cornerRadius(6)
+            }
+            
+            if emulation == "generic" {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.appAmber)
+                        Text("Generic USB is unsupported on iOS")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.appAmber)
+                    }
+                    
+                    Text("Xprinter, Rongta, and generic printers do NOT support USB direct printing on iPad due to Apple's MFi security restrictions. Please connect the printer to your router via Ethernet cable and choose TCP/IP LAN.")
+                        .font(.caption2)
+                        .foregroundColor(.textSecondary)
+                }
+                .padding(10)
+                .background(Color.appAmber.opacity(0.1))
+                .cornerRadius(6)
+                .padding(.top, 4)
+            }
+        }
+        .apCard()
+    }
+    
+    @ViewBuilder
+    private var mediaSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("MEDIA SPECIFICATIONS")
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.appAccent)
+                .tracking(1.0)
+            
+            Picker("Paper Width", selection: $paperWidth) {
+                Text("80 mm Thermal").tag("80mm")
+                Text("58 mm Thermal").tag("58mm")
+                Text("40 mm Sticker").tag("40mm Sticker")
+            }
+            .pickerStyle(SegmentedPickerStyle())
+        }
+        .apCard()
+    }
+    
+    @ViewBuilder
+    private var routingSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("CATEGORY ROUTING MAP")
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.appAccent)
+                .tracking(1.0)
+            
+            Text("Map menu categories to this printer. If none are selected, all categories will default to printing here.")
+                .font(.caption2)
+                .foregroundColor(.textSecondary)
+            
+            if appCategories.isEmpty {
+                Text("No categories registered in system database.")
+                    .font(.caption)
+                    .foregroundColor(.textSecondary)
+                    .italic()
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140))], alignment: .leading, spacing: 10) {
+                    ForEach(appCategories) { category in
+                        let slug = category.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                        let isSelected = selectedCategories.contains(slug)
+                        Button(action: {
+                            if isSelected {
+                                selectedCategories.remove(slug)
+                            } else {
+                                selectedCategories.insert(slug)
+                            }
+                            APHaptic.trigger()
+                        }) {
+                            HStack {
+                                Text(category.name)
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                Spacer()
+                                if isSelected {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption2)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(isSelected ? Color.appAccent : Color.appSurfaceHigh)
+                            .foregroundColor(isSelected ? .white : .textPrimary)
+                            .cornerRadius(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(isSelected ? Color.clear : Color.appBorderSubtle, lineWidth: 1)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        .apCard()
     }
 }
 
@@ -567,8 +794,40 @@ struct PrinterConfigSheet: View {
 struct PrintPreviewSheet: View {
     @Binding var isPresented: Bool
     var printer: Printer
-    @State private var previewType: String = "" // "receipt", "kitchen", "label"
+    @State private var previewType: String = "" // "receipt", "kitchen", "bar", "label"
     
+    @State private var isPrinting = false
+    @State private var printResultSuccess = false
+    
+    // ── Store info (อ่านค่าจริงจาก AppStorage เหมือน ReceiptTemplateSettingsView) ──
+    @AppStorage("store_name")        private var storeName       = "AlphaPos Restaurant"
+    @AppStorage("store_phone")       private var storePhone      = "02-123-4567"
+    @AppStorage("store_address")     private var storeAddress    = "123 Sukhumvit Rd, Bangkok"
+    @AppStorage("store_tax_id")      private var storeTaxId      = "1234567890123"
+    @AppStorage("store_branch_code") private var storeBranchCode = "00000"
+    @AppStorage("store_logo_path")   private var storeLogoPath   = ""
+    @AppStorage("promptpay_number")  private var promptPayNumber = ""
+
+    // ── Default template สำหรับ previewType ที่เลือก ──
+    @Query(sort: \ReceiptTemplate.name) private var allTemplates: [ReceiptTemplate]
+
+    private var activeTemplate: ReceiptTemplate? {
+        let role = previewType.isEmpty ? printer.role : previewType
+        let typeKey = role == "label" ? "sticker" : role
+        return allTemplates.first(where: { !$0.isDeleted && $0.templateType == typeKey && $0.isDefault })
+            ?? allTemplates.first(where: { !$0.isDeleted && $0.templateType == typeKey })
+    }
+
+    // ── สร้าง fixedPreviewType สำหรับ ReceiptLivePreview ──
+    private var livePreviewType: ReceiptLivePreview.PreviewType {
+        switch previewType {
+        case "kitchen": return .kitchen
+        case "bar":     return .bar
+        case "label", "sticker": return .sticker
+        default:        return .receipt
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -587,21 +846,27 @@ struct PrintPreviewSheet: View {
                     
                     ScrollView {
                         VStack(spacing: 24) {
-                            if previewType == "receipt" {
-                                ReceiptPreviewCard(paperWidth: printer.paperWidth)
-                            } else if previewType == "kitchen" {
-                                KitchenTicketPreviewCard(paperWidth: printer.paperWidth)
-                            } else if previewType == "bar" {
-                                KitchenTicketPreviewCard(paperWidth: printer.paperWidth, stationLabel: "BAR STATION")
-                            } else {
-                                StickerPreviewCard()
-                            }
-                            
-                            Text("Note: This is a high-fidelity digital print simulation matching ESC/POS commands (for Receipt & Kitchen) and TSPL commands (for Sticker Label).")
-                                .font(.caption2)
-                                .foregroundColor(.textSecondary)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 24)
+                            ReceiptLivePreview(
+                                storeName:         storeName,
+                                storeAddress:      storeAddress,
+                                storePhone:        storePhone,
+                                storeTaxId:        storeTaxId,
+                                storeBranchCode:   storeBranchCode,
+                                storeLogoPath:     storeLogoPath,
+                                promptPayNumber:   promptPayNumber,
+                                headerText:        activeTemplate?.headerText ?? "",
+                                footerText:        activeTemplate?.footerText ?? "",
+                                showTaxId:         activeTemplate?.showTaxId         ?? true,
+                                showCustomerInfo:  activeTemplate?.showCustomerInfo  ?? true,
+                                paperWidth:        activeTemplate?.paperWidth        ?? printer.paperWidth,
+                                showLogo:          activeTemplate?.showLogo          ?? true,
+                                showServiceCharge: activeTemplate?.showServiceCharge ?? true,
+                                showTableInfo:     activeTemplate?.showTableInfo     ?? true,
+                                showQRCode:        activeTemplate?.showQRCode        ?? true,
+                                showItemModifiers: activeTemplate?.showItemModifiers ?? true,
+                                showOrderType:     activeTemplate?.showOrderType     ?? true,
+                                fixedPreviewType:  livePreviewType
+                            )
                         }
                         .padding()
                     }
@@ -614,10 +879,37 @@ struct PrintPreviewSheet: View {
                     Button("Close") { isPresented = false }
                         .foregroundColor(.textPrimary)
                 }
+                
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: startTestPrint) {
+                        if isPrinting {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        } else {
+                            Text("Print Test Page")
+                                .fontWeight(.bold)
+                        }
+                    }
+                    .disabled(isPrinting)
+                    .foregroundColor(isPrinting ? .textTertiary : .appAccent)
+                }
             }
             .onAppear {
                 previewType = printer.role
             }
+        }
+    }
+    
+    private func startTestPrint() {
+        isPrinting = true
+        Task {
+            let result = await PrintService.shared.printTest(to: printer, previewType: previewType)
+            isPrinting = false
+            printResultSuccess = result.success
+            // Log เต็มดูได้ที่ Xcode Console
+            result.log.forEach { print("[PrintTest] \($0)") }
+            // Haptic feedback ให้รู้ผลโดยไม่ต้องแสดง Alert
+            APHaptic.trigger()
         }
     }
 }

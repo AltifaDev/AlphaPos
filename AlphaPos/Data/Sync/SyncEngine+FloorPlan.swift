@@ -787,6 +787,7 @@ extension SyncEngine {
                             && table.status == "occupied"
                             && table.isSynced {
                             table.status    = expectedStatus
+                            table.isSynced  = false
                             table.updatedAt = Date()
                         }
                     }
@@ -835,4 +836,217 @@ extension SyncEngine {
         }
     }
 
+    func pullEmployees(_ modelContext: ModelContext) async {
+        guard await NetworkManager.shared.isConnected() else { return }
+
+        do {
+            let remoteEmployees = try await NetworkManager.shared.fetchEmployees()
+            
+            for remoteEmp in remoteEmployees {
+                guard let idStr = remoteEmp["id"] as? String,
+                      let id = UUID(uuidString: idStr) else { continue }
+
+                let firstName = remoteEmp["first_name"] as? String ?? ""
+                let lastName = remoteEmp["last_name"] as? String ?? ""
+                let phone = remoteEmp["phone"] as? String
+                let nationalId = remoteEmp["national_id"] as? String
+                let bankAccountNumber = remoteEmp["bank_account_number"] as? String
+                let bankName = remoteEmp["bank_name"] as? String
+                let employmentType = remoteEmp["employment_type"] as? String ?? "hourly"
+                let payRate = remoteDouble(remoteEmp["pay_rate"], fallback: 0.0)
+                let email = remoteEmp["email"] as? String
+                let address = remoteEmp["address"] as? String
+                let emergencyContactName = remoteEmp["emergency_contact_name"] as? String
+                let emergencyContactPhone = remoteEmp["emergency_contact_phone"] as? String
+                let isDeleted = remoteBool(remoteEmp["is_deleted"], fallback: false)
+                
+                let joinedAtStr = remoteEmp["joined_at"] as? String ?? ""
+                let joinedAt = parseISO8601Date(joinedAtStr)
+                
+                let updatedAtStr = remoteEmp["updated_at"] as? String ?? ""
+                let updatedAt = parseISO8601Date(updatedAtStr)
+
+                // Extra auth fields stored in Supabase employees table
+                let username = remoteEmp["username"] as? String ?? ""
+                let pinCode = remoteEmp["pin_code"] as? String ?? ""
+                let roleName = remoteEmp["role"] as? String ?? "Staff"
+
+                // Resolve matching Role
+                let roleDescriptor = FetchDescriptor<Role>(
+                    predicate: #Predicate<Role> { $0.name == roleName }
+                )
+                let matchedRoles = try? modelContext.fetch(roleDescriptor)
+                let role = matchedRoles?.first ?? {
+                    let newRole = Role(name: roleName, roleDescription: "\(roleName) Privileges", permissionKeys: "")
+                    modelContext.insert(newRole)
+                    return newRole
+                }()
+
+                // Try to find existing employee
+                let idDescriptor = FetchDescriptor<Employee>(
+                    predicate: #Predicate<Employee> { $0.id == id }
+                )
+                
+                if let matches = try? modelContext.fetch(idDescriptor), let existing = matches.first {
+                    // Update if remote is newer
+                    if updatedAt > existing.updatedAt || !existing.isSynced {
+                        existing.firstName = firstName
+                        existing.lastName = lastName
+                        existing.phone = phone
+                        existing.nationalId = nationalId
+                        existing.bankAccountNumber = bankAccountNumber
+                        existing.bankName = bankName
+                        existing.employmentType = employmentType
+                        existing.payRate = payRate
+                        existing.email = email
+                        existing.address = address
+                        existing.emergencyContactName = emergencyContactName
+                        existing.emergencyContactPhone = emergencyContactPhone
+                        existing.joinedAt = joinedAt
+                        existing.isDeleted = isDeleted
+                        existing.isSynced = true
+                        existing.updatedAt = updatedAt
+
+                        // Sync associated User details
+                        if let user = existing.user {
+                            user.username = username
+                            user.pinCodeHash = pinCode
+                            user.role = role
+                        } else {
+                            let newUser = User(
+                                id: UUID(),
+                                username: username,
+                                email: email,
+                                passwordHash: SecurityHelper.sha256("password"),
+                                pinCodeHash: pinCode,
+                                role: role,
+                                isActive: true,
+                                isSynced: true,
+                                isDeleted: false,
+                                updatedAt: Date()
+                            )
+                            modelContext.insert(newUser)
+                            existing.user = newUser
+                        }
+                    }
+                } else if !isDeleted {
+                    // Insert new employee
+                    let newUser = User(
+                        id: UUID(),
+                        username: username,
+                        email: email,
+                        passwordHash: SecurityHelper.sha256("password"),
+                        pinCodeHash: pinCode,
+                        role: role,
+                        isActive: true,
+                        isSynced: true,
+                        isDeleted: false,
+                        updatedAt: Date()
+                    )
+                    modelContext.insert(newUser)
+
+                    let newEmp = Employee(
+                        id: id,
+                        user: newUser,
+                        firstName: firstName,
+                        lastName: lastName,
+                        phone: phone,
+                        nationalId: nationalId,
+                        bankAccountNumber: bankAccountNumber,
+                        bankName: bankName,
+                        employmentType: employmentType,
+                        payRate: payRate,
+                        joinedAt: joinedAt,
+                        email: email,
+                        address: address,
+                        emergencyContactName: emergencyContactName,
+                        emergencyContactPhone: emergencyContactPhone,
+                        isSynced: true,
+                        isDeleted: false,
+                        updatedAt: updatedAt
+                    )
+                    modelContext.insert(newEmp)
+                }
+            }
+            try? modelContext.save()
+        } catch {
+            encounteredSyncError = true
+            print("SyncEngine [Employee Pull Error]: \(error.localizedDescription)")
+        }
+    }
+
+    func pullEmployeeShifts(_ modelContext: ModelContext) async {
+        guard await NetworkManager.shared.isConnected() else { return }
+
+        do {
+            let remoteShifts = try await NetworkManager.shared.fetchEmployeeShifts()
+            
+            for remoteShift in remoteShifts {
+                guard let idStr = remoteShift["id"] as? String,
+                      let id = UUID(uuidString: idStr),
+                      let employeeIdStr = remoteShift["employee_id"] as? String,
+                      let employeeId = UUID(uuidString: employeeIdStr) else { continue }
+
+                let scheduledStartStr = remoteShift["scheduled_start"] as? String ?? ""
+                let scheduledEndStr = remoteShift["scheduled_end"] as? String ?? ""
+                let scheduledStart = parseISO8601Date(scheduledStartStr)
+                let scheduledEnd = parseISO8601Date(scheduledEndStr)
+                
+                let role = remoteShift["role"] as? String
+                let notes = remoteShift["notes"] as? String
+                let isDeleted = remoteBool(remoteShift["is_deleted"], fallback: false)
+                
+                let updatedAtStr = remoteShift["updated_at"] as? String ?? ""
+                let updatedAt = parseISO8601Date(updatedAtStr)
+
+                // Get employee relation
+                let empDescriptor = FetchDescriptor<Employee>(
+                    predicate: #Predicate<Employee> { $0.id == employeeId }
+                )
+                guard let employees = try? modelContext.fetch(empDescriptor), let employee = employees.first else {
+                    print("SyncEngine [EmployeeShift Pull Warning]: Referenced employee \(employeeId) not found locally.")
+                    continue
+                }
+
+                // Check for existing shift
+                let idDescriptor = FetchDescriptor<EmployeeShift>(
+                    predicate: #Predicate<EmployeeShift> { $0.id == id }
+                )
+                
+                if let matches = try? modelContext.fetch(idDescriptor), let existing = matches.first {
+                    if updatedAt > existing.updatedAt || !existing.isSynced {
+                        existing.employee = employee
+                        existing.scheduledStart = scheduledStart
+                        existing.scheduledEnd = scheduledEnd
+                        existing.role = role
+                        existing.notes = notes
+                        existing.isDeleted = isDeleted
+                        existing.isSynced = true
+                        existing.updatedAt = updatedAt
+                        
+                        if isDeleted {
+                            modelContext.delete(existing)
+                        }
+                    }
+                } else if !isDeleted {
+                    let newShift = EmployeeShift(
+                        id: id,
+                        employee: employee,
+                        scheduledStart: scheduledStart,
+                        scheduledEnd: scheduledEnd,
+                        role: role,
+                        notes: notes,
+                        isSynced: true,
+                        isDeleted: false,
+                        updatedAt: updatedAt
+                    )
+                    modelContext.insert(newShift)
+                }
+            }
+            try? modelContext.save()
+        } catch {
+            encounteredSyncError = true
+            print("SyncEngine [EmployeeShift Pull Error]: \(error.localizedDescription)")
+        }
+    }
 }
