@@ -61,7 +61,7 @@ struct AlphaPosApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Role.self, User.self, RestaurantTable.self, RestaurantWall.self,
-            TableSession.self, Supplier.self, InventoryItem.self,
+            TableSession.self, Supplier.self, InventoryItem.self, Expense.self,
             InventoryTransaction.self, Category.self, MenuItem.self,
             DeliveryPrice.self, Recipe.self, ModifierGroup.self,
             MenuItemModifierGroup.self, Modifier.self, Order.self,
