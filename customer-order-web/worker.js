@@ -3,6 +3,9 @@ export default {
     try {
       const url = new URL(request.url);
 
+      // Never cache index.html — always serve fresh so asset ?v= bumps take effect immediately
+      const isHtml = url.pathname === "/" || url.pathname.endsWith(".html");
+
       // Production must be explicitly configured. A loopback/LAN fallback
       // would point customers at the wrong machine.
       if (url.pathname === "/config.js" || url.pathname === "config.js") {
@@ -24,7 +27,21 @@ export default {
       }
 
       // Otherwise, fall back to serving static assets
-      return await env.ASSETS.fetch(request);
+      const assetResponse = await env.ASSETS.fetch(request);
+
+      if (isHtml) {
+        // Strip Cloudflare's default cache headers for HTML — force revalidation every time
+        const newHeaders = new Headers(assetResponse.headers);
+        newHeaders.set("Cache-Control", "no-cache, no-store, must-revalidate");
+        newHeaders.set("Pragma", "no-cache");
+        newHeaders.set("Expires", "0");
+        return new Response(assetResponse.body, {
+          status: assetResponse.status,
+          headers: newHeaders,
+        });
+      }
+
+      return assetResponse;
     } catch (err) {
       return new Response("Not Found", { status: 404 });
     }
