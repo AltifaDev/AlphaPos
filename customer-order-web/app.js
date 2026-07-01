@@ -2836,98 +2836,12 @@ class AlphaPosApp {
 
         this.realtimeChannels = [];
 
-        if (this.supabase) {
-            try {
-                const ch1 = this.supabase
-                    .channel('status-changes')
-                    .on('postgres_changes', {
-                        event: '*',
-                        schema: 'public',
-                        table: 'order_items',
-                        filter: `merchant_id=eq.${this.merchantId}`
-                    }, payload => {
-                        console.log("Realtime order item update received:", payload);
-                        this._debouncedFetchHistory();
-                    });
-                ch1.subscribe();
-                this.realtimeChannels.push(ch1);
+        // NOTE: Supabase Realtime WebSocket is disabled when running behind Cloudflare Workers proxy
+        // because WebSocket upgrade requests to self-hosted Supabase (HTTP VPS) cannot pass through
+        // the HTTPS-only Cloudflare edge without a WebSocket-aware tunnel.
+        // Order status updates are handled by the polling interval below (every 15s).
+        // Re-enable Realtime only when Supabase is exposed on a public HTTPS domain with WSS support.
 
-                const ch2 = this.supabase
-                    .channel('orders-changes')
-                    .on('postgres_changes', {
-                        event: '*',
-                        schema: 'public',
-                        table: 'orders',
-                        filter: `merchant_id=eq.${this.merchantId}`
-                    }, payload => {
-                        console.log("Realtime order update received:", payload);
-                        this._debouncedFetchHistory();
-                        // Trigger feedback when order is served
-                        if (payload.new && payload.new.status === 'served' && payload.new.table_number === this.tableNumber) {
-                            console.log("[Feedback] Order served — triggering feedback form");
-                            this._onOrderServed(payload.new.id);
-                        }
-                    });
-                ch2.subscribe();
-                this.realtimeChannels.push(ch2);
-
-                // Listen for table_sessions changes (detect session closure from iPad POS)
-                const ch3 = this.supabase
-                    .channel('session-changes')
-                    .on('postgres_changes', {
-                        event: 'UPDATE',
-                        schema: 'public',
-                        table: 'table_sessions',
-                        filter: `merchant_id=eq.${this.merchantId}`
-                    }, payload => {
-                        console.log("Realtime session update received:", payload);
-                        const newRecord = payload.new;
-                        if (newRecord && (newRecord.is_active === false || newRecord.is_active === 0) && newRecord.table_number === this.tableNumber) {
-                            // Session was closed by iPad POS — notify and block
-                            console.warn("Session closed by POS for table:", this.tableNumber);
-                            this.sessionToken = null;
-                            localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
-                            this.cart = {};
-                            this.saveCartToStorage();
-
-                            if (window.locationVerifier) {
-                                window.locationVerifier.markPaymentCompleted();
-                            }
-
-                            this.showBlockingState(
-                                "sessionClosedTitle",
-                                "sessionClosedDesc",
-                                "pleaseOrderStaff"
-                            );
-                        }
-                    });
-                ch3.subscribe();
-                this.realtimeChannels.push(ch3);
-
-                // Listen for menu_items changes (auto-reload when menu is updated)
-                const ch4 = this.supabase
-                    .channel('menu-changes')
-                    .on('postgres_changes', {
-                        event: '*',
-                        schema: 'public',
-                        table: 'menu_items',
-                        filter: `merchant_id=eq.${this.merchantId}`
-                    }, payload => {
-                        console.log("Realtime menu update received:", payload);
-                        // Reload entire menu from server on any menu change
-                        this.loadMenuFromServer().then(() => {
-                            this.renderCategories();
-                            this.renderMenuItems();
-
-                            this._showToast("Menu has been updated!", 3000);
-                        });
-                    });
-                ch4.subscribe();
-                this.realtimeChannels.push(ch4);
-            } catch (err) {
-                console.error("Failed to initialize Supabase realtime subscriptions:", err);
-            }
-        }
 
         // Setup a periodic check of session validity + fetching status
         if (this.pollingInterval) {
