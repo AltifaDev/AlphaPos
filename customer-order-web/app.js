@@ -3230,7 +3230,7 @@ class AlphaPosApp {
                 item_name: item.name,
                 price: item.price + modifierPriceSum,
                 quantity: qty,
-                status: 'cooking',
+                status: 'pending',
                 item_id: safeItemId,
                 merchant_id: this.merchantId,
                 notes: notes,
@@ -3248,7 +3248,7 @@ class AlphaPosApp {
                         order_number: orderNum,
                         table_number: this.tableNumber,
                         total: total,
-                        status: 'preparing',
+                        status: 'pending',
                         session_token: this.sessionToken,
                         guest_count: this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount),
                         merchant_id: this.merchantId,
@@ -3309,7 +3309,7 @@ class AlphaPosApp {
                         orderNumber: orderNum,
                         tableNumber: this.tableNumber,
                         total: total,
-                        status: 'preparing',
+                        status: 'pending',
                         sessionToken: this.sessionToken,
                         guestCount: this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount),
                         merchant_id: this.merchantId,
@@ -3372,7 +3372,7 @@ class AlphaPosApp {
                 tableNumber: this.tableNumber,
                 items: orderItems,
                 total: total,
-                status: 'preparing',
+                status: 'pending',
                 createdAt: new Date().toISOString()
             });
 

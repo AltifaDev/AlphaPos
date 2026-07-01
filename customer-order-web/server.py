@@ -1460,7 +1460,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 raise ValueError("Order item limit exceeded.")
             order_id = clean_string(order_data.get("id") or str(uuid.uuid4()), "id", 50, required=True, pattern=r"[A-Za-z0-9_-]+")
             status = clean_string(order_data.get("status") or "preparing", "status", 20, required=True)
-            allowed_order_statuses = {"preparing", "ready", "served", "completed", "cancelled"}
+            allowed_order_statuses = {"preparing", "ready", "served", "completed", "cancelled", "pending"}
             if status not in allowed_order_statuses:
                 raise ValueError(f"Invalid order status '{status}'.")
             session_token = order_data.get("sessionToken") or order_data.get("session_token")

@@ -451,6 +451,40 @@ struct POSView: View {
         APHaptic.trigger()
     }
 
+    private var hasPendingSelfOrders: Bool {
+        sessionOrdersForDisplay.contains { $0.status == "pending" && !$0.isDeleted }
+    }
+
+    private func approvePendingSelfOrders() {
+        guard let session = activeSession else { return }
+        
+        let pendingOrders = session.orders.filter { $0.status == "pending" && !$0.isDeleted }
+        for order in pendingOrders {
+            order.status = "preparing"
+            for item in order.items {
+                if !item.isDeleted {
+                    item.status = "cooking"
+                    item.isSynced = false
+                    item.updatedAt = Date()
+                }
+            }
+            order.isSynced = false
+            order.updatedAt = Date()
+        }
+        
+        session.isSynced = false
+        session.updatedAt = Date()
+        
+        modelContext.saveWithLogging(label: #function)
+        
+        APHaptic.trigger()
+        sentToKitchenVersion += 1
+        
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
+    }
+
     private func deleteOrderedItem(_ orderedItem: GroupedOrderedItem) {
         let targetIdentity = orderedItem.identity
         let targetStatus = orderedItem.status
@@ -1285,6 +1319,52 @@ struct POSView: View {
                 } else {
                     ScrollViewReader { scrollViewProxy in
                         List {
+                            // 0. Pending Self-Orders Approval Banner
+                            if hasPendingSelfOrders {
+                                Section {
+                                    Button {
+                                        approvePendingSelfOrders()
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: "bell.badge.fill")
+                                                .font(.headline)
+                                                .foregroundColor(.white)
+                                                .symbolEffect(.bounce, options: .repeating)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text("มีออเดอร์ใหม่จากลูกค้า")
+                                                    .font(.system(size: 13, weight: .bold))
+                                                    .foregroundColor(.white)
+                                                Text("แตะเพื่อส่งออเดอร์นี้เข้าห้องครัว")
+                                                    .font(.system(size: 10))
+                                                    .foregroundColor(.white.opacity(0.85))
+                                            }
+                                            Spacer()
+                                            Text("อนุมัติ")
+                                                .font(.system(size: 11, weight: .bold))
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 5)
+                                                .background(Color.white.opacity(0.2))
+                                                .cornerRadius(6)
+                                                .foregroundColor(.white)
+                                        }
+                                        .padding(.vertical, 8)
+                                        .padding(.horizontal, 12)
+                                        .background(
+                                            LinearGradient(
+                                                gradient: Gradient(colors: [Color.appAmber, Color.orange]),
+                                                startPoint: .leading,
+                                                endPoint: .trailing
+                                            )
+                                        )
+                                        .cornerRadius(8)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            }
+
                             // 1. Already Ordered Items
                             if !groupedOrderedItems.isEmpty {
                                 ForEach(groupedOrderedItems) { orderedItem in

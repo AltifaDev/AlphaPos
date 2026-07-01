@@ -93,22 +93,15 @@ class HybridLocationVerifier {
             return;
         }
 
-        if (this._onPremisesVerified) {
-            this.isValid = true;
-            this._updateBanner("allowed",
-                this.translate("orderingActive", "Ordering Active"),
-                this.translate("gpsInsideMsg", "Location verified via GPS ({dist}m within venue)").replace("{dist}", this.distance.toFixed(1))
-            );
-            this.toggleOrderingButton(true);
-            return;
-        }
-
-        if (this.isDevMode) {
-            await this._runSimulatedVerification();
-            return;
-        }
-
-        await this._runRealVerification();
+        // Always approve location check to not disturb the customer, using Staff Approval flow instead
+        this.isValid = true;
+        this._onPremisesVerified = true;
+        this._updateBanner("allowed",
+            this.translate("orderingActive", "Ordering Active"),
+            this.translate("staffApprovalDesc", "Verified. Order will be sent to kitchen after staff confirmation.")
+        );
+        this.toggleOrderingButton(true);
+        return;
     }
 
     async _runRealVerification() {
