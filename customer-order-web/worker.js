@@ -21,7 +21,7 @@ export default {
         url.pathname.startsWith("/auth/v1/") ||
         url.pathname.startsWith("/functions/v1/")
       ) {
-        const backendUrlStr = env.SUPABASE_URL || "http://119.59.99.163";
+        const backendUrlStr = env.SUPABASE_URL || "http://119.59.99.163.nip.io";
         const backendBase = new URL(backendUrlStr);
         
         const targetUrl = new URL(request.url);
@@ -58,7 +58,7 @@ export default {
 
       // Proxy Local Server API requests (/v1/) to VPS port 8080
       if (url.pathname.startsWith("/v1/")) {
-        const localServerUrlStr = env.LOCAL_SERVER_URL || "http://119.59.99.163:8080";
+        const localServerUrlStr = env.LOCAL_SERVER_URL || "http://119.59.99.163.nip.io:8080";
         const backendBase = new URL(localServerUrlStr);
         
         const targetUrl = new URL(request.url);
