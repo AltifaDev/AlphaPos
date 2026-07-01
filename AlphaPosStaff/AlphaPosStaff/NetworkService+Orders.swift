@@ -32,7 +32,7 @@ extension NetworkService {
         let ordersData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
             URLQueryItem(name: "select", value: "*,order_items(*)"),
             URLQueryItem(name: "table_number", value: "eq.\(tableNumber)"),
-            URLQueryItem(name: "status", value: "in.(preparing,ready,served,completed)"),
+            URLQueryItem(name: "status", value: "in.(preparing,ready,served,completed,pending)"),
             URLQueryItem(name: "order", value: "created_at.asc")
         ])
         let ordersArray = (try? JSONSerialization.jsonObject(with: ordersData) as? [[String: Any]]) ?? []
@@ -95,7 +95,7 @@ extension NetworkService {
         let ordersData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
             URLQueryItem(name: "select", value: "*,order_items(*)"),
             // ไม่ fetch completed — ลด payload และป้องกัน orders เก่า occupy ใน limit
-            URLQueryItem(name: "status", value: "in.(preparing,ready,served)"),
+            URLQueryItem(name: "status", value: "in.(preparing,ready,served,pending)"),
             URLQueryItem(name: "order", value: "created_at.desc"),
             URLQueryItem(name: "limit", value: "100")
         ])
@@ -241,6 +241,31 @@ extension NetworkService {
             }
         }
 
+        await refreshAll()
+        return true
+    }
+
+    func approveOrder(order: Order) async throws -> Bool {
+        // 1. Update order status to "preparing"
+        _ = try await sendSupabaseRequest(
+            method: "PATCH",
+            endpoint: "orders",
+            queryItems: [URLQueryItem(name: "id", value: "eq.\(order.id)")],
+            payload: ["status": "preparing"]
+        )
+        
+        // 2. Update all order items with status "pending" to "cooking"
+        for item in order.items {
+            if item.status == "pending" || item.status == "cooking" {
+                _ = try await sendSupabaseRequest(
+                    method: "PATCH",
+                    endpoint: "order_items",
+                    queryItems: [URLQueryItem(name: "id", value: "eq.\(item.id)")],
+                    payload: ["status": "cooking"]
+                )
+            }
+        }
+        
         await refreshAll()
         return true
     }

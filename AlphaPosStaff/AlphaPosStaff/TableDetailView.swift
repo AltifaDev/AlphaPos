@@ -621,8 +621,25 @@ struct TableDetailView: View {
                         selectedOrderForTimeline = order
                     }
 
-                // Serve-all button (only if not all served)
-                if !allServed && !isServingAll {
+                // Serve-all or Approve button
+                if order.status.lowercased() == "pending" {
+                    Button {
+                        approveOrder(order)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 10))
+                            Text("อนุมัติ")
+                                .font(.system(size: 10, weight: .bold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(amber)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                } else if !allServed && !isServingAll {
                     Button {
                         serveAllItems(in: order)
                     } label: {
@@ -965,6 +982,15 @@ struct TableDetailView: View {
                 for item in pending { servingItemIds.remove(item.id) }
                 isServingAll = false
             }
+        }
+    }
+
+    /// Approve pending self-service order
+    private func approveOrder(_ order: Order) {
+        APHaptic.trigger()
+        Task {
+            _ = try? await NetworkService.shared.approveOrder(order: order)
+            await loadOrders()
         }
     }
 
