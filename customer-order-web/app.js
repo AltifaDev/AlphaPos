@@ -192,9 +192,7 @@ class AlphaPosApp {
         this.supabase = null;
         this.merchantId = cfg.merchantId || '';
         this.localServerURL = cfg.localServerURL || window.location.origin;
-        const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        const hasExplicitLocalServer = !!cfg.localServerURL && cfg.localServerURL !== window.location.origin;
-        this.isLocalServerAvailable = isLocalHost || hasExplicitLocalServer;
+        this.isLocalServerAvailable = true; // Always enable local server fallback via proxy
         this.merchantToken = null; // JWT token with merchant_id claim
         this._submitInProgress = false;
         this.syncHealthInterval = null;
@@ -911,7 +909,7 @@ class AlphaPosApp {
 
                 const settingsPromise = query.limit(1).maybeSingle();
                 const timeoutPromise = new Promise((_, reject) => {
-                    setTimeout(() => reject(new Error("Merchant settings lookup timed out")), 1500);
+                    setTimeout(() => reject(new Error("Merchant settings lookup timed out")), 5000);
                 });
                 const { data, error } = await Promise.race([settingsPromise, timeoutPromise]);
                 if (error) throw error;
