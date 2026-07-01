@@ -565,7 +565,7 @@ final class POSViewModel {
         session.endedAt = Date()
         session.isSynced = false
         session.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     APHaptic.trigger()
@@ -821,7 +821,7 @@ final class POSViewModel {
             newValue: order.total
         )
         modelContext.insert(auditLog)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
 
         APHaptic.trigger()
     }
@@ -851,10 +851,14 @@ final class POSViewModel {
             localItem.currentQuantity -= qtyDeducted
             localItem.updatedAt = Date()
             localItem.isSynced = false
+            
+            // Consume from FEFO lots to keep lots in sync with currentQuantity
+            let expiryManager = InventoryExpiryManager.shared(for: modelContext)
+            expiryManager.consumeFEFO(item: localItem, quantity: qtyDeducted)
 
             let txn = InventoryTransaction(
                 item: localItem,
-                transactionType: "sell",
+                transactionType: InventoryMovementType.sell.rawValue,
                 quantity: -qtyDeducted,
                 referenceId: baseReferenceId,
                 notes: "Local POS checkout deduct for \(cartItem.item.name) (Qty: \(cartItem.quantity))",
@@ -879,10 +883,14 @@ final class POSViewModel {
             localItem.currentQuantity -= qtyDeducted
             localItem.updatedAt = Date()
             localItem.isSynced = false
+            
+            // Consume from FEFO lots to keep lots in sync with currentQuantity
+            let expiryManager = InventoryExpiryManager.shared(for: modelContext)
+            expiryManager.consumeFEFO(item: localItem, quantity: qtyDeducted)
 
             let txn = InventoryTransaction(
                 item: localItem,
-                transactionType: "sell",
+                transactionType: InventoryMovementType.sell.rawValue,
                 quantity: -qtyDeducted,
                 referenceId: modifierReferenceIds.indices.contains(index) ? modifierReferenceIds[index] : baseReferenceId,
                 notes: "Modifier deduct: \(mod.name) for \(cartItem.item.name) (Qty: \(cartItem.quantity))",
@@ -919,7 +927,7 @@ final class POSViewModel {
 
             let txn = InventoryTransaction(
                 item: localItem,
-                transactionType: "refund_return",
+                transactionType: InventoryMovementType.refundReturn.rawValue,
                 quantity: qtyToRestore,
                 referenceId: orderItem.id,
                 notes: "Refund return: \(menuItem.name) (Qty: \(orderItem.quantity)) — Order: \(order.orderNumber)",
@@ -947,7 +955,7 @@ final class POSViewModel {
 
             let txn = InventoryTransaction(
                 item: localItem,
-                transactionType: "refund_return",
+                transactionType: InventoryMovementType.refundReturn.rawValue,
                 quantity: qtyToRestore,
                 referenceId: orderItemMod.id,
                 notes: "Refund return modifier: \(modifier.name) for \(menuItem.name) — Order: \(order.orderNumber)",
@@ -957,7 +965,7 @@ final class POSViewModel {
         }
     }
 
-    try? modelContext.save()
+    modelContext.saveWithLogging(label: #function)
 
     Task {
         await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1081,7 +1089,7 @@ final class SampleDataSeeder {
         if let txns = try? modelContext.fetch(FetchDescriptor<InventoryTransaction>()) {
             for item in txns { modelContext.delete(item) }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     static func seedTables(modelContext: ModelContext) {
@@ -1141,7 +1149,7 @@ final class SampleDataSeeder {
         for table in sampleTables {
             modelContext.insert(table)
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     static func seedRolesAndEmployeesIfEmpty(modelContext: ModelContext) {
@@ -1180,7 +1188,7 @@ final class SampleDataSeeder {
                 modelContext.insert(emp1)
                 modelContext.insert(emp2)
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         }
     }
 
@@ -1209,7 +1217,7 @@ final class SampleDataSeeder {
         if let recipes = try? modelContext.fetch(FetchDescriptor<Recipe>()) {
             for item in recipes { modelContext.delete(item) }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     static func autoSeedIfOutdated(modelContext: ModelContext) {
@@ -1451,14 +1459,14 @@ final class SampleDataSeeder {
             modelContext.insert(recipe)
         }
 
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     static func seedAll(modelContext: ModelContext) {
         clearAllData(modelContext: modelContext)
         seedCatalogOnly(modelContext: modelContext)
         seedMockTransactions(modelContext: modelContext)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     static func seedMockTransactions(modelContext: ModelContext) {
@@ -1652,7 +1660,7 @@ final class SampleDataSeeder {
             // Yesterday waste
             let txn1 = InventoryTransaction(
                 item: mangoItem,
-                transactionType: "waste",
+                transactionType: InventoryMovementType.waste.rawValue,
                 quantity: -3.0,
                 costPrice: mangoItem.costPrice,
                 notes: "Spoiled mangoes",
@@ -1667,7 +1675,7 @@ final class SampleDataSeeder {
             // Today waste
             let txn2 = InventoryTransaction(
                 item: mangoItem,
-                transactionType: "waste",
+                transactionType: InventoryMovementType.waste.rawValue,
                 quantity: -2.0,
                 costPrice: mangoItem.costPrice,
                 notes: "Bruised during prep",
@@ -1683,7 +1691,7 @@ final class SampleDataSeeder {
         if let coconutItem = inventoryItems.first(where: { $0.sku == "ING-COCONUT" }) {
             let txn = InventoryTransaction(
                 item: coconutItem,
-                transactionType: "waste",
+                transactionType: InventoryMovementType.waste.rawValue,
                 quantity: -500.0,
                 costPrice: coconutItem.costPrice,
                 notes: "Spilled carton",

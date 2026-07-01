@@ -83,25 +83,17 @@ extension Color {
     }
 
     static func resolveColor(lightHex: String, darkHex: String) -> Color {
-        let theme = currentTheme
-        if theme == .light {
-            return Color(hex: lightHex)
-        } else if theme == .dark {
-            return Color(hex: darkHex)
-        } else {
-            #if os(iOS)
-            return Color(UIColor { traitCollection in
-                return traitCollection.userInterfaceStyle == .light ? UIColor(hex: lightHex) : UIColor(hex: darkHex)
-            })
-            #elseif os(macOS)
-            return Color(NSColor(name: nil) { appearance in
-                let isDark = appearance.name.rawValue.contains("Dark")
-                return isDark ? NSColor(hex: darkHex) : NSColor(hex: lightHex)
-            })
-            #else
-            return Color(hex: darkHex)
-            #endif
-        }
+        #if os(iOS)
+        return Color(UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .light ? UIColor(hex: lightHex) : UIColor(hex: darkHex)
+        })
+        #elseif os(macOS)
+        return Color(NSColor(name: nil) { appearance in
+            appearance.name.rawValue.contains("Dark") ? NSColor(hex: darkHex) : NSColor(hex: lightHex)
+        })
+        #else
+        return currentTheme == .light ? Color(hex: lightHex) : Color(hex: darkHex)
+        #endif
     }
 
     // ── Backgrounds ──────────────────────────────────────────────────────────
@@ -627,4 +619,3 @@ extension UIImage {
     }
 }
 #endif
-

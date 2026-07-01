@@ -159,7 +159,7 @@ struct StaffPermissionsSettingsView: View {
         selectedRole.permissionKeys = selectedPermissionKeys.sorted().joined(separator: ",")
         selectedRole.isSynced = false
         selectedRole.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
         statusMessage = "permissions_saved_message".t
         showingStatus = true
@@ -175,7 +175,7 @@ struct StaffPermissionsSettingsView: View {
             actionType: "staff_passcode_reset",
             details: "Passcode reset for \(selectedEmployee.firstName) \(selectedEmployee.lastName)"
         ))
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         newPasscode = ""
         APHaptic.trigger()
         statusMessage = "passcode_saved_message".t

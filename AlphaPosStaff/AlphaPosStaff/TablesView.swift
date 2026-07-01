@@ -22,6 +22,9 @@ struct TablesView: View {
     @State private var selectedTable: RestaurantTable? = nil
     @State private var guestCount = 2
     @State private var isRefreshing = false
+    @State private var bounceTableId: String? = nil
+    @State private var viewportSize: CGSize = .zero
+    @AppStorage("logged_in_employee_role") private var loggedInEmployeeRole = ""
     
     @State private var selectedFloor = 1
     @State private var selectedZone = "All"
@@ -223,6 +226,28 @@ struct TablesView: View {
                             .pickerStyle(.segmented)
                             .frame(maxWidth: 160)
                             
+                            // Search Button (Magnifying glass)
+                            if !filteredTables.isEmpty {
+                                Menu {
+                                    ForEach(filteredTables) { table in
+                                        Button(action: {
+                                            focusTable(table)
+                                        }) {
+                                            let labelFormat = "table_label".localized(for: appLanguage)
+                                            let labelText = String(format: labelFormat, table.tableNumber)
+                                            let seatsText = appLanguage == "th" ? " (\(table.capacity) ที่นั่ง)" : " (\(table.capacity) seats)"
+                                            Text(labelText + seatsText)
+                                        }
+                                    }
+                                } label: {
+                                    Image(systemName: "magnifyingglass")
+                                        .foregroundColor(.white)
+                                        .frame(width: 30, height: 30)
+                                        .background(Color.white.opacity(0.18))
+                                        .clipShape(Circle())
+                                }
+                            }
+                            
                             Spacer()
                             
                             Divider().frame(height: 20)
@@ -306,6 +331,29 @@ struct TablesView: View {
                             }
 
                             Divider().frame(height: 18)
+
+                            // Search Button (Magnifying glass)
+                            if !filteredTables.isEmpty {
+                                Menu {
+                                    ForEach(filteredTables) { table in
+                                        Button(action: {
+                                            focusTable(table)
+                                        }) {
+                                            let labelFormat = "table_label".localized(for: appLanguage)
+                                            let labelText = String(format: labelFormat, table.tableNumber)
+                                            let seatsText = appLanguage == "th" ? " (\(table.capacity) ที่นั่ง)" : " (\(table.capacity) seats)"
+                                            Text(labelText + seatsText)
+                                        }
+                                    }
+                                } label: {
+                                    Image(systemName: "magnifyingglass")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(.appAccent)
+                                        .frame(width: 30, height: 30)
+                                        .background(Color.appAccent.opacity(0.08))
+                                        .clipShape(Circle())
+                                }
+                            }
 
                             // Theme toggle
                             Button(action: {
@@ -548,7 +596,8 @@ struct TablesView: View {
                                                 }
                                             }
                                             .offset(x: CGFloat(table.positionX), y: CGFloat(table.positionY))
-                                            .scaleEffect(isAnimatedIn ? 1.0 : 0.3)
+                                            .scaleEffect(bounceTableId == table.id ? 1.2 : 1.0)
+                                            .animation(.spring(response: 0.3, dampingFraction: 0.5), value: bounceTableId)
                                             .opacity(isAnimatedIn ? (selectedZone == "All" || table.zone == selectedZone ? 1.0 : 0.25) : 0)
                                             .animation(.spring(response: 0.45, dampingFraction: 0.8), value: selectedZone)
                                             .animation(.spring(response: 0.65, dampingFraction: 0.72).delay(Double(index) * 0.04), value: isAnimatedIn)
@@ -595,9 +644,11 @@ struct TablesView: View {
                                     autoFitCanvas(viewportSize: viewport.size)
                                 }
                                 .onAppear {
+                                    viewportSize = viewport.size
                                     autoFitCanvas(viewportSize: viewport.size)
                                 }
                                 .onChange(of: viewport.size) { _, newSize in
+                                    viewportSize = newSize
                                     autoFitCanvas(viewportSize: newSize)
                                 }
                                 .onChange(of: selectedFloor) { _, _ in
@@ -822,6 +873,43 @@ struct TablesView: View {
             self.zoomScale = finalScale
             self.panOffset = CGSize(width: targetX, height: targetY)
             self.activePanOffset = .zero
+        }
+    }
+
+    private func focusTable(_ table: RestaurantTable) {
+        let targetX = CGFloat(table.positionX) + 80
+        let targetY = CGFloat(table.positionY) + 80
+        
+        let vw = viewportSize.width > 10 ? viewportSize.width : 375
+        let vh = viewportSize.height > 10 ? viewportSize.height : 667
+        
+        let centerX = vw / 2.0
+        let centerY = vh / 2.0
+        let targetZoom: CGFloat = 0.8
+        
+        let newPanOffset = CGSize(
+            width: centerX - (targetX * targetZoom),
+            height: centerY - (targetY * targetZoom)
+        )
+        
+        withAnimation(.spring(response: 0.6, dampingFraction: 0.85)) {
+            viewMode = .canvas
+            zoomScale = targetZoom
+            panOffset = newPanOffset
+            gestureScale = 1.0
+            activePanOffset = .zero
+        }
+        
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.45)) {
+            bounceTableId = table.id
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                if bounceTableId == table.id {
+                    bounceTableId = nil
+                }
+            }
         }
     }
     
@@ -1112,7 +1200,16 @@ struct TablesView: View {
     
     private func openSessionSheetView(for table: RestaurantTable) -> some View {
         VStack(spacing: APSpacing.lg) {
-            Text(String(format: "open_session_table".localized(for: appLanguage), table.tableNumber))
+            let titleText: String = {
+                if table.status.lowercased() == "reserved" {
+                    let reservedLabel = appLanguage == "th" ? "จองไว้" : "Reserved"
+                    return "\(String(format: "table_label".localized(for: appLanguage), table.tableNumber)) (\(reservedLabel))"
+                } else {
+                    return String(format: "open_session_table".localized(for: appLanguage), table.tableNumber)
+                }
+            }()
+            
+            Text(titleText)
                 .font(.headline).fontWeight(.bold)
                 .foregroundColor(.textPrimary)
                 .padding(.top, APSpacing.lg)
@@ -1130,18 +1227,63 @@ struct TablesView: View {
                 .frame(height: 100)
             }
             
-            Button(action: {
-                selectedTable = nil
-                Task {
-                    _ = try? await NetworkService.shared.openSession(tableNumber: table.tableNumber, guestCount: guestCount)
-                    await loadTables()
+            if table.status.lowercased() == "reserved" {
+                VStack(spacing: APSpacing.sm) {
+                    Button(action: {
+                        selectedTable = nil
+                        Task {
+                            _ = try? await NetworkService.shared.openSession(tableNumber: table.tableNumber, guestCount: guestCount)
+                            _ = try? await NetworkService.shared.updateTableStatus(tableNumber: table.tableNumber, status: "occupied")
+                            await loadTables()
+                        }
+                    }) {
+                        let checkInLabel = appLanguage == "th" ? "เช็คอินเปิดโต๊ะ" : "Check-in (Open)"
+                        Label(checkInLabel, systemImage: "door.left.hand.open")
+                            .apGradientButton(gradient: APGradient.positive)
+                    }
+                    
+                    Button(action: {
+                        selectedTable = nil
+                        Task {
+                            _ = try? await NetworkService.shared.updateTableStatus(tableNumber: table.tableNumber, status: "vacant")
+                            await loadTables()
+                        }
+                    }) {
+                        let cancelLabel = appLanguage == "th" ? "ยกเลิกการจองโต๊ะ" : "Cancel Reservation"
+                        Label(cancelLabel, systemImage: "xmark.circle")
+                            .apGradientButton(gradient: APGradient.destructive)
+                    }
                 }
-            }) {
-                Label("open_table".localized(for: appLanguage), systemImage: "door.left.hand.open")
-                    .apGradientButton(gradient: APGradient.positive)
+                .padding(.horizontal, APSpacing.md)
+                .padding(.bottom, APSpacing.md)
+            } else {
+                VStack(spacing: APSpacing.sm) {
+                    Button(action: {
+                        selectedTable = nil
+                        Task {
+                            _ = try? await NetworkService.shared.openSession(tableNumber: table.tableNumber, guestCount: guestCount)
+                            await loadTables()
+                        }
+                    }) {
+                        Label("open_table".localized(for: appLanguage), systemImage: "door.left.hand.open")
+                            .apGradientButton(gradient: APGradient.positive)
+                    }
+                    
+                    Button(action: {
+                        selectedTable = nil
+                        Task {
+                            _ = try? await NetworkService.shared.updateTableStatus(tableNumber: table.tableNumber, status: "reserved")
+                            await loadTables()
+                        }
+                    }) {
+                        let reserveLabel = appLanguage == "th" ? "จองโต๊ะนี้" : "Reserve Table"
+                        Label(reserveLabel, systemImage: "calendar.badge.clock")
+                            .apGradientButton(gradient: APGradient.accent)
+                    }
+                }
+                .padding(.horizontal, APSpacing.md)
+                .padding(.bottom, APSpacing.md)
             }
-            .padding(.horizontal, APSpacing.md)
-            .padding(.bottom, APSpacing.md)
         }
     }
     

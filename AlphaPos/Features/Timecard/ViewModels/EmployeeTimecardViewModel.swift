@@ -76,7 +76,7 @@ final class EmployeeTimecardViewModel {
             }
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         showingScanner = false
         
         // Enterprise Alert Triggers — notify master about clock in/out
@@ -140,6 +140,6 @@ final class EmployeeTimecardViewModel {
             }
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 }

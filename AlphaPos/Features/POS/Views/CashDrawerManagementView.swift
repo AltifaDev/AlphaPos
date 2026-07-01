@@ -690,7 +690,7 @@ struct CashDrawerManagementView: View {
         newSession.notes = openingNotes.isEmpty ? nil : openingNotes
         
         modelContext.insert(newSession)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
         
         Task {
@@ -713,7 +713,7 @@ struct CashDrawerManagementView: View {
         )
         
         modelContext.insert(newMovement)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
         
         Task {
@@ -752,7 +752,7 @@ struct CashDrawerManagementView: View {
         )
         modelContext.insert(report)
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         // Open Z-Report modal
         zReportSession = session
@@ -787,7 +787,7 @@ struct CashDrawerManagementView: View {
                 let success = try await NetworkManager.shared.uploadShiftReport(report)
                 if success {
                     report.isSynced = true
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                 }
             } catch {
                 #if DEBUG

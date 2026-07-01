@@ -16,7 +16,7 @@ extension SyncEngine {
     
     /// Post alert when sync fails after multiple retries
     func alertSyncFailed(error: Error, attempt: Int) {
-        guard attempt >= 3 else { return } // Only alert after 3+ failures
+        guard attempt == 3 else { return } // Only alert exactly on the 3rd failure of a streak
         Task { @MainActor in
             NotificationStore.shared.postAlert(
                 priority: .high,

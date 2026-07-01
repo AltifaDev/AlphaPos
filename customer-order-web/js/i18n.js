@@ -234,7 +234,7 @@ export const translations = {
                 preparingYourOrder: "กำลังเตรียมออเดอร์ของคุณ",
                 kitchenBusy: "ครัวยุ่งมาก",
                 fastService: "บริการรวดเร็ว",
-                updatedJustNow: "อัพเดทเมื่อสักครู่"
+                updatedJustNow: "อัพเดทเมื่อสักครู่",
                 
                 // Order Progress Tracker
                 orderTracker: "สถานะออเดอร์",
@@ -268,7 +268,7 @@ export const translations = {
                 tagFriendlyStaff: "พนักงานเป็นกันเอง",
                 tagClean: "สะอาด",
                 tagGoodValue: "คุ้มค่า",
-                tagWillReturn: "จะกลับมาอีก"
+                tagWillReturn: "จะกลับมาอีก",
 
                 // Allergen & Dietary Filters
                 allergenInfo: "ข้อมูลสารก่อภูมิแพ้",
@@ -357,7 +357,7 @@ export const translations = {
                 pushOrderReady: "您的订单已准备好！",
                 pushOrderConfirmed: "订单已确认",
                 pushPickUp: "请取餐",
-            }
+            },
             en: {
                 // Onboarding Step 1
                 welcomeTable: "Welcome to Table",
@@ -593,7 +593,7 @@ export const translations = {
                 preparingYourOrder: "Preparing your order",
                 kitchenBusy: "Kitchen is busy",
                 fastService: "Fast service",
-                updatedJustNow: "Updated just now"
+                updatedJustNow: "Updated just now",
                 
                 // Order Progress Tracker
                 orderTracker: "Order Progress",
@@ -627,7 +627,7 @@ export const translations = {
                 tagFriendlyStaff: "Friendly Staff",
                 tagClean: "Clean",
                 tagGoodValue: "Good Value",
-                tagWillReturn: "Will Come Back"
+                tagWillReturn: "Will Come Back",
 
                 // Allergen & Dietary Filters
                 allergenInfo: "Allergen Info",
@@ -953,7 +953,7 @@ export const translations = {
                 tagFriendlyStaff: "友好的员工",
                 tagClean: "干净",
                 tagGoodValue: "物有所值",
-                tagWillReturn: "还会再来"
+                tagWillReturn: "还会再来",
 
                 // Wait Time Widget
                 estimatedWait: "预计等待",
@@ -963,7 +963,7 @@ export const translations = {
                 preparingYourOrder: "正在准备您的订单",
                 kitchenBusy: "厨房繁忙",
                 fastService: "快速服务",
-                updatedJustNow: "刚刚更新"
+                updatedJustNow: "刚刚更新",
                 
                 // Order Progress Tracker
                 orderTracker: "订单进度",
@@ -978,7 +978,7 @@ export const translations = {
                 minutesShort: "分钟",
                 elapsed: "已过",
                 currentStep: "当前",
-                calculating: "计算中..."
+                calculating: "计算中...",
 
                 // Allergen & Dietary Filters
                 allergenInfo: "过敏原信息",

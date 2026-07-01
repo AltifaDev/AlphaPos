@@ -53,6 +53,7 @@ final class NetworkService {
     var serviceRequests: [ServiceRequest] = []
     var orders: [Order] = []
     var floorPlanImages: [FloorPlanImageStaff] = []
+    var unreadChatCount = 0
     
     var activeAlertsCount: Int {
         let pendingRequests = serviceRequests.filter { $0.status == "pending" }.count
@@ -378,10 +379,14 @@ final class NetworkService {
             async let fetchedOrders = fetchAllActiveOrders()
             async let fetchedWorkflow = fetchMerchantSettings()
             async let fetchedFloorPlans = fetchFloorPlanImages()
+            async let fetchedUnreadChat = fetchTotalUnreadChatCount()
             
             // Await all concurrent fetches (orders first for notification priority)
             let ordersRes = try await fetchedOrders
-            let (tablesRes, requestsRes, floorPlansRes) = try await (fetchedTables, fetchedRequests, fetchedFloorPlans)
+            let tablesRes = try await fetchedTables
+            let requestsRes = try await fetchedRequests
+            let floorPlansRes = try await fetchedFloorPlans
+            _ = await fetchedUnreadChat
             let settingsRes = (try? await fetchedWorkflow) ?? (true, "", true, true)
             
             await MainActor.run {

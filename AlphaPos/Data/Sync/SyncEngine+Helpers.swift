@@ -110,7 +110,7 @@ extension SyncEngine {
                 print("SyncEngine [Printer Sync Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     /// Syncs unsynced PrintRoutingRules to Supabase
@@ -137,7 +137,7 @@ extension SyncEngine {
                 print("SyncEngine [PrintRoutingRule Sync Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 }
 

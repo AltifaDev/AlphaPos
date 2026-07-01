@@ -25,8 +25,8 @@ enum DeepLinkDestination: Equatable {
         case .quickOrder: return 1  // Quick Order tab
         case .alert:      return 2  // Alerts tab
         case .order:      return 2  // Orders appear in alerts/timeline
-        case .timecard:   return 3  // Timecard tab
-        case .schedule:   return 3  // Schedule (under timecard for now)
+        case .schedule:   return 4  // More tab
+        case .timecard:   return 4  // More tab
         }
     }
 }

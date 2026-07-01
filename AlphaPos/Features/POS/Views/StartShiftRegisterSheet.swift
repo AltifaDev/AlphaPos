@@ -348,7 +348,7 @@ struct StartShiftRegisterSheet: View {
         newSession.notes = openingNotes.isEmpty ? nil : openingNotes
         
         modelContext.insert(newSession)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         // ── Auto-print Open Shift Slip ─────────────────────────────────
         // พิมพ์อัตโนมัติเฉพาะเมื่อ "print_open_shift" = true ใน Settings

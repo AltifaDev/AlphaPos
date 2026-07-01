@@ -27,7 +27,7 @@ extension SyncEngine {
                 print("SyncEngine [Category Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullCategoriesFromSupabase(_ modelContext: ModelContext) async {
@@ -59,7 +59,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = category
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Category Pull Error]: \(error.localizedDescription)")
@@ -79,7 +79,7 @@ extension SyncEngine {
                 if try await NetworkManager.shared.uploadBranch(branch) {
                     branch.isSynced = true
                     branch.updatedAt = Date()
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                 }
             } catch {
                 encounteredSyncError = true
@@ -118,7 +118,7 @@ extension SyncEngine {
                     modelContext.insert(branch)
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Branch Pull Error]: \(error.localizedDescription)")
@@ -144,7 +144,7 @@ extension SyncEngine {
                 print("SyncEngine [InventoryItem Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullInventoryItemsFromSupabase(_ modelContext: ModelContext) async {
@@ -186,15 +186,42 @@ extension SyncEngine {
                     local.category = remote["category"] as? String
                     local.storageLocation = remote["storage_location"] as? String
                     local.barcode = remote["barcode"] as? String
+                    // Safety Stock & Lead Time fields (migration_006)
+                    local.safetyStockLevel  = remoteDouble(remote["safety_stock_level"])
+                    local.maxStockLevel     = remoteDouble(remote["max_stock_level"])
+                    local.leadTimeDays      = (remote["lead_time_days"] as? Int) ?? 1
+                    // Expiry alert thresholds
+                    local.expiryWarningDays  = (remote["expiry_warning_days"]  as? Int) ?? 7
+                    local.expiryCriticalDays = (remote["expiry_critical_days"] as? Int) ?? 3
                     local.updatedAt = updatedAt
                     local.isSynced = true
                 } else {
-                    let item = InventoryItem(id: id, name: name, sku: remote["sku"] as? String, unit: remote["unit"] as? String ?? "piece", currentQuantity: remoteDouble(remote["current_quantity"]), reorderLevel: remoteDouble(remote["reorder_level"]), costPrice: remoteDouble(remote["cost_price"]), supplier: supplier, branch: branch, category: remote["category"] as? String, storageLocation: remote["storage_location"] as? String, barcode: remote["barcode"] as? String, isSynced: true, updatedAt: updatedAt == .distantPast ? Date() : updatedAt)
+                    let item = InventoryItem(
+                        id: id,
+                        name: name,
+                        sku: remote["sku"] as? String,
+                        unit: remote["unit"] as? String ?? "piece",
+                        currentQuantity: remoteDouble(remote["current_quantity"]),
+                        reorderLevel: remoteDouble(remote["reorder_level"]),
+                        costPrice: remoteDouble(remote["cost_price"]),
+                        supplier: supplier,
+                        branch: branch,
+                        safetyStockLevel:  remoteDouble(remote["safety_stock_level"]),
+                        maxStockLevel:     remoteDouble(remote["max_stock_level"]),
+                        leadTimeDays:      (remote["lead_time_days"]      as? Int) ?? 1,
+                        expiryWarningDays: (remote["expiry_warning_days"]  as? Int) ?? 7,
+                        expiryCriticalDays:(remote["expiry_critical_days"] as? Int) ?? 3,
+                        category: remote["category"] as? String,
+                        storageLocation: remote["storage_location"] as? String,
+                        barcode: remote["barcode"] as? String,
+                        isSynced: true,
+                        updatedAt: updatedAt == .distantPast ? Date() : updatedAt
+                    )
                     modelContext.insert(item)
                     localById[idStr.lowercased()] = item
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [InventoryItem Pull Error]: \(error.localizedDescription)")
@@ -220,7 +247,7 @@ extension SyncEngine {
                 print("SyncEngine [ModifierGroup Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullModifierGroupsFromSupabase(_ modelContext: ModelContext) async {
@@ -250,7 +277,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = group
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [ModifierGroup Pull Error]: \(error.localizedDescription)")
@@ -276,7 +303,7 @@ extension SyncEngine {
                 print("SyncEngine [Modifier Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullModifiersFromSupabase(_ modelContext: ModelContext) async {
@@ -319,7 +346,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = modifier
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Modifier Pull Error]: \(error.localizedDescription)")
@@ -349,7 +376,7 @@ extension SyncEngine {
                 print("SyncEngine [MenuItemModifierGroup Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullMenuItemModifierGroupsFromSupabase(_ modelContext: ModelContext) async {
@@ -389,7 +416,7 @@ extension SyncEngine {
                     localByKey[key] = relation
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [MenuItemModifierGroup Pull Error]: \(error.localizedDescription)")
@@ -407,7 +434,7 @@ extension SyncEngine {
         for txn in txns {
             if txn.isDeleted {
                 modelContext.delete(txn)
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 continue
             }
 

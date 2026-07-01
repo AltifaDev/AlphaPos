@@ -35,7 +35,7 @@ extension SyncEngine {
                 print("SyncEngine [Supplier Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullSuppliersFromSupabase(_ modelContext: ModelContext) async {
@@ -80,7 +80,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = supplier
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Supplier Pull Error]: \(error.localizedDescription)")
@@ -113,7 +113,7 @@ extension SyncEngine {
                 print("SyncEngine [TaxRate Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullTaxRatesFromSupabase(_ modelContext: ModelContext) async {
@@ -159,7 +159,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = taxRate
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [TaxRate Pull Error]: \(error.localizedDescription)")
@@ -192,7 +192,7 @@ extension SyncEngine {
                 print("SyncEngine [Recipe Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullRecipesFromSupabase(_ modelContext: ModelContext) async {
@@ -241,7 +241,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = recipe
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Recipe Pull Error]: \(error.localizedDescription)")
@@ -274,7 +274,7 @@ extension SyncEngine {
                 print("SyncEngine [CurrencyExchangeRate Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullCurrencyExchangeRatesFromSupabase(_ modelContext: ModelContext) async {
@@ -319,7 +319,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = rate
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [CurrencyExchangeRate Pull Error]: \(error.localizedDescription)")
@@ -327,6 +327,79 @@ extension SyncEngine {
     }
 
     // ──────────────────────────────────────────────────────────────────────
+    // MARK: - Role
+    // ──────────────────────────────────────────────────────────────────────
+
+    func syncRoles(_ modelContext: ModelContext) async {
+        var descriptor = FetchDescriptor<Role>(
+            predicate: #Predicate<Role> { $0.isDeleted == true || $0.isSynced == false }
+        )
+        descriptor.fetchLimit = 500
+        guard let roles = try? modelContext.fetch(descriptor), !roles.isEmpty else { return }
+
+        for role in roles {
+            do {
+                if role.isDeleted {
+                    if try await NetworkManager.shared.deleteRoleOnServer(id: role.id) {
+                        modelContext.delete(role)
+                    }
+                } else if try await NetworkManager.shared.uploadRole(role) {
+                    role.isSynced = true
+                    role.updatedAt = Date()
+                }
+            } catch {
+                encounteredSyncError = true
+                print("SyncEngine [Role Push Error]: \(error.localizedDescription)")
+            }
+        }
+        modelContext.saveWithLogging(label: #function)
+    }
+
+    func pullRolesFromSupabase(_ modelContext: ModelContext) async {
+        do {
+            let remoteRoles = try await NetworkManager.shared.fetchRolesFromSupabase()
+            guard !remoteRoles.isEmpty else { return }
+
+            var __desclocals = FetchDescriptor<Role>()
+            __desclocals.fetchLimit = 500
+            let locals = (try? modelContext.fetch(__desclocals)) ?? []
+            var localById = Dictionary(uniqueKeysWithValues: locals.map { ($0.id.uuidString.lowercased(), $0) })
+
+            for remote in remoteRoles {
+                guard let idStr = remote["id"] as? String,
+                      let id = UUID(uuidString: idStr),
+                      let name = remote["name"] as? String else { continue }
+                let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
+
+                if let local = localById[idStr.lowercased()] {
+                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    if local.isDeleted { continue }
+                    local.name = name
+                    local.roleDescription = remote["role_description"] as? String
+                    local.permissionKeys = remote["permission_keys"] as? String ?? ""
+                    local.updatedAt = updatedAt
+                    local.isSynced = true
+                } else {
+                    let role = Role(
+                        id: id,
+                        name: name,
+                        roleDescription: remote["role_description"] as? String,
+                        permissionKeys: remote["permission_keys"] as? String ?? "",
+                        isSynced: true,
+                        isDeleted: false,
+                        updatedAt: updatedAt == .distantPast ? Date() : updatedAt
+                    )
+                    modelContext.insert(role)
+                    localById[idStr.lowercased()] = role
+                }
+            }
+            modelContext.saveWithLogging(label: #function)
+        } catch {
+            encounteredSyncError = true
+            print("SyncEngine [Role Pull Error]: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - User
     // ──────────────────────────────────────────────────────────────────────
 
@@ -352,7 +425,7 @@ extension SyncEngine {
                 print("SyncEngine [User Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullUsersFromSupabase(_ modelContext: ModelContext) async {
@@ -406,7 +479,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = user
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [User Pull Error]: \(error.localizedDescription)")

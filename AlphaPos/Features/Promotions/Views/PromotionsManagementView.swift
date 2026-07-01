@@ -393,7 +393,7 @@ struct PromotionsManagementView: View {
                                 promo.isActive.toggle()
                                 promo.isSynced = false
                                 promo.updatedAt = Date()
-                                try? modelContext.save()
+                                modelContext.saveWithLogging(label: #function)
 
                                 // Trigger sync in the background
                                 Task {
@@ -593,7 +593,7 @@ struct PromotionsManagementView: View {
                         withAnimation {
                             modelContext.delete(promo)
                         }
-                        try? modelContext.save()
+                        modelContext.saveWithLogging(label: #function)
                     } else {
                         errorMessage = "Could not delete this promotion on the database. Please check connection and permissions."
                         showingErrorAlert = true
@@ -949,7 +949,7 @@ struct PromotionFormSheet: View {
             modelContext.insert(newPromo)
         }
 
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
 
         // Trigger sync in the background
         let context = modelContext

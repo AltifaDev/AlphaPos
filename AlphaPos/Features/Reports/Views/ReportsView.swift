@@ -24,6 +24,7 @@ struct ReportsView: View {
     @Query(filter: #Predicate<MenuItem> { !$0.isDeleted }) private var allMenuItems: [MenuItem]
     @Query(filter: #Predicate<InventoryItem> { !$0.isDeleted }) private var allInventory: [InventoryItem]
     @Query(filter: #Predicate<InventoryTransaction> { !$0.isDeleted }) private var allInvTransactions: [InventoryTransaction]
+    @Query(filter: #Predicate<InventoryLot> { !$0.isDeleted })         private var allInventoryLots: [InventoryLot]
     @Query(filter: #Predicate<Employee> { !$0.isDeleted }) private var allEmployees: [Employee]
     @Query(filter: #Predicate<Timecard> { !$0.isDeleted }) private var allTimecards: [Timecard]
 
@@ -216,7 +217,26 @@ struct ReportsView: View {
         case .menuProfitability:
             MenuProfitabilityReportView(viewModel: viewModel)
         case .inventoryStock:
-            InventoryReportView(viewModel: viewModel)
+            VStack(spacing: 0) {
+                        // Toggle bar
+                        Picker("", selection: $viewModel.showInventoryAnalytics) {
+                            Text("สรุปทั่วไป").tag(false)
+                            Text("Analytics").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .padding(.bottom, APSpacing.sm)
+
+                        if viewModel.showInventoryAnalytics {
+                            InventoryAnalyticsReportView(
+                                viewModel: viewModel,
+                                allInventory: allInventory,
+                                allTransactions: allInvTransactions,
+                                allLots: allInventoryLots
+                            )
+                        } else {
+                            InventoryReportView(viewModel: viewModel)
+                        }
+                    }
         case .employeeHours:
             EmployeeHoursReportView(viewModel: viewModel)
         }
@@ -238,14 +258,28 @@ struct ReportsView: View {
             viewModel.computeMenuProfitability(orders: allOrders, menuItems: allMenuItems)
         case .inventoryStock:
             viewModel.computeInventoryReport(items: allInventory, transactions: allInvTransactions)
+            // Analytics view uses allInventoryLots passed directly — no extra compute step needed
         case .employeeHours:
             viewModel.computeEmployeeHours(employees: allEmployees, timecards: allTimecards)
         }
     }
 
     private func exportCurrentReport() {
-        let title = localizedReportName(viewModel.selectedReport).replacingOccurrences(of: " ", with: "_")
-        viewModel.generatePDF(title: title, content: reportContent)
+        // Analytics report uses CoreGraphics multi-page PDF exporter
+        if viewModel.selectedReport == .inventoryStock && viewModel.showInventoryAnalytics {
+            let analytics = InventoryAnalytics(
+                items: allInventory,
+                transactions: allInvTransactions,
+                lots: allInventoryLots,
+                start: viewModel.effectiveStartDate,
+                end: viewModel.effectiveEndDate
+            )
+            viewModel.generateInventoryAnalyticsPDF(analytics: analytics)
+        } else {
+            // Existing single-page ImageRenderer export
+            let title = localizedReportName(viewModel.selectedReport).replacingOccurrences(of: " ", with: "_")
+            viewModel.generatePDF(title: title, content: reportContent)
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

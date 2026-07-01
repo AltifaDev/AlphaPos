@@ -860,7 +860,7 @@ struct TaxSettingsView: View {
             tax.updatedAt = Date()
         }
 
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
     }
 
@@ -869,7 +869,7 @@ struct TaxSettingsView: View {
         tax.isActive = false
         tax.isSynced = false
         tax.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
 
         if selectedTax?.id == tax.id {
             if let next = activeTaxes.first(where: { $0.id != tax.id }) {

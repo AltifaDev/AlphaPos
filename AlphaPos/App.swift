@@ -151,8 +151,8 @@ struct AlphaPosApp: App {
 
     private func cleanupDuplicateSeedEmployees(_ modelContext: ModelContext) {
         let mockEmpIds = [
-            UUID(uuidString: "11111111-1111-1111-1111-111111111101")!,
-            UUID(uuidString: "11111111-1111-1111-1111-111111111102")!
+            UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
         ]
         for id in mockEmpIds {
             let descriptor = FetchDescriptor<Employee>(
@@ -170,7 +170,7 @@ struct AlphaPosApp: App {
                 #endif
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     var body: some Scene {

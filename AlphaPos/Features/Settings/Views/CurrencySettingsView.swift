@@ -286,14 +286,14 @@ struct CurrencySettingsView: View {
             rate.isActive = isActive
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
     }
     
     private func deleteRate(_ rate: CurrencyExchangeRate) {
         rate.isDeleted = true
         rate.isActive = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         if selectedRate?.id == rate.id {
             if let next = activeRates.first(where: { !$0.isDeleted }) {
                 selectRate(next)

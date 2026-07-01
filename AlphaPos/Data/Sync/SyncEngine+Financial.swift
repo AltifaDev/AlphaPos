@@ -35,7 +35,7 @@ extension SyncEngine {
                 print("SyncEngine [Expense Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullExpensesFromSupabase(_ modelContext: ModelContext) async {
@@ -115,7 +115,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = expense
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Expense Pull Error]: \(error.localizedDescription)")
@@ -148,7 +148,7 @@ extension SyncEngine {
                 print("SyncEngine [RefundTransaction Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullRefundTransactionsFromSupabase(_ modelContext: ModelContext) async {
@@ -214,7 +214,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = refund
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [RefundTransaction Pull Error]: \(error.localizedDescription)")
@@ -247,7 +247,7 @@ extension SyncEngine {
                 print("SyncEngine [OrderTaxLine Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullOrderTaxLinesFromSupabase(_ modelContext: ModelContext) async {
@@ -300,7 +300,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = taxLine
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [OrderTaxLine Pull Error]: \(error.localizedDescription)")
@@ -333,7 +333,7 @@ extension SyncEngine {
                 print("SyncEngine [Tip Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullTipsFromSupabase(_ modelContext: ModelContext) async {
@@ -387,7 +387,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = tip
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Tip Pull Error]: \(error.localizedDescription)")

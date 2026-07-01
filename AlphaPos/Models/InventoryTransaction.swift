@@ -5,7 +5,7 @@ import SwiftData
 final class InventoryTransaction {
     @Attribute(.unique) var id: UUID
     var item: InventoryItem?
-    var transactionType: String // "receive", "waste", "adjust", "sell"
+    var transactionType: String // Use movementType computed var (InventoryMovementType) for type-safe access
     var quantity: Double
     var costPrice: Double?
     var referenceId: UUID? // Maps to OrderItem ID or Supplier invoice
@@ -29,5 +29,39 @@ final class InventoryTransaction {
         self.isSynced = isSynced
         self.isDeleted = isDeleted
         self.updatedAt = updatedAt
+    }
+}
+
+// MARK: - Convenience Init
+
+extension InventoryTransaction {
+    /// Convenience initialiser that accepts InventoryMovementType directly.
+    /// This is the preferred init for all new call sites.
+    convenience init(
+        id: UUID = UUID(),
+        item: InventoryItem? = nil,
+        movement: InventoryMovementType,
+        quantity: Double,
+        costPrice: Double? = nil,
+        referenceId: UUID? = nil,
+        notes: String? = nil,
+        branch: Branch? = nil,
+        isSynced: Bool = false,
+        isDeleted: Bool = false,
+        updatedAt: Date = Date()
+    ) {
+        self.init(
+            id: id,
+            item: item,
+            transactionType: movement.rawValue,
+            quantity: quantity,
+            costPrice: costPrice,
+            referenceId: referenceId,
+            notes: notes,
+            branch: branch,
+            isSynced: isSynced,
+            isDeleted: isDeleted,
+            updatedAt: updatedAt
+        )
     }
 }

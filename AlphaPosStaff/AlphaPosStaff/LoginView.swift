@@ -899,19 +899,49 @@ struct LoginView: View {
         errorMessage = nil
         Task {
             do {
+                let mId = activeMerchantId.trimmingCharacters(in: .whitespacesAndNewlines)
+                let isDemo = mId.lowercased() == "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
+                
+                // 1. Verify merchant subscription status from server
+                let subscription = try await NetworkService.shared.fetchMerchantSubscription(merchantId: mId)
+                
+                let tier = subscription.subscriptionTier ?? "offline_perpetual"
+                let status = subscription.subscriptionStatus ?? "active"
+                
+                // 2. Enforce active subscription
+                if status.lowercased() != "active" {
+                    await MainActor.run {
+                        self.isLoading = false
+                        self.errorMessage = appLanguage == "th"
+                            ? "สิทธิ์การใช้งานของร้านค้าหมดอายุแล้ว กรุณาเปิดบัญชีหลักเพื่ออัปเดตข้อมูลการชำระเงิน"
+                            : "The store's subscription has expired. Please open the main register to renew billing."
+                    }
+                    return
+                }
+                
+                // 3. Enforce Online Cloud Tier (bypass for Demo Store to support App Store reviews)
+                if tier != "online_subscription" && !isDemo {
+                    await MainActor.run {
+                        self.isLoading = false
+                        self.errorMessage = appLanguage == "th"
+                            ? "ร้านค้านี้ใช้แพ็กเกจแบบออฟไลน์ (เครื่องเดียว) การต่อพ่วงพนักงานหลายเครื่องจำเป็นต้องอัปเกรดเป็นแพ็กเกจออนไลน์คลาวด์"
+                            : "This store is on an Offline Plan (Single-Device). Accessing POS features from staff devices requires upgrading to the Online Cloud Plan."
+                    }
+                    return
+                }
+                
+                // 4. Load employee list if active and tier matches
                 let list = try await NetworkService.shared.fetchEmployees()
                 await MainActor.run {
                     self.employees = list
                     self.isLoading = false
                 }
             } catch {
-                // Fallback to local mocks if server offline
                 await MainActor.run {
-                    self.employees = [
-                        Employee(id: "11111111-1111-1111-1111-111111111111", firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, username: "somchai", role: "Store Manager", faceRegisteredAt: nil),
-                        Employee(id: "22222222-2222-2222-2222-222222222222", firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, username: "somsri", role: "Waitstaff", faceRegisteredAt: nil)
-                    ]
                     self.isLoading = false
+                    self.errorMessage = appLanguage == "th"
+                        ? "ไม่สามารถเชื่อมต่อระบบออนไลน์ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต"
+                        : "Failed to connect to the cloud. AlphaPos Staff requires an active internet connection."
                 }
             }
         }

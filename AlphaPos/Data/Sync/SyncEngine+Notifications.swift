@@ -148,6 +148,7 @@ extension SyncEngine {
         // ─── Stage 1: Pushes (Sequential to respect foreign key & relationship constraints) ───
         await syncMerchant()
         await syncSecurityPolicies(modelContext)
+        await syncRoles(modelContext)
         await syncRolePermissions(modelContext)
         await syncMerchantDevices(modelContext)
         await syncUsers(modelContext)
@@ -178,8 +179,9 @@ extension SyncEngine {
 
         await syncBranches(modelContext)
         await syncSuppliers(modelContext)
-        await syncInventoryItems(modelContext)
-        await syncInventoryTransactions(modelContext)
+        await syncInventoryItemsWithRetry(modelContext)
+        await syncInventoryTransactionsWithRetry(modelContext)
+        await syncInventoryLotsWithRetry(modelContext)          // Expiry/FEFO lots (retry-enabled)
         await syncRecipes(modelContext)
         await syncMenuItems(modelContext)
         await syncPromotions(modelContext)
@@ -206,6 +208,7 @@ extension SyncEngine {
             group.addTask { await self.pullBranchesFromSupabase(modelContext) }
             group.addTask { await self.pullSuppliersFromSupabase(modelContext) }
             group.addTask { await self.pullInventoryItemsFromSupabase(modelContext) }
+            group.addTask { await self.pullInventoryLotsFromSupabase(modelContext) }  // Expiry/FEFO lots
             group.addTask { await self.pullMenuItemsFromSupabase(modelContext) }
             group.addTask { await self.pullPromotionsFromSupabase(modelContext) }
             group.addTask { await self.pullPromotionBundleItemsFromSupabase(modelContext) }
@@ -233,6 +236,7 @@ extension SyncEngine {
             group.addTask { await self.pullTipsFromSupabase(modelContext) }
             group.addTask { await self.pullOrderItemModifiersFromSupabase(modelContext) }
             group.addTask { await self.pullUsersFromSupabase(modelContext) }
+            group.addTask { await self.pullRolesFromSupabase(modelContext) }
             group.addTask { await self.pullReceiptTemplatesFromSupabase(modelContext) }
         }
 
@@ -247,7 +251,7 @@ extension SyncEngine {
                 self.lastSyncedAt = Date()
                 self.isFirstSync = false
                 // Enterprise Alert: connection restored after previous failure
-                if self.consecutiveSyncFailures > 0 {
+                if self.consecutiveSyncFailures >= 3 {
                     self.alertConnectionRestored()
                 }
                 self.consecutiveSyncFailures = 0

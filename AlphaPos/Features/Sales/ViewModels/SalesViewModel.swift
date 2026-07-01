@@ -629,7 +629,7 @@ final class SalesViewModel {
             .sorted(by: { $0.currentQty < $1.currentQty })
 
         // Waste summary from InventoryTransactions
-        let allWaste = activeItems.flatMap { $0.transactions }.filter { $0.transactionType == "waste" && !$0.isDeleted }
+        let allWaste = activeItems.flatMap { $0.transactions }.filter { $0.transactionType == InventoryMovementType.waste.rawValue && !$0.isDeleted }
         self.totalWasteCost = allWaste.reduce(0.0) { total, tx in
             let costPer = tx.costPrice ?? (tx.item?.costPrice ?? 0)
             return total + abs(tx.quantity) * costPer

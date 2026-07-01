@@ -556,6 +556,6 @@ struct SyncConflictView: View {
         for customer in pendingCustomers { customer.isSynced = true }
         for item in pendingInventory { item.isSynced = true }
         for tc in pendingTimecards { tc.isSynced = true }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 }

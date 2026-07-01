@@ -30,6 +30,7 @@ struct TableView: View {
     @State private var focusTableId: UUID? = nil
     @State private var bounceTableId: UUID? = nil
     @State private var headerWidth: CGFloat = 0
+    @State private var searchTablesList: [RestaurantTable] = []
     @ObservedObject private var syncEngine = SyncEngine.shared
     
     @Query(filter: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted })
@@ -225,6 +226,10 @@ struct TableView: View {
         .onAppear {
             loadCachedFloorPlanImage()
             enforceTableLimit()
+            searchTablesList = tables
+        }
+        .onChange(of: tables) { _, newTables in
+            updateSearchTablesList(with: newTables)
         }
         .onChange(of: selectedFloor) { loadCachedFloorPlanImage() }
         .onChange(of: floorPlanImages) { loadCachedFloorPlanImage() }
@@ -382,7 +387,7 @@ struct TableView: View {
                                             for child in leader.joinedChildren {
                                                 child.updatedAt = Date()
                                             }
-                                            try? modelContext.save()
+                                            modelContext.saveWithLogging(label: #function)
                                             
                                             activeSession = newSession
                                             selectedTab = .pos
@@ -407,7 +412,7 @@ struct TableView: View {
                                         for child in leader.joinedChildren {
                                             child.updatedAt = Date()
                                         }
-                                        try? modelContext.save()
+                                        modelContext.saveWithLogging(label: #function)
                                         
                                         activeSession = newSession
                                         selectedTab = .pos
@@ -1073,7 +1078,7 @@ struct TableView: View {
             }
             
             if didChange {
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 Task {
                     await SyncEngine.shared.syncAll(modelContext: modelContext)
                 }
@@ -1086,7 +1091,7 @@ struct TableView: View {
         table.positionY = newPosition.y
         table.isSynced = false
         table.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         draggedTableId = nil
     }
     
@@ -1237,7 +1242,7 @@ struct TableView: View {
             )
             modelContext.insert(newItem)
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
     }
 
@@ -1265,7 +1270,7 @@ struct TableView: View {
 
         // 4. Delete from local database context immediately
         modelContext.delete(existing)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
 
         // 5. Sync deletion to remote database
         Task {
@@ -1319,7 +1324,7 @@ struct TableView: View {
                     img.scale = newValue
                     img.isSynced = false
                     img.updatedAt = Date()
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                 }
             }
         )
@@ -1333,7 +1338,7 @@ struct TableView: View {
                     img.offsetX = newValue
                     img.isSynced = false
                     img.updatedAt = Date()
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                 }
             }
         )
@@ -1347,7 +1352,7 @@ struct TableView: View {
                     img.offsetY = newValue
                     img.isSynced = false
                     img.updatedAt = Date()
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                 }
             }
         )
@@ -1409,7 +1414,7 @@ struct TableView: View {
             modelContext.insert(preset)
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
         
         Task {
@@ -1508,7 +1513,7 @@ struct TableView: View {
             }
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
         
         Task {
@@ -1527,7 +1532,7 @@ struct TableView: View {
         preset.updatedAt = Date()
         preset.isSynced = false
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
         
         Task {
@@ -1621,7 +1626,7 @@ struct TableView: View {
                     t.isSynced = false
                     t.updatedAt = Date()
                 }
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 // remove floor from list
                 var updated = floors.filter { $0.id != selectedFloor }
                 floorsJson = updated.jsonString
@@ -1812,7 +1817,7 @@ struct TableView: View {
                             bg.offsetY = 0.0
                             bg.updatedAt = Date()
                             bg.isSynced = false
-                            try? modelContext.save()
+                            modelContext.saveWithLogging(label: #function)
                         }
                     }
                     APHaptic.trigger()
@@ -1947,7 +1952,7 @@ struct TableView: View {
                     t.isSynced = false
                     t.updatedAt = Date()
                 }
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 // remove floor from list
                 var updated = floors.filter { $0.id != selectedFloor }
                 floorsJson = updated.jsonString
@@ -2095,7 +2100,7 @@ struct TableView: View {
 
     @ViewBuilder
     private var findTableCompactButton: some View {
-        let activeTables = tables.filter { !$0.isDeleted && ($0.floor ?? 1) == selectedFloor }
+        let activeTables = searchTablesList.filter { !$0.isDeleted && ($0.floor ?? 1) == selectedFloor }
         if !activeTables.isEmpty {
             Menu {
                 ForEach(activeTables) { table in
@@ -2436,6 +2441,28 @@ struct TableView: View {
             }
         }
     }
+    
+    private func updateSearchTablesList(with newTables: [RestaurantTable]) {
+        let activeNew = newTables.filter { !$0.isDeleted }
+        let activeOld = searchTablesList.filter { !$0.isDeleted }
+        
+        guard activeNew.count == activeOld.count else {
+            searchTablesList = newTables
+            return
+        }
+        
+        for i in 0..<activeNew.count {
+            let tNew = activeNew[i]
+            let tOld = activeOld[i]
+            if tNew.id != tOld.id ||
+               tNew.tableNumber != tOld.tableNumber ||
+               tNew.capacity != tOld.capacity ||
+               tNew.floor != tOld.floor {
+                searchTablesList = newTables
+                return
+            }
+        }
+    }
 }
 
 // MARK: - Table Detail / Action View
@@ -2480,7 +2507,7 @@ struct TableDetailView: View {
     
     private func performDelete() {
         modelContext.delete(table)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
@@ -2491,7 +2518,7 @@ struct TableDetailView: View {
         table.zone = newZone
         table.isSynced = false
         table.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
@@ -2538,7 +2565,7 @@ struct TableDetailView: View {
             }
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
     
     var body: some View {
@@ -2587,7 +2614,7 @@ struct TableDetailView: View {
                                                 table.capacity -= 1
                                                 table.isSynced = false
                                                 table.updatedAt = Date()
-                                                try? modelContext.save()
+                                                modelContext.saveWithLogging(label: #function)
                                                 Task {
                                                     await SyncEngine.shared.syncAll(modelContext: modelContext)
                                                 }
@@ -2608,7 +2635,7 @@ struct TableDetailView: View {
                                                 table.capacity += 1
                                                 table.isSynced = false
                                                 table.updatedAt = Date()
-                                                try? modelContext.save()
+                                                modelContext.saveWithLogging(label: #function)
                                                 Task {
                                                     await SyncEngine.shared.syncAll(modelContext: modelContext)
                                                 }
@@ -2690,7 +2717,7 @@ struct TableDetailView: View {
                                             table.isSynced = false
                                             table.status = "vacant"
                                             table.updatedAt = Date()
-                                            try? modelContext.save()
+                                            modelContext.saveWithLogging(label: #function)
                                             Task {
                                                 await SyncEngine.shared.syncAll(modelContext: modelContext)
                                             }
@@ -2727,7 +2754,7 @@ struct TableDetailView: View {
                                                         child.status = "vacant"
                                                         child.isSynced = false
                                                         child.updatedAt = Date()
-                                                        try? modelContext.save()
+                                                        modelContext.saveWithLogging(label: #function)
                                                         Task {
                                                             await SyncEngine.shared.syncAll(modelContext: modelContext)
                                                         }
@@ -2750,7 +2777,7 @@ struct TableDetailView: View {
                                                         targetTable.status = table.status
                                                         targetTable.isSynced = false
                                                         targetTable.updatedAt = Date()
-                                                        try? modelContext.save()
+                                                        modelContext.saveWithLogging(label: #function)
                                                         Task {
                                                             await SyncEngine.shared.syncAll(modelContext: modelContext)
                                                         }
@@ -3031,7 +3058,7 @@ struct TableDetailView: View {
         for child in leader.joinedChildren {
             child.updatedAt = Date()
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)

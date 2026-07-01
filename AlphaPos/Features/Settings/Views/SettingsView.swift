@@ -49,6 +49,7 @@ struct SettingsView: View {
     @State private var showingReceiptTemplateSheet = false
     @State private var showingCurrencySheet = false
     @State private var showingSystemOpsSheet = false
+    @State private var showingSubscriptionSheet = false
     
     var body: some View {
         ZStack {
@@ -169,6 +170,30 @@ struct SettingsView: View {
                                         Label(lm.languageCode == "th" ? "เปลี่ยน PIN บัญชีร้านค้า" : "Change Store Owner PIN", systemImage: "lock.ipad")
                                             .foregroundColor(.textPrimary)
                                         Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.footnote)
+                                            .foregroundColor(.textSecondary)
+                                    }
+                                }
+                                
+                                Divider()
+                                    .background(Color.appDivider)
+                                
+                                // Subscription & Billing
+                                Button(action: { showingSubscriptionSheet = true }) {
+                                    HStack {
+                                        Label(lm.languageCode == "th" ? "แผนสมาชิกและการเรียกเก็บเงิน" : "Subscription & Billing", systemImage: "creditcard.fill")
+                                            .foregroundColor(.textPrimary)
+                                        Spacer()
+                                        if let tier = MerchantAuthManager.shared.subscriptionTier {
+                                            Text(tier == "offline_perpetual" ? (lm.languageCode == "th" ? "ออฟไลน์ ซื้อขาด" : "Offline Perpetual") : (tier == "offline_subscription" ? (lm.languageCode == "th" ? "ออฟไลน์ รายเดือน/ปี" : "Offline Sub") : (lm.languageCode == "th" ? "ออนไลน์ คลาวด์" : "Online Cloud")))
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(.appAccent)
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(Color.appAccent.opacity(0.12))
+                                                .cornerRadius(6)
+                                        }
                                         Image(systemName: "chevron.right")
                                             .font(.footnote)
                                             .foregroundColor(.textSecondary)
@@ -330,6 +355,20 @@ struct SettingsView: View {
             Button(lm.languageCode == "th" ? "ยกเลิก" : "Cancel", role: .cancel) { newOwnerPin = "" }
         } message: {
             Text(lm.languageCode == "th" ? "กรุณาระบุรหัส PIN 4 หลักเพื่อความปลอดภัยในการเข้าสู่ระบบโหมดเจ้าของร้าน" : "Please enter a 4-digit security PIN for accessing owner mode.")
+        }
+        .fullScreenCover(isPresented: $showingSubscriptionSheet) {
+            NavigationStack {
+                SubscriptionSettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button { showingSubscriptionSheet = false } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(Color.textSecondary)
+                            }
+                        }
+                    }
+            }
         }
         .task {
             let connected = await NetworkManager.shared.isConnected()
@@ -630,7 +669,7 @@ struct SettingsView: View {
         if let items = try? modelContext.fetch(FetchDescriptor<MenuItem>()) {
             for item in items { modelContext.delete(item) }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 }
 

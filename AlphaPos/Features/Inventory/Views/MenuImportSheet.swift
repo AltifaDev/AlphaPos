@@ -804,7 +804,7 @@ struct MenuImportSheet: View {
             }
             
             if !newCategoriesToSave.isEmpty {
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
             }
             
             // 2. Create products

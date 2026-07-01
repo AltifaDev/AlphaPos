@@ -131,7 +131,8 @@ extension NetworkService {
                 status: dict["status"] as? String ?? "approved",
                 notes: dict["notes"] as? String,
                 clockInFaceConfidence: dict["clock_in_confidence"] as? Double,
-                clockOutFaceConfidence: dict["clock_out_confidence"] as? Double
+                clockOutFaceConfidence: dict["clock_out_confidence"] as? Double,
+                shiftId: dict["shift_id"] as? String
             )
         }
     }
@@ -152,7 +153,8 @@ extension NetworkService {
             "notes": timecard.notes ?? "",
             "clock_in_confidence": timecard.clockInFaceConfidence ?? 0.0,
             "clock_out_confidence": timecard.clockOutFaceConfidence ?? 0.0,
-            "merchant_id": merchantId
+            "merchant_id": merchantId,
+            "shift_id": timecard.shiftId ?? NSNull()
         ]
         
         if let clockOut = timecard.clockOut, clockOut > 0 {

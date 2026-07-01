@@ -582,7 +582,7 @@ struct ShiftSchedulerCalendarView: View {
                 }
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         showingFormSheet = false
         editingShift = nil
     }
@@ -590,7 +590,7 @@ struct ShiftSchedulerCalendarView: View {
     private func deleteShift() {
         if let sh = editingShift {
             modelContext.delete(sh)
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         }
         showingFormSheet = false
         editingShift = nil

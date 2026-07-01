@@ -35,7 +35,7 @@ extension SyncEngine {
                 print("SyncEngine [RestaurantWall Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullRestaurantWallsFromSupabase(_ modelContext: ModelContext) async {
@@ -94,7 +94,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = wall
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [RestaurantWall Pull Error]: \(error.localizedDescription)")
@@ -127,7 +127,7 @@ extension SyncEngine {
                 print("SyncEngine [TableLayoutPreset Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullTableLayoutPresetsFromSupabase(_ modelContext: ModelContext) async {
@@ -188,7 +188,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = preset
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [TableLayoutPreset Pull Error]: \(error.localizedDescription)")
@@ -221,7 +221,7 @@ extension SyncEngine {
                 print("SyncEngine [ReceiptTemplate Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullReceiptTemplatesFromSupabase(_ modelContext: ModelContext) async {
@@ -289,7 +289,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = template
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [ReceiptTemplate Pull Error]: \(error.localizedDescription)")

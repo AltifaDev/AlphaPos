@@ -24,7 +24,7 @@ extension SyncEngine {
                         item.isSynced = true
                         item.updatedAt = Date()
                     }
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                 }
             } catch {
                 encounteredSyncError = true
@@ -71,7 +71,7 @@ extension SyncEngine {
         for shift in shifts {
             if shift.isDeleted {
                 modelContext.delete(shift)
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 continue
             }
 
@@ -163,7 +163,7 @@ extension SyncEngine {
                 }
             }
             if needsSave {
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
             }
         }
 
@@ -187,7 +187,7 @@ extension SyncEngine {
                         }
                     }
                     if needsSave {
-                        try? modelContext.save()
+                        modelContext.saveWithLogging(label: #function)
                     }
                 }
             }
@@ -306,7 +306,7 @@ extension SyncEngine {
                 }
             }
             
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Table Pull Error]: \(error.localizedDescription)")
@@ -539,7 +539,7 @@ extension SyncEngine {
                             }
                         }
                     }
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                     continue
                 }
 
@@ -670,7 +670,7 @@ extension SyncEngine {
                         }
                     }
                 }
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
             }
 
         } catch {
@@ -794,7 +794,7 @@ extension SyncEngine {
                 }
             }
 
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Sessions Pull Error]: \(error.localizedDescription)")
@@ -968,7 +968,7 @@ extension SyncEngine {
                     modelContext.insert(newEmp)
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Employee Pull Error]: \(error.localizedDescription)")
@@ -1043,7 +1043,7 @@ extension SyncEngine {
                     modelContext.insert(newShift)
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [EmployeeShift Pull Error]: \(error.localizedDescription)")

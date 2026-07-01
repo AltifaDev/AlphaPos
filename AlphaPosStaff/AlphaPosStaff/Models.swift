@@ -110,6 +110,22 @@ struct Timecard: Codable, Identifiable, Hashable {
     let notes: String?
     let clockInFaceConfidence: Double?
     let clockOutFaceConfidence: Double?
+    let shiftId: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case employeeId = "employee_id"
+        case employeeName = "employee_name"
+        case clockIn = "clock_in"
+        case clockOut = "clock_out"
+        case breakDurationMinutes = "break_duration"
+        case overtimeMinutes = "overtime_minutes"
+        case status
+        case notes
+        case clockInFaceConfidence = "clock_in_confidence"
+        case clockOutFaceConfidence = "clock_out_confidence"
+        case shiftId = "shift_id"
+    }
 }
 
 struct ServiceRequest: Codable, Identifiable, Hashable {

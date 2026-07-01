@@ -683,7 +683,7 @@ struct KitchenDisplayView: View {
             }
             order.updatedAt = Date()
             order.isSynced = false
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             APHaptic.trigger()
         }
     }
@@ -714,7 +714,7 @@ struct KitchenDisplayView: View {
             }
             lastOrder.updatedAt = Date()
             lastOrder.isSynced = false
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             APHaptic.trigger()
         }
     }
@@ -747,7 +747,7 @@ struct KitchenDisplayView: View {
         }
         
         if didAutoComplete {
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             APHaptic.trigger()
         }
     }
@@ -1027,7 +1027,7 @@ struct KitchenPremiumTicketCard: View {
             } else {
                 order.status = "preparing"
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             // Trigger sync
             Task {
@@ -1067,7 +1067,7 @@ struct KitchenPremiumTicketCard: View {
                 if !hasActiveItems {
                     order.status = "ready"
                 }
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 
                 Task {
                     await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1371,7 +1371,7 @@ struct KitchenTicketView: View {
             } else {
                 order.status = "preparing"
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             Task {
                 await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1395,7 +1395,7 @@ struct KitchenTicketView: View {
             } else {
                 order.status = "preparing"
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             Task {
                 await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1411,7 +1411,7 @@ struct KitchenTicketView: View {
             
             order.isSynced = false
             order.updatedAt = Date()
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             Task {
                 await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1459,7 +1459,7 @@ struct KitchenTicketView: View {
                 if !hasActiveItems {
                     order.status = "ready"
                 }
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 
                 Task {
                     await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1489,7 +1489,7 @@ struct KitchenTicketView: View {
                 if !hasActiveItems {
                     order.status = "served"
                 }
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 
                 Task {
                     await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1876,7 +1876,7 @@ struct KitchenOrderDetailView: View {
             if activeItems.isEmpty {
                 order.status = "ready"
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             Task {
                 await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1906,7 +1906,7 @@ struct KitchenOrderDetailView: View {
             } else {
                 order.status = "preparing"
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             Task {
                 await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1922,7 +1922,7 @@ struct KitchenOrderDetailView: View {
             
             order.isSynced = false
             order.updatedAt = Date()
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         }
         
         Task {
@@ -1948,7 +1948,7 @@ struct KitchenOrderDetailView: View {
             if activeItems.isEmpty {
                 order.status = "ready"
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             // Check if all active items matching this station have been served/cancelled
             let activeItemsForStation = order.items.filter { ($0.status == "cooking" || $0.status == "alert") && (station == .kitchen ? !$0.isBeverage : $0.isBeverage) }
@@ -1977,7 +1977,7 @@ struct KitchenOrderDetailView: View {
             if !hasActiveItems {
                 order.status = "ready"
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             Task {
                 await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -2005,7 +2005,7 @@ struct KitchenOrderDetailView: View {
             if !hasActiveItems {
                 order.status = "served"
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             Task {
                 await SyncEngine.shared.syncAll(modelContext: modelContext)

@@ -794,14 +794,14 @@ struct PayrollDashboardView: View {
         timecard.status = "approved"
         timecard.updatedAt = Date()
         timecard.isSynced = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
     
     private func rejectTimecard(_ timecard: Timecard) {
         timecard.status = "rejected"
         timecard.updatedAt = Date()
         timecard.isSynced = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
     
     private func calculatePayroll() {
@@ -1101,7 +1101,7 @@ struct PayrollDashboardView: View {
             }
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         showingEmployeeSheet = false
         editingEmployee = nil
         
@@ -1164,7 +1164,7 @@ struct PayrollDashboardView: View {
                 }
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         showingShiftSheet = false
         editingShift = nil
     }
@@ -1219,7 +1219,7 @@ struct PayrollDashboardView: View {
             )
             modelContext.insert(newTc)
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         showingTimecardSheet = false
         editingTimecard = nil
     }

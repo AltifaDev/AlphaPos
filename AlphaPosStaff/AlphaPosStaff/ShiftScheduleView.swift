@@ -106,6 +106,12 @@ struct Shift: Codable, Identifiable, Hashable {
               let m = Int(parts[1]) else { return nil }
         return Calendar.current.date(bySettingHour: h, minute: m, second: 0, of: baseDate)
     }
+
+    var durationHours: Double {
+        guard let start = startDateTime, var end = endDateTime else { return 0 }
+        if end <= start { end = Calendar.current.date(byAdding: .day, value: 1, to: end) ?? end }
+        return end.timeIntervalSince(start) / 3600
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -120,6 +126,7 @@ struct ShiftScheduleView: View {
     @State private var teamShifts: [Shift] = []
     @State private var isLoading = false
     @State private var selectedWeekOffset = 0  // 0 = this week, 1 = next week
+    @State private var selectedDayIndex = 0
     @State private var currentTime = Date()
     @State private var loadError: String? = nil
     
@@ -150,6 +157,21 @@ struct ShiftScheduleView: View {
             .sorted { ($0.startDateTime ?? .distantFuture) < ($1.startDateTime ?? .distantFuture) }
             .first
     }
+
+    private var selectedDate: Date { weekDays[selectedDayIndex] }
+
+    private var selectedMyShifts: [Shift] {
+        shiftsFor(date: selectedDate).sorted { $0.startTime < $1.startTime }
+    }
+
+    private var selectedTeamShifts: [Shift] {
+        let date = dateString(from: selectedDate)
+        return teamShifts.filter { $0.date == date }.sorted { $0.startTime < $1.startTime }
+    }
+
+    private var scheduledHours: Double {
+        myShifts.reduce(0) { $0 + $1.durationHours }
+    }
     
     private var countdownText: String {
         guard let next = nextShift, let startDT = next.startDateTime else {
@@ -179,20 +201,11 @@ struct ShiftScheduleView: View {
                 Color.appBackground.ignoresSafeArea()
                 
                 ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(spacing: APSpacing.lg) {
-                        // Next Shift Countdown Card
-                        nextShiftCard
-                        
-                        // Week Selector
+                    LazyVStack(spacing: APSpacing.md) {
                         weekSelector
-                        
-                        // Weekly Calendar
+                        weekOverview
                         weeklyCalendar
-                        
-                        // My Shifts This Week
                         myShiftsSection
-                        
-                        // Team Schedule
                         teamScheduleSection
                     }
                     .padding(.horizontal, APSpacing.md)
@@ -205,6 +218,7 @@ struct ShiftScheduleView: View {
             .navigationTitle("schedule".localized(for: appLanguage))
             .apNavBar()
             .onAppear {
+                selectDefaultDay()
                 Task { await loadShifts() }
             }
             .alert("load_shifts_failed".localized(for: appLanguage),
@@ -225,123 +239,113 @@ struct ShiftScheduleView: View {
         }
     }
     
-    // MARK: - Next Shift Countdown Card
-    
-    private var nextShiftCard: some View {
-        VStack(spacing: APSpacing.sm) {
+    // MARK: - Week overview
+
+    private var weekOverview: some View {
+        VStack(spacing: APSpacing.md) {
+            HStack(spacing: 0) {
+                summaryMetric(value: "\(myShifts.count)", label: "scheduled_shifts", icon: "calendar")
+                Divider().frame(height: 42)
+                summaryMetric(value: formattedHours(scheduledHours), label: "scheduled_hours", icon: "clock")
+                Divider().frame(height: 42)
+                summaryMetric(value: "\(Set(myShifts.map(\.date)).count)", label: "work_days", icon: "briefcase")
+            }
+
+            Divider().background(Color.appDivider)
+
             if let next = nextShift {
                 HStack(spacing: APSpacing.md) {
-                    // Left: Shift type icon with color
-                    ZStack {
-                        Circle()
-                            .fill(next.shiftType.color.opacity(0.15))
-                            .frame(width: 56, height: 56)
-                        Image(systemName: next.shiftType.icon)
-                            .font(.title2)
-                            .foregroundColor(next.shiftType.color)
-                    }
-                    
-                    // Center: Info
-                    VStack(alignment: .leading, spacing: 4) {
+                    Image(systemName: next.shiftType.icon)
+                        .font(.title3)
+                        .foregroundColor(next.shiftType.color)
+                        .frame(width: 44, height: 44)
+                        .background(next.shiftType.color.opacity(0.12), in: RoundedRectangle(cornerRadius: APRadius.sm))
+
+                    VStack(alignment: .leading, spacing: 3) {
                         Text("next_shift".localized(for: appLanguage))
                             .font(.caption)
                             .foregroundColor(.textSecondary)
-                        
-                        Text(next.shiftType.displayName.localized(for: appLanguage))
-                            .font(.headline)
-                            .fontWeight(.bold)
+                        Text("\(formatCompactDate(next.date))  •  \(next.startTime)–\(next.endTime)")
+                            .font(.subheadline.weight(.semibold))
                             .foregroundColor(.textPrimary)
-                        
-                        Text("\(next.startTime) – \(next.endTime)")
-                            .font(.subheadline)
-                            .foregroundColor(.textSecondary)
-                        
                         if let station = next.station, !station.isEmpty {
-                            HStack(spacing: 4) {
-                                Image(systemName: "mappin.circle.fill")
-                                    .font(.caption)
-                                Text(station)
-                                    .font(.caption)
-                            }
-                            .foregroundColor(.textTertiary)
+                            Label(station, systemImage: "mappin.and.ellipse")
+                                .font(.caption)
+                                .foregroundColor(.textSecondary)
                         }
                     }
-                    
-                    Spacer()
-                    
-                    // Right: Countdown
-                    VStack(spacing: 4) {
+
+                    Spacer(minLength: APSpacing.sm)
+
+                    VStack(alignment: .trailing, spacing: 2) {
                         Text("starts_in".localized(for: appLanguage))
                             .font(.caption2)
                             .foregroundColor(.textTertiary)
                         Text(countdownText)
-                            .font(.title2)
-                            .fontWeight(.heavy)
+                            .font(.headline.weight(.bold))
                             .foregroundColor(next.shiftType.color)
                             .monospacedDigit()
                     }
                 }
-                .padding(APSpacing.md)
             } else {
-                HStack(spacing: APSpacing.md) {
-                    Image(systemName: "calendar.badge.checkmark")
-                        .font(.largeTitle)
-                        .foregroundColor(.textTertiary)
-                    
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("no_shifts".localized(for: appLanguage))
-                            .font(.headline)
-                            .foregroundColor(.textPrimary)
-                        Text("schedule".localized(for: appLanguage))
-                            .font(.caption)
-                            .foregroundColor(.textSecondary)
-                    }
-                    
-                    Spacer()
-                }
-                .padding(APSpacing.md)
+                Label("no_shifts".localized(for: appLanguage), systemImage: "calendar.badge.checkmark")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundColor(.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .apCard()
+    }
+
+    private func summaryMetric(value: String, label: String, icon: String) -> some View {
+        VStack(spacing: 4) {
+            Label(value, systemImage: icon)
+                .font(.headline.weight(.bold))
+                .foregroundColor(.textPrimary)
+                .labelStyle(.titleAndIcon)
+            Text(label.localized(for: appLanguage))
+                .font(.caption2)
+                .foregroundColor(.textSecondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
     
     // MARK: - Week Selector
     
     private var weekSelector: some View {
-        HStack {
-            Button(action: { withAnimation { selectedWeekOffset -= 1 } }) {
+        HStack(spacing: APSpacing.sm) {
+            Button(action: { changeWeek(by: -1) }) {
                 Image(systemName: "chevron.left")
-                    .font(.title3.weight(.semibold))
-                    .foregroundColor(.appAccent)
+                    .frame(width: 44, height: 44)
+                    .background(Color.appSurface, in: Circle())
             }
-            
+
             Spacer()
-            
+
             VStack(spacing: 2) {
-                Text(selectedWeekOffset == 0 ? "this_week".localized(for: appLanguage) : weekRangeString)
+                Text(selectedWeekOffset == 0 ? "this_week".localized(for: appLanguage) : "schedule".localized(for: appLanguage))
                     .font(.headline)
                     .fontWeight(.bold)
                     .foregroundColor(.textPrimary)
-                
-                if selectedWeekOffset != 0 {
-                    Text(weekRangeString)
-                        .font(.caption)
-                        .foregroundColor(.textSecondary)
-                }
+                Text(weekRangeString)
+                    .font(.caption)
+                    .foregroundColor(.textSecondary)
             }
-            
+
             Spacer()
-            
-            Button(action: { withAnimation { selectedWeekOffset += 1 } }) {
+
+            Button(action: { changeWeek(by: 1) }) {
                 Image(systemName: "chevron.right")
-                    .font(.title3.weight(.semibold))
-                    .foregroundColor(.appAccent)
+                    .frame(width: 44, height: 44)
+                    .background(Color.appSurface, in: Circle())
             }
         }
-        .padding(.horizontal, APSpacing.sm)
-        .onChange(of: selectedWeekOffset) { _ in
-            Task { await loadShifts() }
-        }
+        .font(.body.weight(.semibold))
+        .foregroundColor(.appAccent)
+        .accessibilityElement(children: .contain)
     }
     
     private var weekRangeString: String {
@@ -356,39 +360,42 @@ struct ShiftScheduleView: View {
     
     private var weeklyCalendar: some View {
         HStack(spacing: 6) {
-            ForEach(weekDays, id: \.self) { day in
+            ForEach(Array(weekDays.enumerated()), id: \.element) { index, day in
                 let isToday = Calendar.current.isDateInToday(day)
+                let isSelected = selectedDayIndex == index
                 let dayShifts = shiftsFor(date: day)
-                
-                VStack(spacing: 6) {
-                    // Day name
-                    Text(dayAbbreviation(day))
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundColor(isToday ? .white : .textSecondary)
-                    
-                    // Date number
-                    Text("\(Calendar.current.component(.day, from: day))")
-                        .font(.subheadline)
-                        .fontWeight(isToday ? .bold : .regular)
-                        .foregroundColor(isToday ? .white : .textPrimary)
-                    
-                    // Shift dots
-                    HStack(spacing: 2) {
-                        ForEach(dayShifts.prefix(3), id: \.id) { shift in
-                            Circle()
-                                .fill(shift.shiftType.color)
-                                .frame(width: 6, height: 6)
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { selectedDayIndex = index }
+                } label: {
+                    VStack(spacing: 6) {
+                        Text(dayAbbreviation(day))
+                            .font(.caption2.weight(.semibold))
+
+                        Text("\(Calendar.current.component(.day, from: day))")
+                            .font(.body.weight(isSelected ? .bold : .medium))
+
+                        HStack(spacing: 2) {
+                            ForEach(dayShifts.prefix(2), id: \.id) { shift in
+                                Circle()
+                                    .fill(isSelected ? Color.white : shift.shiftType.color)
+                                    .frame(width: 5, height: 5)
+                            }
+                        }
+                        .frame(height: 6)
+                    }
+                    .foregroundColor(isSelected ? .white : .textPrimary)
+                    .frame(maxWidth: .infinity, minHeight: 68)
+                    .background(isSelected ? Color.appAccent : Color.clear, in: RoundedRectangle(cornerRadius: APRadius.sm))
+                    .overlay {
+                        if isToday && !isSelected {
+                            RoundedRectangle(cornerRadius: APRadius.sm)
+                                .stroke(Color.appAccent, lineWidth: 1.5)
                         }
                     }
-                    .frame(height: 8)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, APSpacing.sm)
-                .background(
-                    RoundedRectangle(cornerRadius: APRadius.sm, style: .continuous)
-                        .fill(isToday ? Color.appAccent : Color.clear)
-                )
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(formatDateHeader(dateString(from: day))), \(dayShifts.count) \("scheduled_shifts".localized(for: appLanguage))")
             }
         }
         .padding(APSpacing.sm)
@@ -402,14 +409,18 @@ struct ShiftScheduleView: View {
             HStack {
                 Image(systemName: "person.fill")
                     .foregroundColor(.appAccent)
-                Text("my_shifts".localized(for: appLanguage))
-                    .font(.headline)
-                    .fontWeight(.bold)
-                    .foregroundColor(.textPrimary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("my_shifts".localized(for: appLanguage))
+                        .font(.headline.weight(.bold))
+                        .foregroundColor(.textPrimary)
+                    Text(formatDateHeader(dateString(from: selectedDate)))
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                }
                 
                 Spacer()
                 
-                Text("\(myShifts.count)")
+                Text("\(selectedMyShifts.count)")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.appAccent)
@@ -426,21 +437,11 @@ struct ShiftScheduleView: View {
                     Spacer()
                 }
                 .padding(.vertical, APSpacing.xl)
-            } else if myShifts.isEmpty {
+            } else if selectedMyShifts.isEmpty {
                 emptyStateView
             } else {
-                ForEach(groupedMyShifts, id: \.0) { (dateStr, shifts) in
-                    VStack(alignment: .leading, spacing: APSpacing.sm) {
-                        Text(formatDateHeader(dateStr))
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundColor(.textSecondary)
-                            .padding(.leading, 4)
-                        
-                        ForEach(shifts) { shift in
-                            ShiftRowView(shift: shift, appLanguage: appLanguage)
-                        }
-                    }
+                ForEach(selectedMyShifts) { shift in
+                    ShiftRowView(shift: shift, appLanguage: appLanguage, now: currentTime)
                 }
             }
         }
@@ -461,7 +462,7 @@ struct ShiftScheduleView: View {
                 
                 Spacer()
                 
-                Text("\(teamShifts.count)")
+                Text("\(selectedTeamShifts.count)")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.appPurple)
@@ -470,53 +471,31 @@ struct ShiftScheduleView: View {
                     .background(Capsule().fill(Color.appPurple.opacity(0.15)))
             }
             
-            if teamShifts.isEmpty && !isLoading {
+            if selectedTeamShifts.isEmpty && !isLoading {
                 HStack {
                     Spacer()
-                    VStack(spacing: 8) {
-                        Image(systemName: "person.3")
-                            .font(.title)
-                            .foregroundColor(.textTertiary)
-                        Text("no_shifts".localized(for: appLanguage))
-                            .font(.subheadline)
-                            .foregroundColor(.textSecondary)
-                    }
-                    Spacer()
-                }
-                .padding(.vertical, APSpacing.lg)
-            } else {
-                // Group team shifts by shift type for today
-                let todayStr = dateString(from: Date())
-                let todayTeamShifts = teamShifts.filter { $0.date == todayStr }
-                
-                if todayTeamShifts.isEmpty {
-                    Text("no_shifts".localized(for: appLanguage))
+                    Label("no_team_shifts_day".localized(for: appLanguage), systemImage: "person.3")
                         .font(.subheadline)
                         .foregroundColor(.textSecondary)
-                        .padding(.vertical, APSpacing.md)
-                } else {
-                    ForEach(ShiftType.allCases, id: \.rawValue) { type in
-                        let typeShifts = todayTeamShifts.filter { $0.shiftType == type }
-                        if !typeShifts.isEmpty {
-                            VStack(alignment: .leading, spacing: APSpacing.sm) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: type.icon)
-                                        .font(.caption)
-                                        .foregroundColor(type.color)
-                                    Text(type.displayName.localized(for: appLanguage))
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(type.color)
-                                }
-                                
-                                FlowLayout(spacing: 6) {
-                                    ForEach(typeShifts) { shift in
-                                        TeamMemberChip(shift: shift)
-                                    }
+                    Spacer()
+                }
+                .padding(.vertical, APSpacing.sm)
+            } else {
+                ForEach(ShiftType.allCases, id: \.rawValue) { type in
+                    let typeShifts = selectedTeamShifts.filter { $0.shiftType == type }
+                    if !typeShifts.isEmpty {
+                        VStack(alignment: .leading, spacing: APSpacing.sm) {
+                            Label(type.displayName.localized(for: appLanguage), systemImage: type.icon)
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(type.color)
+
+                            FlowLayout(spacing: 6) {
+                                ForEach(typeShifts) { shift in
+                                    TeamMemberChip(shift: shift)
                                 }
                             }
-                            .padding(.vertical, 4)
                         }
+                        .padding(.vertical, 4)
                     }
                 }
             }
@@ -527,25 +506,27 @@ struct ShiftScheduleView: View {
     // MARK: - Empty State
     
     private var emptyStateView: some View {
-        VStack(spacing: APSpacing.md) {
-            Image(systemName: "calendar.badge.clock")
-                .font(.system(size: 44))
-                .foregroundColor(.textTertiary)
-            
-            Text("no_shifts".localized(for: appLanguage))
-                .font(.headline)
-                .foregroundColor(.textSecondary)
+        HStack(spacing: APSpacing.md) {
+            Image(systemName: "calendar.badge.checkmark")
+                .font(.title2)
+                .foregroundColor(.appTeal)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("no_shift_day".localized(for: appLanguage))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.textPrimary)
+                Text("no_shift_day_hint".localized(for: appLanguage))
+                    .font(.caption)
+                    .foregroundColor(.textSecondary)
+            }
+
+            Spacer()
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, APSpacing.xl)
+        .padding(APSpacing.md)
+        .background(Color.appSurfaceHigh.opacity(0.45), in: RoundedRectangle(cornerRadius: APRadius.sm))
     }
     
     // MARK: - Helpers
-    
-    private var groupedMyShifts: [(String, [Shift])] {
-        Dictionary(grouping: myShifts, by: { $0.date })
-            .sorted { $0.key < $1.key }
-    }
     
     private func shiftsFor(date: Date) -> [Shift] {
         let str = dateString(from: date)
@@ -571,15 +552,43 @@ struct ShiftScheduleView: View {
         guard let date = formatter.date(from: dateStr) else { return dateStr }
         
         if Calendar.current.isDateInToday(date) {
-            return "Today"
+            return "today".localized(for: appLanguage)
         } else if Calendar.current.isDateInTomorrow(date) {
-            return "Tomorrow"
+            return "tomorrow".localized(for: appLanguage)
         } else {
             let displayFormatter = DateFormatter()
             displayFormatter.dateFormat = "EEEE, MMM d"
             if appLanguage == "th" { displayFormatter.locale = Locale(identifier: "th_TH") }
             return displayFormatter.string(from: date)
         }
+    }
+
+    private func formatCompactDate(_ dateStr: String) -> String {
+        let input = DateFormatter()
+        input.dateFormat = "yyyy-MM-dd"
+        guard let date = input.date(from: dateStr) else { return dateStr }
+        let output = DateFormatter()
+        output.locale = Locale(identifier: appLanguage == "th" ? "th_TH" : appLanguage == "lo" ? "lo_LA" : "en_US")
+        output.setLocalizedDateFormatFromTemplate("EEE d MMM")
+        return output.string(from: date)
+    }
+
+    private func formattedHours(_ hours: Double) -> String {
+        hours.rounded() == hours ? String(format: "%.0fh", hours) : String(format: "%.1fh", hours)
+    }
+
+    private func selectDefaultDay() {
+        guard selectedWeekOffset == 0 else { selectedDayIndex = 0; return }
+        let weekday = Calendar.current.component(.weekday, from: Date())
+        selectedDayIndex = weekday == 1 ? 6 : weekday - 2
+    }
+
+    private func changeWeek(by offset: Int) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            selectedWeekOffset += offset
+            selectDefaultDay()
+        }
+        Task { await loadShifts() }
     }
     
     // MARK: - Data Loading
@@ -617,66 +626,80 @@ struct ShiftScheduleView: View {
 struct ShiftRowView: View {
     let shift: Shift
     let appLanguage: String
-    
+    let now: Date
+
+    private var status: (key: String, color: Color) {
+        guard let start = shift.startDateTime, var end = shift.endDateTime else {
+            return ("shift_upcoming", .appAccent)
+        }
+        if end <= start { end = Calendar.current.date(byAdding: .day, value: 1, to: end) ?? end }
+        if now < start { return ("shift_upcoming", .appAccent) }
+        if now > end { return ("shift_completed", .appTeal) }
+        return ("shift_in_progress", .appGreen)
+    }
+
     var body: some View {
-        HStack(spacing: APSpacing.md) {
-            // Shift type indicator bar
+        HStack(alignment: .top, spacing: APSpacing.md) {
             RoundedRectangle(cornerRadius: 3)
                 .fill(shift.shiftType.gradient)
-                .frame(width: 4, height: 48)
-            
-            // Shift type icon
-            ZStack {
-                RoundedRectangle(cornerRadius: APRadius.sm, style: .continuous)
-                    .fill(shift.shiftType.color.opacity(0.12))
-                    .frame(width: 40, height: 40)
-                Image(systemName: shift.shiftType.icon)
-                    .font(.body)
+                .frame(width: 4)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(shift.startTime)
+                    .font(.body.weight(.bold))
+                    .foregroundColor(.textPrimary)
+                Text(shift.endTime)
+                    .font(.caption)
+                    .foregroundColor(.textSecondary)
+                Text(String(format: "%.1fh", shift.durationHours))
+                    .font(.caption2.weight(.semibold))
                     .foregroundColor(shift.shiftType.color)
             }
-            
-            // Info
-            VStack(alignment: .leading, spacing: 3) {
-                Text(shift.shiftType.displayName.localized(for: appLanguage))
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.textPrimary)
-                
-                HStack(spacing: APSpacing.sm) {
-                    Label(shift.startTime + " – " + shift.endTime, systemImage: "clock")
+            .monospacedDigit()
+            .frame(width: 48, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: shift.shiftType.icon)
+                        .foregroundColor(shift.shiftType.color)
+                    Text(shift.shiftType.displayName.localized(for: appLanguage))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.textPrimary)
+
+                    Spacer()
+
+                    Text(status.key.localized(for: appLanguage))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(status.color)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(status.color.opacity(0.12), in: Capsule())
+                }
+
+                if let station = shift.station, !station.isEmpty {
+                    Label(station, systemImage: "mappin.and.ellipse")
                         .font(.caption)
                         .foregroundColor(.textSecondary)
-                    
-                    if let station = shift.station, !station.isEmpty {
-                        Label(station, systemImage: "mappin")
-                            .font(.caption)
-                            .foregroundColor(.textTertiary)
-                    }
+                }
+
+                if let notes = shift.notes, !notes.isEmpty {
+                    Text(notes)
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            
-            Spacer()
-            
-            // Duration badge
-            if let start = shift.startDateTime, let end = shift.endDateTime {
-                let hours = end.timeIntervalSince(start) / 3600.0
-                Text(String(format: "%.0fh", hours))
-                    .font(.caption)
-                    .fontWeight(.bold)
-                    .foregroundColor(shift.shiftType.color)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        Capsule().fill(shift.shiftType.color.opacity(0.12))
-                    )
-            }
         }
-        .padding(.vertical, 6)
-        .padding(.horizontal, APSpacing.sm)
+        .padding(APSpacing.md)
         .background(
-            RoundedRectangle(cornerRadius: APRadius.sm, style: .continuous)
-                .fill(Color.appSurfaceHigh.opacity(0.5))
+            RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                .fill(Color.appSurfaceHigh.opacity(0.45))
+                .overlay(
+                    RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                        .stroke(Color.appDivider.opacity(0.35), lineWidth: 1)
+                )
         )
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -700,16 +723,14 @@ struct TeamMemberChip: View {
                     .foregroundColor(shift.shiftType.color)
             }
             
-            Text(shift.employeeName)
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundColor(.textPrimary)
-                .lineLimit(1)
-            
-            if let station = shift.station, !station.isEmpty {
-                Text("• \(station)")
+            VStack(alignment: .leading, spacing: 1) {
+                Text(shift.employeeName)
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(.textPrimary)
+                    .lineLimit(1)
+                Text("\(shift.startTime)–\(shift.endTime)" + (shift.station.flatMap { $0.isEmpty ? nil : " • \($0)" } ?? ""))
                     .font(.caption2)
-                    .foregroundColor(.textTertiary)
+                    .foregroundColor(.textSecondary)
             }
         }
         .padding(.horizontal, 10)

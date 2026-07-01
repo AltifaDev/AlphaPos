@@ -20,6 +20,7 @@ enum InventorySortKey: String, CaseIterable, Identifiable {
     case quantity = "quantity"
     case cost = "cost"
     case updated = "updated"
+    case expiry  = "expiry"
     
     var id: String { rawValue }
     
@@ -29,6 +30,7 @@ enum InventorySortKey: String, CaseIterable, Identifiable {
         case .quantity: return "inventory_sort_quantity".t
         case .cost: return "inventory_sort_cost".t
         case .updated: return "inventory_sort_updated".t
+        case .expiry:  return "inventory_sort_expiry".t
         }
     }
     
@@ -38,6 +40,7 @@ enum InventorySortKey: String, CaseIterable, Identifiable {
         case .quantity: return "number"
         case .cost: return "dollarsign.circle"
         case .updated: return "clock"
+        case .expiry:  return "calendar.badge.exclamationmark"
         }
     }
 }
@@ -226,6 +229,8 @@ final class InventoryViewModel {
             return [SortDescriptor(\InventoryItem.costPrice, order: sortAscending ? .forward : .reverse)]
         case .updated:
             return [SortDescriptor(\InventoryItem.updatedAt, order: sortAscending ? .forward : .reverse)]
+        case .expiry:
+            return [SortDescriptor(\InventoryItem.updatedAt, order: sortAscending ? .forward : .reverse)]
         }
     }
     
@@ -282,7 +287,7 @@ final class InventoryViewModel {
             
             let txn = InventoryTransaction(
                 item: item,
-                transactionType: "receive",
+                transactionType: InventoryMovementType.receive.rawValue,
                 quantity: amount,
                 costPrice: item.costPrice,
                 notes: notes.isEmpty ? "Bulk receive (\(items.count) items)" : notes,
@@ -291,7 +296,7 @@ final class InventoryViewModel {
             modelContext.insert(txn)
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -314,7 +319,7 @@ final class InventoryViewModel {
             let txnNote = "Bulk Waste: \(reason)" + (notes.isEmpty ? "" : " (\(notes))")
             let txn = InventoryTransaction(
                 item: item,
-                transactionType: "waste",
+                transactionType: InventoryMovementType.waste.rawValue,
                 quantity: -wasteQty,
                 notes: txnNote,
                 branch: item.branch
@@ -322,7 +327,7 @@ final class InventoryViewModel {
             modelContext.insert(txn)
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -344,7 +349,7 @@ final class InventoryViewModel {
             let txnNote = "Bulk Waste: \(reason)" + (notes.isEmpty ? "" : " (\(notes))")
             let txn = InventoryTransaction(
                 item: item,
-                transactionType: "waste",
+                transactionType: InventoryMovementType.waste.rawValue,
                 quantity: -wasteQty,
                 notes: txnNote,
                 branch: item.branch
@@ -352,7 +357,7 @@ final class InventoryViewModel {
             modelContext.insert(txn)
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -369,7 +374,7 @@ final class InventoryViewModel {
             item.updatedAt = Date()
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         isInBulkMode = false
         selectedItemIds.removeAll()
         
@@ -532,14 +537,14 @@ final class InventoryViewModel {
         
         let txn = InventoryTransaction(
             item: item,
-            transactionType: "receive",
+            transactionType: InventoryMovementType.receive.rawValue,
             quantity: amount,
             costPrice: newUnitCost,
             notes: notes.isEmpty ? "Supplier delivery receive" : notes,
             branch: item.branch
         )
         modelContext.insert(txn)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         // Trigger background sync task
         Task {
@@ -558,13 +563,13 @@ final class InventoryViewModel {
         let txnNote = "Waste: \(reasonSelection)" + (notes.isEmpty ? "" : " (\(notes))")
         let txn = InventoryTransaction(
             item: item,
-            transactionType: "waste",
+            transactionType: InventoryMovementType.waste.rawValue,
             quantity: -amount,
             notes: txnNote,
             branch: item.branch
         )
         modelContext.insert(txn)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         // Trigger background sync task
         Task {
@@ -637,7 +642,7 @@ final class InventoryViewModel {
         
         menuItem.updatedAt = Date()
         menuItem.isSynced = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -657,7 +662,7 @@ final class InventoryViewModel {
             address: address
         )
         modelContext.insert(supplier)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -671,6 +676,9 @@ final class InventoryViewModel {
         unit: String,
         reorderLevel: Double,
         costPrice: Double,
+        safetyStockLevel: Double = 0.0,
+        maxStockLevel: Double = 0.0,
+        leadTimeDays: Int = 1,
         supplierId: UUID?,
         category: String?,
         storageLocation: String?,
@@ -683,6 +691,9 @@ final class InventoryViewModel {
         item.unit = unit
         item.reorderLevel = reorderLevel
         item.costPrice = costPrice
+        item.safetyStockLevel = safetyStockLevel
+        item.maxStockLevel = maxStockLevel
+        item.leadTimeDays = leadTimeDays
         item.category = category
         item.storageLocation = storageLocation
         item.barcode = barcode
@@ -701,7 +712,7 @@ final class InventoryViewModel {
         
         item.updatedAt = Date()
         item.isSynced = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -714,7 +725,7 @@ final class InventoryViewModel {
         item.isDeleted = true
         item.isSynced = false
         item.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -727,6 +738,9 @@ final class InventoryViewModel {
         unit: String,
         reorderLevel: Double,
         costPrice: Double,
+        safetyStockLevel: Double = 0.0,
+        maxStockLevel: Double = 0.0,
+        leadTimeDays: Int = 1,
         supplierId: UUID?,
         category: String?,
         storageLocation: String?,
@@ -752,6 +766,9 @@ final class InventoryViewModel {
             costPrice: costPrice,
             supplier: selectedSupplier,
             branch: activeBranch,
+            safetyStockLevel: safetyStockLevel,
+            maxStockLevel: maxStockLevel,
+            leadTimeDays: leadTimeDays,
             category: category,
             storageLocation: storageLocation,
             barcode: barcode
@@ -774,6 +791,9 @@ final class InventoryViewModel {
                     costPrice: costPrice,
                     supplier: selectedSupplier,
                     branch: otherBranch,
+                    safetyStockLevel: safetyStockLevel,
+                    maxStockLevel: maxStockLevel,
+                    leadTimeDays: leadTimeDays,
                     category: category,
                     storageLocation: storageLocation,
                     barcode: barcode
@@ -782,7 +802,7 @@ final class InventoryViewModel {
             }
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -799,13 +819,13 @@ final class InventoryViewModel {
         let txnNote = "Return to Supplier: " + (notes.isEmpty ? "No details" : notes)
         let txn = InventoryTransaction(
             item: item,
-            transactionType: "return_to_supplier",
+            transactionType: InventoryMovementType.returnToSupplier.rawValue,
             quantity: -amount,
             notes: txnNote,
             branch: item.branch
         )
         modelContext.insert(txn)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -830,7 +850,7 @@ final class InventoryViewModel {
                 let notesText = line.notes.isEmpty ? "Physical audit adjustment" : line.notes
                 let txn = InventoryTransaction(
                     item: item,
-                    transactionType: "adjust",
+                    transactionType: InventoryMovementType.adjust.rawValue,
                     quantity: diff,
                     notes: notesText,
                     branch: item.branch
@@ -839,7 +859,7 @@ final class InventoryViewModel {
             }
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -905,7 +925,7 @@ final class InventoryViewModel {
             modelContext.insert(deliveryPrice)
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -975,7 +995,7 @@ final class InventoryViewModel {
         
         menuItem.updatedAt = Date()
         menuItem.isSynced = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -987,7 +1007,7 @@ final class InventoryViewModel {
         guard let modelContext = modelContext else { return }
         
         modelContext.delete(menuItem)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1020,7 +1040,7 @@ final class InventoryViewModel {
         
         menuItem.updatedAt = Date()
         menuItem.isSynced = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1034,7 +1054,7 @@ final class InventoryViewModel {
         
         let category = Category(name: name, categoryDescription: description)
         modelContext.insert(category)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1049,7 +1069,7 @@ final class InventoryViewModel {
         
         category.updatedAt = Date()
         category.isSynced = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1060,7 +1080,7 @@ final class InventoryViewModel {
         guard let modelContext = modelContext else { return }
         
         modelContext.delete(category)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1074,7 +1094,7 @@ final class InventoryViewModel {
         
         let group = ModifierGroup(name: name, minSelection: minSelection, maxSelection: maxSelection)
         modelContext.insert(group)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1090,7 +1110,7 @@ final class InventoryViewModel {
         
         group.updatedAt = Date()
         group.isSynced = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1101,7 +1121,7 @@ final class InventoryViewModel {
         guard let modelContext = modelContext else { return }
         
         modelContext.delete(group)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1127,7 +1147,7 @@ final class InventoryViewModel {
             quantityRequired: qtyRequired
         )
         modelContext.insert(modifier)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1152,7 +1172,7 @@ final class InventoryViewModel {
         
         modifier.updatedAt = Date()
         modifier.isSynced = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1163,7 +1183,7 @@ final class InventoryViewModel {
         guard let modelContext = modelContext else { return }
         
         modelContext.delete(modifier)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1219,7 +1239,7 @@ final class InventoryViewModel {
                 }
             }
             
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             UserDefaults.standard.set(mainBranch.id.uuidString, forKey: "active_branch_id")
         } else if UserDefaults.standard.string(forKey: "active_branch_id") == nil, let first = existingBranches.first {
             UserDefaults.standard.set(first.id.uuidString, forKey: "active_branch_id")
@@ -1230,7 +1250,7 @@ final class InventoryViewModel {
         guard let modelContext = modelContext else { return }
         let newBranch = Branch(name: name, location: location, phone: phone)
         modelContext.insert(newBranch)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         // Let's copy existing items to the new branch so it has the same product catalog (starting with 0 stock)
         let itemDesc = FetchDescriptor<InventoryItem>()
@@ -1258,7 +1278,7 @@ final class InventoryViewModel {
                     modelContext.insert(copy)
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         }
     }
     
@@ -1294,7 +1314,7 @@ final class InventoryViewModel {
             modelContext.insert(poItem)
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1306,7 +1326,7 @@ final class InventoryViewModel {
         po.status = "sent"
         po.updatedAt = Date()
         po.isSynced = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1362,7 +1382,7 @@ final class InventoryViewModel {
                 let txnNote = "PO Receive #\(po.poNumber) (Partial)" + (notes.isEmpty ? "" : " (\(notes))")
                 let txn = InventoryTransaction(
                     item: invItem,
-                    transactionType: "receive",
+                    transactionType: InventoryMovementType.receive.rawValue,
                     quantity: newQty,
                     costPrice: unitCost,
                     notes: txnNote,
@@ -1383,7 +1403,7 @@ final class InventoryViewModel {
             }
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1395,7 +1415,7 @@ final class InventoryViewModel {
         po.status = "cancelled"
         po.updatedAt = Date()
         po.isSynced = false
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1405,7 +1425,7 @@ final class InventoryViewModel {
     func deletePurchaseOrder(po: PurchaseOrder) {
         guard let modelContext = modelContext else { return }
         modelContext.delete(po)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1468,7 +1488,7 @@ final class InventoryViewModel {
         // 4. Create Transactions
         let txnOut = InventoryTransaction(
             item: item,
-            transactionType: "transfer_out",
+            transactionType: InventoryMovementType.transferOut.rawValue,
             quantity: -quantity,
             notes: "Transfer to \(toBranch.name)" + (notes.isEmpty ? "" : " (\(notes))"),
             branch: fromBranch
@@ -1476,7 +1496,7 @@ final class InventoryViewModel {
         
         let txnIn = InventoryTransaction(
             item: target,
-            transactionType: "transfer_in",
+            transactionType: InventoryMovementType.transferIn.rawValue,
             quantity: quantity,
             notes: "Transfer from \(fromBranch.name)" + (notes.isEmpty ? "" : " (\(notes))"),
             branch: toBranch
@@ -1485,7 +1505,7 @@ final class InventoryViewModel {
         modelContext.insert(txnOut)
         modelContext.insert(txnIn)
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)

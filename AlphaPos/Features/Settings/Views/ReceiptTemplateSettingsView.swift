@@ -723,13 +723,13 @@ struct ReceiptTemplateSettingsView: View {
             t.isSynced         = false
             t.updatedAt        = Date()
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
     }
 
     private func deleteTemplate(_ tmpl: ReceiptTemplate) {
         tmpl.isDeleted = true
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         if selectedTemplate?.id == tmpl.id { autoSelectTemplate() }
         APHaptic.trigger()
     }

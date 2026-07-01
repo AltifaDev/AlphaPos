@@ -160,7 +160,7 @@ struct StaffDevicesSettingsView: View {
                         actionType: isTrusted ? "device_trusted" : "device_revoked",
                         details: "\(device.deviceName) \(isTrusted ? "trusted" : "revoked")"
                     ))
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                 }
             ))
             .labelsHidden()
@@ -184,7 +184,7 @@ struct StaffDevicesSettingsView: View {
         )
         UserDefaults.standard.set(device.id.uuidString.lowercased(), forKey: key)
         modelContext.insert(device)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     private func isCurrentDevice(_ device: MerchantDevice) -> Bool {

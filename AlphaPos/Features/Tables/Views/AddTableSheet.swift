@@ -438,7 +438,7 @@ struct AddTableSheet: View {
         )
         
         modelContext.insert(newTable)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)

@@ -46,6 +46,7 @@ echo ""
 SOURCES=(
     "$PROJECT_DIR/Core/Security/SecurityHelper.swift"
     "$PROJECT_DIR/Core/Localization/AppLocalization.swift"
+    "$PROJECT_DIR/Models/InventoryMovementType.swift"
     "$TESTS_DIR/TestResult.swift"
     "$TESTS_DIR/SecurityTests.swift"
     "$TESTS_DIR/POSTests.swift"
@@ -58,6 +59,7 @@ SOURCES=(
     "$TESTS_DIR/PayrollTests.swift"
     "$TESTS_DIR/LocalizationTests.swift"
     "$TESTS_DIR/ExpenseTests.swift"
+    "$TESTS_DIR/InventoryAdvancedTests.swift"
     "$TESTS_DIR/TestRunner.swift"
 )
 

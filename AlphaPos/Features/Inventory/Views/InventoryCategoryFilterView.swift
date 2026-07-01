@@ -433,7 +433,7 @@ struct ManageCategoriesSheet: View {
                 }
             }
             
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             if assignedCount > 0 {
                 Task {
@@ -575,7 +575,7 @@ struct ManageCategoriesSheet: View {
                 UserDefaults.standard.set(data, forKey: "inventory_abc_classification")
             }
             
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             autoAssignResult = "ABC Classification สำเร็จ:\n• Class A (มูลค่าสูง): \(classACount) รายการ\n• Class B (ปานกลาง): \(classBCount) รายการ\n• Class C (มูลค่าต่ำ): \(classCCount) รายการ"
             isClassifying = false
@@ -821,7 +821,7 @@ struct BulkAssignCategorySheet: View {
             item.updatedAt = Date()
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)

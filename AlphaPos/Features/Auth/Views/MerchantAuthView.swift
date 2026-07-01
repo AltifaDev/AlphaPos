@@ -31,6 +31,10 @@ struct MerchantAuthView: View {
     @State private var taxId = ""
     @State private var shopPhone = ""
     
+    // Pricing Package Inputs (Step 3)
+    @State private var selectedPlanId: String = "offline_perpetual"
+    @State private var isAnnualBilling = false
+    
     // Feedback States
     @State private var errorMessage = ""
     @State private var isLoading = false
@@ -356,7 +360,7 @@ struct MerchantAuthView: View {
                     Text(L.Auth.createTitle.t)
                         .font(.system(size: 20, weight: .black, design: .rounded))
                         .foregroundColor(.white)
-                    Text(signupStep == 1 ? "Step 1: Admin Account Setup" : "Step 2: Restaurant Details")
+                    Text(signupStep == 1 ? "Step 1: Admin Account Setup" : (signupStep == 2 ? "Step 2: Restaurant Details" : "Step 3: Choose Pricing Package"))
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(Color(hex: "FF9500"))
                 }
@@ -370,6 +374,9 @@ struct MerchantAuthView: View {
                     Circle()
                         .fill(signupStep >= 2 ? Color(hex: "FF9500") : Color.white.opacity(0.3))
                         .frame(width: 8, height: 8)
+                    Circle()
+                        .fill(signupStep >= 3 ? Color(hex: "FF9500") : Color.white.opacity(0.3))
+                        .frame(width: 8, height: 8)
                 }
             }
             .padding(.bottom, 8)
@@ -380,8 +387,10 @@ struct MerchantAuthView: View {
             
             if signupStep == 1 {
                 accountDetailsStep
-            } else {
+            } else if signupStep == 2 {
                 shopDetailsStep
+            } else {
+                pricingSelectionStep
             }
         }
     }
@@ -702,6 +711,150 @@ struct MerchantAuthView: View {
             .padding(.top, 6)
         }
     }
+
+    @ViewBuilder
+    private var pricingSelectionStep: some View {
+        VStack(spacing: 16) {
+            // Billing Cycle Toggle (Monthly vs Annual)
+            HStack {
+                Text("รายเดือน")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(isAnnualBilling ? .white.opacity(0.6) : .white)
+                
+                Toggle("", isOn: $isAnnualBilling)
+                    .toggleStyle(SwitchToggleStyle(tint: Color(hex: "FF9500")))
+                    .labelsHidden()
+                    .padding(.horizontal, 4)
+                
+                Text("รายปี (ประหยัด 20%)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(isAnnualBilling ? .white : .white.opacity(0.6))
+            }
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity)
+            
+            // Plan Cards
+            VStack(spacing: 10) {
+                // Plan 1: Offline Perpetual
+                planCard(
+                    id: "offline_perpetual",
+                    title: "ออฟไลน์ ซื้อขาด",
+                    subtitle: "ใช้งาน 1 เครื่องตลอดชีพ ไม่มีรายเดือน",
+                    price: "฿9,900",
+                    priceLabel: "จ่ายครั้งเดียว",
+                    features: ["ใช้งานถาวรระดับเครื่องแม่", "ไม่ต้องใช้อินเทอร์เน็ต", "สำรองข้อมูลแบบ Manual", "จำกัดเฉพาะฟีเจอร์ปัจจุบัน"],
+                    color: Color(hex: "6366F1")
+                )
+                
+                // Plan 2: Offline Subscription
+                planCard(
+                    id: "offline_subscription",
+                    title: isAnnualBilling ? "ออฟไลน์ รายปี" : "ออฟไลน์ รายเดือน",
+                    subtitle: "ใช้งาน 1 เครื่อง พร้อมอัปเดตฟรีตลอดสัญญา",
+                    price: isAnnualBilling ? "฿2,990" : "฿290",
+                    priceLabel: isAnnualBilling ? "/ปี" : "/เดือน",
+                    features: ["ใช้งานออฟไลน์ 1 เครื่องแม่", "อัปเดตฟีเจอร์ใหม่ฟรีในสัญญา", "แก้ไขสิทธิ์ / พนักงาน", "บริการความช่วยเหลือ 24/7"],
+                    color: .appTeal
+                )
+                
+                // Plan 3: Online Cloud Subscription
+                planCard(
+                    id: "online_subscription",
+                    title: isAnnualBilling ? "ออนไลน์ รายปี" : "ออนไลน์ รายเดือน",
+                    subtitle: "ซิงค์หลายเครื่อง คลาวด์แดชบอร์ด ออเดอร์ QR",
+                    price: isAnnualBilling ? "฿11,990" : "฿1,190",
+                    priceLabel: isAnnualBilling ? "/ปี" : "/เดือน",
+                    features: ["ซิงค์ข้อมูลระหว่างหลาย iPad/iPhone", "รับออเดอร์ QR Code จากลูกค้า", "สำรองข้อมูลอัตโนมัติบน Cloud", "สถิติวิเคราะห์ยอดขายแบบ Real-time"],
+                    color: Color(hex: "FF9500")
+                )
+            }
+            
+            // Continue button
+            Button(action: handleSelectPlan) {
+                HStack {
+                    if isLoading {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .padding(.trailing, 8)
+                    }
+                    Text("เริ่มต้นใช้งานด้วยแพ็กเกจนี้")
+                        .font(.system(size: 14, weight: .bold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(
+                    Capsule()
+                        .fill(APGradient.positive)
+                )
+                .foregroundColor(.white)
+                .shadow(color: Color.appTeal.opacity(0.3), radius: 8, x: 0, y: 3)
+            }
+            .disabled(isLoading)
+            .padding(.top, 8)
+        }
+    }
+
+    private func planCard(
+        id: String,
+        title: String,
+        subtitle: String,
+        price: String,
+        priceLabel: String,
+        features: [String],
+        color: Color
+    ) -> some View {
+        let isSelected = selectedPlanId == id
+        return Button(action: {
+            triggerHapticFeedback(.light)
+            selectedPlanId = id
+        }) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                        Text(subtitle)
+                            .font(.system(size: 10))
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text(price)
+                            .font(.system(size: 16, weight: .black))
+                            .foregroundColor(color)
+                        Text(priceLabel)
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                }
+                
+                Divider().background(Color.white.opacity(0.15))
+                
+                // Mini features
+                HStack(spacing: 12) {
+                    ForEach(features.prefix(2), id: \.self) { feat in
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 8))
+                                .foregroundColor(color)
+                            Text(feat)
+                                .font(.system(size: 9))
+                                .foregroundColor(.white.opacity(0.85))
+                        }
+                    }
+                }
+            }
+            .padding(12)
+            .background(Color.white.opacity(isSelected ? 0.12 : 0.04))
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? color : Color.white.opacity(0.15), lineWidth: isSelected ? 2 : 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
     
     private var errorMessageBanner: some View {
         HStack {
@@ -832,6 +985,68 @@ struct MerchantAuthView: View {
                     activeMerchantId = newMerchantUUID.uuidString.lowercased()
                     loggedInEmail = email
                     loggedInName = "\(firstName) \(lastName)"
+                    withAnimation {
+                        signupStep = 3
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isLoading = false
+                    triggerNotificationFeedback(.error)
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+    
+    private func handleSelectPlan() {
+        isLoading = true
+        errorMessage = ""
+        triggerHapticFeedback(.medium)
+        
+        Task {
+            do {
+                let mId = activeMerchantId
+                
+                // 1. Calculate subscription parameters
+                let tier = selectedPlanId
+                let status = "active"
+                let expiry: Double? = {
+                    if tier == "offline_perpetual" {
+                        return Date.distantFuture.timeIntervalSince1970
+                    } else {
+                        let days = isAnnualBilling ? 365 : 30
+                        return Date().addingTimeInterval(TimeInterval(days * 24 * 60 * 60)).timeIntervalSince1970
+                    }
+                }()
+                
+                // 2. If online and has internet, update database on Supabase
+                if await NetworkManager.shared.isConnected() {
+                    let isoExpiry = expiry.map { NetworkManager.iso8601.string(from: Date(timeIntervalSince1970: $0)) }
+                    var payload: [String: Any] = [
+                        "subscription_tier": tier,
+                        "subscription_status": status
+                    ]
+                    if let isoExpiry = isoExpiry { payload["subscription_expires_at"] = isoExpiry }
+                    
+                    _ = try await NetworkManager.shared.sendSupabaseRequest(
+                        method: "PATCH",
+                        endpoint: "merchants",
+                        queryItems: [URLQueryItem(name: "id", value: "eq.\(mId)")],
+                        payload: payload
+                    )
+                }
+                
+                // 3. Save subscription details locally in Keychain
+                MerchantAuthManager.shared.saveSubscription(tier: tier, status: status, expiry: expiry)
+                
+                // 4. Force offlineSyncMode depending on plan choice
+                let isOfflinePlan = (tier == "offline_perpetual" || tier == "offline_subscription")
+                UserDefaults.standard.set(isOfflinePlan, forKey: "offline_sync_mode")
+                
+                await MainActor.run {
+                    isLoading = false
+                    triggerNotificationFeedback(.success)
                     withAnimation { isLoggedIn = true }
                     onAuthenticated?()
                 }
@@ -839,7 +1054,7 @@ struct MerchantAuthView: View {
                 await MainActor.run {
                     isLoading = false
                     triggerNotificationFeedback(.error)
-                    errorMessage = error.localizedDescription
+                    errorMessage = "บันทึกแผนสมาชิกไม่สำเร็จ: \(error.localizedDescription)"
                 }
             }
         }
@@ -920,7 +1135,7 @@ struct MerchantAuthView: View {
         modelContext.insert(emp2)
         
         // Save database
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 }
 

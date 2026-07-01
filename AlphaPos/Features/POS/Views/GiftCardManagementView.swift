@@ -55,7 +55,7 @@ struct GiftCardManagementView: View {
         .sheet(isPresented: $showingIssueSheet) {
             GiftCardIssueSheet(customers: customers) { card in
                 modelContext.insert(card)
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 selectedCard = card
                 Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
             }
@@ -69,7 +69,7 @@ struct GiftCardManagementView: View {
                     selectedCard.isSynced = false
                     selectedCard.updatedAt = Date()
                     insertAudit(action: "gift_card_topup", amount: amount, card: selectedCard, note: note)
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                     Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
                 }
             }
@@ -82,7 +82,7 @@ struct GiftCardManagementView: View {
                     selectedCard.isSynced = false
                     selectedCard.updatedAt = Date()
                     insertAudit(action: "gift_card_redeem", amount: amount, card: selectedCard, note: note)
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                     Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
                 }
             }
@@ -97,7 +97,7 @@ struct GiftCardManagementView: View {
                 selectedCard.isSynced = false
                 selectedCard.updatedAt = Date()
                 insertAudit(action: "gift_card_void", amount: 0, card: selectedCard, note: "Card disabled from Gift Card Management")
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 self.selectedCard = nil
                 Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
             }

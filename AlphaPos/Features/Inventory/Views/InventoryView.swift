@@ -1,6 +1,6 @@
 // InventoryView.swift
 // AlphaPos — Premium Inventory Interface v2
-// Redesigned for high-volume (200+ items) with pagination, dynamic sorting,
+// Redesigned for high-volume (200+ items) with pagination, dynamic sorting, expiry alerts,
 // debounced search, color-coded stock bars, and bulk operations.
 
 import SwiftUI
@@ -61,6 +61,15 @@ struct InventoryView: View {
 
     // ABC Classification (computed on data change)
     @State private var abcClassification: [UUID: String] = [:]
+
+    // Expiry Date & FEFO
+    @State private var expiryManager = InventoryExpiryManager()
+    @State private var showingExpiryAlerts = false
+    @State private var expiryAlertCount: (expired: Int, critical: Int, warning: Int) = (0, 0, 0)
+
+    // Safety Stock & Reorder Suggestions
+    @State private var safetyStockManager = SafetyStockManager()
+    @State private var showingReorderSuggestions = false
 
     // Debounce timer
     @State private var searchDebounceTask: Task<Void, Never>?
@@ -169,7 +178,10 @@ struct InventoryView: View {
             .onAppear {
                 viewModel.modelContext = modelContext
                 viewModel.seedDefaultBranchIfNeeded()
+                expiryManager.modelContext = modelContext
+                safetyStockManager.modelContext = modelContext
                 recalculateABC()
+                refreshExpiryCount()
                 withAnimation(.easeOut(duration: 0.4)) {
                     isAnimatedIn = true
                 }
@@ -246,6 +258,12 @@ struct InventoryView: View {
             } message: {
                 Text(LocalizationManager.shared.t("bulk_delete_confirm_message", selectedItems.count))
             }
+            .sheet(isPresented: $showingExpiryAlerts) {
+                ExpiryAlertListSheet(
+                    alerts: expiryManager.getExpiringAlerts(branch: activeBranch)
+                )
+                .onDisappear { refreshExpiryCount() }
+            }
     }
 
     private var content: some View {
@@ -263,7 +281,7 @@ struct InventoryView: View {
         }
     }
 
-    private var sectionPicker: some View {
+private var sectionPicker: some View {
         Picker("Inventory Menu", selection: $selectedSection) {
             Text("inventory_raw_materials".t).tag(0)
             Text("inventory_products".t).tag(1)
@@ -440,6 +458,13 @@ struct InventoryView: View {
             // Stats header
             inventoryStatsHeader
 
+            // Expiry alerts dashboard (hidden when no alerts)
+            ExpiryAlertDashboard(expiryManager: expiryManager, activeBranch: activeBranch)
+                .onTapGesture { showingExpiryAlerts = true }
+
+            // Reorder suggestions dashboard (hidden when all items adequate)
+            ReorderSuggestionDashboard(safetyStockManager: safetyStockManager, activeBranch: activeBranch)
+
             Divider().background(Color.appDivider)
 
             // Search bar with debounce
@@ -468,11 +493,13 @@ struct InventoryView: View {
 
     // MARK: - Stats Header
 
-    private var inventoryStatsHeader: some View {
+private var inventoryStatsHeader: some View {
         HStack(spacing: APSpacing.md) {
             statCard(title: "total_items".t, value: "\(branchInventory.count)", icon: "shippingbox.fill", color: Color.appAccent)
             statCard(title: "filter_low_stock".t, value: "\(lowStockCount)", icon: "exclamationmark.triangle.fill", color: .appRose)
             statCard(title: "transactions".t, value: "\(filteredTransactionsList.count)", icon: "arrow.left.and.right.circle.fill", color: .appTeal)
+            expiryStatCard
+            reorderStatCard
         }
         .padding(APSpacing.md)
         .background(Color.appSurface)
@@ -501,6 +528,94 @@ struct InventoryView: View {
                 .stroke(Color.appBorderSubtle, lineWidth: 1)
         )
     }
+
+    // MARK: - Expiry Stat Card
+
+    /// Tappable card that shows expired/critical lot counts.
+    /// Tapping opens the full ExpiryAlertListSheet.
+    @ViewBuilder
+    private var expiryStatCard: some View {
+        let total = expiryAlertCount.expired + expiryAlertCount.critical + expiryAlertCount.warning
+        if total > 0 {
+            Button {
+                showingExpiryAlerts = true
+            } label: {
+                HStack(spacing: APSpacing.sm) {
+                    Image(systemName: expiryAlertCount.expired > 0
+                          ? "xmark.circle.fill"
+                          : "clock.badge.exclamationmark.fill")
+                        .font(.title3)
+                        .foregroundColor(expiryAlertCount.expired > 0 ? Color.appRose : .orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(total)")
+                            .font(.headline).fontWeight(.bold)
+                            .foregroundColor(.textPrimary)
+                        Text(expiryAlertCount.expired > 0 ? "หมดอายุ/วิกฤต" : "ใกล้หมดอายุ")
+                            .font(.caption2)
+                            .foregroundColor(.textSecondary)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    (expiryAlertCount.expired > 0 ? Color.appRose : Color.orange)
+                        .opacity(0.10)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke((expiryAlertCount.expired > 0 ? Color.appRose : Color.orange).opacity(0.35), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// Refresh the badge counts from ExpiryManager.
+    private func refreshExpiryCount() {
+        expiryAlertCount = viewModel.expiryAlertCount(branch: activeBranch)
+    }
+
+    // MARK: - Reorder Stat Card
+
+    @ViewBuilder
+    private var reorderStatCard: some View {
+        let suggestions = safetyStockManager.generateSuggestions(branch: activeBranch)
+        let urgent = suggestions.filter { $0.status == .outOfStock || $0.status == .atReorderPoint }.count
+        if !suggestions.isEmpty {
+            Button { showingReorderSuggestions = true } label: {
+                HStack(spacing: APSpacing.sm) {
+                    Image(systemName: urgent > 0 ? "cart.badge.plus" : "cart")
+                        .font(.title3)
+                        .foregroundColor(urgent > 0 ? Color("appYellow") : Color.appTeal)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(suggestions.count)")
+                            .font(.headline).fontWeight(.bold)
+                            .foregroundColor(.textPrimary)
+                        Text("สั่งซื้อ")
+                            .font(.caption2)
+                            .foregroundColor(.textSecondary)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background((urgent > 0 ? Color("appYellow") : Color.appTeal).opacity(0.10))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke((urgent > 0 ? Color("appYellow") : Color.appTeal).opacity(0.35), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showingReorderSuggestions) {
+                ReorderSuggestionListSheet(
+                    suggestions: suggestions,
+                    safetyStockManager: safetyStockManager
+                )
+            }
+        }
+    }
+
 
     // MARK: - Search Bar
 
@@ -972,6 +1087,16 @@ struct InventoryView: View {
                 result = a.costPrice < b.costPrice
             case .updated:
                 result = a.updatedAt < b.updatedAt
+            case .expiry:
+                // FEFO sort: item with earliest nearest-expiry lot comes first
+                let aExpiry = expiryManager.lots(for: a).first?.expiryDate
+                let bExpiry = expiryManager.lots(for: b).first?.expiryDate
+                switch (aExpiry, bExpiry) {
+                case let (.some(da), .some(db)): result = da < db
+                case (.some, .none):             result = true   // items with expiry before no-expiry
+                case (.none, .some):             result = false
+                case (.none, .none):             result = a.name < b.name
+                }
             }
             return sortAscending ? result : !result
         }
@@ -1465,22 +1590,22 @@ private struct TransactionLogRow: View {
     let txn: InventoryTransaction
 
     private var typeConfig: (label: String, icon: String, color: Color, gradient: LinearGradient) {
-        switch txn.transactionType {
-        case "receive":
+        switch txn.movementType {
+        case .receive:
             return ("inventory_receive".t, "plus.circle.fill", .appTeal, APGradient.positive)
-        case "waste":
+        case .waste:
             return ("inventory_waste".t, "trash.fill", .appRose, APGradient.destructive)
-        case "sell":
+        case .sell:
             return ("sell_label".t, "cart.fill", Color.appAccent, APGradient.accent)
-        case "return_to_supplier":
+        case .returnToSupplier:
             return ("return_to_supplier".t, "arrow.uturn.left.circle.fill", .appAmber, APGradient.warning)
-        case "transfer_out":
+        case .transferOut:
             return ("xfer_out".t, "arrow.right.circle.fill", .appRose, APGradient.destructive)
-        case "transfer_in":
+        case .transferIn:
             return ("xfer_in".t, "arrow.left.circle.fill", .appTeal, APGradient.positive)
-        case "refund_return":
+        case .refundReturn:
             return ("refund_label".t, "arrow.uturn.backward.circle.fill", .appAmber, APGradient.warning)
-        default:
+        case .adjust, .opening:
             return ("adjustment_label".t, "arrow.left.and.right.circle.fill", .appAmber, APGradient.warning)
         }
     }
@@ -1545,6 +1670,11 @@ struct ReceiveStockView: View {
     @State private var costString = ""
     @State private var noteText = ""
 
+    // Expiry Date & Lot Tracking (FEFO)
+    @State private var hasExpiry = false
+    @State private var expiryDate = Calendar.current.date(byAdding: .day, value: 30, to: Date()) ?? Date()
+    @State private var lotNumber = ""
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -1566,6 +1696,16 @@ struct ReceiveStockView: View {
                             inputField("invoice_reference_note".t, text: $noteText)
                         }
                         .apCard()
+
+                        VStack(alignment: .leading, spacing: APSpacing.sm) {
+                            sectionHeader("expiry_lot_section_title".t)
+                            ExpiryDatePicker(
+                                hasExpiry: $hasExpiry,
+                                expiryDate: $expiryDate,
+                                lotNumber: $lotNumber
+                            )
+                        }
+                        .apCard()
                     }
                     .padding(APSpacing.md)
                 }
@@ -1578,8 +1718,14 @@ struct ReceiveStockView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("process_btn".t) {
-                        viewModel.processReceive(item: item, amountString: amountString,
-                                                  costString: costString, notes: noteText)
+                        viewModel.processReceiveWithExpiry(
+                            item: item,
+                            amountString: amountString,
+                            costString: costString,
+                            notes: noteText,
+                            expiryDate: hasExpiry ? expiryDate : nil,
+                            lotNumber: hasExpiry ? lotNumber : nil
+                        )
                         onComplete()
                     }
                     .disabled(amountString.isEmpty)
@@ -1877,6 +2023,11 @@ struct EditStockItemView: View {
     @State private var storageLocation = ""
     @State private var barcode = ""
 
+    // Safety Stock & Lead Time
+    @State private var safetyStockString = "0.0"
+    @State private var maxStockString = "0.0"
+    @State private var leadTimeDaysString = "1"
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -1903,6 +2054,28 @@ struct EditStockItemView: View {
                             sectionHeader("reordering_costs".t)
                             inputField("reorder_trigger_level_placeholder".t, text: $reorderString)
                             inputField("unit_cost_price_placeholder".t, text: $costString)
+                        }
+                        .apCard()
+
+                        VStack(alignment: .leading, spacing: APSpacing.sm) {
+                            sectionHeader("safety_stock_section_title".t)
+                            SafetyStockFields(
+                                safetyStockString: $safetyStockString,
+                                maxStockString: $maxStockString,
+                                leadTimeDaysString: $leadTimeDaysString,
+                                unit: unit
+                            )
+                        }
+                        .apCard()
+
+                        VStack(alignment: .leading, spacing: APSpacing.sm) {
+                            sectionHeader("safety_stock_section_title".t)
+                            SafetyStockFields(
+                                safetyStockString: $safetyStockString,
+                                maxStockString: $maxStockString,
+                                leadTimeDaysString: $leadTimeDaysString,
+                                unit: unit
+                            )
                         }
                         .apCard()
 
@@ -1963,6 +2136,9 @@ struct EditStockItemView: View {
                             unit: unit,
                             reorderLevel: reorder,
                             costPrice: cost,
+                            safetyStockLevel: Double(safetyStockString) ?? 0.0,
+                            maxStockLevel: Double(maxStockString) ?? 0.0,
+                            leadTimeDays: Int(leadTimeDaysString) ?? 1,
                             supplierId: selectedSupplierId,
                             category: category.isEmpty ? nil : category,
                             storageLocation: storageLocation.isEmpty ? nil : storageLocation,
@@ -1984,6 +2160,10 @@ struct EditStockItemView: View {
                 category = item.category ?? ""
                 storageLocation = item.storageLocation ?? ""
                 barcode = item.barcode ?? ""
+                // Safety Stock & Lead Time
+                safetyStockString  = String(format: "%.1f", item.safetyStockLevel)
+                maxStockString     = String(format: "%.1f", item.maxStockLevel)
+                leadTimeDaysString = String(item.leadTimeDays)
             }
             .alert("delete_item_alert_title".t, isPresented: $showingDeleteAlert) {
                 Button("cancel_btn".t, role: .cancel) { }
@@ -2016,15 +2196,15 @@ struct ItemMovementHistorySheet: View {
     }
 
     private var totalReceived: Double {
-        item.transactions.filter { $0.transactionType == "receive" }.reduce(0.0) { $0 + $1.quantity }
+        item.transactions.filter { $0.transactionType == InventoryMovementType.receive.rawValue }.reduce(0.0) { $0 + $1.quantity }
     }
 
     private var totalWasted: Double {
-        item.transactions.filter { $0.transactionType == "waste" }.reduce(0.0) { $0 + abs($1.quantity) }
+        item.transactions.filter { $0.transactionType == InventoryMovementType.waste.rawValue }.reduce(0.0) { $0 + abs($1.quantity) }
     }
 
     private var totalSold: Double {
-        item.transactions.filter { $0.transactionType == "sell" }.reduce(0.0) { $0 + abs($1.quantity) }
+        item.transactions.filter { $0.transactionType == InventoryMovementType.sell.rawValue }.reduce(0.0) { $0 + abs($1.quantity) }
     }
 
     var body: some View {
@@ -2219,6 +2399,11 @@ struct AddStockItemView: View {
     @State private var storageLocation = ""
     @State private var barcode = ""
 
+    // Safety Stock & Lead Time
+    @State private var safetyStockString = "0.0"
+    @State private var maxStockString = "0.0"
+    @State private var leadTimeDaysString = "1"
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -2245,6 +2430,17 @@ struct AddStockItemView: View {
                             sectionHeader("reordering_costs".t)
                             inputField("reorder_trigger_level_placeholder".t, text: $reorderString)
                             inputField("unit_cost_price_placeholder".t, text: $costString)
+                        }
+                        .apCard()
+
+                        VStack(alignment: .leading, spacing: APSpacing.sm) {
+                            sectionHeader("safety_stock_section_title".t)
+                            SafetyStockFields(
+                                safetyStockString: $safetyStockString,
+                                maxStockString: $maxStockString,
+                                leadTimeDaysString: $leadTimeDaysString,
+                                unit: unit
+                            )
                         }
                         .apCard()
 
@@ -2280,6 +2476,9 @@ struct AddStockItemView: View {
                             unit: unit,
                             reorderLevel: reorder,
                             costPrice: cost,
+                            safetyStockLevel: Double(safetyStockString) ?? 0.0,
+                            maxStockLevel: Double(maxStockString) ?? 0.0,
+                            leadTimeDays: Int(leadTimeDaysString) ?? 1,
                             supplierId: selectedSupplierId,
                             category: category.isEmpty ? nil : category,
                             storageLocation: storageLocation.isEmpty ? nil : storageLocation,

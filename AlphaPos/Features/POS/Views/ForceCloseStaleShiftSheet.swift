@@ -220,7 +220,7 @@ struct ForceCloseStaleShiftSheet: View {
         session.isSynced = false
         session.updatedAt = Date()
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
         
         Task {

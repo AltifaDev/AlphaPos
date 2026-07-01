@@ -27,6 +27,8 @@ struct TableDetailView: View {
     @AppStorage("app_language") private var appLanguage = "en"
     @AppStorage("logged_in_employee_id") private var loggedInEmployeeId = ""
     @AppStorage("logged_in_employee_name") private var loggedInEmployeeName = ""
+    @AppStorage("logged_in_employee_role") private var loggedInEmployeeRole = ""
+    @State private var showAccessDeniedAlert = false
 
     // ── Order state ───────────────────────────────────────────────────────────
     @State private var networkService = NetworkService.shared
@@ -99,6 +101,11 @@ struct TableDetailView: View {
 
     private var shouldShowEmptyState: Bool {
         !hasAnyActiveOrders && postPaymentStatus == nil
+    }
+
+    private var isAuthorizedToClearTable: Bool {
+        let role = loggedInEmployeeRole.lowercased()
+        return role.contains("manager") || role.contains("owner") || role.contains("admin")
     }
 
     private var isAllServed: Bool {
@@ -265,11 +272,20 @@ struct TableDetailView: View {
                 scheduleNextDiningCheck()
             }
             Button("ลูกค้าไปแล้ว — เคลียร์โต๊ะ", role: .destructive) {
-                clearTableAfterDining()
+                if isAuthorizedToClearTable {
+                    clearTableAfterDining()
+                } else {
+                    showAccessDeniedAlert = true
+                }
             }
         } message: {
             let mins = stillDiningReminderCount == 0 ? 15 : 10
             Text("ชำระเงินไปแล้ว \(mins) นาที โต๊ะ \(currentTable.tableNumber) ยังไม่ถูกเคลียร์ ลูกค้ายังนั่งรับประทานอยู่หรือเปล่า?")
+        }
+        .alert("สิทธิ์ไม่เพียงพอ", isPresented: $showAccessDeniedAlert) {
+            Button("ตกลง", role: .cancel) {}
+        } message: {
+            Text("เฉพาะผู้จัดการหรือเจ้าของร้านเท่านั้นที่มีสิทธิ์เคลียร์โต๊ะและเซสชันการกิน")
         }
         // ── Clear table confirm ───────────────────────────────────────────────
         .confirmationDialog("เคลียร์โต๊ะ \(currentTable.tableNumber)?",
@@ -453,16 +469,30 @@ struct TableDetailView: View {
             Spacer()
 
             if status == .stillDining {
-                Button {
-                    showClearTableConfirm = true
-                } label: {
-                    Text("เคลียร์โต๊ะ")
-                        .font(.caption.weight(.bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(elfGreen)
-                        .clipShape(Capsule())
+                if isAuthorizedToClearTable {
+                    Button {
+                        showClearTableConfirm = true
+                    } label: {
+                        Text("เคลียร์โต๊ะ")
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(elfGreen)
+                            .clipShape(Capsule())
+                    }
+                } else {
+                    HStack(spacing: 4) {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 10))
+                        Text("เคลียร์โต๊ะ")
+                            .font(.caption.weight(.bold))
+                    }
+                    .foregroundColor(.textSecondary.opacity(0.6))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.appSurfaceHigh)
+                    .clipShape(Capsule())
                 }
             }
         }

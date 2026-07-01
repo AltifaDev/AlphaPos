@@ -4,6 +4,7 @@ import SwiftUI
 enum AppLanguage: String, CaseIterable, Identifiable {
     case english = "en"
     case thai = "th"
+    case lao = "lo"
     
     var id: String { self.rawValue }
     
@@ -11,6 +12,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         switch self {
         case .english: return "English"
         case .thai: return "ไทย"
+        case .lao: return "ລາວ"
         }
     }
     
@@ -18,6 +20,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         switch self {
         case .english: return "🇺🇸"
         case .thai: return "🇹🇭"
+        case .lao: return "🇱🇦"
         }
     }
 }
@@ -26,105 +29,160 @@ final class LanguageManager {
     static let shared = LanguageManager()
     
     private let translations: [String: [String: String]] = [
+        "more": [
+            "en": "More",
+            "th": "เพิ่มเติม",
+            "lo": "ເພີ່ມເຕີມ"
+        ],
+        "work_schedule": [
+            "en": "Work & Schedule",
+            "th": "กะงานและเวลาเข้าออก",
+            "lo": "ກະວຽກແລະເວລາເຂົ້າອອກ"
+        ],
+        "preferences": [
+            "en": "Preferences",
+            "th": "ตั้งค่าการใช้งาน",
+            "lo": "ຕັ້ງຄ່າການໃຊ້ງານ"
+        ],
+        "system_session": [
+            "en": "System & Session",
+            "th": "ระบบและเซสชัน",
+            "lo": "ລະບົບແລະເຊດຊັນ"
+        ],
+        "personal_info": [
+            "en": "Personal Info",
+            "th": "ข้อมูลส่วนตัว",
+            "lo": "ຂໍ້ມູນສ່ວນຕົວ"
+        ],
+        "app_language": [
+            "en": "App Language",
+            "th": "ภาษาของแอป",
+            "lo": "ພາສາຂອງແອັບ"
+        ],
         "all_items_served_before_checkout": [
             "en": "All items must be served before checkout.",
-            "th": "ต้องเสิร์ฟรายการทั้งหมดก่อนชำระเงิน"
+            "th": "ต้องเสิร์ฟรายการทั้งหมดก่อนชำระเงิน",
+            "lo": "ຕ້ອງເສີບລາຍການທັງໝົດກ່ອນຊຳລະເງິນ"
         ],
         "checkout_blocked_unserved_title": [
             "en": "Serve items first",
-            "th": "ต้องกดเสิร์ฟก่อน"
+            "th": "ต้องกดเสิร์ฟก่อน",
+            "lo": "ຕ້ອງກດເສີບກ່ອນ"
         ],
         "serve_before_checkout_action": [
             "en": "Back to table",
-            "th": "กลับไปหน้าโต๊ะ"
+            "th": "กลับไปหน้าโต๊ะ",
+            "lo": "ກັບຄືນໜ້າໂຕະ"
         ],
         "finalizing_payment": [
             "en": "Finalizing payment...",
-            "th": "กำลังบันทึกการชำระเงิน..."
+            "th": "กำลังบันทึกการชำระเงิน...",
+            "lo": "ກຳລັງບັນທຶກການຊຳລະເງິນ..."
         ],
         "biometric_verified": [
             "en": "Biometric verified",
-            "th": "ยืนยันชีวภาพสำเร็จ"
+            "th": "ยืนยันชีวภาพสำเร็จ",
+            "lo": "ຢືນຢັນຊີວພາພສຳເລັດ"
         ],
         "completed": [
             "en": "Completed",
-            "th": "เสร็จสิ้น"
+            "th": "เสร็จสิ้น",
+            "lo": "ເສັດສິ້ນ"
         ],
         "delete_item_confirm": [
             "en": "Delete this item from the order?",
-            "th": "ลบรายการนี้ออกจากออเดอร์หรือไม่?"
+            "th": "ลบรายการนี้ออกจากออเดอร์หรือไม่?",
+            "lo": "ລົບລາຍການນີ້ອອກຈາກອໍເດີຫຼືບໍ່?"
         ],
         "table_details": [
             "en": "Table Details",
-            "th": "รายละเอียดโต๊ะ"
+            "th": "รายละเอียดโต๊ะ",
+            "lo": "ລາຍລະອຽດໂຕະ"
         ],
         "diagnostics_system_status": [
             "en": "Diagnostics & System Status",
-            "th": "การวินิจฉัยและสถานะระบบ"
+            "th": "การวินิจฉัยและสถานะระบบ",
+            "lo": "ການວິນິຈສັຍແລະສຖານະລະບົບ"
         ],
         "connection_status": [
             "en": "Connection Status",
-            "th": "สถานะการเชื่อมต่อ"
+            "th": "สถานะการเชื่อมต่อ",
+            "lo": "ສຖານະການເຊື່ອມຕໍ່"
         ],
         "offline_status": [
             "en": "Offline",
-            "th": "ออฟไลน์"
+            "th": "ออฟไลน์",
+            "lo": "ອອຟໄລ"
         ],
         "online_status": [
             "en": "Online",
-            "th": "ออนไลน์"
+            "th": "ออนไลน์",
+            "lo": "ອອນໄລ"
         ],
         "merchant_uuid_label": [
             "en": "Store ID (Merchant UUID)",
-            "th": "รหัสร้านค้า (Merchant UUID)"
+            "th": "รหัสร้านค้า (Merchant UUID)",
+            "lo": "ລຫັສລ້ານຄ້າ (Merchant UUID)"
         ],
         "not_paired_status": [
             "en": "None (Not Paired)",
-            "th": "ไม่มี (ยังไม่ได้จับคู่)"
+            "th": "ไม่มี (ยังไม่ได้จับคู่)",
+            "lo": "ບໍ່ມີ (ຍັງບໍ່ໄດ້ຈັບຄູ່)"
         ],
         "clear_cache": [
             "en": "Clear Cache",
-            "th": "ล้างแคช"
+            "th": "ล้างแคช",
+            "lo": "ລ້າງແຄຊ"
         ],
         "reset_server_data": [
             "en": "Reset Server Data",
-            "th": "รีเซ็ตข้อมูลเซิร์ฟเวอร์"
+            "th": "รีเซ็ตข้อมูลเซิร์ฟเวอร์",
+            "lo": "ຣີເຊັດຂໍ້ມູນເຊີບເວີ"
         ],
         "cache_cleared_success": [
             "en": "Cache cleared and data re-synced successfully.",
-            "th": "ล้างแคชและซิงค์ข้อมูลใหม่สำเร็จ"
+            "th": "ล้างแคชและซิงค์ข้อมูลใหม่สำเร็จ",
+            "lo": "ລ້າງແຄຊແລະຊິງຂໍ້ມູນໄໝ່ສຳເລັດ"
         ],
         "wipe_transactions_title": [
             "en": "Wipe Transactions & Sessions?",
-            "th": "ลบธุรกรรมและเซสชันทั้งหมดหรือไม่?"
+            "th": "ลบธุรกรรมและเซสชันทั้งหมดหรือไม่?",
+            "lo": "ລົບທຸລກລລມແລະເຊດຊັນທັງໝົດຫຼືບໍ່?"
         ],
         "yes_wipe": [
             "en": "Yes, Wipe",
-            "th": "ยืนยันลบ"
+            "th": "ยืนยันลบ",
+            "lo": "ຢືນຢັນລົບ"
         ],
         "wipe_transactions_body": [
             "en": "This will delete all active sessions, orders, and service requests on the server. Menu items and staff profiles will remain untouched.",
-            "th": "การดำเนินการนี้จะลบเซสชัน ออเดอร์ และคำขอบริการที่กำลังใช้งานบนเซิร์ฟเวอร์ โดยไม่กระทบเมนูและโปรไฟล์พนักงาน"
+            "th": "การดำเนินการนี้จะลบเซสชัน ออเดอร์ และคำขอบริการที่กำลังใช้งานบนเซิร์ฟเวอร์ โดยไม่กระทบเมนูและโปรไฟล์พนักงาน",
+            "lo": "ການດຳເນິນການນີ້ຈະລົບເຊດຊັນ ອໍເດີ ແລະຄຳຂອບລິການທີ່ກຳລັງໄຊ້ງານບນເຊີບເວີ ໂດຍບໍ່ກະທົບເມນູແລະໂປຣໄຟລ໌ພະນັກງານ"
         ],
         "wipe_success": [
             "en": "All active sessions and orders wiped from Supabase. Tables reset to vacant.",
-            "th": "ลบเซสชันและออเดอร์ที่กำลังใช้งานแล้ว โต๊ะถูกรีเซ็ตเป็นว่าง"
+            "th": "ลบเซสชันและออเดอร์ที่กำลังใช้งานแล้ว โต๊ะถูกรีเซ็ตเป็นว่าง",
+            "lo": "ລົບເຊດຊັນແລະອໍເດີທີ່ກຳລັງໄຊ້ງານແລ້ວ ໂຕະຖູກຣີເຊັດເປ໇ນວ່າງ"
         ],
         "wipe_failed_prefix": [
             "en": "Wipe failed:",
-            "th": "ลบข้อมูลไม่สำเร็จ:"
+            "th": "ลบข้อมูลไม่สำเร็จ:",
+            "lo": "ລົບຂໍ້ມູນບໍ່ສຳເລັດ:"
         ],
         "system_notification": [
             "en": "System Notification",
-            "th": "การแจ้งเตือนระบบ"
+            "th": "การแจ้งเตือนระบบ",
+            "lo": "ການແຈ້ງເຕືອນລະບົບ"
         ],
         "ok": [
             "en": "OK",
-            "th": "ตกลง"
+            "th": "ตกลง",
+            "lo": "ຕົກລົງ"
         ],
         "sign_out_confirm_body": [
             "en": "Are you sure you want to sign out? You will need to log in again to access your account.",
-            "th": "ยืนยันออกจากระบบหรือไม่? คุณจะต้องเข้าสู่ระบบอีกครั้งเพื่อใช้งานบัญชีนี้"
+            "th": "ยืนยันออกจากระบบหรือไม่? คุณจะต้องเข้าสู่ระบบอีกครั้งเพื่อใช้งานบัญชีนี้",
+            "lo": "ຢືນຢັນອອກຈາກລະບົບຫຼືບໍ່? ທ່ານຈະຕ້ອງເຂົ້າສູ່ລະບົບອີກຄລັ້ງເພື່ອໄຊ້ງານບັຍຊີນີ້"
         ],
         "table_system_disabled_title": [
             "en": "Table System Disabled",
@@ -153,7 +211,7 @@ final class LanguageManager {
         "link_store_sub": [
             "en": "To begin, pair this device with your iPad POS.",
             "th": "เริ่มต้นจับคู่อุปกรณ์นี้เข้ากับเครื่อง iPad POS ของร้านค้า",
-            "lo": "ເລີ່ມຕົ້ນຈັບຄູ່ອຸປະກອນນີ້ກັບເຄື່ອງ iPad POS ຂອງຮ້านຄ້າ",
+            "lo": "ເລີ່ມຕົ້ນຈັບຄູ່ອຸປະກອນນີ້ກັບເຄື່ອງ iPad POS ຂອງຮ້ານຄ້າ",
             "km": "ដើម្បីចាប់ផ្តើម ភ្ជាប់ឧបករណ៍នេះជាមួយ iPad POS របស់អ្នក។",
             "vi": "Để bắt đầu, hãy ghép nối thiết bị này với iPad POS của bạn.",
             "my": "စတင်ရန် ဤစက်ပစ္စည်းကို သင်၏ iPad POS နှင့် ချိတ်ဆက်ပါ။"
@@ -169,7 +227,7 @@ final class LanguageManager {
         "enter_manually": [
             "en": "Enter Store ID Manually",
             "th": "ป้อนรหัสร้านค้าด้วยตนเอง",
-            "lo": "ປ້ອນລະຫັດຮ້านຄ້າດ້ວຍຕົນເອງ",
+            "lo": "ປ້ອນລະຫັດຮ້ານຄ້າດ້ວຍຕົນເອງ",
             "km": "បញ្ចូលលេខសម្គាល់ហាងដោយដៃ",
             "vi": "Nhập mã cửa hàng thủ công",
             "my": "ဆိုင် ID ကို ကိုယ်တိုင်ရိုက်ထည့်ပါ"
@@ -177,7 +235,7 @@ final class LanguageManager {
         "sandbox_demo": [
             "en": "Connect to Sandbox Demo Store",
             "th": "เชื่อมต่อร้านค้าจำลอง (Sandbox)",
-            "lo": "ເຊື່ອມຕໍ່ຮ້านຄ້າຈໍາລອງ (Sandbox)",
+            "lo": "ເຊື່ອມຕໍ່ຮ້ານຄ້າຈໍາລອງ (Sandbox)",
             "km": "ភ្ជាប់ទៅកាន់ហាងសាកល្បង Sandbox",
             "vi": "Kết nối với cửa hàng thử nghiệm",
             "my": "Sandbox စမ်းသပ်ဆိုင်သို့ ချိတ်ဆက်ပါ"
@@ -193,7 +251,7 @@ final class LanguageManager {
         "scan_pairing_qr_desc": [
             "en": "Scan the Pairing QR Code in iPad POS Settings",
             "th": "สแกน QR Code สำหรับจับคู่ในหน้าต่างการตั้งค่าของเครื่อง iPad POS",
-            "lo": "ສະແກน QR Code ເພື່ອຈັບຄູ່ໃນໜ້າຕັ້ງຄ່າຂອງເຄື່ອງ iPad POS",
+            "lo": "ສະແກນ QR Code ເພື່ອຈັບຄູ່ໃນໜ້າຕັ້ງຄ່າຂອງເຄື່ອງ iPad POS",
             "km": "ស្កែនកូដ QR នៅក្នុងการកំណត់ iPad POS",
             "vi": "Quét mã QR ghép nối trong Cài đặt iPad POS",
             "my": "iPad POS ဆက်တင်များရှိ ချိတ်ဆက်မှု QR ကုဒ်ကို စကင်န်ဖတ်ပါ"
@@ -249,7 +307,7 @@ final class LanguageManager {
         "unlink_store_title": [
             "en": "Unlink Store",
             "th": "ยกเลิกการเชื่อมต่อร้านค้า",
-            "lo": "ຍົກເລີກการເຊື່ອມຕໍ່ຮ້ານຄ້າ",
+            "lo": "ຍົກເລີກການເຊື່ອມຕໍ່ຮ້ານຄ້າ",
             "km": "ផ្តាច់ទំនាក់ទំនងហាង",
             "vi": "Hủy liên kết cửa hàng",
             "my": "ဆိုင်ချိတ်ဆက်မှု ဖြုတ်ရန်"
@@ -385,7 +443,7 @@ final class LanguageManager {
         "guests": [
             "en": "Guests",
             "th": "จำนวนลูกค้า",
-            "lo": "ຈຳນວນລູกຄ້າ",
+            "lo": "ຈຳນວນລູກຄ້າ",
             "km": "ភ្ញៀវ",
             "vi": "Khách",
             "my": "ဧည့်သည်များ"
@@ -425,7 +483,7 @@ final class LanguageManager {
         "clock_in_out": [
             "en": "Clock In/Out",
             "th": "ลงเวลางาน",
-            "lo": "ລົງເວลາງານ",
+            "lo": "ລົງເວລາງານ",
             "km": "ចុះឈ្មោះចូល/ចេញ",
             "vi": "Điểm danh vào/ra",
             "my": "အလုပ်ဝင်/ထွက်ချိန်"
@@ -505,7 +563,7 @@ final class LanguageManager {
         "modifiers": [
             "en": "Modifiers",
             "th": "ตัวเลือกเพิ่มเติม",
-            "lo": "ຕົວເລືອກເພີ່ມເຕີม",
+            "lo": "ຕົວເລືອກເພີ່ມເຕີມ",
             "km": "ជម្រើសបន្ថែម",
             "vi": "Lựa chọn thêm",
             "my": "ပြင်ဆင်မှုများ"
@@ -537,7 +595,7 @@ final class LanguageManager {
         "promptpay_qr": [
             "en": "PromptPay QR",
             "th": "พร้อมเพย์ QR",
-            "lo": "ພ້ອมເພຍ QR",
+            "lo": "ພ້ອມເພຍ QR",
             "km": "ស្កែន QR",
             "vi": "Quét mã QR",
             "my": "QR ဖြင့် ပေးချေရန်"
@@ -625,7 +683,7 @@ final class LanguageManager {
         "Indoor": [
             "en": "Indoor",
             "th": "ในร้าน",
-            "lo": "ໃນຮ້าน",
+            "lo": "ໃນຮ້ານ",
             "km": "ក្នុងហាង",
             "vi": "Trong nhà",
             "my": "အိမ်တွင်း"
@@ -889,7 +947,7 @@ final class LanguageManager {
         "loading_tables_layout": [
             "en": "Loading tables layout...",
             "th": "กำลังโหลดข้อมูลผังโต๊ะ...",
-            "lo": "ກຳลังໂຫລດຂໍ້ມູນຜັງໂຕະ...",
+            "lo": "ກຳລັງໂຫລດຂໍ້ມູນຜັງໂຕະ...",
             "km": "កំពុងផ្ទុកប្លង់តុ...",
             "vi": "Đang tải sơ đồ bàn...",
             "my": "စားပွဲပုံစံကို ယူနေသည်..."
@@ -921,7 +979,7 @@ final class LanguageManager {
         "manage_tables": [
             "en": "Manage Tables",
             "th": "จัดการโต๊ะอาหาร",
-            "lo": "ຈັດการโตะอาหาร",
+            "lo": "ຈັດການໂຕະອາຫານ",
             "km": "គ្រប់គ្រងតុ",
             "vi": "Quản lý bàn",
             "my": "စားပွဲများ စီမံမည်"
@@ -961,7 +1019,7 @@ final class LanguageManager {
         "no_staff_sub": [
             "en": "This store ID does not have any registered staff profiles yet, or the database is empty.",
             "th": "รหัสร้านค้านี้ยังไม่มีการเพิ่มข้อมูลพนักงาน หรือข้อมูลในระบบว่างเปล่า",
-            "lo": "ລະຫັດຮ້านຄ້ານີ້ຍັງບໍ່ມີຂໍ້ມູນພະนັກງານ ຫຼື ຂໍ້ມູນໃນລະບົບຫວ່າງເປົ່າ",
+            "lo": "ລະຫັດຮ້ານຄ້ານີ້ຍັງບໍ່ມີຂໍ້ມູນພະນັກງານ ຫຼື ຂໍ້ມູນໃນລະບົບຫວ່າງເປົ່າ",
             "km": "លេខសម្គាល់ហាងនេះមិនទាន់មានប្រវត្តិរូបបុគ្គលិកដែលបានចុះឈ្មោះទេ ឬទិន្នន័យទទេ",
             "vi": "Mã cửa hàng này chưa đăng ký hồ sơ nhân viên nào, hoặc cơ sở dữ liệu trống.",
             "my": "ဤဆိုင် ID တွင် မည်သည့်ဝန်ထမ်းပရိုဖိုင်မျှ မရှိသေးပါ သို့မဟုတ် ดေတာဗေ့စ်သည် ဗလာဖြစ်နေသည်။"
@@ -969,7 +1027,7 @@ final class LanguageManager {
         "onboarding_step1": [
             "en": "1. Add staff profiles in the iPad POS admin settings panel.",
             "th": "1. เพิ่มโปรไฟล์พนักงานในหน้าการตั้งค่าเครื่อง iPad POS หลัก",
-            "lo": "1. ເພີ່ມຂໍ້ມູນພະนັກງານໃນໜ້າຕັ້ງຄ່າເຄື່ອງ iPad POS ຫຼັກ",
+            "lo": "1. ເພີ່ມຂໍ້ມູນພະນັກງານໃນໜ້າຕັ້ງຄ່າເຄື່ອງ iPad POS ຫຼັກ",
             "km": "1. បន្ថែមប្រវត្តិរូបបុគ្គលិកនៅក្នុងផ្ទាំងកំណត់ iPad POS ធំ។",
             "vi": "1. Thêm tài khoản nhân viên trong bảng cài đặt iPad POS chính.",
             "my": "1. iPad POS စီမံခန့်ခွဲသူ ဆက်တင်များဘောင်တွင် ဝန်ထမ်းပရိုဖိုင်များ ထည့်ပါ။"
@@ -977,7 +1035,7 @@ final class LanguageManager {
         "onboarding_step2": [
             "en": "2. Ensure your iPhone is paired with the correct Store ID (UUID).",
             "th": "2. ตรวจสอบให้แน่ใจว่า iPhone ของคุณเชื่อมต่อกับ Store ID (UUID) ที่ถูกต้อง",
-            "lo": "2. ກວດສອບໃຫ້ແນ່ໃຈว่า iPhone ຂອງເຈົ້າເຊື່ອມຕໍ່ກັບ Store ID (UUID) ທີ່ຖືກຕ້ອງ",
+            "lo": "2. ກວດສອບໃຫ້ແນ່ໃຈວ່າ iPhone ຂອງເຈົ້າເຊື່ອມຕໍ່ກັບ Store ID (UUID) ທີ່ຖືກຕ້ອງ",
             "km": "2. ប្រាកដថា iPhone របស់អ្នកបានភ្ជាប់ជាមួយលេខសម្គាល់ហាង (UUID) ត្រឹមត្រូវ។",
             "vi": "2. Đảm bảo iPhone của bạn được liên kết đúng ID cửa hàng (UUID).",
             "my": "2. သင်၏ iPhone ကို ဆိုင် ID (UUID) အမှန်နှင့် ချိတ်ဆက်ထားကြောင်း သေချาပါစေ။"
@@ -985,7 +1043,7 @@ final class LanguageManager {
         "onboarding_step3": [
             "en": "3. Tap Refresh Profiles below to retrieve updated accounts.",
             "th": "3. กดปุ่ม 'รีเฟรชข้อมูลพนักงาน' ด้านล่างเพื่อดึงข้อมูลอัปเดตล่าสุด",
-            "lo": "3. ກົດປຸ່ມ 'ດຶງຂໍ້ມູນໃໝ່' ດ້ານລຸ່ມເພື່ອດຶงຂໍ້ມູນຫຼ້າสุด",
+            "lo": "3. ກົດປຸ່ມ 'ດຶງຂໍ້ມູນໃໝ່' ດ້ານລຸ່ມເພື່ອດຶງຂໍ້ມູນຫຼ້າສຸດ",
             "km": "3. ចុច 'ធ្វើបច្ចុប្បន្នភាព' ខាងក្រោមដើម្បីទាញយកប្រវត្តិរូបថ្មី។",
             "vi": "3. Nhấn 'Tải lại danh sách' bên dưới để cập nhật danh sách.",
             "my": "3. နောက်ဆုံးပေါ် အကောင့်များကို ရယူရန် အောက်ရှိ 'အကောင့်များ ပြန်ယူမည်' ကို နှိပ်ပါ။"
@@ -1065,7 +1123,7 @@ final class LanguageManager {
         "off_duty": [
             "en": "OFF DUTY",
             "th": "ยังไม่ได้เข้างาน",
-            "lo": "ຍັງບໍ່ໄດ້ເຂົ້າວຽก",
+            "lo": "ຍັງບໍ່ໄດ້ເຂົ້າວຽກ",
             "km": "ក្រៅម៉ោងការងារ",
             "vi": "ĐANG NGHỈ CA",
             "my": "အလုပ်ပြင်ပ"
@@ -1081,7 +1139,7 @@ final class LanguageManager {
         "auth_clock_out": [
             "en": "Authenticate & Clock Out",
             "th": "สแกนใบหน้าและเลิกงาน",
-            "lo": "ສະແກນໃບໜ້າและເລີກວຽກ",
+            "lo": "ສະແກນໃບໜ້າແລະເລີກວຽກ",
             "km": "ផ្ទៀងផ្ទាត់ ແລະចុះឈ្មោះចេញ",
             "vi": "Xác thực & Ra ca",
             "my": "စစ်ဆေးပြီး အလုပ်ထွက်ပါ"
@@ -1089,7 +1147,7 @@ final class LanguageManager {
         "not_clocked_in_today": [
             "en": "Not clocked in today",
             "th": "วันนี้ยังไม่ได้ลงเวลาเข้างาน",
-            "lo": "ມື້ນີ້ຍັງບໍ່ໄດ້ລົງเวลาເຂົ້າວຽກ",
+            "lo": "ມື້ນີ້ຍັງບໍ່ໄດ້ລົງເວລາເຂົ້າວຽກ",
             "km": "មិនទាន់ចុះឈ្មោះចូលនៅថ្ងៃនេះទេ",
             "vi": "Hôm nay chưa điểm danh vào",
             "my": "ယနေ့ အလုပ်မဝင်ရသေးပါ"
@@ -1097,7 +1155,7 @@ final class LanguageManager {
         "auth_clock_in": [
             "en": "Authenticate & Clock In",
             "th": "สแกนใบหน้าและเข้างาน",
-            "lo": "ສະແກນໃบໜ້າและເຂົ້າວຽก",
+            "lo": "ສະແກນໃບໜ້າແລະເຂົ້າວຽກ",
             "km": "ផ្ទៀងផ្ទាត់ และចុះឈ្មោះចូល",
             "vi": "Xác thực & Vào ca",
             "my": "စစ်ဆေးပြီး အလုပ်ဝင်ပါ"
@@ -1105,7 +1163,7 @@ final class LanguageManager {
         "no_clock_in_records": [
             "en": "No clock in records found.",
             "th": "ไม่พบประวัติการลงเวลางาน",
-            "lo": "ບໍ່ພົບປະຫວັດການລົງເວลາງານ",
+            "lo": "ບໍ່ພົບປະຫວັດການລົງເວລາງານ",
             "km": "រកមិនឃើញប្រវត្តិចុះឈ្មោះចូលទេ",
             "vi": "Không tìm thấy dữ liệu điểm danh",
             "my": "အလုပ်ချိန်မှတ်တမ်း မရှိပါ"
@@ -1129,7 +1187,7 @@ final class LanguageManager {
         "timecard_register": [
             "en": "Timecard Register",
             "th": "เครื่องบันทึกเวลาทำงาน",
-            "lo": "ເຄື່ອງບັນທຶກເວลາງານ",
+            "lo": "ເຄື່ອງບັນທຶກເວລາງານ",
             "km": "ម៉ាស៊ីនကត់ត្រាម៉ោងធ្វើការ",
             "vi": "Ghi nhận giờ công",
             "my": "အလုပ်ချိန် မှတ်ပုံတင်"
@@ -1177,7 +1235,7 @@ final class LanguageManager {
         "contract_details": [
             "en": "Contract Details",
             "th": "รายละเอียดสัญญาจ้าง",
-            "lo": "ລາຍລະອียดสัญญาจ้าง",
+            "lo": "ລາຍລະອີຍດສັຍຍາຈ້າງ",
             "km": "ព័ត៌មានលម្អិតកិច្ចសន្យា",
             "vi": "Chi tiết hợp đồng",
             "my": "စာချုပ် အသေးစိတ်"
@@ -1257,7 +1315,7 @@ final class LanguageManager {
         "no_orders_placed": [
             "en": "No orders placed yet",
             "th": "ยังไม่มีรายการอาหารสั่งเข้ามา",
-            "lo": "ຍັງບໍ່ມີລายການອາຫານສັ່ງເຂົ้າມา",
+            "lo": "ຍັງບໍ່ມີລາຍການອາຫານສັ່ງເຂົ້າມາ",
             "km": "មិនទាន់មានការកុម្មង់ទេ",
             "vi": "Chưa có món nào được gọi",
             "my": "မှာယူထားသော ဟင်းပွဲမရှိသေးပါ"
@@ -1417,7 +1475,7 @@ final class LanguageManager {
         "emv_simulator": [
             "en": "EMV Tap / Swipe Simulator",
             "th": "ตัวจำลองการแตะ/รูดบัตร (EMV)",
-            "lo": "ຕົວຈຳລອງการແຕະ/ຮູດບັດ (EMV)",
+            "lo": "ຕົວຈຳລອງການແຕະ/ຮູດບັດ (EMV)",
             "km": "ការសាកល្បងប៉ះ/អូសកាត (EMV)",
             "vi": "Trình mô phỏng chạm/quẹt thẻ EMV",
             "my": "EMV ကတ်ဖတ်စက် စမ်းသပ်စနစ်"
@@ -1513,7 +1571,7 @@ final class LanguageManager {
         "drinks": [
             "en": "Drinks",
             "th": "เครื่องดื่ม",
-            "lo": "เครื่องดื่ม",
+            "lo": "ເຄື່ອງດື່ມ",
             "km": "ភេសជ្ជៈ",
             "vi": "Đồ uống",
             "my": "အအေးနှင့်သောက်စရာ"
@@ -1528,672 +1586,903 @@ final class LanguageManager {
         ],
         "enable_notifications": [
             "en": "Enable Notifications",
-            "th": "เปิดใช้งานการแจ้งเตือน"
+            "th": "เปิดใช้งานการแจ้งเตือน",
+            "lo": "ເປິດໄຊ້ງານການແຈ້ງເຕືອນ"
         ],
         "enable_notifications_desc": [
             "en": "Receive alerts for new orders, ready dishes, and service requests.",
-            "th": "รับการแจ้งเตือนสำหรับออร์เดอร์ใหม่ อาหารพร้อมเสิร์ฟ และคำเรียกพนักงาน"
+            "th": "รับการแจ้งเตือนสำหรับออร์เดอร์ใหม่ อาหารพร้อมเสิร์ฟ และคำเรียกพนักงาน",
+            "lo": "ລັບການແຈ້ງເຕືອນສຳລັບອໍເດີໄໝ່ ອາຫານພລ້ອມເສີບ ແລະຄຳຮຽກພະນັກງານ"
         ],
         "settings_section": [
             "en": "SETTINGS",
-            "th": "การตั้งค่าแอป"
+            "th": "การตั้งค่าแอป",
+            "lo": "ການຕັ້ງຄ່າແອປ"
         ],
         "active_alerts_section": [
             "en": "Active Alerts",
-            "th": "รายการที่ต้องจัดการ"
+            "th": "รายการที่ต้องจัดการ",
+            "lo": "ລາຍການທີ່ຕ້ອງຈັດການ"
         ],
         "resolved_history_section": [
             "en": "History / Resolved",
-            "th": "ประวัติที่ดำเนินการแล้ว"
+            "th": "ประวัติที่ดำเนินการแล้ว",
+            "lo": "ປະຫວັດທີ່ດຳເນິນການແລ້ວ"
         ],
         "priority_high": [
             "en": "High",
-            "th": "สำคัญมาก"
+            "th": "สำคัญมาก",
+            "lo": "ສຳຄັນຫຼາຍ"
         ],
         "priority_medium": [
             "en": "Medium",
-            "th": "ปานกลาง"
+            "th": "ปานกลาง",
+            "lo": "ປານກາງ"
         ],
         "priority_low": [
             "en": "Low",
-            "th": "ทั่วไป"
+            "th": "ทั่วไป",
+            "lo": "ທົ່ວໄປ"
         ],
         "serve_action": [
             "en": "Serve",
-            "th": "เสิร์ฟ"
+            "th": "เสิร์ฟ",
+            "lo": "ເສີບ"
         ],
         "order_ready": [
             "en": "Ready",
-            "th": "พร้อมเสิร์ฟ"
+            "th": "พร้อมเสิร์ฟ",
+            "lo": "ພລ້ອມເສີບ"
         ],
         "order_preparing": [
             "en": "Preparing",
-            "th": "กำลังเตรียม"
+            "th": "กำลังเตรียม",
+            "lo": "ກຳລັງເຕລີຍມ"
         ],
         "order_served": [
             "en": "Served",
-            "th": "เสิร์ฟแล้ว"
+            "th": "เสิร์ฟแล้ว",
+            "lo": "ເສີບແລ້ວ"
         ],
         "order_completed": [
             "en": "Completed",
-            "th": "เสร็จสิ้น"
+            "th": "เสร็จสิ้น",
+            "lo": "ເສັດສິ້ນ"
         ],
         "served_items_locked": [
             "en": "Served items are locked",
-            "th": "รายการที่เสิร์ฟแล้วถูกล็อก"
+            "th": "รายการที่เสิร์ฟแล้วถูกล็อก",
+            "lo": "ລາຍການທີ່ເສີບແລ້ວຖູກລ໇ອກ"
         ],
         "shift_required_title": [
             "en": "Clock In Required",
-            "th": "ต้องเข้ากะก่อน"
+            "th": "ต้องเข้ากะก่อน",
+            "lo": "ຕ້ອງເຂົ້າກະກ່ອນ"
         ],
         "shift_required_subtitle": [
             "en": "You must clock in before placing orders. Please go to Clock In/Out to start your shift.",
-            "th": "คุณต้องลงเวลาเข้างานก่อนจึงจะสั่งอาหารได้ กรุณาไปที่หน้าลงเวลาเข้างาน"
+            "th": "คุณต้องลงเวลาเข้างานก่อนจึงจะสั่งอาหารได้ กรุณาไปที่หน้าลงเวลาเข้างาน",
+            "lo": "ທ່ານຕ້ອງລງເວລາເຂົ້າງານກ່ອນຈຶງຈະສັ່ງອາຫານໄດ້ ກະລຸນາໄປທີ່ໜ້າລງເວລາເຂົ້າງານ"
         ],
         "shift_guard_nav_title": [
             "en": "Shift Verification",
-            "th": "ตรวจสอบกะทำงาน"
+            "th": "ตรวจสอบกะทำงาน",
+            "lo": "ກວດສອບກະເຮັດວຽກ"
         ],
         "shift_guard_info_text": [
             "en": "For security and payroll accuracy, all staff must have an active shift before performing POS operations.",
-            "th": "เพื่อความปลอดภัยและความถูกต้องของค่าแรง พนักงานทุกคนต้องเข้ากะก่อนใช้งานระบบ POS"
+            "th": "เพื่อความปลอดภัยและความถูกต้องของค่าแรง พนักงานทุกคนต้องเข้ากะก่อนใช้งานระบบ POS",
+            "lo": "ເພື່ອຄວາມປອດໄພແລະຄວາມຖືກຕ້ອງຂອງຄ່າແຮງ ພະນັກງານທຸກຄົນຕ້ອງເຂົ້າກະກ່ອນໄຊ້ງານລະບົບ POS"
         ],
         "go_to_clock_in_btn": [
             "en": "Go to Clock In",
-            "th": "ไปลงเวลาเข้างาน"
+            "th": "ไปลงเวลาเข้างาน",
+            "lo": "ໄປລງເວລາເຂົ້າງານ"
         ],
         "go_back_btn": [
             "en": "Go Back",
-            "th": "กลับ"
+            "th": "กลับ",
+            "lo": "ກລັບ"
         ],
         // MARK: - Quick Order Mode
         "quick_order": [
             "en": "Quick Order",
-            "th": "สั่งด่วน"
+            "th": "สั่งด่วน",
+            "lo": "ສັ່ງດ່ວນ"
         ],
         "select_order_type": [
             "en": "Select order type",
-            "th": "เลือกประเภทออเดอร์"
+            "th": "เลือกประเภทออเดอร์",
+            "lo": "ເລືອກປລະເພທອໍເດີ"
         ],
         "takeaway": [
             "en": "Takeaway",
-            "th": "สั่งกลับบ้าน"
+            "th": "สั่งกลับบ้าน",
+            "lo": "ສັ່ງກລັບບ້ານ"
         ],
         "delivery": [
             "en": "Delivery",
-            "th": "เดลิเวอรี่"
+            "th": "เดลิเวอรี่",
+            "lo": "ເດລິເວອລີ່"
         ],
         "walk_in": [
             "en": "Walk-in",
-            "th": "ลูกค้า Walk-in"
+            "th": "ลูกค้า Walk-in",
+            "lo": "ລູກຄ້າ Walk-in"
         ],
         "your_cart": [
             "en": "Your Cart",
-            "th": "ตะกร้าของคุณ"
+            "th": "ตะกร้าของคุณ",
+            "lo": "ຕະກລ້າຂອງທ່ານ"
         ],
         "queue_number": [
             "en": "Queue Number",
-            "th": "หมายเลขคิว"
+            "th": "หมายเลขคิว",
+            "lo": "ໝາຍເລຂຄິວ"
         ],
         "pay_now": [
             "en": "Pay Now",
-            "th": "ชำระเลย"
+            "th": "ชำระเลย",
+            "lo": "ຊຳລະເລຍ"
         ],
         "pay_later": [
             "en": "Pay Later",
-            "th": "ชำระทีหลัง"
+            "th": "ชำระทีหลัง",
+            "lo": "ຊຳລະທີຫຼັງ"
         ],
         "order_submitted": [
             "en": "Order Submitted!",
-            "th": "ส่งออเดอร์แล้ว!"
+            "th": "ส่งออเดอร์แล้ว!",
+            "lo": "ສ່ງອໍເດີແລ້ວ!"
         ],
         "empty_cart_msg": [
             "en": "Add items to start",
-            "th": "เพิ่มรายการเพื่อเริ่ม"
+            "th": "เพิ่มรายการเพื่อเริ่ม",
+            "lo": "ເພິ່ມລາຍການເພື່ອເລີ່ມ"
         ],
         "new_order": [
             "en": "New Order",
-            "th": "ออเดอร์ใหม่"
+            "th": "ออเดอร์ใหม่",
+            "lo": "ອໍເດີໄໝ່"
         ],
         "select_payment": [
             "en": "Select Payment Method",
-            "th": "เลือกวิธีชำระเงิน"
+            "th": "เลือกวิธีชำระเงิน",
+            "lo": "ເລືອກວິທີຊຳລະເງິນ"
         ],
         "total_amount": [
             "en": "Total Amount",
-            "th": "ยอดรวม"
+            "th": "ยอดรวม",
+            "lo": "ຍອດລວມ"
         ],
         "submit_order": [
             "en": "Submit Order",
-            "th": "ส่งออเดอร์"
+            "th": "ส่งออเดอร์",
+            "lo": "ສ່ງອໍເດີ"
         ],
         "items_label": [
             "en": "items",
-            "th": "รายการ"
+            "th": "รายการ",
+            "lo": "ລາຍການ"
         ],
         "search_menu": [
             "en": "Search menu...",
-            "th": "ค้นหาเมนู..."
+            "th": "ค้นหาเมนู...",
+            "lo": "ຄ້ນຫາເມນູ..."
         ],
         "all_categories": [
             "en": "All",
-            "th": "ทั้งหมด"
+            "th": "ทั้งหมด",
+            "lo": "ທັງໝົດ"
+        ],
+        "filter_menu": [
+            "en": "Filter Menu",
+            "th": "ตัวกรองเมนู",
+            "lo": "ຕົວຕອງເມນູ"
+        ],
+        "sort_by": [
+            "en": "Sort By",
+            "th": "จัดเรียงตาม",
+            "lo": "ຈັດລຽງຕາມ"
+        ],
+        "price_range": [
+            "en": "Price Range",
+            "th": "ช่วงราคา",
+            "lo": "ຊ່ວງລາຄາ"
+        ],
+        "min_price": [
+            "en": "Min Price",
+            "th": "ราคาต่ำสุด",
+            "lo": "ລາຄາຕໍ່າສຸດ"
+        ],
+        "max_price": [
+            "en": "Max Price",
+            "th": "ราคาสูงสุด",
+            "lo": "ລາຄາສູງສຸດ"
+        ],
+        "favorites_only": [
+            "en": "Favorites Only",
+            "th": "เฉพาะรายการโปรด",
+            "lo": "ສະເພາະລາຍການທີ່ມັກ"
+        ],
+        "apply": [
+            "en": "Apply Filters",
+            "th": "ใช้ตัวกรอง",
+            "lo": "ໃຊ້ຕົວຕອງ"
+        ],
+        "reset": [
+            "en": "Reset",
+            "th": "ล้างค่า",
+            "lo": "ລ້າງຄ່າ"
+        ],
+        "to": [
+            "en": "to",
+            "th": "ถึง",
+            "lo": "ເຖິງ"
+        ],
+        "price_low_high": [
+            "en": "Price: Low to High",
+            "th": "ราคา: ต่ำไปสูง",
+            "lo": "ລາຄາ: ຕໍ່າຫາສູງ"
+        ],
+        "price_high_low": [
+            "en": "Price: High to Low",
+            "th": "ราคา: สูงไปต่ำ",
+            "lo": "ລາຄາ: ສູງຫາຕໍ່າ"
+        ],
+        "name_a_z": [
+            "en": "Name: A to Z",
+            "th": "ชื่อ: A ไป Z",
+            "lo": "ຊື່: A ຫາ Z"
+        ],
+        "name_z_a": [
+            "en": "Name: Z to A",
+            "th": "ชื่อ: Z ไป A",
+            "lo": "ຊື່: Z ຫາ A"
+        ],
+        "sort_none": [
+            "en": "Default",
+            "th": "เริ่มต้น",
+            "lo": "ເລີ່ມຕົ້ນ"
         ],
         // MARK: - Offline Cache
         "offline_banner": [
             "en": "You're offline",
-            "th": "คุณออฟไลน์อยู่"
+            "th": "คุณออฟไลน์อยู่",
+            "lo": "ທ່ານອອຟໄລຢູ່"
         ],
         "offline_banner_desc": [
             "en": "Changes will sync when back online",
-            "th": "ข้อมูลจะซิงค์เมื่อกลับมาออนไลน์"
+            "th": "ข้อมูลจะซิงค์เมื่อกลับมาออนไลน์",
+            "lo": "ຂໍ້ມູນຈະຊິງເມື່ອກັບຄືນມາອອນໄລ"
         ],
         "offline_queued": [
             "en": "Queued",
-            "th": "อยู่ในคิว"
+            "th": "อยู่ในคิว",
+            "lo": "ຢູ່ໄນຄິວ"
         ],
         "offline_syncing": [
             "en": "Syncing...",
-            "th": "กำลังซิงค์..."
+            "th": "กำลังซิงค์...",
+            "lo": "ກຳລັງຊິງ..."
         ],
         "offline_cached_data": [
             "en": "Showing cached data",
-            "th": "แสดงข้อมูลที่เก็บไว้"
+            "th": "แสดงข้อมูลที่เก็บไว้",
+            "lo": "ແສດງຂໍ້ມູນທີ່ເກ໇ບໄວ້"
         ],
         "offline_order_queued": [
             "en": "Order queued for sync",
-            "th": "ออเดอร์อยู่ในคิวรอซิงค์"
+            "th": "ออเดอร์อยู่ในคิวรอซิงค์",
+            "lo": "ອໍເດີຢູ່ໄນຄິວລອຊິງ"
         ],
         // MARK: - Order Timeline
         "order_timeline": [
             "en": "Order Timeline",
-            "th": "ไทม์ไลน์ออเดอร์"
+            "th": "ไทม์ไลน์ออเดอร์",
+            "lo": "ໄທໄລອໍເດີ"
         ],
         "order_placed": [
             "en": "Order Placed",
-            "th": "สั่งออเดอร์แล้ว"
+            "th": "สั่งออเดอร์แล้ว",
+            "lo": "ສັ່ງອໍເດີແລ້ວ"
         ],
         "order_confirmed": [
             "en": "Confirmed",
-            "th": "ยืนยันแล้ว"
+            "th": "ยืนยันแล้ว",
+            "lo": "ຢືນຢັນແລ້ວ"
         ],
         "order_picked_up": [
             "en": "Picked Up",
-            "th": "รับแล้ว"
+            "th": "รับแล้ว",
+            "lo": "ລັບແລ້ວ"
         ],
         "order_cancelled": [
             "en": "Cancelled",
-            "th": "ยกเลิก"
+            "th": "ยกเลิก",
+            "lo": "ຍົກເລີກ"
         ],
         "estimated_time": [
             "en": "Est. time remaining",
-            "th": "เวลาโดยประมาณ"
+            "th": "เวลาโดยประมาณ",
+            "lo": "ເວລາໂດຍປລະມານ"
         ],
         "elapsed_time": [
             "en": "Elapsed",
-            "th": "เวลาผ่านไป"
+            "th": "เวลาผ่านไป",
+            "lo": "ເວລາຜ່ານໄປ"
         ],
         "track_order": [
             "en": "Track Order",
-            "th": "ติดตามออเดอร์"
+            "th": "ติดตามออเดอร์",
+            "lo": "ຕິດຕາມອໍເດີ"
         ],
         // MARK: - Deep Link Notifications
         "notification_new_order": [
             "en": "New Order",
-            "th": "ออเดอร์ใหม่"
+            "th": "ออเดอร์ใหม่",
+            "lo": "ອໍເດີໄໝ່"
         ],
         "notification_order_ready": [
             "en": "Order Ready",
-            "th": "ออเดอร์พร้อม"
+            "th": "ออเดอร์พร้อม",
+            "lo": "ອໍເດີພລ້ອມ"
         ],
         "notification_table_update": [
             "en": "Table Updated",
-            "th": "อัพเดทโต๊ะ"
+            "th": "อัพเดทโต๊ะ",
+            "lo": "ອັພເດທໂຕະ"
         ],
         "notification_tap_to_view": [
             "en": "Tap to view details",
-            "th": "แตะเพื่อดูรายละเอียด"
+            "th": "แตะเพื่อดูรายละเอียด",
+            "lo": "ແຕະເພື່ອເບິ່ງລາຍລະອຽດ"
         ],
         "notification_shift_reminder": [
             "en": "Shift Reminder",
-            "th": "แจ้งเตือนกะ"
+            "th": "แจ้งเตือนกะ",
+            "lo": "ແຈ້ງເຕືອນກະ"
         ],
         "notification_clock_reminder": [
             "en": "Don't forget to clock in!",
-            "th": "อย่าลืมลงเวลาเข้างาน!"
+            "th": "อย่าลืมลงเวลาเข้างาน!",
+            "lo": "ຢ່າລືມລງເວລາເຂົ້າງານ!"
         ],
         "schedule": [
             "en": "Schedule",
-            "th": "ตารางเวร"
+            "th": "ตารางเวร",
+            "lo": "ຕາຕະລາງເວລ"
         ],
         "my_shifts": [
             "en": "My Shifts",
-            "th": "กะของฉัน"
+            "th": "กะของฉัน",
+            "lo": "ກະຂອງຂ້ອຍ"
         ],
         "team_schedule": [
             "en": "Team Schedule",
-            "th": "ตารางทีม"
+            "th": "ตารางทีม",
+            "lo": "ຕາຕະລາງທີມ"
         ],
         "next_shift": [
             "en": "Next Shift",
-            "th": "กะถัดไป"
+            "th": "กะถัดไป",
+            "lo": "ກະຖັດໄປ"
         ],
         "starts_in": [
             "en": "Starts in",
-            "th": "เริ่มใน"
+            "th": "เริ่มใน",
+            "lo": "ເລີ່ມໄນ"
         ],
         "morning_shift": [
             "en": "Morning",
-            "th": "กะเช้า"
+            "th": "กะเช้า",
+            "lo": "ກະເຊົ້າ"
         ],
         "afternoon_shift": [
             "en": "Afternoon",
-            "th": "กะบ่าย"
+            "th": "กะบ่าย",
+            "lo": "ກະບ່າຍ"
         ],
         "evening_shift": [
             "en": "Evening",
-            "th": "กะเย็น"
+            "th": "กะเย็น",
+            "lo": "ກະແລງ"
         ],
         "night_shift": [
             "en": "Night",
-            "th": "กะดึก"
+            "th": "กะดึก",
+            "lo": "ກະເດິກ"
         ],
         "no_shifts": [
             "en": "No shifts this week",
-            "th": "ไม่มีกะในสัปดาห์นี้"
+            "th": "ไม่มีกะในสัปดาห์นี้",
+            "lo": "ບໍ່ມີກະໄນສັບປະດານີ້"
         ],
         "this_week": [
             "en": "This Week",
-            "th": "สัปดาห์นี้"
+            "th": "สัปดาห์นี้",
+            "lo": "ສັບປະດານີ້"
         ],
+        "scheduled_shifts": ["en": "Shifts", "th": "จำนวนกะ", "lo": "ຈຳນວນກະ"],
+        "scheduled_hours": ["en": "Hours", "th": "ชั่วโมง", "lo": "ຊົ່ວໂມງ"],
+        "work_days": ["en": "Work days", "th": "วันทำงาน", "lo": "ມື້ເຮັດວຽກ"],
+        "today": ["en": "Today", "th": "วันนี้", "lo": "ມື້ນີ້"],
+        "tomorrow": ["en": "Tomorrow", "th": "พรุ่งนี้", "lo": "ມື້ອື່ນ"],
+        "no_shift_day": ["en": "No shift assigned", "th": "ไม่มีเวรในวันนี้", "lo": "ບໍ່ມີກະໃນມື້ນີ້"],
+        "no_shift_day_hint": ["en": "This is a day off unless your manager updates the schedule.", "th": "ถือเป็นวันหยุด เว้นแต่ผู้จัดการจะปรับตาราง", "lo": "ເປັນມື້ພັກ ເວັ້ນແຕ່ຜູ້ຈັດການປັບຕາຕະລາງ"],
+        "no_team_shifts_day": ["en": "No team shifts on this day", "th": "ไม่มีตารางทีมในวันนี้", "lo": "ບໍ່ມີກະທີມໃນມື້ນີ້"],
+        "shift_upcoming": ["en": "Upcoming", "th": "กำลังจะถึง", "lo": "ກຳລັງຈະຮອດ"],
+        "shift_in_progress": ["en": "In progress", "th": "กำลังทำงาน", "lo": "ກຳລັງເຮັດວຽກ"],
+        "shift_completed": ["en": "Completed", "th": "เสร็จสิ้น", "lo": "ສຳເລັດ"],
         // MARK: - Daily Summary
         "daily_summary": [
             "en": "Daily Summary",
-            "th": "สรุปประจำวัน"
+            "th": "สรุปประจำวัน",
+            "lo": "ສະຫຼຸບປະຈຳວັນ"
         ],
         "orders_served": [
             "en": "Orders Served",
-            "th": "ออเดอร์ที่เสิร์ฟ"
+            "th": "ออเดอร์ที่เสิร์ฟ",
+            "lo": "ອໍເດີທີ່ເສີບ"
         ],
         "revenue_generated": [
             "en": "Revenue",
-            "th": "ยอดขาย"
+            "th": "ยอดขาย",
+            "lo": "ຍອດຂາຍ"
         ],
         "avg_prep_time": [
             "en": "Avg Prep Time",
-            "th": "เวลาเตรียมเฉลี่ย"
+            "th": "เวลาเตรียมเฉลี่ย",
+            "lo": "ເວລາເຕລີຍມສະເລ່ຍ"
         ],
         "tables_turned": [
             "en": "Tables Turned",
-            "th": "โต๊ะที่ปิด"
+            "th": "โต๊ะที่ปิด",
+            "lo": "ໂຕະທີ່ປິດ"
         ],
         "tips_earned": [
             "en": "Tips Earned",
-            "th": "ทิปที่ได้"
+            "th": "ทิปที่ได้",
+            "lo": "ທິປທີ່ໄດ້"
         ],
         "hourly_activity": [
             "en": "Hourly Activity",
-            "th": "กิจกรรมรายชั่วโมง"
+            "th": "กิจกรรมรายชั่วโมง",
+            "lo": "ກິດຈະກຳລາຍຊົ່ວໂມງ"
         ],
         "top_items_sold": [
             "en": "Top Items",
-            "th": "รายการขายดี"
+            "th": "รายการขายดี",
+            "lo": "ລາຍການຂາຍດີ"
         ],
         "hours_worked": [
             "en": "Hours Worked",
-            "th": "ชั่วโมงทำงาน"
+            "th": "ชั่วโมงทำงาน",
+            "lo": "ຊົ່ວໂມງເຮັດວຽກ"
         ],
         "day_streak": [
             "en": "Day Streak",
-            "th": "ทำงานต่อเนื่อง"
+            "th": "ทำงานต่อเนื่อง",
+            "lo": "ເຮັດວຽກຕໍ່ເນື່ອງ"
         ],
         "todays_summary": [
             "en": "Today's Summary",
-            "th": "สรุปวันนี้"
+            "th": "สรุปวันนี้",
+            "lo": "ສະຫຼຸບມື້ນີ້"
         ],
         // MARK: - Split Bill
         "split_bill": [
             "en": "Split Bill",
-            "th": "แบ่งบิล"
+            "th": "แบ่งบิล",
+            "lo": "ແບ່ງບິນ"
         ],
         "equal_split": [
             "en": "Equal Split",
-            "th": "หารเท่า"
+            "th": "หารเท่า",
+            "lo": "ຫານເທົ່າ"
         ],
         "split_by_amount": [
             "en": "By Amount",
-            "th": "ตามจำนวนเงิน"
+            "th": "ตามจำนวนเงิน",
+            "lo": "ຕາມຈຳນວນເງິນ"
         ],
         "split_by_item": [
             "en": "By Item",
-            "th": "ตามรายการ"
+            "th": "ตามรายการ",
+            "lo": "ຕາມລາຍການ"
         ],
         "number_of_people": [
             "en": "Number of people",
-            "th": "จำนวนคน"
+            "th": "จำนวนคน",
+            "lo": "ຈຳນວນຄົນ"
         ],
         "person_n": [
             "en": "Person %d",
-            "th": "คนที่ %d"
+            "th": "คนที่ %d",
+            "lo": "ຄົນທີ່ %d"
         ],
         "remaining": [
             "en": "Remaining",
-            "th": "คงเหลือ"
+            "th": "คงเหลือ",
+            "lo": "ຄົງເຫຼືອ"
         ],
         "each_pays": [
             "en": "Each pays",
-            "th": "คนละ"
+            "th": "คนละ",
+            "lo": "ຄົນລະ"
         ],
         "paid": [
             "en": "Paid",
-            "th": "จ่ายแล้ว"
+            "th": "จ่ายแล้ว",
+            "lo": "ຈ່າຍແລ້ວ"
         ],
         "unpaid": [
             "en": "Unpaid",
-            "th": "ยังไม่จ่าย"
+            "th": "ยังไม่จ่าย",
+            "lo": "ຍັງບໍ່ຈ່າຍ"
         ],
         "confirm_split": [
             "en": "Confirm Split Payment",
-            "th": "ยืนยันการแยกจ่าย"
+            "th": "ยืนยันการแยกจ่าย",
+            "lo": "ຢືນຢັນການແຍກຈ່າຍ"
         ],
         "assign_items": [
             "en": "Assign items",
-            "th": "กำหนดรายการ"
+            "th": "กำหนดรายการ",
+            "lo": "ກຳນົດລາຍການ"
         ],
         // MARK: - Break Timer
         "break_timer": [
             "en": "Break Timer",
-            "th": "เวลาพัก"
+            "th": "เวลาพัก",
+            "lo": "ເວລາພັກ"
         ],
         "short_break": [
             "en": "Short Break",
-            "th": "พักสั้น"
+            "th": "พักสั้น",
+            "lo": "ພັກສັ້ນ"
         ],
         "meal_break": [
             "en": "Meal Break",
-            "th": "พักทานอาหาร"
+            "th": "พักทานอาหาร",
+            "lo": "ພັກທານອາຫານ"
         ],
         "custom_break": [
             "en": "Custom",
-            "th": "กำหนดเอง"
+            "th": "กำหนดเอง",
+            "lo": "ກຳນົດເອງ"
         ],
         "start_break": [
             "en": "Start Break",
-            "th": "เริ่มพัก"
+            "th": "เริ่มพัก",
+            "lo": "ເລີ່ມພັກ"
         ],
         "end_break": [
             "en": "End Break",
-            "th": "หยุดพัก"
+            "th": "หยุดพัก",
+            "lo": "ຢຸດພັກ"
         ],
         "break_overtime": [
             "en": "Break Overtime!",
-            "th": "เกินเวลาพัก!"
+            "th": "เกินเวลาพัก!",
+            "lo": "ເກິນເວລາພັກ!"
         ],
         "break_remaining": [
             "en": "remaining",
-            "th": "เหลือ"
+            "th": "เหลือ",
+            "lo": "ເຫຼືອ"
         ],
         "break_history": [
             "en": "Break History",
-            "th": "ประวัติการพัก"
+            "th": "ประวัติการพัก",
+            "lo": "ປະຫວັດການພັກ"
         ],
         "break_policy": [
             "en": "Break Policy",
-            "th": "นโยบายการพัก"
+            "th": "นโยบายการพัก",
+            "lo": "ນໂຍບາຍການພັກ"
         ],
         "minutes": [
             "en": "min",
-            "th": "นาที"
+            "th": "นาที",
+            "lo": "ນາທີ"
         ],
         "select_break_type": [
             "en": "Select break type",
-            "th": "เลือกประเภทการพัก"
+            "th": "เลือกประเภทการพัก",
+            "lo": "ເລືອກປລະເພທການພັກ"
         ],
         "tip_tracker": [
             "en": "Tip Tracker",
-            "th": "ติดตามทิป"
+            "th": "ติดตามทิป",
+            "lo": "ຕິດຕາມທິປ"
         ],
         "todays_tips": [
             "en": "Today's Tips",
-            "th": "ทิปวันนี้"
+            "th": "ทิปวันนี้",
+            "lo": "ທິປມື້ນີ້"
         ],
         "weekly_tips": [
             "en": "Weekly Tips",
-            "th": "ทิปรายสัปดาห์"
+            "th": "ทิปรายสัปดาห์",
+            "lo": "ທິປລາຍສັບປະດາ"
         ],
         "monthly_tips": [
             "en": "Monthly Tips",
-            "th": "ทิปรายเดือน"
+            "th": "ทิปรายเดือน",
+            "lo": "ທິປລາຍເດືອນ"
         ],
         "cash_tips": [
             "en": "Cash",
-            "th": "เงินสด"
+            "th": "เงินสด",
+            "lo": "ເງິນສດ"
         ],
         "card_tips": [
             "en": "Card",
-            "th": "บัตร"
+            "th": "บัตร",
+            "lo": "ບັຕລ"
         ],
         "tip_goal": [
             "en": "Daily Goal",
-            "th": "เป้าหมายวันนี้"
+            "th": "เป้าหมายวันนี้",
+            "lo": "ເປ້າໝາຍມື້ນີ້"
         ],
         "tip_pool": [
             "en": "Tip Pool",
-            "th": "ทิปรวม"
+            "th": "ทิปรวม",
+            "lo": "ທິປລວມ"
         ],
         "your_share": [
             "en": "Your Share",
-            "th": "ส่วนของคุณ"
+            "th": "ส่วนของคุณ",
+            "lo": "ສ່ວນຂອງທ່ານ"
         ],
         "avg_per_shift": [
             "en": "Avg per shift",
-            "th": "เฉลี่ยต่อกะ"
+            "th": "เฉลี่ยต่อกะ",
+            "lo": "ສະເລ່ຍຕ່ອກະ"
         ],
         "set_goal": [
             "en": "Set Goal",
-            "th": "ตั้งเป้า"
+            "th": "ตั้งเป้า",
+            "lo": "ຕັ້ງເປ້າ"
         ],
         "tip_history": [
             "en": "Tip History",
-            "th": "ประวัติทิป"
+            "th": "ประวัติทิป",
+            "lo": "ປະຫວັດທິປ"
         ],
         "messages": [
             "en": "Messages",
-            "th": "ข้อความ"
+            "th": "ข้อความ",
+            "lo": "ຂ້ອຄວາມ"
         ],
         "team_chat": [
             "en": "Team Chat",
-            "th": "แชทกลุ่ม"
+            "th": "แชทกลุ่ม",
+            "lo": "ແຊັດກຸ່ມ"
         ],
         "direct_message": [
             "en": "Direct Message",
-            "th": "ข้อความส่วนตัว"
+            "th": "ข้อความส่วนตัว",
+            "lo": "ຂ້ອຄວາມສ່ວນຕັວ"
         ],
         "quick_messages": [
             "en": "Quick Messages",
-            "th": "ข้อความด่วน"
+            "th": "ข้อความด่วน",
+            "lo": "ຂ້ອຄວາມດ່ວນ"
         ],
         "type_message": [
             "en": "Type a message...",
-            "th": "พิมพ์ข้อความ..."
+            "th": "พิมพ์ข้อความ...",
+            "lo": "ພິມຂ້ອຄວາມ..."
         ],
         "send": [
             "en": "Send",
-            "th": "ส่ง"
+            "th": "ส่ง",
+            "lo": "ສ່ງ"
         ],
         "online": [
             "en": "Online",
-            "th": "ออนไลน์"
+            "th": "ออนไลน์",
+            "lo": "ອອນໄລ"
         ],
         "need_help": [
             "en": "Need help at Table",
-            "th": "ต้องการช่วยที่โต๊ะ"
+            "th": "ต้องการช่วยที่โต๊ะ",
+            "lo": "ຕ້ອງການຊ່ວຍທີ່ໂຕະ"
         ],
         "order_ready_pickup": [
             "en": "Order ready for pickup",
-            "th": "ออเดอร์พร้อมรับ"
+            "th": "ออเดอร์พร้อมรับ",
+            "lo": "ອໍເດີພລ້ອມລັບ"
         ],
         "running_low": [
             "en": "Running low on stock",
-            "th": "สินค้าใกล้หมด"
+            "th": "สินค้าใกล้หมด",
+            "lo": "ສິນຄ້າໃກ້ໝົດ"
         ],
         "unread_messages": [
             "en": "unread",
-            "th": "ยังไม่อ่าน"
+            "th": "ยังไม่อ่าน",
+            "lo": "ຍັງບໍ່ອ່ານ"
         ],
         "no_messages_yet": [
             "en": "No messages yet. Start a conversation!",
-            "th": "ยังไม่มีข้อความ เริ่มสนทนาเลย!"
+            "th": "ยังไม่มีข้อความ เริ่มสนทนาเลย!",
+            "lo": "ຍັງບໍ່ມີຂ້ອຄວາມ ເລີ່ມສົນທະນາເລຍ!"
         ],
         "search_staff": [
             "en": "Search staff...",
-            "th": "ค้นหาพนักงาน..."
+            "th": "ค้นหาพนักงาน...",
+            "lo": "ຄ້ນຫາພະນັກງານ..."
         ],
         "taking_break": [
             "en": "Taking my break",
-            "th": "พักผ่อนอยู่"
+            "th": "พักผ่อนอยู่",
+            "lo": "ພັກຜ່ອນຢູ່"
         ],
         "back_from_break": [
             "en": "Back from break",
-            "th": "กลับจากพัก"
+            "th": "กลับจากพัก",
+            "lo": "ກລັບຈາກພັກ"
         ],
         "customer_complaint": [
             "en": "Customer complaint",
-            "th": "ลูกค้าร้องเรียน"
+            "th": "ลูกค้าร้องเรียน",
+            "lo": "ລູກຄ້າລ້ອງເລີຍນ"
         ],
         "loading": [
             "en": "Loading...",
-            "th": "กำลังโหลด..."
+            "th": "กำลังโหลด...",
+            "lo": "ກຳລັງໂຫຼດ..."
         ],
         "offline": [
             "en": "Offline",
-            "th": "ออฟไลน์"
+            "th": "ออฟไลน์",
+            "lo": "ອອຟໄລ"
         ]
         ,
         // ── Error/Confirm keys เพิ่มจาก UX fix (2026-06-28) ──────────────────
         "split_payment_failed": [
             "en": "Payment Failed",
-            "th": "การชำระเงินล้มเหลว"
+            "th": "การชำระเงินล้มเหลว",
+            "lo": "ການຊຳລະເງິນຫຼົ້ມເຫຼວ"
         ],
         "split_payment_error_msg": [
             "en": "Could not save split payment. Please try again.",
-            "th": "บันทึกการแยกจ่ายไม่สำเร็จ กรุณาลองใหม่"
+            "th": "บันทึกการแยกจ่ายไม่สำเร็จ กรุณาลองใหม่",
+            "lo": "ບັນທຶກການແຍກຈ່າຍບໍ່ສຳເລັດ ກະລຸນາລອງໃໝ່"
         ],
         "submit_order_failed": [
             "en": "Order Failed",
-            "th": "ส่งออเดอร์ไม่สำเร็จ"
+            "th": "ส่งออเดอร์ไม่สำเร็จ",
+            "lo": "ສ່ງອໍເດີບໍ່ສຳເລັດ"
         ],
         "order_submit_error_msg": [
             "en": "Could not submit order. Please check connection and try again.",
-            "th": "ส่งออเดอร์ไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่"
+            "th": "ส่งออเดอร์ไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่",
+            "lo": "ສ່ງອໍເດີບໍ່ສຳເລັດ ກະລຸນາກວດສອບການເຊື່ອມຕໍ່ແລ້ວລອງໃໝ່"
         ],
         "load_orders_failed": [
             "en": "Could not load orders",
-            "th": "โหลดออเดอร์ไม่สำเร็จ"
+            "th": "โหลดออเดอร์ไม่สำเร็จ",
+            "lo": "ໂຫຼດອໍເດີບໍ່ສຳເລັດ"
         ],
         "confirm": [
             "en": "Confirm",
-            "th": "ยืนยัน"
+            "th": "ยืนยัน",
+            "lo": "ຢືນຢັນ"
         ],
         "people": [
             "en": "people",
-            "th": "คน"
+            "th": "คน",
+            "lo": "ຄົນ"
         ],
         // ── Timecard localization keys (2026-06-28) ────────────────────────
         "live_shift_in_progress": [
             "en": "Live shift in progress",
-            "th": "กำลังทำงานอยู่"
+            "th": "กำลังทำงานอยู่",
+            "lo": "ກຳລັງເຮັດວຽກຢູ່"
         ],
         "ready_for_shift": [
             "en": "Ready for your next shift",
-            "th": "พร้อมเริ่มกะงานใหม่"
+            "th": "พร้อมเริ่มกะงานใหม่",
+            "lo": "ພລ້ອມເລີ່ມກະງານໄໝ່"
         ],
         "shift_running_hint": [
             "en": "Keep the shift running. Clock out only when work is complete.",
-            "th": "กะงานกำลังดำเนินอยู่ กด Clock out เมื่อทำงานเสร็จ"
+            "th": "กะงานกำลังดำเนินอยู่ กด Clock out เมื่อทำงานเสร็จ",
+            "lo": "ກະງານກຳລັງດຳເນິນຢູ່ ກດ Clock out ເມື່ອເຮັດວຽກເສລ໇ຈ"
         ],
         "verify_to_clock_in": [
             "en": "Verify your identity, then clock in to start tracking time.",
-            "th": "ยืนยันตัวตน แล้วกด Clock in เพื่อเริ่มนับเวลา"
+            "th": "ยืนยันตัวตน แล้วกด Clock in เพื่อเริ่มนับเวลา",
+            "lo": "ຢືນຢັນຕົວຕົນ ແລ້ວກດ Clock in ເພື່ອເລີ່ມນັບເວລາ"
         ],
         "enroll_face": [
             "en": "Enroll Face",
-            "th": "ลงทะเบียนใบหน้า"
+            "th": "ลงทะเบียนใบหน้า",
+            "lo": "ລົງທະບຽນໄບໜ້າ"
         ],
         "update_face": [
             "en": "Update Face",
-            "th": "อัปเดตใบหน้า"
+            "th": "อัปเดตใบหน้า",
+            "lo": "ອັບເດດໄບໜ້າ"
         ],
         "adjustment": [
             "en": "Adjustment",
-            "th": "ปรับเวลา"
+            "th": "ปรับเวลา",
+            "lo": "ປັບເວລາ"
         ],
         "verify_identity": [
             "en": "Verify your identity...",
-            "th": "กำลังยืนยันตัวตน..."
+            "th": "กำลังยืนยันตัวตน...",
+            "lo": "ກຳລັງຢືນຢັນຕົວຕົນ..."
         ],
         "enter_pin_to_verify": [
             "en": "Enter PIN to verify",
-            "th": "ป้อน PIN เพื่อยืนยัน"
+            "th": "ป้อน PIN เพื่อยืนยัน",
+            "lo": "ປ້ອນ PIN ເພື່ອຢືນຢັນ"
         ],
         // ── OrderStatusBadge localization (2026-06-28) ─────────────────────
-        "status_pending": ["en": "Pending", "th": "รอยืนยัน"],
-        "status_confirmed": ["en": "Confirmed", "th": "ยืนยันแล้ว"],
-        "status_preparing": ["en": "Preparing", "th": "กำลังเตรียม"],
-        "status_ready": ["en": "Ready", "th": "พร้อมเสิร์ฟ"],
-        "status_served": ["en": "Served", "th": "เสิร์ฟแล้ว"],
-        "status_completed": ["en": "Paid ✓", "th": "ชำระแล้ว ✓"],
-        "status_cancelled": ["en": "Cancelled", "th": "ยกเลิก"],
-        "status_cooking": ["en": "Cooking", "th": "กำลังปรุง"],
-        "status_queued": ["en": "Queued", "th": "รอคิว"],
+        "status_pending": ["en": "Pending", "th": "รอยืนยัน", "lo": "ລອຢືນຢັນ"],
+        "status_confirmed": ["en": "Confirmed", "th": "ยืนยันแล้ว", "lo": "ຢືນຢັນແລ້ວ"],
+        "status_preparing": ["en": "Preparing", "th": "กำลังเตรียม", "lo": "ກຳລັງເຕລີຍມ"],
+        "status_ready": ["en": "Ready", "th": "พร้อมเสิร์ฟ", "lo": "ພລ້ອມເສີບ"],
+        "status_served": ["en": "Served", "th": "เสิร์ฟแล้ว", "lo": "ເສີບແລ້ວ"],
+        "status_completed": ["en": "Paid ✓", "th": "ชำระแล้ว ✓", "lo": "ຊຳລະແລ້ວ ✓"],
+        "status_cancelled": ["en": "Cancelled", "th": "ยกเลิก", "lo": "ຍົກເລີກ"],
+        "status_cooking": ["en": "Cooking", "th": "กำลังปรุง", "lo": "ກຳລັງປຸງ"],
+        "status_queued": ["en": "Queued", "th": "รอคิว", "lo": "ລອຄິວ"],
         // ── Accessibility labels (2026-06-28) ──────────────────────────────
-        "switch_to_light_mode": ["en": "Switch to light mode", "th": "เปลี่ยนเป็นโหมดสว่าง"],
-        "switch_to_dark_mode": ["en": "Switch to dark mode", "th": "เปลี่ยนเป็นโหมดมืด"],
-        "refresh_tables": ["en": "Refresh tables", "th": "รีเฟรชโต๊ะ"],
-        "close_sheet": ["en": "Close", "th": "ปิด"],
-        "remove_item": ["en": "Remove item", "th": "ลบรายการ"],
-        "serve_item": ["en": "Serve item", "th": "เสิร์ฟรายการ"],
-        "recall_item": ["en": "Recall item", "th": "ยกเลิกการเสิร์ฟ"],
-        "expand_notes": ["en": "Expand notes", "th": "ดูหมายเหตุ"],
+        "switch_to_light_mode": ["en": "Switch to light mode", "th": "เปลี่ยนเป็นโหมดสว่าง", "lo": "ເປລີ່ຍນເປ໇ນໂໝົດສະຫວ່າງ"],
+        "switch_to_dark_mode": ["en": "Switch to dark mode", "th": "เปลี่ยนเป็นโหมดมืด", "lo": "ເປລີ່ຍນເປ໇ນໂໝົດມຶດ"],
+        "refresh_tables": ["en": "Refresh tables", "th": "รีเฟรชโต๊ะ", "lo": "ລີເຟລຊໂຕະ"],
+        "close_sheet": ["en": "Close", "th": "ปิด", "lo": "ປິດ"],
+        "remove_item": ["en": "Remove item", "th": "ลบรายการ", "lo": "ລົບລາຍການ"],
+        "serve_item": ["en": "Serve item", "th": "เสิร์ฟรายการ", "lo": "ເສີບລາຍການ"],
+        "recall_item": ["en": "Recall item", "th": "ยกเลิกการเสิร์ฟ", "lo": "ຍົກເລີກການເສີບ"],
+        "expand_notes": ["en": "Expand notes", "th": "ดูหมายเหตุ", "lo": "ເບິ່ງໝາຍເຫດ"],
         // ── BreakTimerView localization (2026-06-28) ────────────────────────
-        "paused": ["en": "Paused", "th": "หยุดชั่วคราว"],
-        "resume_break": ["en": "Resume", "th": "กลับไปพัก"],
-        "pause_break": ["en": "Pause", "th": "หยุดชั่วคราว"],
-        "no_breaks_today": ["en": "No breaks yet today", "th": "ยังไม่มีพักวันนี้"],
-        "set_duration": ["en": "Set duration", "th": "ตั้งเวลา"],
-        "break_ending_soon_title": ["en": "⏰ Break ending soon", "th": "⏰ ใกล้หมดเวลาพัก"],
-        "break_ending_soon_body": ["en": "Your break time is up in 1 minute!", "th": "เวลาพักของคุณจะหมดใน 1 นาที!"],
-        "break_ended_title": ["en": "Break ended", "th": "หมดเวลาพักแล้ว"],
-        "break_ended_body": ["en": "Your break time is up. Please return to work.", "th": "หมดเวลาพักแล้ว กลับมาทำงานได้เลย"],
+        "paused": ["en": "Paused", "th": "หยุดชั่วคราว", "lo": "ຢຸດຊົ່ວຄາວ"],
+        "resume_break": ["en": "Resume", "th": "กลับไปพัก", "lo": "ກັບຄືນພັກ"],
+        "pause_break": ["en": "Pause", "th": "หยุดชั่วคราว", "lo": "ຢຸດຊົ່ວຄາວ"],
+        "no_breaks_today": ["en": "No breaks yet today", "th": "ยังไม่มีพักวันนี้", "lo": "ຍັງບໍ່ມີພັກມື້ນີ້"],
+        "set_duration": ["en": "Set duration", "th": "ตั้งเวลา", "lo": "ຕັ້ງເວລາ"],
+        "break_ending_soon_title": ["en": "⏰ Break ending soon", "th": "⏰ ใกล้หมดเวลาพัก", "lo": "⏰ ໃກ້ໝົດເວລາພັກ"],
+        "break_ending_soon_body": ["en": "Your break time is up in 1 minute!", "th": "เวลาพักของคุณจะหมดใน 1 นาที!", "lo": "ເວລາພັກຂອງທ່ານຈະໝົດໄນ 1 ນາທີ!"],
+        "break_ended_title": ["en": "Break ended", "th": "หมดเวลาพักแล้ว", "lo": "ໝົດເວລາພັກແລ້ວ"],
+        "break_ended_body": ["en": "Your break time is up. Please return to work.", "th": "หมดเวลาพักแล้ว กลับมาทำงานได้เลย", "lo": "ໝົດເວລາພັກແລ້ວ ກັບຄືນມາເຮັດວຽກໄດ້ເລຍ"],
         // ── DailySummaryView localization (2026-06-28) ─────────────────────
-        "on_duty": ["en": "On Duty", "th": "กำลังทำงาน"],
-        "keep_up_great_work": ["en": "Keep up the great work!", "th": "เยี่ยมมาก! ทำต่อไปนะ"],
-        "loading_summary": ["en": "Loading summary...", "th": "กำลังโหลดสรุป..."],
-        "no_activity_today": ["en": "No activity recorded yet today.", "th": "ยังไม่มีกิจกรรมวันนี้"],
+        "on_duty": ["en": "On Duty", "th": "กำลังทำงาน", "lo": "ກຳລັງເຮັດວຽກ"],
+        "keep_up_great_work": ["en": "Keep up the great work!", "th": "เยี่ยมมาก! ทำต่อไปนะ", "lo": "ເຍີ່ຍມມາກ! ເຮັດຕໍ່ໄປນະ"],
+        "loading_summary": ["en": "Loading summary...", "th": "กำลังโหลดสรุป...", "lo": "ກຳລັງໂຫຼດສະຫຼຸບ..."],
+        "no_activity_today": ["en": "No activity recorded yet today.", "th": "ยังไม่มีกิจกรรมวันนี้", "lo": "ຍັງບໍ່ມີກິດຈະກຳມື້ນີ້"],
         // ── OrderTimelineView localization (2026-06-28) ─────────────────────
-        "in_progress_label": ["en": "In progress...", "th": "กำลังดำเนินการ..."],
-        "almost_ready_label": ["en": "Almost ready!", "th": "เกือบพร้อมแล้ว!"],
-        "approx_minutes": ["en": "~%d min", "th": "~%d นาที"],
+        "in_progress_label": ["en": "In progress...", "th": "กำลังดำเนินการ...", "lo": "ກຳລັງດຳເນິນການ..."],
+        "almost_ready_label": ["en": "Almost ready!", "th": "เกือบพร้อมแล้ว!", "lo": "ເກືອບພລ້ອມແລ້ວ!"],
+        "approx_minutes": ["en": "~%d min", "th": "~%d นาที", "lo": "~%d ນາທີ"],
         // ── SplitBillView extra strings (2026-06-28) ─────────────────────
-        "over_by": ["en": "Over by ฿", "th": "เกิน ฿"],
-        "short_by": ["en": "Short by ฿", "th": "ขาด ฿"],
-        "n_items": ["en": "items", "th": "รายการ"],
+        "over_by": ["en": "Over by ฿", "th": "เกิน ฿", "lo": "ເກິນ ฿"],
+        "short_by": ["en": "Short by ฿", "th": "ขาด ฿", "lo": "ຂາດ ฿"],
+        "n_items": ["en": "items", "th": "รายการ", "lo": "ລາຍການ"],
         // ── TablesView extra strings (2026-06-28) ──────────────────────────
-        "offline_data_may_be_delayed": ["en": "Offline — data may be delayed", "th": "ออฟไลน์ — ข้อมูลอาจล่าช้า"],
-        "loading_floor_plan": ["en": "กำลังโหลดแผนผัง...", "th": "กำลังโหลดแผนผัง..."],
-        "floor_first": ["en": "1st Floor", "th": "ชั้น 1"],
-        "floor_second": ["en": "2nd Floor", "th": "ชั้น 2"],
-        "floor_third": ["en": "3rd Floor", "th": "ชั้น 3"],
+        "offline_data_may_be_delayed": ["en": "Offline — data may be delayed", "th": "ออฟไลน์ — ข้อมูลอาจล่าช้า", "lo": "ອອຟໄລ — ຂໍ້ມູນອາຈລ່າຊ້າ"],
+        "loading_floor_plan": ["en": "กำลังโหลดแผนผัง...", "th": "กำลังโหลดแผนผัง...", "lo": "ກຳລັງໂຫຼດແຜນຜັງ..."],
+        "floor_first": ["en": "1st Floor", "th": "ชั้น 1", "lo": "ຊັ້ນ 1"],
+        "floor_second": ["en": "2nd Floor", "th": "ชั้น 2", "lo": "ຊັ້ນ 2"],
+        "floor_third": ["en": "3rd Floor", "th": "ชั้น 3", "lo": "ຊັ້ນ 3"],
         // ── StaffDashboardView extra strings (2026-06-28) ──────────────────
-        "server_configuration": ["en": "Server Configuration", "th": "การตั้งค่าเซิร์ฟเวอร์"],
-        "supabase_server_url": ["en": "Supabase Server URL", "th": "URL เซิร์ฟเวอร์ Supabase"],
-        "note_changing_server": ["en": "Note: Changing server requires re-pairing all devices.", "th": "หมายเหตุ: การเปลี่ยนเซิร์ฟเวอร์ต้องจับคู่อุปกรณ์ใหม่ทั้งหมด"],
+        "server_configuration": ["en": "Server Configuration", "th": "การตั้งค่าเซิร์ฟเวอร์", "lo": "ການຕັ້ງຄ່າເຊີບເວີ"],
+        "supabase_server_url": ["en": "Supabase Server URL", "th": "URL เซิร์ฟเวอร์ Supabase", "lo": "URL ເຊີບເວີ Supabase"],
+        "note_changing_server": ["en": "Note: Changing server requires re-pairing all devices.", "th": "หมายเหตุ: การเปลี่ยนเซิร์ฟเวอร์ต้องจับคู่อุปกรณ์ใหม่ทั้งหมด", "lo": "ໝາຍເຫດ: ການເປລີ່ຍນເຊີບເວີຕ້ອງຈັບຄູ່ອຸປກລໄໝ່ທັງໝົດ"],
         // ── NotificationListView extra strings (2026-06-28) ────────────────
-        "and_conjunction": ["en": " & ", "th": " และ "]
+        "and_conjunction": ["en": " & ", "th": " และ ", "lo": " ແລະ "]
         ,
         // ── LoginView (2026-06-28) ──────────────────────────────────────────
-        "invalid_uuid_format": ["en": "Invalid UUID format (e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)", "th": "รูปแบบ UUID ไม่ถูกต้อง (เช่น xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)"],
-        "load_shifts_failed": ["en": "Could not load shifts", "th": "โหลดกะงานไม่สำเร็จ"]
+        "invalid_uuid_format": ["en": "Invalid UUID format (e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)", "th": "รูปแบบ UUID ไม่ถูกต้อง (เช่น xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)", "lo": "ຮູບແບບ UUID ບໍ່ຖືກຕ້ອງ (ເຊ່ນ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)"],
+        "load_shifts_failed": ["en": "Could not load shifts", "th": "โหลดกะงานไม่สำเร็จ", "lo": "ໂຫຼດກະງານບໍ່ສຳເລັດ"]
     ]
     
     func translate(_ key: String, lang: String) -> String {

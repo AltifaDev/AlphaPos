@@ -222,18 +222,6 @@ struct NotificationListView: View {
             .navigationTitle("alerts".localized(for: appLanguage))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    NavigationLink {
-                        StaffMessagingView()
-                    } label: {
-                        Image(systemName: "bubble.left.and.bubble.right.fill")
-                            .foregroundColor(.appAccent)
-                            .overlay(alignment: .topTrailing) {
-                                MessagingBadgeView(count: 0)
-                                    .offset(x: 8, y: -6)
-                            }
-                    }
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(action: loadRequests) {
                         Image(systemName: "arrow.clockwise")

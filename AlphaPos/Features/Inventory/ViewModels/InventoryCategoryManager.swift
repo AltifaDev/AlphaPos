@@ -209,7 +209,7 @@ final class InventoryCategoryManager {
         }
 
         if assignedCount > 0 {
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             Task {
                 await SyncEngine.shared.syncAll(modelContext: modelContext)
             }
@@ -259,7 +259,7 @@ final class InventoryCategoryManager {
         item.updatedAt = Date()
         item.isSynced = false
 
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
@@ -277,7 +277,7 @@ final class InventoryCategoryManager {
             item.isSynced = false
         }
 
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }

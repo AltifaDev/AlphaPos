@@ -136,7 +136,7 @@ extension SyncEngine {
             prefetchImages(remoteItems)
 
             if didChange {
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 #if DEBUG
                 print("SyncEngine [PullMenu]: Updated SwiftData from Supabase (\(remoteItems.count) items)")
                 #endif
@@ -435,7 +435,7 @@ extension SyncEngine {
             }
 
             if didChange {
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 #if DEBUG
                 print("SyncEngine [PullPromotions]: Updated SwiftData from Supabase (\(remotePromos.count) remote items)")
                 #endif

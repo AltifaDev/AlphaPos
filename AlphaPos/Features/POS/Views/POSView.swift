@@ -338,7 +338,7 @@ struct POSView: View {
             table.updatedAt = Date()
         }
 
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
 
         if let firstOrder = ordersToPay.first {
             completedOrderForReceipt = firstOrder
@@ -417,7 +417,7 @@ struct POSView: View {
             table.updatedAt = Date()
         }
 
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
 
         if let firstOrder = unpaidOrders.first {
             completedOrderForReceipt = firstOrder
@@ -439,7 +439,7 @@ struct POSView: View {
 
         order.isSynced = false
         order.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
 
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -468,7 +468,7 @@ struct POSView: View {
                 }
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         viewModel.syncFromSession(activeSession)
         APHaptic.trigger()
     }
@@ -605,7 +605,7 @@ struct POSView: View {
                             item.updatedAt = Date()
                         }
                     }
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                     viewModel.syncFromSession(activeSession)
                 }
                 noteText = ""
@@ -1815,7 +1815,7 @@ private struct MenuItemCard: View {
             Button {
                 item.isAvailable.toggle()
                 item.updatedAt = Date()
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
             } label: {
                 Label(item.isAvailable ? "ทำเครื่องหมาย: ของหมด" : "ทำเครื่องหมาย: พร้อมขาย", systemImage: item.isAvailable ? "slash.circle" : "checkmark.circle")
             }
@@ -1823,7 +1823,7 @@ private struct MenuItemCard: View {
             Button {
                 item.isFavorite = !(item.isFavorite ?? false)
                 item.updatedAt = Date()
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
             } label: {
                 Label((item.isFavorite ?? false) ? "เอาออกจากรายการโปรด" : "เพิ่มเป็นรายการโปรด", systemImage: (item.isFavorite ?? false) ? "star.slash" : "star.fill")
             }
@@ -1831,7 +1831,7 @@ private struct MenuItemCard: View {
             Button {
                 item.isBestseller = !(item.isBestseller ?? false)
                 item.updatedAt = Date()
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
             } label: {
                 Label((item.isBestseller ?? false) ? "เอาออกจากสินค้าขายดี" : "เพิ่มเป็นสินค้าขายดี", systemImage: (item.isBestseller ?? false) ? "flame.fill" : "flame")
             }

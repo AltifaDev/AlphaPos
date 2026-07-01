@@ -171,6 +171,9 @@ final class ReportsViewModel {
     var wasteEntries: [WasteEntry] = []
     var totalWasteCost: Double = 0
 
+    // ── Inventory Analytics (advanced report) ───────────────────────────────
+    var showInventoryAnalytics: Bool = false   // toggle between classic & analytics view
+
     // ── Employee Hours ──────────────────────────────────────────────────────
     var employeeHoursEntries: [EmployeeHoursEntry] = []
     var totalLaborHours: Double = 0
@@ -444,7 +447,7 @@ final class ReportsViewModel {
 
         // Waste transactions in period
         let wasteTransactions = transactions.filter {
-            !$0.isDeleted && $0.transactionType == "waste" &&
+            !$0.isDeleted && $0.transactionType == InventoryMovementType.waste.rawValue &&
             $0.updatedAt >= start && $0.updatedAt < end
         }
         wasteEntries = wasteTransactions.compactMap { tx in

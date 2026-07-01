@@ -114,6 +114,105 @@ function base64ToBlobUrl(base64Data, defaultMimeType = 'video/mp4') {
         console.error("Failed to convert base64 to Blob:", e);
         return base64Data.startsWith('data:') ? base64Data : `data:${mimeType};base64,${base64Data}`;
     }
+}
+
+
+
+function createSafeElement(tag, attrs = {}, textContent = '') {
+    const el = document.createElement(tag);
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+    if (textContent) el.textContent = textContent;
+    return el;
+}
+
+function formatCurrency(amount, currency = 'THB', locale = 'th-TH') {
+    try {
+        return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(amount);
+    } catch {
+        return `฿${Number(amount).toFixed(2)}`;
+    }
+}
+
+function formatNumber(num, decimals = 0) {
+    try {
+        return new Intl.NumberFormat().format(num);
+    } catch {
+        return String(num);
+    }
+}
+
+class AlphaPosApp {
+    constructor() {
+        // Mock Menu Data representing actual restaurant dishes
+        this.menuItems = defaultMenuItems; // Loaded from API as fallback
+
+        // Inject sample high-quality food looping videos for recommended items
+        if (this.menuItems && this.menuItems.length > 0) {
+            // main1: Signature River Prawn Pad Thai
+            const main1 = this.menuItems.find(i => i.id === "main1");
+            if (main1) main1.videoUrl = "https://player.vimeo.com/external/435674703.sd.mp4?s=7f773cdccf1a0e784534f5263a232f3c64e5ba79&profile_id=139&oauth2_token_id=57447761";
+            
+            // app3: Tom Yum Goong
+            const app3 = this.menuItems.find(i => i.id === "app3");
+            if (app3) app3.videoUrl = "https://player.vimeo.com/external/371433846.sd.mp4?s=236da2f3c0227e3d077b90f741131a1b&profile_id=139&oauth2_token_id=57447761";
+
+            // dessert1: Mango Sticky Rice
+            const dessert1 = this.menuItems.find(i => i.id === "dessert1");
+            if (dessert1) dessert1.videoUrl = "https://player.vimeo.com/external/538571059.sd.mp4?s=d00e62d22b62d377b8b209d6f83a45c382215c2d&profile_id=139&oauth2_token_id=57447761";
+        }
+
+        // Categories List
+        this.categories = [
+            { id: "foods", name: "Foods" },
+            { id: "drinks", name: "Drinks" },
+            { id: "desserts", name: "Desserts" }
+        ];
+
+        // App States
+        this.currentCategory = "foods";
+        // Allergen & Dietary Filter
+        this.allergenFilter = new AllergenFilter();
+        window._allergenFilter = this.allergenFilter;
+        this.searchQuery = "";
+        this.cart = {}; // Format: { cartKey: { itemId, quantity, selectedModifiers: [], notes } }
+        this.modifiersConfig = { groups: [], modifiers: [], links: [] };
+        this.menuViewMode = localStorage.getItem('menuViewMode') || 'grid'; // 'list' | 'grid'
+        this.tableNumber = "1"; // Default fallback
+        this.sessionToken = null;
+        this.selectedGuestCount = 2; // Default
+        this.currentOnboardingStep = 1;
+        this.currentView = "menu";
+        this.branchCode = "";
+
+        // Configuration (loaded from config.js or environment)
+        const cfg = window.ALPHAPOS_CONFIG || {};
+        this.supabaseUrl = cfg.supabaseUrl || '';
+        this.supabaseKey = cfg.supabaseKey || '';
+        this.edgeFunctionUrl = cfg.edgeFunctionUrl || '';
+        this.supabase = null;
+        this.merchantId = cfg.merchantId || '';
+        this.localServerURL = cfg.localServerURL || window.location.origin;
+        const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const hasExplicitLocalServer = !!cfg.localServerURL && cfg.localServerURL !== window.location.origin;
+        this.isLocalServerAvailable = isLocalHost || hasExplicitLocalServer;
+        this.merchantToken = null; // JWT token with merchant_id claim
+        this._submitInProgress = false;
+        this.syncHealthInterval = null;
+        this._activeModal = null;
+        this._lastFocusedElement = null;
+
+        this.lastFetchedOrders = [];
+        this.currentLanguage = 'th';
+
+        // Register Service Worker for offline capability
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                    .then(reg => console.log('Service Worker registered successfully:', reg.scope))
+                    .catch(err => console.error('Service Worker registration failed:', err));
+            });
+        }
+    }
 
     // ========================================
     // ENHANCED BILL VIEW
@@ -238,103 +337,6 @@ function base64ToBlobUrl(base64Data, defaultMimeType = 'video/mp4') {
 
         } catch (e) {
             console.error("[Payment] Error closing session:", e);
-        }
-    }
-}
-
-function createSafeElement(tag, attrs = {}, textContent = '') {
-    const el = document.createElement(tag);
-    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
-    if (textContent) el.textContent = textContent;
-    return el;
-}
-
-function formatCurrency(amount, currency = 'THB', locale = 'th-TH') {
-    try {
-        return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(amount);
-    } catch {
-        return `฿${Number(amount).toFixed(2)}`;
-    }
-}
-
-function formatNumber(num, decimals = 0) {
-    try {
-        return new Intl.NumberFormat().format(num);
-    } catch {
-        return String(num);
-    }
-}
-
-class AlphaPosApp {
-    constructor() {
-        // Mock Menu Data representing actual restaurant dishes
-        this.menuItems = defaultMenuItems; // Loaded from API as fallback
-
-        // Inject sample high-quality food looping videos for recommended items
-        if (this.menuItems && this.menuItems.length > 0) {
-            // main1: Signature River Prawn Pad Thai
-            const main1 = this.menuItems.find(i => i.id === "main1");
-            if (main1) main1.videoUrl = "https://player.vimeo.com/external/435674703.sd.mp4?s=7f773cdccf1a0e784534f5263a232f3c64e5ba79&profile_id=139&oauth2_token_id=57447761";
-            
-            // app3: Tom Yum Goong
-            const app3 = this.menuItems.find(i => i.id === "app3");
-            if (app3) app3.videoUrl = "https://player.vimeo.com/external/371433846.sd.mp4?s=236da2f3c0227e3d077b90f741131a1b&profile_id=139&oauth2_token_id=57447761";
-
-            // dessert1: Mango Sticky Rice
-            const dessert1 = this.menuItems.find(i => i.id === "dessert1");
-            if (dessert1) dessert1.videoUrl = "https://player.vimeo.com/external/538571059.sd.mp4?s=d00e62d22b62d377b8b209d6f83a45c382215c2d&profile_id=139&oauth2_token_id=57447761";
-        }
-
-        // Categories List
-        this.categories = [
-            { id: "foods", name: "Foods" },
-            { id: "drinks", name: "Drinks" },
-            { id: "desserts", name: "Desserts" }
-        ];
-
-        // App States
-        this.currentCategory = "foods";
-        // Allergen & Dietary Filter
-        this.allergenFilter = new AllergenFilter();
-        window._allergenFilter = this.allergenFilter;
-        this.searchQuery = "";
-        this.cart = {}; // Format: { cartKey: { itemId, quantity, selectedModifiers: [], notes } }
-        this.modifiersConfig = { groups: [], modifiers: [], links: [] };
-        this.menuViewMode = localStorage.getItem('menuViewMode') || 'grid'; // 'list' | 'grid'
-        this.tableNumber = "1"; // Default fallback
-        this.sessionToken = null;
-        this.selectedGuestCount = 2; // Default
-        this.currentOnboardingStep = 1;
-        this.currentView = "menu";
-        this.branchCode = "";
-
-        // Configuration (loaded from config.js or environment)
-        const cfg = window.ALPHAPOS_CONFIG || {};
-        this.supabaseUrl = cfg.supabaseUrl || '';
-        this.supabaseKey = cfg.supabaseKey || '';
-        this.edgeFunctionUrl = cfg.edgeFunctionUrl || '';
-        this.supabase = null;
-        this.merchantId = cfg.merchantId || '';
-        this.localServerURL = cfg.localServerURL || window.location.origin;
-        const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        const hasExplicitLocalServer = !!cfg.localServerURL && cfg.localServerURL !== window.location.origin;
-        this.isLocalServerAvailable = isLocalHost || hasExplicitLocalServer;
-        this.merchantToken = null; // JWT token with merchant_id claim
-        this._submitInProgress = false;
-        this.syncHealthInterval = null;
-        this._activeModal = null;
-        this._lastFocusedElement = null;
-
-        this.lastFetchedOrders = [];
-        this.currentLanguage = 'th';
-
-        // Register Service Worker for offline capability
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./service-worker.js')
-                    .then(reg => console.log('Service Worker registered successfully:', reg.scope))
-                    .catch(err => console.error('Service Worker registration failed:', err));
-            });
         }
     }
 

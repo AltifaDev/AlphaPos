@@ -119,7 +119,7 @@ final class AppSessionManager: ObservableObject {
                 actionType: "store_owner_unlock",
                 details: "\(displayName) unlocked this register using merchant account"
             ))
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         }
     }
 
@@ -156,7 +156,7 @@ final class AppSessionManager: ObservableObject {
                 actionType: "staff_unlock",
                 details: "\(displayName) unlocked this register"
             ))
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         }
     }
 
@@ -177,7 +177,7 @@ final class AppSessionManager: ObservableObject {
                 actionType: "staff_lock",
                 details: "\(session.displayName) locked this register (\(reason))"
             ))
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         }
         // Enterprise Alert: notify Notification Center about locked session
         if reason == "session_timeout", let session = currentStaffSession {

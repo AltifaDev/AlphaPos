@@ -226,4 +226,59 @@ extension NetworkService {
         
         throw NetworkError.invalidResponse
     }
+
+    func fetchTodayActiveShift(employeeId: String) async throws -> Shift? {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let todayStr = formatter.string(from: Date())
+        
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "employee_shifts", queryItems: [
+            URLQueryItem(name: "select", value: "*,employees(first_name,last_name)"),
+            URLQueryItem(name: "employee_id", value: "eq.\(employeeId)"),
+            URLQueryItem(name: "scheduled_start", value: "gte.\(todayStr)T00:00:00"),
+            URLQueryItem(name: "scheduled_start", value: "lte.\(todayStr)T23:59:59")
+        ])
+        
+        let jsonArray = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+        guard let dict = jsonArray.first else { return nil }
+        
+        guard let id = dict["id"] as? String,
+              let empId = dict["employee_id"] as? String,
+              let scheduledStartStr = dict["scheduled_start"] as? String,
+              let scheduledEndStr = dict["scheduled_end"] as? String
+        else { return nil }
+        
+        let empDict = dict["employees"] as? [String: Any]
+        let firstName = empDict?["first_name"] as? String ?? ""
+        let lastName = empDict?["last_name"] as? String ?? ""
+        let empName = "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
+        
+        guard let startDateVal = parseDate(scheduledStartStr),
+              let endDateVal = parseDate(scheduledEndStr)
+        else { return nil }
+        
+        let dateOnlyFormatter = DateFormatter()
+        dateOnlyFormatter.dateFormat = "yyyy-MM-dd"
+        let dateStr = dateOnlyFormatter.string(from: startDateVal)
+        
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH:mm"
+        let startTimeStr = timeFormatter.string(from: startDateVal)
+        let endTimeStr = timeFormatter.string(from: endDateVal)
+        
+        let shiftTypeStr = dict["shift_type"] as? String ?? "morning"
+        let shiftType = ShiftType(rawValue: shiftTypeStr) ?? .morning
+        
+        return Shift(
+            id: id,
+            employeeId: empId,
+            employeeName: empName,
+            date: dateStr,
+            startTime: startTimeStr,
+            endTime: endTimeStr,
+            shiftType: shiftType,
+            station: dict["station"] as? String,
+            notes: dict["notes"] as? String
+        )
+    }
 }

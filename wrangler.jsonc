@@ -7,7 +7,7 @@
     "enabled": true
   },
   "assets": {
-    "directory": "customer-order-web"
+    "directory": "customer-order-web/dist"
   },
   "compatibility_flags": [
     "nodejs_compat"

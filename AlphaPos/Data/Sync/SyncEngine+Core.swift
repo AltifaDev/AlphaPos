@@ -23,7 +23,7 @@ extension SyncEngine {
                 print("SyncEngine [SecurityPolicy Sync Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func syncRolePermissions(_ modelContext: ModelContext) async {
@@ -41,7 +41,7 @@ extension SyncEngine {
                 print("SyncEngine [RolePermission Sync Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func syncMerchantDevices(_ modelContext: ModelContext) async {
@@ -59,7 +59,7 @@ extension SyncEngine {
                 print("SyncEngine [MerchantDevice Sync Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func syncStaffSessions(_ modelContext: ModelContext) async {
@@ -93,7 +93,7 @@ extension SyncEngine {
                 print("SyncEngine [StaffSession Sync Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func syncAuditLogs(_ modelContext: ModelContext) async {
@@ -137,7 +137,7 @@ extension SyncEngine {
                 print("SyncEngine [AuditLog Sync Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func syncOrders(_ modelContext: ModelContext) async {
@@ -158,7 +158,7 @@ extension SyncEngine {
                     let sessionOrderCount = siblingOrders.count
                     order.orderNumber = "\(order.orderNumber)-\(sessionOrderCount + 1)"
                     order.updatedAt = Date()
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                 }
             }
         }
@@ -217,7 +217,7 @@ extension SyncEngine {
                     print("SyncEngine [Payment Delete]: \(error.localizedDescription)")
                 }
                 modelContext.delete(payment)
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 continue
             }
 
@@ -304,7 +304,7 @@ extension SyncEngine {
                     encounteredSyncError = true
                 }
                 modelContext.delete(timecard)
-                try? modelContext.save()
+                modelContext.saveWithLogging(label: #function)
                 continue
             }
 
@@ -378,7 +378,7 @@ extension SyncEngine {
                 print("SyncEngine [Customer Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullCompletedOrdersAndPayments(_ modelContext: ModelContext) async {
@@ -511,7 +511,7 @@ extension SyncEngine {
                     }
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [CompletedOrders Pull Error]: \(error.localizedDescription)")
@@ -579,7 +579,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = customer
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Customer Pull Error]: \(error.localizedDescription)")
@@ -607,7 +607,7 @@ extension SyncEngine {
                 print("SyncEngine [GiftCard Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullGiftCardsFromSupabase(_ modelContext: ModelContext) async {
@@ -660,7 +660,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = card
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [GiftCard Pull Error]: \(error.localizedDescription)")
@@ -688,7 +688,7 @@ extension SyncEngine {
                 print("SyncEngine [LoyaltyTransaction Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullLoyaltyTransactionsFromSupabase(_ modelContext: ModelContext) async {
@@ -743,7 +743,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = txn
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [LoyaltyTransaction Pull Error]: \(error.localizedDescription)")
@@ -765,7 +765,7 @@ extension SyncEngine {
                 print("SyncEngine [RegisterSession Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullRegisterSessions(_ modelContext: ModelContext) async {
@@ -851,7 +851,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = session
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [RegisterSession Pull Error]: \(error.localizedDescription)")
@@ -886,7 +886,7 @@ extension SyncEngine {
                 print("SyncEngine [CashMovement Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullCashMovements(_ modelContext: ModelContext) async {
@@ -951,7 +951,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = movement
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [CashMovement Pull Error]: \(error.localizedDescription)")

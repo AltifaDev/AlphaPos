@@ -258,6 +258,30 @@ extension NetworkManager {
         try await softDeleteMasterData(endpoint: "currency_exchange_rates", id: id)
     }
 
+    // ─── Role ───────────────────────────────────────────────────────────
+
+    func fetchRolesFromSupabase() async throws -> [[String: Any]] {
+        try await fetchMasterData(endpoint: "roles")
+    }
+
+    func uploadRole(_ role: Role) async throws -> Bool {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let payload: [String: Any] = [
+            "id": role.id.uuidString.lowercased(),
+            "merchant_id": merchantId,
+            "name": role.name,
+            "role_description": role.roleDescription ?? "",
+            "permission_keys": role.permissionKeys,
+            "is_deleted": role.isDeleted,
+            "updated_at": NetworkManager.iso8601.string(from: role.updatedAt)
+        ]
+        return try await upsertMasterData(endpoint: "roles", payload: payload)
+    }
+
+    func deleteRoleOnServer(id: UUID) async throws -> Bool {
+        try await softDeleteMasterData(endpoint: "roles", id: id)
+    }
+
     // ─── User ───────────────────────────────────────────────────────────
 
     func fetchUsersFromSupabase() async throws -> [[String: Any]] {

@@ -56,6 +56,28 @@ extension NetworkService {
             URLQueryItem(name: "order", value: "last_message_at.desc.nullslast")
         ])
         let jsonArray = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+        
+        // Fetch all unread messages to count them per channel ID
+        let unreadData = (try? await sendSupabaseRequest(method: "GET", endpoint: "chat_messages", queryItems: [
+            URLQueryItem(name: "select", value: "id,channel_id"),
+            URLQueryItem(name: "sender_id", value: "neq.\(employeeId)"),
+            URLQueryItem(name: "is_read", value: "eq.false")
+        ])) ?? Data()
+        let unreadMessages = (try? JSONSerialization.jsonObject(with: unreadData) as? [[String: Any]]) ?? []
+        
+        // Group unread counts by channel_id
+        var unreadCounts: [String: Int] = [:]
+        for msg in unreadMessages {
+            if let chId = msg["channel_id"] as? String {
+                unreadCounts[chId, default: 0] += 1
+            }
+        }
+        
+        // Update global unreadChatCount
+        await MainActor.run {
+            self.unreadChatCount = unreadMessages.count
+        }
+        
         return jsonArray.compactMap { dict in
             guard let id = dict["id"] as? String,
                   let name = dict["name"] as? String,
@@ -77,7 +99,7 @@ extension NetworkService {
                 participants: participants,
                 lastMessage: dict["last_message_text"] as? String,
                 lastMessageAt: dict["last_message_at"] as? String,
-                unreadCount: dict["unread_count"] as? Int ?? 0
+                unreadCount: unreadCounts[id] ?? 0
             )
         }
     }
@@ -198,5 +220,29 @@ extension NetworkService {
             lastMessageAt: nil,
             unreadCount: 0
         )
+    }
+    
+    func fetchTotalUnreadChatCount() async -> Int {
+        let employeeId = UserDefaults.standard.string(forKey: "logged_in_employee_id") ?? ""
+        guard !employeeId.isEmpty else { return 0 }
+        
+        do {
+            let unreadData = try await sendSupabaseRequest(method: "GET", endpoint: "chat_messages", queryItems: [
+                URLQueryItem(name: "select", value: "id"),
+                URLQueryItem(name: "sender_id", value: "neq.\(employeeId)"),
+                URLQueryItem(name: "is_read", value: "eq.false")
+            ])
+            let unreadMessages = (try? JSONSerialization.jsonObject(with: unreadData) as? [[String: Any]]) ?? []
+            
+            // Update the local observable property on MainActor
+            let count = unreadMessages.count
+            await MainActor.run {
+                self.unreadChatCount = count
+            }
+            return count
+        } catch {
+            print("fetchTotalUnreadChatCount: Failed to fetch unread chat count: \(error)")
+            return 0
+        }
     }
 }

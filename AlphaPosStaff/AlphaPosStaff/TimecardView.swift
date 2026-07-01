@@ -748,6 +748,12 @@ struct TimecardView: View {
         Task {
             do {
                 if !isClockedIn {
+                    // WFM Standard: Fetch today's scheduled shift to auto-match and link
+                    let todayShift = try? await NetworkService.shared.fetchTodayActiveShift(employeeId: localEmployee.id)
+                    let hasShift = todayShift != nil
+                    let status = hasShift ? "approved" : "pending_audit"
+                    let notes = hasShift ? "Clock-in via AlphaPosStaff" : "Unscheduled clock-in via AlphaPosStaff (No shift found)"
+                    
                     // ── Clock In ──────────────────────────────────────────
                     let tc = Timecard(
                         id: UUID().uuidString,
@@ -757,10 +763,11 @@ struct TimecardView: View {
                         clockOut: nil,
                         breakDurationMinutes: 0,
                         overtimeMinutes: 0,
-                        status: "approved",
-                        notes: "Clock-in via AlphaPosStaff",
+                        status: status,
+                        notes: notes,
                         clockInFaceConfidence: confidence,
-                        clockOutFaceConfidence: nil
+                        clockOutFaceConfidence: nil,
+                        shiftId: todayShift?.id
                     )
                     _ = try await NetworkService.shared.uploadTimecard(timecard: tc)
                     let formatter = DateFormatter(); formatter.timeStyle = .short
@@ -781,7 +788,8 @@ struct TimecardView: View {
                         status: "approved",
                         notes: "Clock-out via AlphaPosStaff",
                         clockInFaceConfidence: active.clockInFaceConfidence,
-                        clockOutFaceConfidence: confidence
+                        clockOutFaceConfidence: confidence,
+                        shiftId: active.shiftId
                     )
                     _ = try await NetworkService.shared.uploadTimecard(timecard: tc)
                     let duration = Int(now.timeIntervalSince1970 - active.clockIn) / 60

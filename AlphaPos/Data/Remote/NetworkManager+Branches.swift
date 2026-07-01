@@ -66,6 +66,11 @@ extension NetworkManager {
             "current_quantity": item.currentQuantity,
             "reorder_level": item.reorderLevel,
             "cost_price": item.costPrice,
+            "safety_stock_level": item.safetyStockLevel,
+            "max_stock_level":    item.maxStockLevel,
+            "lead_time_days":     item.leadTimeDays,
+            "expiry_warning_days":  item.expiryWarningDays,
+            "expiry_critical_days": item.expiryCriticalDays,
             "is_deleted": item.isDeleted,
             "updated_at": NetworkManager.iso8601.string(from: item.updatedAt)
         ]

@@ -390,7 +390,7 @@ struct LoyaltyManagementView: View {
             transactionDescription: note.isEmpty ? "loyalty_manual_txn_type_\(type)".t : note
         )
         modelContext.insert(txn)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
     }
 

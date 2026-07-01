@@ -607,7 +607,7 @@ struct SystemOpsSettingsView: View {
         if let items = try? modelContext.fetch(FetchDescriptor<MenuItem>()) {
             for i in items { modelContext.delete(i) }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
 
         writeAuditLog(action: "system_ops_cache_clear", details: "Cleared local SwiftData cache (device-scoped)")
 
@@ -686,7 +686,7 @@ struct SystemOpsSettingsView: View {
         if let tables = try? modelContext.fetch(FetchDescriptor<RestaurantTable>()) {
             for t in tables { t.status = "vacant" }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -786,7 +786,7 @@ struct SystemOpsSettingsView: View {
             createdAt: Date()
         )
         modelContext.insert(log)
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     private func loadRecentAuditLogs() {

@@ -34,7 +34,7 @@ extension SyncEngine {
                 print("SyncEngine [ShiftReport Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullShiftReportsFromSupabase(_ modelContext: ModelContext) async {
@@ -109,7 +109,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = report
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [ShiftReport Pull Error]: \(error.localizedDescription)")
@@ -142,7 +142,7 @@ extension SyncEngine {
                 print("SyncEngine [OrderItemModifier Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullOrderItemModifiersFromSupabase(_ modelContext: ModelContext) async {
@@ -198,7 +198,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = oim
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [OrderItemModifier Pull Error]: \(error.localizedDescription)")
@@ -246,7 +246,7 @@ extension SyncEngine {
                 print("SyncEngine [PromotionBundleItem Push Error]: \(error.localizedDescription)")
             }
         }
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 
     func pullPromotionBundleItemsFromSupabase(_ modelContext: ModelContext) async {
@@ -306,7 +306,7 @@ extension SyncEngine {
                     localById[idStr.lowercased()] = item
                 }
             }
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [PromotionBundleItem Pull Error]: \(error.localizedDescription)")

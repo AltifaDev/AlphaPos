@@ -25,6 +25,37 @@ struct QuickOrderView: View {
     @State private var showSplitBill = false
     @State private var showSubmitConfirm = false
     
+    // Filter & Sorting State
+    @State private var showFilterSheet = false
+    @State private var filterSortBy: SortOption = .none
+    @State private var filterMinPrice = ""
+    @State private var filterMaxPrice = ""
+    @State private var filterFavoritesOnly = false
+    
+    // Persistent Favorites
+    @AppStorage("favorite_menu_item_ids") private var favoriteItemIdsData: Data = Data()
+    
+    private var favoriteItemIds: Set<String> {
+        get {
+            let decoded = try? JSONDecoder().decode(Set<String>.self, from: favoriteItemIdsData)
+            return decoded ?? []
+        }
+        nonmutating set {
+            let encoded = try? JSONEncoder().encode(newValue)
+            favoriteItemIdsData = encoded ?? Data()
+        }
+    }
+    
+    enum SortOption: String, CaseIterable {
+        case none = "sort_none"
+        case priceLowHigh = "price_low_high"
+        case priceHighLow = "price_high_low"
+        case nameAZ = "name_a_z"
+        case nameZA = "name_z_a"
+        
+        var displayKey: String { rawValue }
+    }
+    
     enum OrderType: String, CaseIterable {
         case takeaway = "take_out"
         case delivery = "delivery"
@@ -68,7 +99,34 @@ struct QuickOrderView: View {
         if !searchText.isEmpty {
             items = items.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
         }
+        if filterFavoritesOnly {
+            items = items.filter { favoriteItemIds.contains($0.id) }
+        }
+        if let minVal = Double(filterMinPrice), minVal > 0 {
+            items = items.filter { $0.price >= minVal }
+        }
+        if let maxVal = Double(filterMaxPrice), maxVal > 0 {
+            items = items.filter { $0.price <= maxVal }
+        }
+        
+        switch filterSortBy {
+        case .none:
+            break
+        case .priceLowHigh:
+            items.sort { $0.price < $1.price }
+        case .priceHighLow:
+            items.sort { $0.price > $1.price }
+        case .nameAZ:
+            items.sort { $0.name.localizedCompare($1.name) == .orderedAscending }
+        case .nameZA:
+            items.sort { $0.name.localizedCompare($1.name) == .orderedDescending }
+        }
+        
         return items
+    }
+    
+    private var isFilterActive: Bool {
+        filterSortBy != .none || !filterMinPrice.isEmpty || !filterMaxPrice.isEmpty || filterFavoritesOnly
     }
     
     private var cartCount: Int {
@@ -153,6 +211,15 @@ struct QuickOrderView: View {
                         OrderItem(id: UUID().uuidString, name: menuItem.name, quantity: qty, price: menuItem.price, status: "cooking", item_id: menuItem.id, notes: nil, servedBy: nil)
                     },
                     totalAmount: cartTotal
+                )
+            }
+            .sheet(isPresented: $showFilterSheet) {
+                MenuFilterSheet(
+                    sortBy: $filterSortBy,
+                    minPrice: $filterMinPrice,
+                    maxPrice: $filterMaxPrice,
+                    favoritesOnly: $filterFavoritesOnly,
+                    appLanguage: appLanguage
                 )
             }
             .alert("submit_order_failed".localized(for: appLanguage),
@@ -253,16 +320,26 @@ struct QuickOrderView: View {
                         .stroke(Color.appDivider, lineWidth: 1)
                 )
                 
-                // Mock Filter Button from the mockup image
+                // Filter Button with Active State Badge
                 Button(action: {
+                    showFilterSheet = true
                     APHaptic.trigger()
                 }) {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.brandGreenDark)
-                        .padding(12)
-                        .background(Color.brandGreenLight.opacity(0.5))
-                        .cornerRadius(16)
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(isFilterActive ? .white : .brandGreenDark)
+                            .padding(12)
+                            .background(isFilterActive ? Color.brandGreenDark : Color.brandGreenLight.opacity(0.5))
+                            .cornerRadius(16)
+                        
+                        if isFilterActive {
+                            Circle()
+                                .fill(Color.appRose)
+                                .frame(width: 8, height: 8)
+                                .offset(x: 2, y: -2)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
             }
@@ -366,13 +443,20 @@ struct QuickOrderView: View {
                         .padding(.top, 10)
                 }
                 
-                // Favorite Button (Mock)
+                // Favorite Button (Functional)
                 Button(action: {
+                    var current = favoriteItemIds
+                    if current.contains(item.id) {
+                        current.remove(item.id)
+                    } else {
+                        current.insert(item.id)
+                    }
+                    favoriteItemIds = current
                     APHaptic.trigger()
                 }) {
-                    Image(systemName: "heart")
+                    Image(systemName: favoriteItemIds.contains(item.id) ? "heart.fill" : "heart")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.brandGreenDark)
+                        .foregroundColor(favoriteItemIds.contains(item.id) ? .appRose : .brandGreenDark)
                         .padding(8)
                         .background(Color.appSurface)
                         .clipShape(Circle())
@@ -887,6 +971,210 @@ struct BoxIllustrationView: View {
             }
         }
         .padding(.vertical, 20)
+    }
+}
+
+// MARK: - Menu Filter Sheet
+
+struct MenuFilterSheet: View {
+    @Binding var sortBy: QuickOrderView.SortOption
+    @Binding var minPrice: String
+    @Binding var maxPrice: String
+    @Binding var favoritesOnly: Bool
+    
+    let appLanguage: String
+    
+    @Environment(\.dismiss) private var dismiss
+    
+    // Temporary states for local selections (Adhering to SwiftUI Form State Checklist)
+    @State private var localSortBy: QuickOrderView.SortOption = .none
+    @State private var localMinPrice: String = ""
+    @State private var localMaxPrice: String = ""
+    @State private var localFavoritesOnly: Bool = false
+    
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Sorting section
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("sort_by".localized(for: appLanguage).uppercased())
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundColor(.textSecondary)
+                            .tracking(1.0)
+                        
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                            ForEach(QuickOrderView.SortOption.allCases, id: \.self) { option in
+                                Button {
+                                    localSortBy = option
+                                    APHaptic.trigger()
+                                } label: {
+                                    Text(option.displayKey.localized(for: appLanguage))
+                                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 12)
+                                        .background(localSortBy == option ? Color.brandGreenDark : Color.appSurface)
+                                        .foregroundColor(localSortBy == option ? .white : .textSecondary)
+                                        .cornerRadius(12)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .stroke(localSortBy == option ? Color.clear : Color.appDivider, lineWidth: 1)
+                                        )
+                                        .shadow(color: localSortBy == option ? Color.brandGreenDark.opacity(0.15) : Color.clear, radius: 4, x: 0, y: 2)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
+                    
+                    Divider().background(Color.appDivider).padding(.horizontal)
+                    
+                    // Price range section
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("price_range".localized(for: appLanguage).uppercased())
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundColor(.textSecondary)
+                            .tracking(1.0)
+                        
+                        HStack(spacing: 12) {
+                            HStack {
+                                Text("฿")
+                                    .font(.subheadline)
+                                    .foregroundColor(.textSecondary)
+                                TextField("min_price".localized(for: appLanguage), text: $localMinPrice)
+                                    .keyboardType(.decimalPad)
+                                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                            }
+                            .padding(12)
+                            .background(Color.appSurface)
+                            .cornerRadius(12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.appDivider, lineWidth: 1)
+                            )
+                            
+                            Text("to".localized(for: appLanguage))
+                                .font(.subheadline)
+                                .foregroundColor(.textSecondary)
+                            
+                            HStack {
+                                Text("฿")
+                                    .font(.subheadline)
+                                    .foregroundColor(.textSecondary)
+                                TextField("max_price".localized(for: appLanguage), text: $localMaxPrice)
+                                    .keyboardType(.decimalPad)
+                                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                            }
+                            .padding(12)
+                            .background(Color.appSurface)
+                            .cornerRadius(12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.appDivider, lineWidth: 1)
+                            )
+                        }
+                    }
+                    .padding(.horizontal)
+                    
+                    Divider().background(Color.appDivider).padding(.horizontal)
+                    
+                    // Favorites toggle section
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(isOn: $localFavoritesOnly) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "heart.fill")
+                                    .foregroundColor(.appRose)
+                                    .font(.system(size: 16))
+                                Text("favorites_only".localized(for: appLanguage))
+                                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                                    .foregroundColor(.textPrimary)
+                            }
+                        }
+                        .tint(Color.brandGreenDark)
+                        .padding(14)
+                        .background(Color.appSurface)
+                        .cornerRadius(12)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.appDivider, lineWidth: 1)
+                        )
+                    }
+                    .padding(.horizontal)
+                }
+                .padding(.vertical, 20)
+            }
+            .background(Color.appBackground)
+            .navigationTitle("filter_menu".localized(for: appLanguage))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.textTertiary)
+                    }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                HStack(spacing: 12) {
+                    // Reset Button
+                    Button {
+                        localSortBy = .none
+                        localMinPrice = ""
+                        localMaxPrice = ""
+                        localFavoritesOnly = false
+                        APHaptic.trigger()
+                    } label: {
+                        Text("reset".localized(for: appLanguage))
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .foregroundColor(.textSecondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Color.appSurface)
+                            .cornerRadius(12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.appDivider, lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    
+                    // Apply Button
+                    Button {
+                        sortBy = localSortBy
+                        minPrice = localMinPrice
+                        maxPrice = localMaxPrice
+                        favoritesOnly = localFavoritesOnly
+                        dismiss()
+                        APHaptic.success()
+                    } label: {
+                        Text("apply".localized(for: appLanguage))
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Color.brandGreenDark)
+                            .cornerRadius(12)
+                            .shadow(color: Color.brandGreenDark.opacity(0.3), radius: 6, x: 0, y: 3)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(
+                    Color.appSurface
+                        .shadow(color: .black.opacity(0.06), radius: 10, x: 0, y: -4)
+                )
+            }
+            .onAppear {
+                localSortBy = sortBy
+                localMinPrice = minPrice
+                localMaxPrice = maxPrice
+                localFavoritesOnly = favoritesOnly
+            }
+        }
     }
 }
 

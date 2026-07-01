@@ -275,6 +275,8 @@ final class NetworkManager {
         // Enable upsert for POST with on_conflict parameter
         if method == "POST" {
             request.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
+        } else if method == "PATCH" {
+            request.setValue("return=representation", forHTTPHeaderField: "Prefer")
         }
 
         if let payload = payload {

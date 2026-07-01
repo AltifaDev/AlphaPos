@@ -13,6 +13,7 @@ struct MainTabView: View {
     
     @AppStorage("app_language") private var appLanguage = "en"
     @AppStorage("logged_in_employee_name") private var loggedInEmployeeName = ""
+    @AppStorage("logged_in_employee_role") private var loggedInEmployeeRole = ""
     @State private var selectedTab = 0
     @State private var countTimer: Timer? = nil
     
@@ -44,25 +45,22 @@ struct MainTabView: View {
             .badge(networkService.activeAlertsCount)
                 .tag(2)
             
-            ShiftScheduleView()
-                .tabItem {
-                    Label("schedule".localized(for: appLanguage), systemImage: "calendar.badge.clock")
-                }
-                .tag(3)
-            
-            if let emp = loggedInEmployee {
-                TimecardView(employee: emp)
-                    .tabItem {
-                        Label("clock_in_out".localized(for: appLanguage), systemImage: "clock.badge.checkmark.fill")
-                    }
-                    .tag(4)
-                
-                StaffDashboardView(employee: emp, loggedInEmployee: $loggedInEmployee)
-                    .tabItem {
-                        Label("my_account".localized(for: appLanguage), systemImage: "person.crop.circle.fill")
-                    }
-                    .tag(5)
+            NavigationStack {
+                StaffMessagingView()
             }
+            .tabItem {
+                Label("messages".localized(for: appLanguage), systemImage: "bubble.left.and.bubble.right.fill")
+            }
+            .badge(networkService.unreadChatCount)
+            .tag(3)
+            
+            NavigationStack {
+                MoreMenuView(loggedInEmployee: $loggedInEmployee)
+            }
+            .tabItem {
+                Label("more".localized(for: appLanguage), systemImage: "ellipsis.circle.fill")
+            }
+            .tag(4)
         }
         .tint(.appAccent)
         .apColorScheme()
@@ -80,6 +78,7 @@ struct MainTabView: View {
         .onAppear {
             if let emp = loggedInEmployee {
                 loggedInEmployeeName = "\(emp.firstName) \(emp.lastName)"
+                loggedInEmployeeRole = emp.role
             }
             prefetchMenu()
             startCentralSyncPolling()
@@ -87,8 +86,10 @@ struct MainTabView: View {
         .onChange(of: loggedInEmployee) { newEmp in
             if let emp = newEmp {
                 loggedInEmployeeName = "\(emp.firstName) \(emp.lastName)"
+                loggedInEmployeeRole = emp.role
             } else {
                 loggedInEmployeeName = ""
+                loggedInEmployeeRole = ""
             }
         }
         .onDisappear {

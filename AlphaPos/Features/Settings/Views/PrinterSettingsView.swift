@@ -297,7 +297,7 @@ struct PrinterSettingsView: View {
             }
         }
         
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -316,7 +316,7 @@ struct PrinterSettingsView: View {
                 rule.updatedAt = Date()
             }
             
-            try? modelContext.save()
+            modelContext.saveWithLogging(label: #function)
             
             Task {
                 await SyncEngine.shared.syncAll(modelContext: modelContext)

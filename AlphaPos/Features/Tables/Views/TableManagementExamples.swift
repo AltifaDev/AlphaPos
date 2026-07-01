@@ -204,7 +204,7 @@ struct TableSessionManager {
         table.sessions.append(session)
         table.status = "occupied"
         table.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
     
     static func closeSession(_ session: TableSession, for table: inout RestaurantTable, in modelContext: ModelContext) {
@@ -228,7 +228,7 @@ struct TableSessionManager {
         session.endedAt = Date()
         table.status = "cleaning"
         table.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
     
     static func moveToNextStatus(for table: inout RestaurantTable, in modelContext: ModelContext) {
@@ -243,7 +243,7 @@ struct TableSessionManager {
         }
         table.status = nextStatus
         table.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 }
 

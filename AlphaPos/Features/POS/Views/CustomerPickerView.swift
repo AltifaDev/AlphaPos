@@ -83,7 +83,7 @@ struct CustomerPickerView: View {
             .sheet(isPresented: $showAddSheet) {
                 AddCustomerSheet { newCustomer in
                     modelContext.insert(newCustomer)
-                    try? modelContext.save()
+                    modelContext.saveWithLogging(label: #function)
                     selectedCustomer = newCustomer
                     
                     Task {

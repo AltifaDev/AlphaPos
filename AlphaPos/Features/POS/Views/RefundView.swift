@@ -135,7 +135,7 @@ final class RefundViewModel {
         
         order.isSynced = false
         order.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
         
         // Trigger sync
         Task {

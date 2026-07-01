@@ -150,7 +150,7 @@ struct SecuritySettingsView: View {
         policy.requireManagerOverrideForVoid = requireManagerOverrideForVoid
         policy.isSynced = false
         policy.updatedAt = Date()
-        try? modelContext.save()
+        modelContext.saveWithLogging(label: #function)
     }
 }
 

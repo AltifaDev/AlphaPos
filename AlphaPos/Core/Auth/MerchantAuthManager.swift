@@ -27,6 +27,9 @@ final class MerchantAuthManager {
     private let keychainExpiryKey = "alphapos_merchant_jwt_expiry"
     private let keychainMerchantIdKey = "alphapos_merchant_id"
     private let keychainDeviceSecretKey = "alphapos_device_secret"
+    private let keychainSubscriptionTierKey = "alphapos_subscription_tier"
+    private let keychainSubscriptionStatusKey = "alphapos_subscription_status"
+    private let keychainSubscriptionExpiryKey = "alphapos_subscription_expiry"
     
     // MARK: - Configuration
     
@@ -44,8 +47,15 @@ final class MerchantAuthManager {
     }
     
     /// Whether a valid (non-expired) JWT is available.
+    /// In offline mode, expiration is bypassed to allow indefinite single-device offline usage.
     var isAuthenticated: Bool {
-        guard let _ = currentToken, let expiryStr = KeychainManager.shared.retrieve(forKey: keychainExpiryKey),
+        guard let _ = currentToken else {
+            return false
+        }
+        if UserDefaults.standard.bool(forKey: "offline_sync_mode") {
+            return true
+        }
+        guard let expiryStr = KeychainManager.shared.retrieve(forKey: keychainExpiryKey),
               let expiry = Double(expiryStr) else {
             return false
         }
@@ -55,6 +65,29 @@ final class MerchantAuthManager {
     /// The authenticated merchant ID, if available.
     var merchantId: String? {
         KeychainManager.shared.retrieve(forKey: keychainMerchantIdKey)
+    }
+
+    var subscriptionTier: String? {
+        KeychainManager.shared.retrieve(forKey: keychainSubscriptionTierKey)
+    }
+
+    var subscriptionStatus: String? {
+        KeychainManager.shared.retrieve(forKey: keychainSubscriptionStatusKey)
+    }
+
+    var subscriptionExpiry: Double? {
+        guard let val = KeychainManager.shared.retrieve(forKey: keychainSubscriptionExpiryKey) else { return nil }
+        return Double(val)
+    }
+
+    func saveSubscription(tier: String, status: String, expiry: Double?) {
+        KeychainManager.shared.save(tier, forKey: keychainSubscriptionTierKey)
+        KeychainManager.shared.save(status, forKey: keychainSubscriptionStatusKey)
+        if let expiry = expiry {
+            KeychainManager.shared.save(String(expiry), forKey: keychainSubscriptionExpiryKey)
+        } else {
+            KeychainManager.shared.delete(forKey: keychainSubscriptionExpiryKey)
+        }
     }
     
     private init() {
@@ -233,6 +266,9 @@ final class MerchantAuthManager {
         KeychainManager.shared.delete(forKey: keychainExpiryKey)
         KeychainManager.shared.delete(forKey: keychainMerchantIdKey)
         KeychainManager.shared.delete(forKey: keychainDeviceSecretKey)
+        KeychainManager.shared.delete(forKey: keychainSubscriptionTierKey)
+        KeychainManager.shared.delete(forKey: keychainSubscriptionStatusKey)
+        KeychainManager.shared.delete(forKey: keychainSubscriptionExpiryKey)
         
         #if DEBUG
         print("MerchantAuthManager: Logged out and cleared credentials")
