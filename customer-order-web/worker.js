@@ -3,6 +3,59 @@ export default {
     try {
       const url = new URL(request.url);
 
+      // Handle CORS preflight options directly
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400"
+          }
+        });
+      }
+
+      // Proxy Supabase REST, Auth, and Functions API requests to avoid Mixed Content (HTTP/HTTPS) issues
+      if (
+        url.pathname.startsWith("/rest/v1/") ||
+        url.pathname.startsWith("/auth/v1/") ||
+        url.pathname.startsWith("/functions/v1/")
+      ) {
+        const backendUrlStr = env.SUPABASE_URL || "http://119.59.99.163";
+        const backendBase = new URL(backendUrlStr);
+        
+        const targetUrl = new URL(request.url);
+        targetUrl.protocol = backendBase.protocol;
+        targetUrl.host = backendBase.host;
+        targetUrl.port = backendBase.port;
+
+        const headers = new Headers(request.headers);
+        headers.set("Host", backendBase.host);
+        
+        const requestInit = {
+          method: request.method,
+          headers: headers,
+          redirect: "manual"
+        };
+        
+        if (request.method !== "GET" && request.method !== "HEAD") {
+          requestInit.body = request.clone().body;
+        }
+        
+        const proxyResponse = await fetch(targetUrl.toString(), requestInit);
+        
+        const responseHeaders = new Headers(proxyResponse.headers);
+        responseHeaders.set("Access-Control-Allow-Origin", "*");
+        responseHeaders.set("Access-Control-Allow-Headers", "*");
+        responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+        
+        return new Response(proxyResponse.body, {
+          status: proxyResponse.status,
+          statusText: proxyResponse.statusText,
+          headers: responseHeaders
+        });
+      }
+
       // Never cache index.html — always serve fresh so asset ?v= bumps take effect immediately
       const isHtml = url.pathname === "/" || url.pathname.endsWith(".html");
 
@@ -12,8 +65,9 @@ export default {
         if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY || !env.MERCHANT_ID) {
           return new Response("Missing Supabase Worker configuration", { status: 500 });
         }
+        // Force the supabaseUrl to point to the Cloudflare Worker itself to route through the proxy!
         const configJs = `window.ALPHAPOS_CONFIG = ${JSON.stringify({
-          supabaseUrl: env.SUPABASE_URL,
+          supabaseUrl: url.origin,
           supabaseKey: env.SUPABASE_ANON_KEY,
           merchantId: env.MERCHANT_ID,
           isProduction: true
