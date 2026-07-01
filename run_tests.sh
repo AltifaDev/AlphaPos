@@ -79,12 +79,7 @@ fi
 # ── Emit a tiny Swift entry-point wrapper ─────────────────────────────────────
 mkdir -p "$BUILD_DIR"
 
-ENTRY_POINT="$BUILD_DIR/main.swift"
-cat > "$ENTRY_POINT" <<'SWIFT_EOF'
-import Foundation
-let allPassed = TestRunner.runAll()
-exit(allPassed ? 0 : 1)
-SWIFT_EOF
+ENTRY_POINT="$SCRIPT_DIR/Tests_Entrypoint/main.swift"
 
 BINARY="$BUILD_DIR/AlphaPosTests"
 
