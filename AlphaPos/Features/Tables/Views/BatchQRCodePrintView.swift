@@ -10,8 +10,8 @@ struct BatchQRCodePrintView: View {
     @AppStorage("qr_custom_color") private var qrCustomColor = "#111115"
     /// Reads UserDefaults override first, then falls back to Config.plist LOCAL_SERVER_URL.
     private var customerWebBaseUrl: String {
-        let ud = UserDefaults.standard.string(forKey: "dynamic_local_server_url") ?? ""
-        return ud.isEmpty ? AppConfig.shared.localServerURL : ud
+        let ud = UserDefaults.standard.string(forKey: "dynamic_customer_web_url") ?? ""
+        return ud.isEmpty ? "https://alphapos.altifadev.workers.dev" : ud
     }
     
     @Environment(\.dismiss) private var dismiss

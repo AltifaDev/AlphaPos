@@ -45,8 +45,8 @@ struct TableView: View {
     @AppStorage("logged_in_email") private var loggedInEmail = "owner@alphapos.com"
     /// Reads UserDefaults override first, then falls back to Config.plist LOCAL_SERVER_URL.
     private var customerWebBaseUrl: String {
-        let ud = UserDefaults.standard.string(forKey: "dynamic_local_server_url") ?? ""
-        return ud.isEmpty ? AppConfig.shared.localServerURL : ud
+        let ud = UserDefaults.standard.string(forKey: "dynamic_customer_web_url") ?? ""
+        return ud.isEmpty ? "https://alphapos.altifadev.workers.dev" : ud
     }
     @State private var isLayoutManagerAuthorized = false
     // MARK: - Layout & View Mode
@@ -2492,8 +2492,8 @@ struct TableDetailView: View {
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     /// Reads UserDefaults override first, then falls back to Config.plist LOCAL_SERVER_URL.
     private var customerWebBaseUrl: String {
-        let ud = UserDefaults.standard.string(forKey: "dynamic_local_server_url") ?? ""
-        return ud.isEmpty ? AppConfig.shared.localServerURL : ud
+        let ud = UserDefaults.standard.string(forKey: "dynamic_customer_web_url") ?? ""
+        return ud.isEmpty ? "https://alphapos.altifadev.workers.dev" : ud
     }
     @State private var showingManagerPinSheet = false
     

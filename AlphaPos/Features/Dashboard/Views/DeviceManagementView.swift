@@ -4,6 +4,7 @@
 
 import SwiftUI
 import SwiftData
+import Combine
 
 /// Device Management Dashboard for monitoring all connected devices.
 /// Critical for multi-device enterprise POS operations.
@@ -372,29 +373,115 @@ struct DeviceManagementView: View {
 
 private struct AddDevicePlaceholder: View {
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("active_branch_id") private var activeBranchId = ""
+    
+    @State private var pairingToken: String = ""
+    @State private var pairingCode: String = ""
+    @State private var timeLeft: Int = 0
+    @State private var isLoading: Bool = false
+    @State private var errorMessage: String? = nil
+    
+    let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    
+    private var merchantId: UUID {
+        let mStr = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.shared.defaultMerchantId
+        return UUID(uuidString: mStr) ?? UUID(uuidString: "163350b0-056d-4d5e-b5d4-24e7aac5ab6d")!
+    }
+    private var branchId: UUID {
+        return UUID(uuidString: activeBranchId) ?? UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+    }
     
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                Image(systemName: "iphone.badge.plus")
-                    .font(.system(size: 48))
-                    .foregroundColor(.appAccent)
-                Text("device_pair_title".t)
-                    .font(.title2.weight(.bold))
-                Text("device_pair_desc".t)
-                    .font(.subheadline)
-                    .foregroundColor(.textSecondary)
-                    .multilineTextAlignment(.center)
-                
-                // QR placeholder
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.appSurfaceHigh)
-                    .frame(width: 200, height: 200)
-                    .overlay(
-                        Image(systemName: "qrcode")
-                            .font(.system(size: 80))
-                            .foregroundColor(.textTertiary)
-                    )
+            VStack(spacing: 24) {
+                if isLoading {
+                    ProgressView("Generating pairing code...")
+                        .padding()
+                } else if let error = errorMessage {
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(.orange)
+                        Text("Connection Failed")
+                            .font(.headline)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                        Button("Try Again") {
+                            generateToken()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .padding(.top)
+                    }
+                } else {
+                    VStack(spacing: 16) {
+                        Text("device_pair_title".t)
+                            .font(.title2.weight(.bold))
+                            .foregroundColor(.textPrimary)
+                        Text("device_pair_desc".t)
+                            .font(.subheadline)
+                            .foregroundColor(.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                        
+                        // QR Code image
+                        if let qrImage = generateQRCodeImage(from: "alphapos://pair?token=\(pairingToken)") {
+                            Image(uiImage: qrImage)
+                                .interpolation(.none)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 220, height: 220)
+                                .padding(16)
+                                .background(Color.white)
+                                .cornerRadius(16)
+                                .shadow(radius: 4)
+                        } else {
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(Color.appSurfaceHigh)
+                                .frame(width: 220, height: 220)
+                                .overlay(
+                                    Image(systemName: "qrcode")
+                                        .font(.system(size: 80))
+                                        .foregroundColor(.textTertiary)
+                                )
+                        }
+                        
+                        // Passcode display (large, e.g. 123 456)
+                        VStack(spacing: 4) {
+                            Text("หรือป้อนรหัสจับคู่นี้ที่อุปกรณ์พนักงาน")
+                                .font(.caption)
+                                .foregroundColor(.textTertiary)
+                            Text(formatPasscode(pairingCode))
+                                .font(.system(size: 36, weight: .black, design: .monospaced))
+                                .foregroundColor(.appAccent)
+                                .tracking(4)
+                        }
+                        .padding(.vertical, 8)
+                        
+                        // Timer countdown
+                        HStack(spacing: 6) {
+                            Image(systemName: "timer")
+                            Text("รหัสหมดอายุใน: \(formatTime(timeLeft))")
+                        }
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(timeLeft < 60 ? .red : .textSecondary)
+                        
+                        Button(action: {
+                            generateToken()
+                        }) {
+                            Label("รีเซ็ต QR Code ใหม่", systemImage: "arrow.clockwise")
+                                .font(.caption.weight(.bold))
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(Color.appSurfaceHigh)
+                                .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
             .padding()
             .navigationTitle("Add Device")
@@ -404,6 +491,65 @@ private struct AddDevicePlaceholder: View {
                     Button("Close") { dismiss() }
                 }
             }
+            .onAppear {
+                generateToken()
+            }
+            .onReceive(timer) { _ in
+                if timeLeft > 0 {
+                    timeLeft -= 1
+                    if timeLeft == 0 {
+                        generateToken()
+                    }
+                }
+            }
         }
+    }
+    
+    private func generateToken() {
+        isLoading = true
+        errorMessage = nil
+        Task {
+            do {
+                let pairing = try await NetworkManager.shared.createPairingToken(merchantId: merchantId, branchId: branchId)
+                await MainActor.run {
+                    self.pairingToken = pairing.token
+                    self.pairingCode = pairing.pairingCode
+                    self.timeLeft = Int(pairing.expiresAt.timeIntervalSinceNow)
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+    
+    private func generateQRCodeImage(from string: String) -> UIImage? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        let data = string.data(using: .ascii)
+        filter.setValue(data, forKey: "inputMessage")
+        filter.setValue("H", forKey: "inputCorrectionLevel")
+        guard let ciImage = filter.outputImage else { return nil }
+        
+        let transform = CGAffineTransform(scaleX: 10, y: 10)
+        let scaledCIImage = ciImage.transformed(by: transform)
+        
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(scaledCIImage, from: scaledCIImage.extent) else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+    
+    private func formatPasscode(_ code: String) -> String {
+        guard code.count == 6 else { return code }
+        let index = code.index(code.startIndex, offsetBy: 3)
+        return String(code[..<index]) + " " + String(code[index...])
+    }
+    
+    private func formatTime(_ seconds: Int) -> String {
+        let m = seconds / 60
+        let s = seconds % 60
+        return String(format: "%02d:%02d", m, s)
     }
 }

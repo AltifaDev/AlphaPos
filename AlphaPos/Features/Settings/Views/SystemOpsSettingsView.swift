@@ -35,11 +35,12 @@ struct SystemOpsSettingsView: View {
     // MARK: - Re-Seed States
     @State private var showingReSeedAlert = false
 
-    // MARK: - Server URL States
     @State private var supabaseURLDraft: String = ""
     @State private var localServerURLDraft: String = ""
+    @State private var customerWebURLDraft: String = ""
     @State private var supabaseURLError: String? = nil
     @State private var localURLError: String? = nil
+    @State private var customerWebURLError: String? = nil
     @State private var isTestingConnection = false
     @State private var connectionTestResult: String? = nil
     @State private var connectionTestOK = false
@@ -322,6 +323,14 @@ struct SystemOpsSettingsView: View {
                     placeholder: "http://192.168.x.x:8080",
                     text: $localServerURLDraft,
                     error: localURLError
+                )
+
+                // Customer Web URL
+                serverURLField(
+                    label: "Customer Web URL (Self-Ordering)",
+                    placeholder: "https://alphapos.altifadev.workers.dev",
+                    text: $customerWebURLDraft,
+                    error: customerWebURLError
                 )
 
                 // Test + Save buttons
@@ -697,12 +706,15 @@ struct SystemOpsSettingsView: View {
             ?? AppConfig.shared.supabaseURL.absoluteString
         localServerURLDraft = UserDefaults.standard.string(forKey: "dynamic_local_server_url")
             ?? AppConfig.shared.localServerURL
+        customerWebURLDraft = UserDefaults.standard.string(forKey: "dynamic_customer_web_url")
+            ?? "https://alphapos.altifadev.workers.dev"
         serverConfigDirty = false
     }
 
     private func validateURLs() -> Bool {
         supabaseURLError = nil
         localURLError = nil
+        customerWebURLError = nil
         var valid = true
 
         if supabaseURLDraft.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -718,6 +730,14 @@ struct SystemOpsSettingsView: View {
             valid = false
         } else if URL(string: localServerURLDraft)?.host == nil {
             localURLError = "URL รูปแบบไม่ถูกต้อง"
+            valid = false
+        }
+
+        if customerWebURLDraft.trimmingCharacters(in: .whitespaces).isEmpty {
+            customerWebURLError = "URL ต้องไม่ว่างเปล่า"
+            valid = false
+        } else if URL(string: customerWebURLDraft)?.host == nil {
+            customerWebURLError = "URL รูปแบบไม่ถูกต้อง"
             valid = false
         }
 
@@ -767,6 +787,7 @@ struct SystemOpsSettingsView: View {
         guard validateURLs() else { return }
         UserDefaults.standard.set(supabaseURLDraft, forKey: "dynamic_supabase_url")
         UserDefaults.standard.set(localServerURLDraft, forKey: "dynamic_local_server_url")
+        UserDefaults.standard.set(customerWebURLDraft, forKey: "dynamic_customer_web_url")
         serverConfigDirty = false
         writeAuditLog(action: "system_ops_server_config",
                       details: "Updated server URLs: \(supabaseURLDraft)")

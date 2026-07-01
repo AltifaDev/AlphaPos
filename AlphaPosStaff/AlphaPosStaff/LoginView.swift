@@ -1,6 +1,7 @@
 import SwiftUI
 import CryptoKit
 import LocalAuthentication
+import AVFoundation
 
 struct LoginView: View {
     @Binding var loggedInEmployee: Employee?
@@ -41,20 +42,19 @@ struct LoginView: View {
     @State private var isStoreIdCopied = false
 
     // ── Computed ─────────────────────────────────────────────────────────
-    private var uuidIsValid: Bool {
-        let trimmed = manualStoreId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let uuidRegex = #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"#
-        return trimmed.range(of: uuidRegex, options: .regularExpression) != nil
+    private var pairingCodeIsValid: Bool {
+        let cleaned = manualStoreId.replacingOccurrences(of: " ", with: "")
+        return cleaned.count == 6 && CharacterSet.decimalDigits.isSuperset(of: CharacterSet(charactersIn: cleaned))
     }
 
     var body: some View {
 
         ZStack {
-            Color.appBackground.ignoresSafeArea()
-            
             if activeMerchantId.isEmpty {
+                pairingVideoBackground
                 storePairingView
             } else {
+                Color.appBackground.ignoresSafeArea()
                 employeeSelectionView
             }
         }
@@ -146,18 +146,10 @@ struct LoginView: View {
                     .font(.caption)
                     .fontWeight(.bold)
             }
-            .foregroundColor(.appAccent)
+            .foregroundColor(.white)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(
-                Capsule()
-                    .fill(Color.appSurface)
-                    .shadow(color: Color.black.opacity(0.1), radius: 4)
-            )
-            .overlay(
-                Capsule()
-                    .stroke(Color.appBorderSubtle, lineWidth: 1)
-            )
+            .apLiquidGlass(interactive: true, in: Capsule())
         }
     }
     
@@ -174,17 +166,9 @@ struct LoginView: View {
         }) {
             Image(systemName: appTheme == AppTheme.dark.rawValue ? "sun.max.fill" : "moon.fill")
                 .font(.title3)
-                .foregroundColor(.appAccent)
+                .foregroundColor(.white)
                 .padding(12)
-                .background(
-                    Circle()
-                        .fill(Color.appSurface)
-                        .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
-                )
-                .overlay(
-                    Circle()
-                        .stroke(Color.appBorderSubtle, lineWidth: 1)
-                )
+                .apLiquidGlass(interactive: true, in: Circle())
         }
     }
     
@@ -210,6 +194,14 @@ struct LoginView: View {
     }
     
     // MARK: - Subviews: Store Pairing
+
+    private var pairingVideoBackground: some View {
+        ZStack {
+            StaffLoopingVideoPlayer(videoName: "LoginBG")
+            Color.black.opacity(appTheme == AppTheme.dark.rawValue ? 0.48 : 0.30)
+        }
+        .ignoresSafeArea()
+    }
     
     private var storePairingView: some View {
         VStack(spacing: 0) {
@@ -232,16 +224,18 @@ struct LoginView: View {
                     VStack(spacing: APSpacing.xs) {
                         Image(systemName: "qrcode.viewfinder")
                             .font(.system(size: 64))
-                            .foregroundStyle(APGradient.accent)
+                            .foregroundStyle(.white)
+                            .padding(APSpacing.md)
+                            .apLiquidGlass(in: Circle())
                             .padding(.bottom, APSpacing.sm)
                         
                         Text("link_store_title".localized(for: appLanguage))
                             .font(.title).fontWeight(.black)
-                            .foregroundColor(.textPrimary)
+                            .foregroundColor(.white)
                         
                         Text("link_store_sub".localized(for: appLanguage))
                             .font(.subheadline)
-                            .foregroundColor(.textSecondary)
+                            .foregroundColor(.white.opacity(0.82))
                             .multilineTextAlignment(.center)
                     }
                     .padding(.horizontal, APSpacing.lg)
@@ -249,13 +243,9 @@ struct LoginView: View {
                     // Visual Pairing Card (Pulsing QR Code Mockup)
                     ZStack {
                         RoundedRectangle(cornerRadius: APRadius.lg)
-                            .fill(Color.appSurface)
+                            .fill(Color.clear)
                             .frame(height: 240)
-                            .shadow(color: Color.black.opacity(0.1), radius: 10)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: APRadius.lg)
-                                    .stroke(Color.appBorderSubtle, lineWidth: 1)
-                            )
+                            .apLiquidGlass(in: RoundedRectangle(cornerRadius: APRadius.lg))
                         
                         VStack(spacing: APSpacing.md) {
                             ZStack {
@@ -273,7 +263,7 @@ struct LoginView: View {
                             Text("scan_pairing_qr_desc".localized(for: appLanguage))
                                 .font(.caption)
                                 .fontWeight(.semibold)
-                                .foregroundColor(.textSecondary)
+                                .foregroundColor(.white.opacity(0.88))
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal)
                         }
@@ -292,7 +282,15 @@ struct LoginView: View {
                             showingScannerSheet = true
                         }) {
                             Label("scan_qr_code".localized(for: appLanguage), systemImage: "camera.fill")
-                                .apGradientButton(gradient: APGradient.accent)
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, APSpacing.md)
+                                .apLiquidGlass(
+                                    tint: .appAccent.opacity(0.72),
+                                    interactive: true,
+                                    in: RoundedRectangle(cornerRadius: APRadius.md)
+                                )
                         }
                         
                         Button(action: {
@@ -302,14 +300,12 @@ struct LoginView: View {
                         }) {
                             Label("enter_manually".localized(for: appLanguage), systemImage: "keyboard")
                                 .font(.headline)
-                                .foregroundColor(.textPrimary)
+                                .foregroundColor(.white)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, APSpacing.md)
-                                .background(Color.appSurface)
-                                .cornerRadius(APRadius.md)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: APRadius.md)
-                                        .stroke(Color.appBorderSubtle, lineWidth: 1)
+                                .apLiquidGlass(
+                                    interactive: true,
+                                    in: RoundedRectangle(cornerRadius: APRadius.md)
                                 )
                         }
                     }
@@ -326,8 +322,13 @@ struct LoginView: View {
                         Text("sandbox_demo".localized(for: appLanguage))
                             .font(.caption)
                             .fontWeight(.bold)
-                            .foregroundColor(.appAccent)
-                            .underline()
+                            .foregroundColor(.white)
+                            .padding(.horizontal, APSpacing.md)
+                            .padding(.vertical, APSpacing.sm)
+                            .apLiquidGlass(
+                                interactive: true,
+                                in: Capsule()
+                            )
                     }
                     .padding(.bottom, APSpacing.lg)
                 }
@@ -375,36 +376,43 @@ struct LoginView: View {
                 scanProgress = -110
             }
             
-            Text("select_simulated_store".localized(for: appLanguage))
-                .font(.subheadline)
-                .foregroundColor(.textSecondary)
+            if isLoading {
+                ProgressView("Pairing in progress...")
+                    .padding()
+            } else if let error = errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.appRose)
+                    .multilineTextAlignment(.center)
+                    .padding()
+            }
             
             VStack(spacing: APSpacing.sm) {
+                Button(action: {
+                    simulateQRCodeScan()
+                }) {
+                    HStack {
+                        Image(systemName: "qrcode.viewfinder")
+                        Text("จำลองสแกน QR จาก iPad POS")
+                    }
+                    .font(.subheadline.weight(.bold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.appAccent)
+                    .cornerRadius(12)
+                }
+                .disabled(isLoading)
+                
+                // Quick Sandbox Bypass
                 Button(action: {
                     completePairing(with: "163350b0-056d-4d5e-b5d4-24e7aac5ab6d") // Demo
                 }) {
                     Text("simulate_sandbox".localized(for: appLanguage))
-                        .font(.subheadline)
-                        .foregroundColor(.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.appSurface)
-                        .cornerRadius(12)
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.appBorderSubtle, lineWidth: 1))
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
                 }
-                
-                Button(action: {
-                    completePairing(with: "662c6861-1200-47b2-bd77-160b73c4d9bc") // Cafe Terrace
-                }) {
-                    Text("simulate_cafe".localized(for: appLanguage))
-                        .font(.subheadline)
-                        .foregroundColor(.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.appSurface)
-                        .cornerRadius(12)
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.appBorderSubtle, lineWidth: 1))
-                }
+                .padding(.top, 8)
             }
             .padding(.horizontal, APSpacing.lg)
             
@@ -424,59 +432,122 @@ struct LoginView: View {
             }
             
             VStack(spacing: APSpacing.sm) {
-                Text("enter_store_id".localized(for: appLanguage))
+                Text("ป้อนรหัสเชื่อมต่อร้านค้า")
                     .font(.title2).fontWeight(.black)
                     .foregroundColor(.textPrimary)
                 
-                Text("enter_store_id_sub".localized(for: appLanguage))
+                Text("ป้อนรหัสตัวเลข 6 หลักที่แสดงบนเครื่อง iPad POS")
                     .font(.subheadline)
                     .foregroundColor(.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
             
-            TextField("e.g. 163350b0-056d-4d5e-b5d4-24e7aac5ab6d", text: $manualStoreId)
-                .font(.system(.body, design: .monospaced))
-                .textFieldStyle(PlainTextFieldStyle())
-                .padding(14)
-                .background(Color.appSurfaceHigh)
-                .foregroundColor(.textPrimary)
-                .cornerRadius(APRadius.md)
-                .overlay(
-                    RoundedRectangle(cornerRadius: APRadius.md)
-                        .stroke(uuidIsValid || manualStoreId.isEmpty ? Color.appBorderSubtle : Color.appRose.opacity(0.6), lineWidth: 1.5)
-                )
-                .padding(.horizontal, APSpacing.lg)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-
-            // Inline UUID validation hint
-            if !manualStoreId.isEmpty && !uuidIsValid {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.circle.fill")
+            VStack(spacing: 8) {
+                TextField("e.g. 123 456", text: $manualStoreId)
+                    .font(.system(.title2, design: .monospaced))
+                    .multilineTextAlignment(.center)
+                    .keyboardType(.numberPad)
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .padding(14)
+                    .background(Color.appSurfaceHigh)
+                    .foregroundColor(.textPrimary)
+                    .cornerRadius(APRadius.md)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: APRadius.md)
+                            .stroke(pairingCodeIsValid || manualStoreId.isEmpty ? Color.appBorderSubtle : Color.appRose.opacity(0.6), lineWidth: 1.5)
+                    )
+                    .padding(.horizontal, APSpacing.lg)
+                    .onChange(of: manualStoreId) { _, newValue in
+                        let cleaned = newValue.replacingOccurrences(of: " ", with: "")
+                        if cleaned.count > 6 {
+                            manualStoreId = String(cleaned.prefix(6))
+                        } else {
+                            manualStoreId = cleaned
+                        }
+                    }
+                
+                if isLoading {
+                    ProgressView("Pairing...")
+                        .padding(.top, 4)
+                } else if let error = errorMessage {
+                    Text(error)
                         .font(.caption)
                         .foregroundColor(.appRose)
-                    Text("invalid_uuid_format".localized(for: appLanguage))
-                        .font(.caption)
-                        .foregroundColor(.appRose)
+                        .padding(.top, 4)
                 }
-                .padding(.horizontal, APSpacing.lg)
             }
-
+            
             Button(action: {
-                let cleaned = manualStoreId.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !cleaned.isEmpty && uuidIsValid {
-                    completePairing(with: cleaned)
-                    showingManualInputSheet = false
+                let cleaned = manualStoreId.replacingOccurrences(of: " ", with: "")
+                if pairingCodeIsValid {
+                    isLoading = true
+                    errorMessage = nil
+                    Task {
+                        do {
+                            let resolvedMerchantId = try await NetworkService.shared.validatePairingCode(code: cleaned)
+                            await MainActor.run {
+                                self.completePairing(with: resolvedMerchantId)
+                                self.showingManualInputSheet = false
+                                self.isLoading = false
+                            }
+                        } catch {
+                            await MainActor.run {
+                                self.errorMessage = error.localizedDescription
+                                self.isLoading = false
+                            }
+                        }
+                    }
                 }
             }) {
                 Text("link_shop".localized(for: appLanguage))
-                    .apGradientButton(gradient: APGradient.accent, disabled: !uuidIsValid)
+                    .apGradientButton(gradient: APGradient.accent, disabled: !pairingCodeIsValid || isLoading)
             }
-            .disabled(!uuidIsValid)
+            .disabled(!pairingCodeIsValid || isLoading)
             .padding(.horizontal, APSpacing.lg)
             
             Spacer()
+        }
+    }
+    
+    private func simulateQRCodeScan() {
+        isLoading = true
+        errorMessage = nil
+        Task {
+            do {
+                let nowStr = ISO8601DateFormatter().string(from: Date())
+                let queryItems = [
+                    URLQueryItem(name: "is_used", value: "eq.false"),
+                    URLQueryItem(name: "expires_at", value: "gt.\(nowStr)"),
+                    URLQueryItem(name: "order", value: "created_at.desc"),
+                    URLQueryItem(name: "limit", value: "1")
+                ]
+                
+                let data = try await NetworkService.shared.sendSupabaseRequest(
+                    method: "GET",
+                    endpoint: "device_pairing_tokens",
+                    queryItems: queryItems
+                )
+                
+                let decoder = JSONDecoder()
+                let results = try decoder.decode([NetworkService.PairingResponse].self, from: data)
+                
+                guard let first = results.first else {
+                    throw NSError(domain: "NetworkService", code: 404, userInfo: [NSLocalizedDescriptionKey: "ไม่พบ QR Code ที่ใช้งานอยู่บน iPad POS กรุณาเปิด Add Device บน iPad POS ก่อน"])
+                }
+                
+                let resolvedMerchantId = try await NetworkService.shared.validatePairingToken(token: first.token)
+                await MainActor.run {
+                    self.completePairing(with: resolvedMerchantId)
+                    self.showingScannerSheet = false
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isLoading = false
+                }
+            }
         }
     }
     
@@ -1294,5 +1365,63 @@ struct ShakeModifier: ViewModifier {
                     CubicKeyframe(1.0, duration: 0.25)
                 }
             }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func apLiquidGlass<S: Shape>(
+        tint: Color? = nil,
+        interactive: Bool = false,
+        in shape: S
+    ) -> some View {
+        if #available(iOS 26.0, *) {
+            glassEffect(.regular.tint(tint).interactive(interactive), in: shape)
+        } else {
+            background(.ultraThinMaterial, in: shape)
+                .overlay(shape.stroke(.white.opacity(0.22), lineWidth: 1))
+        }
+    }
+}
+
+private struct StaffLoopingVideoPlayer: UIViewRepresentable {
+    let videoName: String
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> PlayerView {
+        let view = PlayerView()
+        if let url = Bundle.main.url(forResource: videoName, withExtension: "mp4") {
+            context.coordinator.play(url, in: view)
+        }
+        return view
+    }
+
+    func updateUIView(_ uiView: PlayerView, context: Context) {}
+
+    final class Coordinator {
+        private var player: AVQueuePlayer?
+        private var looper: AVPlayerLooper?
+
+        func play(_ url: URL, in view: PlayerView) {
+            let player = AVQueuePlayer()
+            player.isMuted = true
+            looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+            self.player = player
+            view.playerLayer.player = player
+            player.play()
+        }
+    }
+
+    final class PlayerView: UIView {
+        override static var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            playerLayer.videoGravity = .resizeAspectFill
+        }
+
+        required init?(coder: NSCoder) { nil }
     }
 }
