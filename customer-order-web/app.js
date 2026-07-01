@@ -3932,4 +3932,30 @@ class AlphaPosApp {
 
 // Instantiate app globally
 window.app = new AlphaPosApp();
-window.addEventListener("DOMContentLoaded", () => window.app.init());
+
+// Wait for config.js (window.ALPHAPOS_CONFIG) to be available before init
+// This is needed because config.js is injected by Cloudflare Worker as a separate script tag
+// and may load after the bundled JS in some browsers
+async function waitForConfig(maxWaitMs = 5000) {
+    const start = Date.now();
+    while (!window.ALPHAPOS_CONFIG && Date.now() - start < maxWaitMs) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    if (!window.ALPHAPOS_CONFIG) {
+        console.warn('[AlphaPos] config.js not loaded within timeout, using defaults');
+    }
+}
+
+window.addEventListener("DOMContentLoaded", async () => {
+    await waitForConfig();
+    // Re-apply config now that it may be available
+    const cfg = window.ALPHAPOS_CONFIG || {};
+    if (cfg.supabaseUrl) {
+        window.app.supabaseUrl = cfg.supabaseUrl;
+        window.app.supabaseKey = cfg.supabaseKey;
+        window.app.merchantId = cfg.merchantId || window.app.merchantId;
+        window.app.localServerURL = cfg.localServerURL || window.app.localServerURL;
+    }
+    window.app.init();
+});
+

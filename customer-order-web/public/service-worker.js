@@ -1,10 +1,10 @@
-const CACHE_NAME = 'alphapos-customer-web-v21';
+const CACHE_NAME = 'alphapos-customer-web-v22';
 const ASSETS_TO_CACHE = [
     './',
     './index.html',
-    './app.js',
-    './styles.css',
-    './hybrid-location.js'
+    './config.js'
+    // Note: app.js, styles.css, hybrid-location.js are bundled into /assets/ by Vite
+    // The bundled assets are cached dynamically by the fetch handler below
 ];
 
 // Install Event

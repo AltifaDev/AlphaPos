@@ -122,14 +122,22 @@ export default {
       const assetResponse = await env.ASSETS.fetch(request);
 
       if (isHtml) {
-        // Strip Cloudflare's default cache headers for HTML — force revalidation every time
-        const newHeaders = new Headers(assetResponse.headers);
-        newHeaders.set("Cache-Control", "no-cache, no-store, must-revalidate");
-        newHeaders.set("Pragma", "no-cache");
-        newHeaders.set("Expires", "0");
-        return new Response(assetResponse.body, {
+        // Inject config.js before </head> so window.ALPHAPOS_CONFIG is always set
+        // (Vite build removes the static <script src="config.js"> tag during bundling)
+        const originalText = await assetResponse.text();
+        const injectedHtml = originalText.replace(
+          '</head>',
+          `<script src="/config.js"></script>\n</head>`
+        );
+        return new Response(injectedHtml, {
           status: assetResponse.status,
-          headers: newHeaders,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "Access-Control-Allow-Origin": "*"
+          }
         });
       }
 
