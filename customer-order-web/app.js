@@ -1008,7 +1008,7 @@ class AlphaPosApp {
                     .limit(1)
                     .maybeSingle();
                 const timeoutPromise = new Promise((_, reject) => {
-                    setTimeout(() => reject(new Error("Active session lookup timed out")), 1500);
+                    setTimeout(() => reject(new Error("Active session lookup timed out")), 5000);
                 });
                 const { data, error } = await Promise.race([sessionPromise, timeoutPromise]);
 
