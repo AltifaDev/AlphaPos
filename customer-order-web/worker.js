@@ -113,7 +113,10 @@ export default {
         return new Response(configJs, {
           headers: {
             "Content-Type": "application/javascript",
-            "Access-Control-Allow-Origin": "*"
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
           }
         });
       }
