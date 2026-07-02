@@ -472,6 +472,26 @@ final class POSViewModel {
         // Increment promotion usage counter
         appliedPromotion.incrementRedemption()
     }
+    
+    // Create OrderTaxLines if tax is enabled
+    if UserDefaults.standard.bool(forKey: "enable_tax") && selectedCustomer?.isTaxExempt != true {
+        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
+        let taxName = UserDefaults.standard.string(forKey: "store_tax_name") ?? "VAT"
+        let globalTaxType = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
+        
+        if cartTax > 0 {
+            let taxLine = OrderTaxLine(
+                order: order,
+                taxName: "\(taxName) \(Int(globalTaxRate))%",
+                taxRate: globalTaxRate,
+                taxableAmount: cartSubtotal,
+                taxAmount: cartTax,
+                isInclusive: (globalTaxType == "inclusive")
+            )
+            modelContext.insert(taxLine)
+            order.taxLines.append(taxLine)
+        }
+    }
 
     // Pre-fetch all inventory items for the active branch once (avoids N+1 inside deductIngredientsLocally)
     var branchInventoryCache: [String: InventoryItem]? = nil

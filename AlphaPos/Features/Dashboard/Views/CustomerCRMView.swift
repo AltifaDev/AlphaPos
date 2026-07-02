@@ -27,6 +27,11 @@ struct CustomerCRMView: View {
     @State private var selectedSegment: CustomerSegment = .all
     @State private var selectedCustomer: Customer? = nil
     
+    @State private var showingAddCustomerSheet = false
+    @State private var newCustomerName = ""
+    @State private var newCustomerPhone = ""
+    @State private var newCustomerEmail = ""
+    
     enum CustomerSegment: String, CaseIterable, Identifiable {
         case all = "All"
         case vip = "VIP"
@@ -78,6 +83,65 @@ struct CustomerCRMView: View {
             }
         }
         .background(Color.appBackground)
+        .sheet(isPresented: $showingAddCustomerSheet) {
+            NavigationStack {
+                Form {
+                    Section(header: Text("Customer Information")) {
+                        TextField("Name", text: $newCustomerName)
+                        TextField("Phone", text: $newCustomerPhone)
+                            .keyboardType(.phonePad)
+                        TextField("Email", text: $newCustomerEmail)
+                            .keyboardType(.emailAddress)
+                            .autocapitalization(.none)
+                    }
+                }
+                .navigationTitle("Add Customer")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") {
+                            showingAddCustomerSheet = false
+                            clearAddCustomerFields()
+                        }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            saveCustomer()
+                        }
+                        .disabled(newCustomerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
+        }
+    }
+    
+    private func clearAddCustomerFields() {
+        newCustomerName = ""
+        newCustomerPhone = ""
+        newCustomerEmail = ""
+    }
+    
+    private func saveCustomer() {
+        let name = newCustomerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let phone = newCustomerPhone.trimmingCharacters(in: .whitespacesAndNewlines)
+        let email = newCustomerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        let newCustomer = Customer(
+            name: name,
+            email: email.isEmpty ? nil : email,
+            phone: phone.isEmpty ? nil : phone
+        )
+        modelContext.insert(newCustomer)
+        try? modelContext.save()
+        
+        // Background sync
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
+        
+        selectedCustomer = newCustomer
+        showingAddCustomerSheet = false
+        clearAddCustomerFields()
+        APHaptic.trigger()
     }
     
     // MARK: - Header
@@ -121,7 +185,7 @@ struct CustomerCRMView: View {
             
             // Add customer button
             Button {
-                // Add new customer
+                showingAddCustomerSheet = true
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "plus")

@@ -933,15 +933,24 @@ struct ChangePasswordSheet: View {
         }
         
         isSaving = true
-        // Simulate remote update
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            isSaving = false
-            successMessage = "Your password has been changed successfully according to secure standards."
-            APHaptic.trigger()
-            
-            // Dismiss after brief delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                isPresented = false
+        Task {
+            do {
+                try await NetworkManager.shared.changeMerchantPassword(newPassword: newPassword)
+                await MainActor.run {
+                    isSaving = false
+                    successMessage = "Your password has been changed successfully in Supabase."
+                    APHaptic.trigger()
+                    
+                    // Dismiss after brief delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        isPresented = false
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isSaving = false
+                    errorMessage = "Failed: \(error.localizedDescription)"
+                }
             }
         }
     }

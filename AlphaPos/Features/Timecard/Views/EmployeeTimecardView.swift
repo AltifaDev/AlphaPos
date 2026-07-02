@@ -601,10 +601,14 @@ struct BiometricFaceScannerSimulator: View {
                                 .frame(width: 280, height: 280)
                         }
 
-                        // Dynamic camera canvas background
+                        // Dynamic camera canvas background with real front camera feed
                         Circle()
                             .fill(Color.appSurface)
                             .frame(width: 260, height: 260)
+                            .overlay(
+                                FrontCameraPreview()
+                                    .clipShape(Circle())
+                            )
                             .overlay(
                                 Circle()
                                     .stroke(
@@ -615,15 +619,15 @@ struct BiometricFaceScannerSimulator: View {
                                     )
                             )
 
-                        // Face ID icon
-                        Image(systemName: "faceid")
-                            .font(.system(size: 120, weight: .ultraLight))
-                            .foregroundColor(
-                                isScanning
-                                ? (mode == .clockIn ? Color.appTeal : Color.appRose).opacity(0.8)
-                                : (Color.currentTheme == .light ? Color.textTertiary.opacity(0.2) : Color.white.opacity(0.15))
-                            )
-                            .animation(.easeInOut(duration: 0.4), value: isScanning)
+                        // Face ID icon (only show overlay when not scanning/loading camera)
+                        if !isScanning {
+                            Image(systemName: "faceid")
+                                .font(.system(size: 120, weight: .ultraLight))
+                                .foregroundColor(
+                                    Color.currentTheme == .light ? Color.textTertiary.opacity(0.2) : Color.white.opacity(0.15)
+                                )
+                                .transition(.opacity)
+                        }
 
                         // Scan line sweep
                         if isScanning {
@@ -730,5 +734,72 @@ struct BiometricFaceScannerSimulator: View {
             let success = simulatedScore >= 95.0
             onCompletion(success, simulatedScore)
         }
+    }
+}
+
+import AVFoundation
+
+struct FrontCameraPreview: UIViewRepresentable {
+    class CameraView: UIView {
+        var captureSession: AVCaptureSession?
+        var previewLayer: AVCaptureVideoPreviewLayer?
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            previewLayer?.frame = bounds
+        }
+
+        func setupCamera() {
+            let session = AVCaptureSession()
+            session.sessionPreset = .high
+            
+            // Find front camera
+            let discoverySession = AVCaptureDevice.DiscoverySession(
+                deviceTypes: [.builtInWideAngleCamera],
+                mediaType: .video,
+                position: .front
+            )
+            
+            guard let frontCamera = discoverySession.devices.first else {
+                return
+            }
+            
+            do {
+                let input = try AVCaptureDeviceInput(device: frontCamera)
+                if session.canAddInput(input) {
+                    session.addInput(input)
+                }
+                
+                let preview = AVCaptureVideoPreviewLayer(session: session)
+                preview.videoGravity = .resizeAspectFill
+                preview.frame = bounds
+                layer.addSublayer(preview)
+                self.previewLayer = preview
+                self.captureSession = session
+                
+                DispatchQueue.global(qos: .userInitiated).async {
+                    session.startRunning()
+                }
+            } catch {
+                print("Front camera setup failed: \(error)")
+            }
+        }
+        
+        func stopCamera() {
+            captureSession?.stopRunning()
+        }
+    }
+
+    func makeUIView(context: Context) -> CameraView {
+        let view = CameraView()
+        view.clipsToBounds = true
+        view.setupCamera()
+        return view
+    }
+
+    func updateUIView(_ uiView: CameraView, context: Context) {}
+    
+    static func dismantleUIView(_ uiView: CameraView, coordinator: ()) {
+        uiView.stopCamera()
     }
 }
