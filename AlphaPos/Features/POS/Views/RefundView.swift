@@ -133,6 +133,25 @@ final class RefundViewModel {
         )
         modelContext.insert(auditLog)
         
+        // Retrieve current active employee session from DB
+        let records = (try? modelContext.fetch(FetchDescriptor<StaffSessionRecord>())) ?? []
+        let activeRecord = records.filter { $0.endedAt == nil }.max(by: { $0.startedAt < $1.startedAt })
+        let employeeId = activeRecord?.employeeId
+        
+        // Instantiate and persist a RefundTransaction record
+        let refundTx = RefundTransaction(
+            order: order,
+            originalPayment: order.payments.first,
+            refundAmount: refundAmount,
+            refundMethod: order.payments.first?.paymentMethod ?? "cash",
+            reasonCode: selectedReason.rawValue,
+            reasonNotes: reasonText,
+            refundedByEmployeeId: employeeId,
+            approvedByEmployeeId: employeeId,
+            status: "completed"
+        )
+        modelContext.insert(refundTx)
+        
         order.isSynced = false
         order.updatedAt = Date()
         modelContext.saveWithLogging(label: #function)

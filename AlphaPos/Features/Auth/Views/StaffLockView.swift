@@ -521,8 +521,7 @@ struct StaffLockView: View {
         Task.detached(priority: .userInitiated) {
             let isOwner = await MainActor.run { isOwnerPasscodeEntry }
             if isOwner {
-                let ownerPin = UserDefaults.standard.string(forKey: "merchant_owner_pin") ?? "8888"
-                if capturedPasscode == ownerPin {
+                if KeychainManager.shared.verifyOwnerPin(capturedPasscode) {
                     await MainActor.run {
                         attempts = 0; lockedUntil = nil; passcode = ""
                         onUseStoreAccount()

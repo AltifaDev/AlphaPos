@@ -165,14 +165,27 @@ struct SettingsView: View {
                                     .background(Color.appDivider)
                                 
                                 // Change Owner PIN
-                                Button(action: { showingChangeOwnerPinSheet = true }) {
-                                    HStack {
-                                        Label(lm.languageCode == "th" ? "เปลี่ยน PIN บัญชีร้านค้า" : "Change Store Owner PIN", systemImage: "lock.ipad")
-                                            .foregroundColor(.textPrimary)
-                                        Spacer()
-                                        Image(systemName: "chevron.right")
-                                            .font(.footnote)
-                                            .foregroundColor(.textSecondary)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Button(action: { showingChangeOwnerPinSheet = true }) {
+                                        HStack {
+                                            Label(lm.languageCode == "th" ? "เปลี่ยน PIN บัญชีร้านค้า" : "Change Store Owner PIN", systemImage: "lock.ipad")
+                                                .foregroundColor(.textPrimary)
+                                            Spacer()
+                                            Image(systemName: "chevron.right")
+                                                .font(.footnote)
+                                                .foregroundColor(.textSecondary)
+                                        }
+                                    }
+                                    
+                                    if KeychainManager.shared.isDefaultPinActive() {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "exclamationmark.shield.fill")
+                                                .foregroundColor(.appRose)
+                                            Text(lm.languageCode == "th" ? "คำเตือน: รหัส PIN เริ่มต้น '8888' ไม่ปลอดภัย โปรดเปลี่ยนใหม่ทันที" : "Warning: Default PIN '8888' is insecure. Change it immediately.")
+                                                .font(.caption2)
+                                                .foregroundColor(.appRose)
+                                        }
+                                        .padding(.leading, 8)
                                     }
                                 }
                                 
@@ -616,8 +629,13 @@ struct SettingsView: View {
     private func saveNewOwnerPin() {
         let cleanPin = newOwnerPin.trimmingCharacters(in: .decimalDigits.inverted)
         if cleanPin.count == 4 {
-            UserDefaults.standard.set(cleanPin, forKey: "merchant_owner_pin")
-            statusMessage = lm.languageCode == "th" ? "เปลี่ยน PIN เจ้าของร้านค้าสำเร็จแล้ว" : "Store owner PIN changed successfully."
+            if KeychainManager.shared.saveOwnerPin(cleanPin) {
+                // Clear legacy plaintext storage
+                UserDefaults.standard.removeObject(forKey: "merchant_owner_pin")
+                statusMessage = lm.languageCode == "th" ? "เปลี่ยน PIN เจ้าของร้านค้าสำเร็จแล้ว" : "Store owner PIN changed successfully."
+            } else {
+                statusMessage = lm.languageCode == "th" ? "ล้มเหลวในการบันทึก PIN พวงกุญแจ" : "Failed to save secure PIN to Keychain."
+            }
             showingStatusAlert = true
         } else {
             statusMessage = lm.languageCode == "th" ? "ล้มเหลว: รหัส PIN ต้องเป็นตัวเลข 4 หลักเท่านั้น" : "Failed: PIN must be exactly 4 digits."

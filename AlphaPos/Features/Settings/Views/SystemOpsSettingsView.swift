@@ -631,10 +631,7 @@ struct SystemOpsSettingsView: View {
     // ─────────────────────────────────────────────────────────────────────────
     private func verifyPinAndProceed() {
         pinAttempts += 1
-        // Read PIN from Keychain (not UserDefaults)
-        let ownerPin = KeychainManager.shared.retrieve(forKey: "merchant_owner_pin") ?? "8888"
-
-        if enteredPin == ownerPin {
+        if KeychainManager.shared.verifyOwnerPin(enteredPin) {
             pinAttempts = 0
             performStoreTransactionsReset()
         } else {

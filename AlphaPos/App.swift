@@ -74,7 +74,8 @@ struct AlphaPosApp: App {
             RefundTransaction.self, CashMovement.self, LoyaltyTransaction.self,
             GiftCard.self, MerchantDevice.self, StaffSessionRecord.self,
             SecurityPolicy.self, FloorPlanImage.self, TableLayoutPreset.self,
-            CurrencyExchangeRate.self, TaxRate.self, ShiftReport.self, ReceiptTemplate.self
+            CurrencyExchangeRate.self, TaxRate.self, ShiftReport.self, ReceiptTemplate.self,
+            InventoryLot.self
         ])
         
         // Locate default.store and run direct SQLite cleanup on orphaned OrderItems

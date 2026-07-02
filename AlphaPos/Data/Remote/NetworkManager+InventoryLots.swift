@@ -127,8 +127,10 @@ extension NetworkManager {
             ],
             payload: nil
         )
-        if let arr = data as? [[String: Any]] { return arr }
-        return []
+        guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return jsonArray
     }
 
     // MARK: - Date-Only Formatter (shared)

@@ -3693,34 +3693,6 @@ textarea:focus-visible,
     gap: 6px !important; /* Reduced gap between actions */
 }
 
-/* Make reserve table button clean and circular on header */
-.header-reserve-btn {
-    width: 32px !important;
-    height: 32px !important;
-    padding: 0 !important;
-    border-radius: 50% !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    background: rgba(255, 255, 255, 0.15) !important;
-    color: #FFFFFF !important;
-    border: 1px solid rgba(255, 255, 255, 0.3) !important;
-    flex-shrink: 0 !important;
-    box-shadow: none !important;
-    transition: all 0.2s ease !important;
-}
-.header-reserve-btn:hover {
-    background: rgba(255, 255, 255, 0.25) !important;
-    transform: scale(1.05) !important;
-}
-.header-reserve-btn span {
-    display: none !important; /* Hide long text to save space */
-}
-.header-reserve-btn svg {
-    margin: 0 !important;
-    width: 14px !important;
-    height: 14px !important;
-}
 
 /* Make language selector clean and circular */
 .lang-dropdown-toggle {
@@ -7679,16 +7651,6 @@ body.bill-open { overflow: hidden; }
     padding: 8px 12px; background: none; border: none; color: var(--primary);
     font-weight: 500; font-size: 0.85rem; cursor: pointer; text-decoration: underline;
 }
-
-/* Reserve Table button in header */
-.header-reserve-btn {
-    display: flex; align-items: center; gap: 4px;
-    padding: 6px 12px; border-radius: 8px;
-    background: var(--primary-light); color: var(--primary);
-    font-weight: 600; font-size: 0.75rem; border: none; cursor: pointer;
-    transition: background 0.2s;
-}
-.header-reserve-btn:hover { background: var(--primary-glow); }
 
 
 /* =========================================================================

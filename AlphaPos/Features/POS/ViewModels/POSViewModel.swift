@@ -552,6 +552,24 @@ final class POSViewModel {
             try? errMsg.write(to: fileURL, atomically: true, encoding: .utf8)
         }
         print(errMsg)
+        
+        // Rollback: delete the failed insertions to keep SwiftData context consistent
+        modelContext.delete(order)
+        for item in order.items {
+            modelContext.delete(item)
+            for mod in item.modifiers {
+                modelContext.delete(mod)
+            }
+        }
+        if let session = tableSession {
+            if let index = session.orders.firstIndex(where: { $0.id == order.id }) {
+                session.orders.remove(at: index)
+            }
+        }
+        try? modelContext.save() // save the deletions
+        
+        lastCheckoutError = "Failed to save checkout: \(error.localizedDescription)"
+        return nil
     }
     cart.removeAll()
     selectedCustomer = nil
