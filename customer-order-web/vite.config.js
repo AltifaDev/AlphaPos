@@ -25,6 +25,7 @@ export default defineConfig({
     minify: 'esbuild', // Minify and obfuscate production JS bundle
     sourcemap: false,
     rollupOptions: {
+      external: ['/config.js', 'config.js'],
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {

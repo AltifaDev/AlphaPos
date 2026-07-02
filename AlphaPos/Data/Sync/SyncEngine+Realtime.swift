@@ -252,14 +252,14 @@ extension SyncEngine {
         // ── Debounce: per-event-type delay ───────────────────────────────
         // C-6 FIX: Use shorter delay for status-critical events so table cards
         // reflect open/close session changes immediately.
-        //   table_sessions / orders  → 0.2s  (user sees status change ~instantly)
-        //   restaurant_tables        → 0.5s  (layout shift less jarring when batched)
-        //   default / full pull      → 0.8s  (multiple endpoints — batch saves network)
+        //   table_sessions / orders  → 0.4s  (balanced instant visual feedback and network load)
+        //   restaurant_tables        → 0.6s  (layout shift less jarring when batched)
+        //   default / full pull      → 1.0s  (multiple endpoints — batch saves network)
         let debounceDelay: Double = {
             switch changedTable {
-            case "table_sessions", "orders", "order_items": return 0.2
-            case "restaurant_tables":                        return 0.5
-            default:                                         return 0.8
+            case "table_sessions", "orders", "order_items": return 0.4
+            case "restaurant_tables":                        return 0.6
+            default:                                         return 1.0
             }
         }()
         realtimeDebounceWorkItem?.cancel()

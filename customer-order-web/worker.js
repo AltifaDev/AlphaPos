@@ -21,7 +21,10 @@ export default {
         url.pathname.startsWith("/auth/v1/") ||
         url.pathname.startsWith("/functions/v1/")
       ) {
-        const backendUrlStr = env.SUPABASE_URL || "http://119.59.99.163.nip.io";
+        const backendUrlStr = env.SUPABASE_URL;
+        if (!backendUrlStr) {
+          return new Response("Supabase URL is not configured", { status: 500 });
+        }
         const backendBase = new URL(backendUrlStr);
         
         const targetUrl = new URL(request.url);
@@ -58,7 +61,10 @@ export default {
 
       // Proxy Local Server API requests (/v1/) to VPS port 8080
       if (url.pathname.startsWith("/v1/")) {
-        const localServerUrlStr = env.LOCAL_SERVER_URL || "http://119.59.99.163.nip.io:8080";
+        const localServerUrlStr = env.LOCAL_SERVER_URL;
+        if (!localServerUrlStr) {
+          return new Response("Local server URL is not configured", { status: 500 });
+        }
         const backendBase = new URL(localServerUrlStr);
         
         const targetUrl = new URL(request.url);
@@ -99,13 +105,14 @@ export default {
       // Production must be explicitly configured. A loopback/LAN fallback
       // would point customers at the wrong machine.
       if (url.pathname === "/config.js" || url.pathname === "config.js") {
-        if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY || !env.MERCHANT_ID) {
+        const supabaseAnonKey = env.SUPABASE_LEGACY_ANON_KEY || env.SUPABASE_ANON_KEY;
+        if (!env.SUPABASE_URL || !supabaseAnonKey || !env.MERCHANT_ID) {
           return new Response("Missing Supabase Worker configuration", { status: 500 });
         }
         // Force the supabaseUrl and localServerURL to point to the Cloudflare Worker itself to route through the proxy!
         const configJs = `window.ALPHAPOS_CONFIG = ${JSON.stringify({
           supabaseUrl: url.origin,
-          supabaseKey: env.SUPABASE_ANON_KEY,
+          supabaseKey: supabaseAnonKey,
           localServerURL: url.origin,
           merchantId: env.MERCHANT_ID,
           isProduction: true

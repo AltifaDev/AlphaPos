@@ -14,7 +14,6 @@
   ],
   "vars": {
     "SUPABASE_URL": "http://119.59.99.163.nip.io",
-    "SUPABASE_ANON_KEY": "sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH",
     "MERCHANT_ID": "163350b0-056d-4d5e-b5d4-24e7aac5ab6d",
     "LOCAL_SERVER_URL": "http://119.59.99.163.nip.io:8080"
   }

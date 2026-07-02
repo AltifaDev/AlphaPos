@@ -1,4 +1,4 @@
-const CACHE_NAME = 'alphapos-customer-web-v23';
+const CACHE_NAME = 'alphapos-customer-web-v24';
 const ASSETS_TO_CACHE = [
     './',
     './index.html',
@@ -45,6 +45,21 @@ self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
     if (url.pathname.startsWith('/v1/') || url.pathname === '/config.js') {
         event.respondWith(fetch(event.request));
+        return;
+    }
+
+    // Always check for a fresh app shell so deployments do not keep serving
+    // an old hashed bundle from the service-worker cache.
+    if (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('.html')) {
+        event.respondWith(
+            fetch(event.request)
+                .then((response) => {
+                    const clone = response.clone();
+                    caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+                    return response;
+                })
+                .catch(() => caches.match(event.request))
+        );
         return;
     }
 

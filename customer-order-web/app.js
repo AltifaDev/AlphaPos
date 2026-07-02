@@ -1,6 +1,5 @@
 import { translations } from './js/i18n.js';
 import { defaultMenuItems } from './js/data.js';
-import { fetchWithFallback, fetchWithRetry } from './js/api.js';
 import { clearCart, loadCart, saveCart } from './js/cart.js';
 import { hideStatusModal, showStatusModal, showToast } from './js/ui.js';
 import { OrderTracker } from './js/order-tracker.js';
@@ -11,6 +10,7 @@ import { reservationSystem } from './js/reservation.js';
 import { reorderHistory } from './js/reorder-history.js';
 import { billView } from './js/bill-view.js';
 import { loyaltySystem } from './js/loyalty.js';
+import { pushManager } from './js/push-notifications.js';
 
 
 
@@ -336,23 +336,6 @@ class AlphaPosApp {
         } catch (e) {
             console.error("[Payment] Error closing session:", e);
         }
-    }
-
-    // Retry wrapper with exponential backoff
-    async _fetchWithRetry(fn, maxRetries = 2) {
-        return fetchWithRetry(fn, maxRetries);
-    }
-
-    // Generic helper: try Supabase first, fall back to local Python server
-    async _fetchWithFallback({ supabaseFn, localUrl, localOptions = {}, transform }) {
-        return fetchWithFallback({
-            supabase: this.supabase,
-            supabaseKey: this.supabaseKey,
-            supabaseFn,
-            localUrl: this.isLocalServerAvailable ? localUrl : null,
-            localOptions,
-            transform
-        });
     }
 
     _showToast(message, duration = 3000) {
@@ -898,27 +881,27 @@ class AlphaPosApp {
             }
         }
 
-        const { success, data } = await this._fetchWithFallback({
-            supabaseFn: async () => {
-                let query = this.supabase
-                    .from('merchants')
-                    .select('id, name, branch_code, is_table_system_enabled, is_web_ordering_enabled');
+        if (!this.supabase) return null;
 
-                if (this.merchantId) query = query.eq('id', this.merchantId);
-                if (branchCode) query = query.eq('branch_code', branchCode);
+        try {
+            let query = this.supabase
+                .from('merchants')
+                .select('id, name, branch_code, is_table_system_enabled, is_web_ordering_enabled');
 
-                const settingsPromise = query.limit(1).maybeSingle();
-                const timeoutPromise = new Promise((_, reject) => {
-                    setTimeout(() => reject(new Error("Merchant settings lookup timed out")), 5000);
-                });
-                const { data, error } = await Promise.race([settingsPromise, timeoutPromise]);
-                if (error) throw error;
-                return data;
-            },
-            localUrl,
-            transform: pickMerchant
-        });
-        return success ? data : null;
+            if (this.merchantId) query = query.eq('id', this.merchantId);
+            if (branchCode) query = query.eq('branch_code', branchCode);
+
+            const settingsPromise = query.limit(1).maybeSingle();
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error("Merchant settings lookup timed out")), 5000);
+            });
+            const { data, error } = await Promise.race([settingsPromise, timeoutPromise]);
+            if (error) throw error;
+            return pickMerchant(data);
+        } catch (error) {
+            console.warn("Merchant settings unavailable; using enabled defaults:", error);
+            return null;
+        }
     }
 
     showOnboardingPanel(panelId) {
@@ -3958,4 +3941,3 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
     window.app.init();
 });
-

@@ -11,7 +11,7 @@ import re
 import time
 import hmac
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import uuid
 from datetime import datetime, timedelta
 import hashlib
@@ -2809,7 +2809,7 @@ def run():
         raise RuntimeError("API_AUTH_TOKEN is required when ALPHAPOS_ENV=production")
     init_db()
     server_address = ('', PORT)
-    httpd = HTTPServer(server_address, UnifiedRequestHandler)
+    httpd = ThreadingHTTPServer(server_address, UnifiedRequestHandler)
     print(f"==========================================================")
     print(f"      Unified API Backend Server active on port: {PORT}")
     print(f"      Database: {DB_FILE} (SQLite)")

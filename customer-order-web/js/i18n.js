@@ -351,13 +351,13 @@ export const translations = {
                 discountApplied: "ส่วนลด",
 
                 // Push Notifications
-                pushTitle: "保持更新",
-                pushDescription: "当您的订单准备好时通知您 — 即使关闭此标签页",
-                pushEnable: "启用通知",
-                pushLater: "以后再说",
-                pushOrderReady: "您的订单已准备好！",
-                pushOrderConfirmed: "订单已确认",
-                pushPickUp: "请取餐",
+                pushTitle: "ติดตามสถานะ",
+                pushDescription: "รับการแจ้งเตือนเมื่ออาหารของคุณพร้อมเสิร์ฟ — แม้ว่าจะปิดหน้าต่างนี้ไปแล้ว",
+                pushEnable: "เปิดการแจ้งเตือน",
+                pushLater: "ไว้ทีหลัง",
+                pushOrderReady: "อาหารของคุณพร้อมแล้ว!",
+                pushOrderConfirmed: "ยืนยันออเดอร์แล้ว",
+                pushPickUp: "กรุณามารับอาหาร",
             },
             en: {
                 // Onboarding Step 1
@@ -1053,5 +1053,13 @@ export const translations = {
                 phoneNumber: "手机号",
                 discountApplied: "折扣",
 
+                // Push Notifications
+                pushTitle: "保持更新",
+                pushDescription: "当您的订单准备好时通知您 — 即使关闭此标签页",
+                pushEnable: "启用通知",
+                pushLater: "以后再说",
+                pushOrderReady: "您的订单已准备好！",
+                pushOrderConfirmed: "订单已确认",
+                pushPickUp: "请取餐",
             }
         }

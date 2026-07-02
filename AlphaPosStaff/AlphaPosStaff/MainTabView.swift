@@ -15,6 +15,7 @@ struct MainTabView: View {
     @AppStorage("logged_in_employee_name") private var loggedInEmployeeName = ""
     @AppStorage("logged_in_employee_role") private var loggedInEmployeeRole = ""
     @State private var selectedTab = 0
+    @State private var previousTab = 0
     @State private var countTimer: Timer? = nil
     
     // Deep link presentation state
@@ -25,45 +26,40 @@ struct MainTabView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            TabView(selection: $selectedTab) {
-            TablesView()
-                .tabItem {
-                    Label("tables".localized(for: appLanguage), systemImage: "table.furniture")
+            VStack(spacing: 0) {
+                ZStack {
+                    if selectedTab == 0 {
+                        TablesView()
+                            .transition(tabTransition(for: 0))
+                            .zIndex(0)
+                    } else if selectedTab == 1 {
+                        QuickOrderView()
+                            .transition(tabTransition(for: 1))
+                            .zIndex(1)
+                    } else if selectedTab == 2 {
+                        NotificationListView()
+                            .transition(tabTransition(for: 2))
+                            .zIndex(2)
+                    } else if selectedTab == 3 {
+                        NavigationStack {
+                            StaffMessagingView()
+                        }
+                        .transition(tabTransition(for: 3))
+                        .zIndex(3)
+                    } else if selectedTab == 4 {
+                        NavigationStack {
+                            MoreMenuView(loggedInEmployee: $loggedInEmployee)
+                        }
+                        .transition(tabTransition(for: 4))
+                        .zIndex(4)
+                    }
                 }
-                .tag(0)
-            
-            QuickOrderView()
-                .tabItem {
-                    Label("quick_order".localized(for: appLanguage), systemImage: "bag.fill.badge.plus")
-                }
-                .tag(1)
-            
-            NotificationListView()
-                .tabItem {
-                    Label("alerts".localized(for: appLanguage), systemImage: "bell.badge.fill")
-                }
-            .badge(networkService.activeAlertsCount)
-                .tag(2)
-            
-            NavigationStack {
-                StaffMessagingView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                
+                customTabBar()
             }
-            .tabItem {
-                Label("messages".localized(for: appLanguage), systemImage: "bubble.left.and.bubble.right.fill")
-            }
-            .badge(networkService.unreadChatCount)
-            .tag(3)
-            
-            NavigationStack {
-                MoreMenuView(loggedInEmployee: $loggedInEmployee)
-            }
-            .tabItem {
-                Label("more".localized(for: appLanguage), systemImage: "ellipsis.circle.fill")
-            }
-            .tag(4)
-        }
-        .tint(.appAccent)
-        .apColorScheme()
+            .ignoresSafeArea(.all, edges: .bottom)
+            .apColorScheme()
             
             // Offline banner overlay
             if OfflineCache.shared.isOffline {
@@ -91,6 +87,9 @@ struct MainTabView: View {
                 loggedInEmployeeName = ""
                 loggedInEmployeeRole = ""
             }
+        }
+        .onChange(of: selectedTab) { oldTab, newTab in
+            previousTab = oldTab
         }
         .onDisappear {
             countTimer?.invalidate()
@@ -203,5 +202,75 @@ struct MainTabView: View {
                 await networkService.refreshAll()
             }
         }
+    }
+    
+    // MARK: - Custom Animated Tab Bar Helpers
+    
+    private func tabTransition(for tabIndex: Int) -> AnyTransition {
+        let isMovingRight = selectedTab > previousTab
+        return .asymmetric(
+            insertion: .move(edge: isMovingRight ? .trailing : .leading),
+            removal: .move(edge: isMovingRight ? .leading : .trailing)
+        )
+    }
+    
+    private func customTabBar() -> some View {
+        VStack(spacing: 0) {
+            Divider()
+                .background(Color.secondary.opacity(0.15))
+            
+            HStack(spacing: 0) {
+                tabButton(index: 0, title: "tables", systemImage: "table.furniture")
+                tabButton(index: 1, title: "quick_order", systemImage: "bag.fill.badge.plus")
+                tabButton(index: 2, title: "alerts", systemImage: "bell.badge.fill", badgeCount: networkService.activeAlertsCount)
+                tabButton(index: 3, title: "messages", systemImage: "bubble.left.and.bubble.right.fill", badgeCount: networkService.unreadChatCount)
+                tabButton(index: 4, title: "more", systemImage: "ellipsis.circle.fill")
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 10)
+            .padding(.bottom, 10) // Padded naturally, safe area handles extending background
+            .background(.ultraThinMaterial)
+        }
+    }
+    
+    private func tabButton(index: Int, title: String, systemImage: String, badgeCount: Int = 0) -> some View {
+        let isSelected = selectedTab == index
+        return Button {
+            if selectedTab != index {
+                previousTab = selectedTab
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    selectedTab = index
+                }
+                APHaptic.trigger()
+            }
+        } label: {
+            VStack(spacing: 4) {
+                ZStack {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 20, weight: isSelected ? .bold : .medium))
+                        .foregroundColor(isSelected ? .appAccent : .secondary.opacity(0.8))
+                        .scaleEffect(isSelected ? 1.15 : 1.0)
+                        .frame(width: 28, height: 28)
+                    
+                    if badgeCount > 0 {
+                        Text("\(badgeCount)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.appRose)
+                            .clipShape(Capsule())
+                            .offset(x: 12, y: -10)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                
+                Text(title.localized(for: appLanguage))
+                    .font(.system(size: 10, weight: isSelected ? .bold : .medium))
+                    .foregroundColor(isSelected ? .appAccent : .secondary.opacity(0.8))
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
     }
 }
