@@ -1981,6 +1981,8 @@ class AlphaPosApp {
                     `;
                 }
 
+                const qtyBadgeHtml = inCartQty > 0 ? `<div class="card-qty-badge">${inCartQty}</div>` : '';
+
                 element.innerHTML = `
                     <div class="list-item-content">
                         <div class="list-item-category">${escapeHtml(itemSubcategory)}</div>
@@ -1999,6 +2001,7 @@ class AlphaPosApp {
                     </div>
                     <div class="list-item-img-container" onclick="event.stopPropagation()">
                         ${mediaHtml}
+                        ${qtyBadgeHtml}
                     </div>
                 `;
             }
