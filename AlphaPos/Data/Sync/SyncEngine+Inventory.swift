@@ -102,7 +102,7 @@ extension SyncEngine {
 
             for remote in remoteLots {
                 guard let idStr = remote["id"] as? String,
-                      let id = UUID(uuidString: idStr) else { continue }
+                      UUID(uuidString: idStr) != nil else { continue }
 
                 let isDeletedRemote = remoteBool(remote["is_deleted"])
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)

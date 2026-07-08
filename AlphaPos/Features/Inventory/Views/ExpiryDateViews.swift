@@ -183,6 +183,7 @@ struct ExpiryAlertDashboard: View {
             .padding(.horizontal, 14)
             .padding(.bottom, 6)
             .onAppear { loadAlerts() }
+            .onChange(of: activeBranch) { _, _ in loadAlerts() }
             .sheet(isPresented: $showingFullList) {
                 ExpiryAlertListSheet(alerts: alerts)
             }

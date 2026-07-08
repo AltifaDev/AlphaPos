@@ -91,6 +91,10 @@ extension SyncEngine {
     // MARK: - Sync Orchestration
 
     func syncAll(modelContext: ModelContext) async {
+        await MainActor.run {
+            self.notifyReadyOrders(modelContext)
+        }
+
         if let activeSyncTask {
             await activeSyncTask.value
             return
@@ -98,6 +102,9 @@ extension SyncEngine {
         let task = Task { [weak self] in
             guard let self else { return }
             await self.performSync(modelContext: modelContext)
+            await MainActor.run {
+                self.notifyReadyOrders(modelContext)
+            }
         }
         activeSyncTask = task
         await task.value
@@ -141,6 +148,7 @@ extension SyncEngine {
         }
 
         await MainActor.run { self.syncStatus = .syncing }
+        await NetworkTimeService.shared.syncWithServer()
         #if DEBUG
         print("SyncEngine: Initiating data synchronization...")
         #endif
@@ -238,6 +246,7 @@ extension SyncEngine {
             group.addTask { await self.pullUsersFromSupabase(modelContext) }
             group.addTask { await self.pullRolesFromSupabase(modelContext) }
             group.addTask { await self.pullReceiptTemplatesFromSupabase(modelContext) }
+            group.addTask { await self.pullMerchantSettings() }
         }
 
         await checkForDelayedOrders(modelContext: modelContext)
@@ -316,6 +325,23 @@ extension SyncEngine {
         } catch {
             encounteredSyncError = true
             return true
+        }
+    }
+
+    func notifyReadyOrders(_ modelContext: ModelContext) {
+        let descriptor = FetchDescriptor<Order>(
+            predicate: #Predicate<Order> { $0.status == "ready" && !$0.isDeleted }
+        )
+        if let readyOrders = try? modelContext.fetch(descriptor) {
+            for order in readyOrders {
+                if !notifiedReadyOrderIds.contains(order.id) {
+                    notifiedReadyOrderIds.insert(order.id)
+                    alertOrderReady(
+                        orderNumber: order.orderNumber,
+                        tableNumber: order.tableSession?.table?.tableNumber
+                    )
+                }
+            }
         }
     }
 }

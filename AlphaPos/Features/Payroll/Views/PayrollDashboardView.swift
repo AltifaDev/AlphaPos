@@ -6,27 +6,40 @@ struct PayrollDashboardView: View {
     @Query(sort: \Employee.firstName) private var employees: [Employee]
     @Query(sort: \Role.name) private var allRoles: [Role]
     @Query(sort: \Timecard.clockIn, order: .reverse) private var allTimecards: [Timecard]
-    
+
     // Payroll calculation state
     @State private var payPeriodStart = Date().addingTimeInterval(-2592000) // 30 days ago
     @State private var payPeriodEnd = Date()
     @State private var calculatedSlips: [LocalPayrollSlip] = []
     @State private var isCalculating = false
-    
+
     // Tab and sheets states
     @AppStorage("app_language") private var appLanguage = "en"
-    @State private var selectedTab = 0 // 0: Timecards, 1: Shifts, 2: Staff
-    
+    @State private var selectedTab = 0 // 0: Timecards, 1: Shifts, 2: Staff, 3: Leave
+
+    // OT (Overtime) Rate Configuration
+    @AppStorage("default_ot_multiplier") private var defaultOTMultiplier = 1.5
+    @AppStorage("ot_threshold_hours_per_day") private var otThresholdHoursPerDay = 8.0
+    // L-5: Social Security & Tax Withholding settings
+    @AppStorage("ss_rate_percent") private var ssRatePercent = 5.0
+    @AppStorage("ss_max_monthly_baht") private var ssMaxMonthlyBaht = 750.0
+    @AppStorage("ss_min_wage_baht") private var ssMinWageBaht = 1650.0
+    @AppStorage("enable_tax_withholding") private var enableTaxWithholding = true
+    @AppStorage("tax_allowance_baht") private var taxAllowanceBaht = 60000.0
+
+
     @State private var showingEmployeeSheet = false
     @State private var editingEmployee: Employee? = nil
-    
+    @State private var showingOTSettings = false
+
+
     @State private var showingShiftSheet = false
     @State private var showingCalendarScheduler = false
     @State private var editingShift: EmployeeShift? = nil
-    
+
     @State private var showingTimecardSheet = false
     @State private var editingTimecard: Timecard? = nil
-    
+
     // Form States: Employee
     @State private var empFirstName = ""
     @State private var empLastName = ""
@@ -57,7 +70,7 @@ struct PayrollDashboardView: View {
     @State private var empRoleId: UUID? = nil
     @State private var faceEmbeddingData: Data? = nil
     @State private var faceRegisteredAt: Date? = nil
-    
+
     // Form States: Shift
     @State private var shiftEmployeeId: UUID? = nil
     @State private var selectedEmployeeIds: Set<UUID> = []
@@ -65,7 +78,7 @@ struct PayrollDashboardView: View {
     @State private var shiftEnd = Date().addingTimeInterval(28800) // +8 hours
     @State private var shiftRole = "Cashier"
     @State private var shiftNotes = ""
-    
+
     // Form States: Timecard
     @State private var tcEmployeeId: UUID? = nil
     @State private var tcClockIn = Date().addingTimeInterval(-28800)
@@ -78,7 +91,7 @@ struct PayrollDashboardView: View {
     var body: some View {
         ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 HStack(spacing: 0) {
                     // LEFT PANEL: Dynamic tab selections
                     VStack(alignment: .leading, spacing: 0) {
@@ -86,13 +99,14 @@ struct PayrollDashboardView: View {
                             Text("timecard_log".localized(for: appLanguage)).tag(0)
                             Text("shift_planner".localized(for: appLanguage)).tag(1)
                             Text("staff_registry".localized(for: appLanguage)).tag(2)
+                            Text("leave_management_tab".t).tag(3)
                         }
                         .pickerStyle(SegmentedPickerStyle())
                         .padding()
                         .background(Color.appSurface)
-                        
+
                         Divider().background(Color.appDivider)
-                        
+
                         ScrollView {
                             VStack(alignment: .leading, spacing: 24) {
                                 if selectedTab == 0 {
@@ -100,14 +114,19 @@ struct PayrollDashboardView: View {
                                 } else if selectedTab == 1 {
                                     shiftsTab
                                 } else {
-                                    staffTab
+                                    if selectedTab == 2 {
+                                        staffTab
+                                    } else {
+                                        // M-5: Leave Management tab
+                                        LeaveManagementView()
+                                    }
                                 }
                             }
                             .padding()
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    
+
                     // RIGHT PANEL: Payroll Calculator Engine
                     VStack(spacing: 0) {
                         Text("payroll_engine_title".t)
@@ -117,22 +136,22 @@ struct PayrollDashboardView: View {
                             .padding()
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(Color.appSurfaceHigh)
-                        
+
                         VStack(alignment: .leading, spacing: 20) {
                             Text("payroll_period_header".t)
                                 .font(.caption)
                                 .fontWeight(.bold)
                                 .foregroundColor(.appAccent)
                                 .tracking(1.0)
-                            
+
                             VStack(spacing: 12) {
                                 DatePicker("Period Start", selection: $payPeriodStart, displayedComponents: .date)
                                     .font(.subheadline)
                                     .foregroundColor(.textPrimary)
-                                
+
                                 Divider()
                                     .background(Color.appDivider)
-                                
+
                                 DatePicker("Period End", selection: $payPeriodEnd, displayedComponents: .date)
                                     .font(.subheadline)
                                     .foregroundColor(.textPrimary)
@@ -144,7 +163,7 @@ struct PayrollDashboardView: View {
                                 RoundedRectangle(cornerRadius: APRadius.md)
                                     .stroke(Color.appBorderSubtle, lineWidth: 1)
                             )
-                            
+
                             Button(action: calculatePayroll) {
                                 if isCalculating {
                                     ProgressView()
@@ -158,10 +177,10 @@ struct PayrollDashboardView: View {
                         }
                         .padding()
                         .background(Color.appSurfaceHigh.opacity(0.3))
-                        
+
                         Divider()
                             .background(Color.appDivider)
-                        
+
                         // Calculation Outputs
                         if isCalculating {
                             VStack(spacing: 16) {
@@ -187,7 +206,7 @@ struct PayrollDashboardView: View {
                         } else {
                             VStack(spacing: 0) {
                                 payrollSummaryCard
-                                
+
                                 ScrollView {
                                     VStack(spacing: 12) {
                                         ForEach(calculatedSlips) { slip in
@@ -202,7 +221,7 @@ struct PayrollDashboardView: View {
                                                             .foregroundColor(.textSecondary)
                                                     }
                                                     Spacer()
-                                                    
+
                                                     VStack(alignment: .trailing, spacing: 4) {
                                                         Text("net_pay_label".t)
                                                             .font(.system(size: 9, weight: .bold))
@@ -214,17 +233,17 @@ struct PayrollDashboardView: View {
                                                             .foregroundColor(.appTeal)
                                                     }
                                                 }
-                                                
+
                                                 Divider()
                                                     .background(Color.appDivider)
-                                                
+
                                                 // Detailed columns
                                                 HStack(alignment: .center) {
                                                     VStack(alignment: .leading, spacing: 2) {
                                                         Text("hours_worked_label".t)
                                                             .font(.system(size: 8, weight: .bold))
                                                             .foregroundColor(.textSecondary)
-                                                        Text("\(slip.hoursWorked, specifier: "%.1f") hrs")
+                                                        Text(String(format: "%.1f", slip.hoursWorked) + " hrs")
                                                             .font(.caption)
                                                             .fontWeight(.semibold)
                                                             .foregroundColor(.textPrimary)
@@ -234,7 +253,7 @@ struct PayrollDashboardView: View {
                                                         Text("ot_pay_label".t)
                                                             .font(.system(size: 8, weight: .bold))
                                                             .foregroundColor(.textSecondary)
-                                                        Text("\(slip.otPay, specifier: "%.1f") ฿")
+                                                        Text(String(format: "%.1f", slip.otPay) + " ฿")
                                                             .font(.caption)
                                                             .fontWeight(.semibold)
                                                             .foregroundColor(.textPrimary)
@@ -244,11 +263,12 @@ struct PayrollDashboardView: View {
                                                         Text("ssf_deduction_label".t)
                                                             .font(.system(size: 8, weight: .bold))
                                                             .foregroundColor(.textSecondary)
-                                                        Text("-\(slip.ssfDeduction, specifier: "%.1f") ฿")
+                                                        Text("-" + String(format: "%.1f", slip.ssfDeduction) + " ฿")
                                                             .font(.caption)
                                                             .fontWeight(.semibold)
                                                             .foregroundColor(.appRose)
                                                     }
+
                                                 }
                                             }
                                             .padding()
@@ -273,6 +293,19 @@ struct PayrollDashboardView: View {
             }
             .navigationTitle("payroll_shifts_title".t)
             .apNavBar()
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: {
+                        APHaptic.trigger()
+                        showingOTSettings = true
+                    }) {
+                        Label("payroll_ot_settings_btn".t, systemImage: "clock.arrow.circlepath")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingOTSettings) {
+                otSettingsSheet
+            }
             .sheet(isPresented: $showingEmployeeSheet) {
                 employeeFormSheet
             }
@@ -286,9 +319,9 @@ struct PayrollDashboardView: View {
                 ShiftSchedulerCalendarView()
             }
     }
-    
+
     // MARK: - Tabs Subviews
-    
+
     private var timecardsTab: some View {
         VStack(alignment: .leading, spacing: 20) {
             // Section 1: Pending Audits
@@ -303,7 +336,7 @@ struct PayrollDashboardView: View {
                 }
                 .font(.headline)
                 .fontWeight(.bold)
-                
+
                 if pendingAudits.isEmpty {
                     Text("no_pending_biometric_audits".t)
                         .font(.subheadline)
@@ -329,7 +362,7 @@ struct PayrollDashboardView: View {
                 RoundedRectangle(cornerRadius: APRadius.lg)
                     .stroke(Color.appBorderSubtle, lineWidth: 1)
             )
-            
+
             // Section 2: Recent Logs & Corrections
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -349,7 +382,7 @@ struct PayrollDashboardView: View {
                             .clipShape(Capsule())
                     }
                 }
-                
+
                 if allTimecards.isEmpty {
                     Text("no_clockin_records".t)
                         .font(.subheadline)
@@ -378,13 +411,13 @@ struct PayrollDashboardView: View {
                                 .foregroundColor(.textSecondary)
                             }
                             Spacer()
-                            
+
                             HStack(spacing: 12) {
                                 APBadge(
                                     text: card.status.uppercased(),
                                     color: card.status == "approved" ? .appTeal : (card.status == "rejected" ? .appRose : .appAmber)
                                 )
-                                
+
                                 Button(action: { editTimecardAction(card) }) {
                                     Image(systemName: "pencil.circle.fill")
                                         .font(.title3)
@@ -405,7 +438,7 @@ struct PayrollDashboardView: View {
             }
         }
     }
-    
+
     private var shiftsTab: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -425,7 +458,7 @@ struct PayrollDashboardView: View {
                         .clipShape(Capsule())
                 }
             }
-            
+
             // Calendar Preview Card
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 16) {
@@ -435,7 +468,7 @@ struct PayrollDashboardView: View {
                         .padding()
                         .background(Color.appAccent.opacity(0.1))
                         .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
-                    
+
                     VStack(alignment: .leading, spacing: 4) {
                         Text("weekly_calendar_view".localized(for: appLanguage))
                             .font(.headline)
@@ -445,9 +478,9 @@ struct PayrollDashboardView: View {
                             .font(.caption)
                             .foregroundColor(.textSecondary)
                     }
-                    
+
                     Spacer()
-                    
+
                     Button(action: {
                         APHaptic.trigger()
                         showingCalendarScheduler = true
@@ -475,7 +508,7 @@ struct PayrollDashboardView: View {
                 )
             }
             .padding(.bottom, 8)
-            
+
             let shifts = employees.flatMap { $0.shifts }
             if shifts.isEmpty {
                 Text("no_shifts_scheduled".t)
@@ -500,7 +533,7 @@ struct PayrollDashboardView: View {
                                 .foregroundColor(.textSecondary)
                         }
                         Spacer()
-                        
+
                         VStack(alignment: .trailing, spacing: 4) {
                             Text(shift.scheduledStart, style: .date)
                                 .font(.subheadline)
@@ -509,7 +542,7 @@ struct PayrollDashboardView: View {
                                 .font(.caption)
                                 .foregroundColor(.textSecondary)
                         }
-                        
+
                         Button(action: { editShiftAction(shift) }) {
                             Image(systemName: "pencil.circle.fill")
                                 .font(.title3)
@@ -529,7 +562,7 @@ struct PayrollDashboardView: View {
             }
         }
     }
-    
+
     private var staffTab: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -549,7 +582,7 @@ struct PayrollDashboardView: View {
                         .clipShape(Capsule())
                 }
             }
-            
+
             if employees.isEmpty {
                 Text("no_employees_registered".t)
                     .foregroundColor(.textSecondary)
@@ -566,7 +599,7 @@ struct PayrollDashboardView: View {
                                 .font(.subheadline).fontWeight(.bold)
                                 .foregroundColor(.appAccent)
                         }
-                        
+
                         VStack(alignment: .leading, spacing: 4) {
                             Text("\(emp.firstName) \(emp.lastName)")
                                 .font(.subheadline).fontWeight(.bold)
@@ -581,7 +614,7 @@ struct PayrollDashboardView: View {
                             }
                         }
                         Spacer()
-                        
+
                         Button(action: { editEmployeeAction(emp) }) {
                             Image(systemName: "pencil.circle.fill")
                                 .font(.title3)
@@ -613,7 +646,7 @@ struct PayrollDashboardView: View {
                         .foregroundColor(.textSecondary)
                 }
                 Spacer()
-                
+
                 // Match score
                 if let confidence = timecard.clockInFaceConfidence {
                     Text("Match: \(confidence, specifier: "%.1f")%")
@@ -622,7 +655,7 @@ struct PayrollDashboardView: View {
                         .foregroundColor(.appRose)
                 }
             }
-            
+
             // Mock Selfie Box
             HStack(spacing: 12) {
                 VStack {
@@ -640,10 +673,10 @@ struct PayrollDashboardView: View {
                     RoundedRectangle(cornerRadius: APRadius.sm)
                         .stroke(Color.appBorderSubtle, lineWidth: 1)
                 )
-                
+
                 Image(systemName: "arrow.left.and.right")
                     .foregroundColor(.textSecondary)
-                
+
                 VStack {
                     Image(systemName: "person.crop.square")
                         .font(.system(size: 32))
@@ -659,9 +692,9 @@ struct PayrollDashboardView: View {
                     RoundedRectangle(cornerRadius: APRadius.sm)
                         .stroke(Color.appBorderSubtle, lineWidth: 1)
                 )
-                
+
                 Spacer()
-                
+
                 // Verify action buttons
                 VStack(spacing: 8) {
                     Button(action: { approveTimecard(timecard) }) {
@@ -675,7 +708,7 @@ struct PayrollDashboardView: View {
                             .cornerRadius(APRadius.sm)
                     }
                     .buttonStyle(PlainButtonStyle())
-                    
+
                     Button(action: { rejectTimecard(timecard) }) {
                         Text("reject_btn_label".t)
                             .font(.caption)
@@ -702,15 +735,15 @@ struct PayrollDashboardView: View {
                 .stroke(Color.appBorderSubtle, lineWidth: 1)
         )
     }
-    
+
     // MARK: - Right Panel summary card
-    
+
     private var payrollSummaryCard: some View {
         let totalWages = calculatedSlips.map { $0.basePay + $0.otPay }.reduce(0, +)
         let totalDeductions = calculatedSlips.map { $0.ssfDeduction }.reduce(0, +)
         let totalNetPay = calculatedSlips.map { $0.netPay }.reduce(0, +)
         let totalHours = calculatedSlips.map { $0.hoursWorked }.reduce(0, +)
-        
+
         return VStack(spacing: 12) {
             HStack {
                 Text("total_payroll".localized(for: appLanguage).uppercased())
@@ -723,14 +756,14 @@ struct PayrollDashboardView: View {
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
             }
-            
+
             HStack(alignment: .firstTextBaseline) {
                 Text("\(totalNetPay, specifier: "%.2f") ฿")
                     .font(.title2)
                     .fontWeight(.black)
                     .foregroundColor(.appTeal)
                 Spacer()
-                
+
                 Button(action: exportReportPDF) {
                     Label("export_report".localized(for: appLanguage), systemImage: "square.and.arrow.up")
                         .font(.caption)
@@ -742,9 +775,9 @@ struct PayrollDashboardView: View {
                         .clipShape(Capsule())
                 }
             }
-            
+
             Divider().background(Color.appDivider)
-            
+
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("total_hours".localized(for: appLanguage))
@@ -789,28 +822,28 @@ struct PayrollDashboardView: View {
     }
 
     // MARK: - Actions & Calculations
-    
+
     private func approveTimecard(_ timecard: Timecard) {
         timecard.status = "approved"
         timecard.updatedAt = Date()
         timecard.isSynced = false
         modelContext.saveWithLogging(label: #function)
     }
-    
+
     private func rejectTimecard(_ timecard: Timecard) {
         timecard.status = "rejected"
         timecard.updatedAt = Date()
         timecard.isSynced = false
         modelContext.saveWithLogging(label: #function)
     }
-    
+
     private func calculatePayroll() {
         isCalculating = true
         calculatedSlips = []
-        
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             var slips: [LocalPayrollSlip] = []
-            
+
             for emp in employees {
                 var hoursWorked = 0.0
                 var otHours = 0.0
@@ -818,7 +851,7 @@ struct PayrollDashboardView: View {
                 var otPay = 0.0
                 var ssfDeduction = 0.0
                 var netPay = 0.0
-                
+
                 // Fetch approved timecards inside range
                 let empCards = allTimecards.filter { card in
                     card.employee?.id == emp.id &&
@@ -826,7 +859,7 @@ struct PayrollDashboardView: View {
                     card.clockIn >= payPeriodStart &&
                     (card.clockOut ?? Date()) <= payPeriodEnd
                 }
-                
+
                 // Calculate hours worked
                 for card in empCards {
                     if let clockOut = card.clockOut {
@@ -836,27 +869,27 @@ struct PayrollDashboardView: View {
                         otHours += Double(card.overtimeMinutes) / 60.0
                     }
                 }
-                
+
                 if emp.employmentType == "hourly" {
                     basePay = hoursWorked * emp.payRate
-                    otPay = otHours * (emp.payRate * 1.5)
+                    otPay = otHours * (emp.payRate * defaultOTMultiplier)
                 } else if emp.employmentType == "daily" {
                     let calendar = Calendar.current
                     let uniqueDays = Set(empCards.map { calendar.startOfDay(for: $0.clockIn) })
                     let daysWorked = Double(uniqueDays.count)
                     basePay = daysWorked * emp.payRate
-                    otPay = otHours * ((emp.payRate / 8.0) * 1.5)
+                    otPay = otHours * ((emp.payRate / 8.0) * defaultOTMultiplier)
                 } else {
                     basePay = emp.payRate
-                    otPay = otHours * ((emp.payRate / 240.0) * 1.5)
+                    otPay = otHours * ((emp.payRate / 240.0) * defaultOTMultiplier)
                 }
-                
+
                 // Social Security Fund Cap (Thai Regulations: 5%, max 750 THB)
                 let rawSsf = basePay * 0.05
                 ssfDeduction = min(750.00, rawSsf)
-                
+
                 netPay = basePay + otPay - ssfDeduction
-                
+
                 let slip = LocalPayrollSlip(
                     employee: emp,
                     hoursWorked: hoursWorked,
@@ -867,57 +900,57 @@ struct PayrollDashboardView: View {
                 )
                 slips.append(slip)
             }
-            
+
             self.calculatedSlips = slips
             self.isCalculating = false
             APHaptic.trigger()
         }
     }
-    
+
     private func updateFullAddress() {
         guard let pId = selectedProvinceId,
               let province = ThailandAddressManager.shared.provinces.first(where: { $0.id == pId }) else {
             empAddress = addressDetail
             return
         }
-        
+
         let pName = province.displayName(for: appLanguage)
         var fullAddress = addressDetail
-        
+
         if let dId = selectedDistrictId,
            let district = province.districts.first(where: { $0.id == dId }) {
             let dName = district.displayName(for: appLanguage)
             let isBangkok = (pId == 1)
-            
+
             if isBangkok {
                 fullAddress += " " + (appLanguage == "th" ? "เขต" : "") + dName
             } else {
                 fullAddress += " " + (appLanguage == "th" ? "อ." : "Amphur ") + dName
             }
-            
+
             if let sId = selectedSubDistrictId,
                let sub = district.subDistricts.first(where: { $0.id == sId }) {
                 let sName = sub.displayName(for: appLanguage)
-                
+
                 if isBangkok {
                     fullAddress += " " + (appLanguage == "th" ? "แขวง" : "") + sName
                 } else {
                     fullAddress += " " + (appLanguage == "th" ? "ต." : "Tambon ") + sName
                 }
-                
+
                 fullAddress += " " + pName
-                
+
                 if !postalCode.isEmpty {
                     fullAddress += " " + postalCode
                 }
             }
         }
-        
+
         empAddress = fullAddress
     }
-    
+
     // MARK: - CRUD Form Actions
-    
+
     private func editEmployeeAction(_ employee: Employee) {
         editingEmployee = employee
         empFirstName = employee.firstName
@@ -928,7 +961,7 @@ struct PayrollDashboardView: View {
         empPayRate = employee.payRate
         empBankName = employee.bankName ?? ""
         empBankAccount = employee.bankAccountNumber ?? ""
-        
+
         empEmail = employee.email ?? ""
         empAddress = employee.address ?? ""
         selectedProvinceId = nil
@@ -939,7 +972,7 @@ struct PayrollDashboardView: View {
         empEmergencyContactName = employee.emergencyContactName ?? ""
         empEmergencyContactPhone = employee.emergencyContactPhone ?? ""
         empJoinedAt = employee.joinedAt
-        
+
         if let res = employee.resignedAt {
             hasResigned = true
             empResignedAt = res
@@ -947,7 +980,7 @@ struct PayrollDashboardView: View {
             hasResigned = false
             empResignedAt = Date()
         }
-        
+
         if let dob = employee.dateOfBirth {
             specifyDOB = true
             empDateOfBirth = dob
@@ -955,7 +988,7 @@ struct PayrollDashboardView: View {
             specifyDOB = false
             empDateOfBirth = Calendar.current.date(byAdding: .year, value: -25, to: Date()) ?? Date()
         }
-        
+
         if let user = employee.user {
             enableLoginAccess = true
             empUsername = user.username
@@ -969,13 +1002,13 @@ struct PayrollDashboardView: View {
             empPin = ""
             empRoleId = nil
         }
-        
+
         faceEmbeddingData = employee.faceEmbeddingData
         faceRegisteredAt = employee.faceRegisteredAt
-        
+
         showingEmployeeSheet = true
     }
-    
+
     private func addEmployeeAction() {
         editingEmployee = nil
         empFirstName = ""
@@ -986,7 +1019,7 @@ struct PayrollDashboardView: View {
         empPayRate = 0.0
         empBankName = ""
         empBankAccount = ""
-        
+
         empEmail = ""
         empAddress = ""
         selectedProvinceId = nil
@@ -1008,14 +1041,14 @@ struct PayrollDashboardView: View {
         empRoleId = nil
         faceEmbeddingData = nil
         faceRegisteredAt = nil
-        
+
         showingEmployeeSheet = true
     }
-    
+
     private func saveEmployee() {
         let selectedRole = allRoles.first(where: { $0.id == empRoleId })
         let targetEmp: Employee
-        
+
         if let emp = editingEmployee {
             emp.firstName = empFirstName
             emp.lastName = empLastName
@@ -1025,7 +1058,7 @@ struct PayrollDashboardView: View {
             emp.payRate = empPayRate
             emp.bankName = empBankName.isEmpty ? nil : empBankName
             emp.bankAccountNumber = empBankAccount.isEmpty ? nil : empBankAccount
-            
+
             emp.email = empEmail.isEmpty ? nil : empEmail
             emp.address = empAddress.isEmpty ? nil : empAddress
             emp.emergencyContactName = empEmergencyContactName.isEmpty ? nil : empEmergencyContactName
@@ -1033,10 +1066,10 @@ struct PayrollDashboardView: View {
             emp.joinedAt = empJoinedAt
             emp.resignedAt = hasResigned ? empResignedAt : nil
             emp.dateOfBirth = specifyDOB ? empDateOfBirth : nil
-            
+
             emp.faceEmbeddingData = faceEmbeddingData
             emp.faceRegisteredAt = faceEmbeddingData == nil ? nil : (faceRegisteredAt ?? Date())
-            
+
             emp.updatedAt = Date()
             emp.isSynced = false
             targetEmp = emp
@@ -1063,10 +1096,10 @@ struct PayrollDashboardView: View {
             modelContext.insert(newEmp)
             targetEmp = newEmp
         }
-        
+
         if enableLoginAccess {
             let userEmail = empEmail.isEmpty ? nil : empEmail
-            
+
             if let user = targetEmp.user {
                 user.username = empUsername.lowercased()
                 user.email = userEmail
@@ -1096,21 +1129,22 @@ struct PayrollDashboardView: View {
             }
         } else {
             if let user = targetEmp.user {
-                modelContext.delete(user)
-                targetEmp.user = nil
+                user.isDeleted = true
+                user.isSynced = false
+                user.updatedAt = Date()
             }
         }
-        
+
         modelContext.saveWithLogging(label: #function)
         showingEmployeeSheet = false
         editingEmployee = nil
-        
+
         // Trigger background sync task to upload the new/updated employee
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
     }
-    
+
     private func editShiftAction(_ shift: EmployeeShift) {
         editingShift = shift
         shiftEmployeeId = shift.employee?.id
@@ -1124,7 +1158,7 @@ struct PayrollDashboardView: View {
         shiftNotes = shift.notes ?? ""
         showingShiftSheet = true
     }
-    
+
     private func addShiftAction() {
         editingShift = nil
         shiftEmployeeId = employees.first?.id
@@ -1138,7 +1172,7 @@ struct PayrollDashboardView: View {
         shiftNotes = ""
         showingShiftSheet = true
     }
-    
+
     private func saveShift() {
         if let sh = editingShift {
             guard let empId = shiftEmployeeId,
@@ -1168,7 +1202,7 @@ struct PayrollDashboardView: View {
         showingShiftSheet = false
         editingShift = nil
     }
-    
+
     private func editTimecardAction(_ timecard: Timecard) {
         editingTimecard = timecard
         tcEmployeeId = timecard.employee?.id
@@ -1180,7 +1214,7 @@ struct PayrollDashboardView: View {
         tcNotes = timecard.notes ?? ""
         showingTimecardSheet = true
     }
-    
+
     private func addTimecardAction() {
         editingTimecard = nil
         tcEmployeeId = employees.first?.id
@@ -1192,11 +1226,11 @@ struct PayrollDashboardView: View {
         tcNotes = ""
         showingTimecardSheet = true
     }
-    
+
     private func saveTimecard() {
         guard let empId = tcEmployeeId,
               let emp = employees.first(where: { $0.id == empId }) else { return }
-              
+
         if let tc = editingTimecard {
             tc.employee = emp
             tc.clockIn = tcClockIn
@@ -1223,22 +1257,22 @@ struct PayrollDashboardView: View {
         showingTimecardSheet = false
         editingTimecard = nil
     }
-    
+
     // MARK: - PDF Exporter Core using SwiftUI ImageRenderer
-    
+
     private func exportReportPDF() {
         let renderer = ImageRenderer(content: PayrollReportView(slips: calculatedSlips, start: payPeriodStart, end: payPeriodEnd))
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("Payroll_Report_\(Date().timeIntervalSince1970).pdf")
-        
+
         renderer.render { size, context in
             var box = CGRect(origin: .zero, size: size)
             guard let pdfContext = CGContext(url as CFURL, mediaBox: &box, nil) else { return }
-            
+
             pdfContext.beginPDFPage(nil)
             context(pdfContext)
             pdfContext.endPDFPage()
             pdfContext.closePDF()
-            
+
             // Native Share sheet trigger
             DispatchQueue.main.async {
                 let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
@@ -1254,9 +1288,113 @@ struct PayrollDashboardView: View {
             }
         }
     }
-    
+
+    // MARK: - OT Settings Sheet
+
+    private var otSettingsSheet: some View {
+        NavigationStack {
+            Form {
+                Section(header: Text("payroll_ot_multiplier_lbl".t)) {
+                    HStack {
+                        Text("payroll_ot_multiplier_lbl".t)
+                            .foregroundColor(.textPrimary)
+                        Spacer()
+                        Text(String(format: "%.2fx", defaultOTMultiplier))
+                            .fontWeight(.bold)
+                            .foregroundColor(.appAccent)
+                    }
+                    Stepper(
+                        value: $defaultOTMultiplier,
+                        in: 1.0...3.0,
+                        step: 0.25
+                    ) {
+                        Text(String(format: "%.2fx", defaultOTMultiplier))
+                            .foregroundColor(.textSecondary)
+                    }
+                    Text("payroll_ot_multiplier_hint".t)
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                }
+
+                Section(header: Text("payroll_ot_threshold_lbl".t)) {
+                    HStack {
+                        Text("payroll_ot_threshold_lbl".t)
+                            .foregroundColor(.textPrimary)
+                        Spacer()
+                        Text("\(Int(otThresholdHoursPerDay)) hrs")
+                            .fontWeight(.bold)
+                            .foregroundColor(.appAccent)
+                    }
+                    Stepper(
+                        value: $otThresholdHoursPerDay,
+                        in: 6.0...10.0,
+                        step: 1.0
+                    ) {
+                        Text("\(Int(otThresholdHoursPerDay)) hrs/day")
+                            .foregroundColor(.textSecondary)
+                    }
+                }
+            }
+
+            // L-5: Social Security Section
+            Section(header: Text("payroll_ss_settings_title".t)) {
+                HStack {
+                    Text("payroll_ss_rate_lbl".t).foregroundColor(.textPrimary)
+                    Spacer()
+                    Text(String(format: "%.1f%%", ssRatePercent)).fontWeight(.bold).foregroundColor(.appAccent)
+                }
+                Stepper(value: $ssRatePercent, in: 0.0...10.0, step: 0.5) {
+                    Text(String(format: "%.1f%%", ssRatePercent)).foregroundColor(.textSecondary)
+                }
+                HStack {
+                    Text("payroll_ss_cap_lbl".t).foregroundColor(.textPrimary)
+                    Spacer()
+                    TextField("750", value: $ssMaxMonthlyBaht, format: .number)
+                        .keyboardType(.numberPad).frame(width: 80)
+                        .multilineTextAlignment(.trailing).foregroundColor(.appAccent)
+                    Text("฿/เดือน").font(.caption).foregroundColor(.textSecondary)
+                }
+                HStack {
+                    Text("payroll_ss_min_wage_lbl".t).foregroundColor(.textPrimary)
+                    Spacer()
+                    TextField("1650", value: $ssMinWageBaht, format: .number)
+                        .keyboardType(.numberPad).frame(width: 80)
+                        .multilineTextAlignment(.trailing).foregroundColor(.appAccent)
+                    Text("฿").font(.caption).foregroundColor(.textSecondary)
+                }
+                Text("payroll_ss_hint".t).font(.caption).foregroundColor(.textSecondary)
+            }
+
+            // L-5: Tax Withholding Section
+            Section(header: Text("payroll_tax_settings_title".t)) {
+                Toggle("payroll_tax_enable_toggle".t, isOn: $enableTaxWithholding)
+                if enableTaxWithholding {
+                    HStack {
+                        Text("payroll_tax_allowance_lbl".t).foregroundColor(.textPrimary)
+                        Spacer()
+                        TextField("60000", value: $taxAllowanceBaht, format: .number)
+                            .keyboardType(.numberPad).frame(width: 90)
+                            .multilineTextAlignment(.trailing).foregroundColor(.appAccent)
+                        Text("฿/ปี").font(.caption).foregroundColor(.textSecondary)
+                    }
+                    Text("payroll_tax_hint".t).font(.caption).foregroundColor(.textSecondary)
+                }
+            }
+
+            .navigationTitle("payroll_ot_settings_btn".t)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("save_btn_label".t) {
+                        APHaptic.trigger()
+                        showingOTSettings = false
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - CRUD Form Sheets Views
-    
+
     private var employeeFormSheet: some View {
         NavigationStack {
             Form {
@@ -1271,22 +1409,22 @@ struct PayrollDashboardView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                 }
-                
+
                 Section(header: Text("additional_details_hr_header".t)) {
                     Toggle("Specify Date of Birth", isOn: $specifyDOB)
                     if specifyDOB {
                         DatePicker("Date of Birth", selection: $empDateOfBirth, displayedComponents: .date)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 8) {
                         Text("home_address_header".t)
                             .font(.caption2)
                             .fontWeight(.bold)
                             .foregroundColor(.appAccent)
-                        
+
                         TextField("House No., Street, Soi, Road", text: $addressDetail)
                             .onChange(of: addressDetail) { _, _ in updateFullAddress() }
-                        
+
                         HStack(spacing: 12) {
                             Picker("Province", selection: $selectedProvinceId) {
                                 Text("select_province_placeholder".t).tag(nil as Int?)
@@ -1300,9 +1438,9 @@ struct PayrollDashboardView: View {
                                 postalCode = ""
                                 updateFullAddress()
                             }
-                            
+
                             let availableDistricts = ThailandAddressManager.shared.provinces.first(where: { $0.id == selectedProvinceId })?.districts ?? []
-                            
+
                             Picker("District", selection: $selectedDistrictId) {
                                 Text("select_district_placeholder".t).tag(nil as Int?)
                                 ForEach(availableDistricts) { dist in
@@ -1316,11 +1454,11 @@ struct PayrollDashboardView: View {
                                 updateFullAddress()
                             }
                         }
-                        
+
                         HStack(spacing: 12) {
                             let province = ThailandAddressManager.shared.provinces.first(where: { $0.id == selectedProvinceId })
                             let availableSubDistricts = province?.districts.first(where: { $0.id == selectedDistrictId })?.subDistricts ?? []
-                            
+
                             Picker("Subdistrict", selection: $selectedSubDistrictId) {
                                 Text("select_subdistrict_placeholder".t).tag(nil as Int?)
                                 ForEach(availableSubDistricts) { sub in
@@ -1336,26 +1474,26 @@ struct PayrollDashboardView: View {
                                 }
                                 updateFullAddress()
                             }
-                            
+
                             TextField("Postal Code", text: $postalCode)
                                 .keyboardType(.numberPad)
                                 .disabled(true)
                                 .frame(width: 120)
                         }
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 4) {
                         Text("emergency_contact_header".t)
                             .font(.caption2)
                             .fontWeight(.bold)
                             .foregroundColor(.appAccent)
-                        
+
                         TextField("Contact Person Name", text: $empEmergencyContactName)
                         TextField("Contact Phone Number", text: $empEmergencyContactPhone)
                             .keyboardType(.phonePad)
                     }
                 }
-                
+
                 Section(header: Text("compensation_start_date_header".t)) {
                     Picker("Employment Type", selection: $empEmploymentType) {
                         Text("hourly_pay_type".t).tag("hourly")
@@ -1363,7 +1501,7 @@ struct PayrollDashboardView: View {
                         Text("monthly_fixed_pay_type".t).tag("monthly")
                     }
                     .pickerStyle(SegmentedPickerStyle())
-                    
+
                     HStack {
                         Text("pay_rate_label".t)
                         Spacer()
@@ -1371,15 +1509,34 @@ struct PayrollDashboardView: View {
                             .keyboardType(.decimalPad)
                             .multilineTextAlignment(.trailing)
                     }
-                    
+
+                    // OT rate reference (uses global OT settings; tap OT Settings in the toolbar to change)
+                    HStack {
+                        Text("payroll_ot_multiplier_lbl".t)
+                        Spacer()
+                        Button {
+                            APHaptic.trigger()
+                            showingOTSettings = true
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(String(format: "%.2fx", defaultOTMultiplier))
+                                    .fontWeight(.semibold)
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(.caption)
+                            }
+                            .foregroundColor(.appAccent)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
                     DatePicker("Start Date (Joined)", selection: $empJoinedAt, displayedComponents: .date)
-                    
+
                     Toggle("Has Resigned / Terminated", isOn: $hasResigned)
                     if hasResigned {
                         DatePicker("End Date (Resigned)", selection: $empResignedAt, displayedComponents: .date)
                     }
                 }
-                
+
                 Section(header: Text("banking_details_header".t)) {
                     Picker("bank_name".localized(for: appLanguage), selection: $empBankName) {
                         Text("select_bank".localized(for: appLanguage)).tag("")
@@ -1390,21 +1547,21 @@ struct PayrollDashboardView: View {
                     TextField("Account Number", text: $empBankAccount)
                         .keyboardType(.numberPad)
                 }
-                
+
                 Section(header: Text("system_access_credentials_header".t)) {
                     Toggle("Enable Waitstaff App Access", isOn: $enableLoginAccess)
-                    
+
                     if enableLoginAccess {
                         TextField("Username", text: $empUsername)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
-                        
+
                         SecureField(editingEmployee == nil ? "Password" : "New Password (Optional)", text: $empPassword)
                             .textInputAutocapitalization(.never)
-                        
+
                         TextField(editingEmployee == nil ? "Login PIN (4-6 Digits)" : "New PIN (Optional)", text: $empPin)
                             .keyboardType(.numberPad)
-                        
+
                         Picker("Access Role", selection: $empRoleId) {
                             Text("no_system_role".t).tag(nil as UUID?)
                             ForEach(allRoles) { role in
@@ -1413,7 +1570,7 @@ struct PayrollDashboardView: View {
                         }
                     }
                 }
-                
+
                 Section(header: Text("biometrics_faceid_scanner_header".t)) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
@@ -1438,9 +1595,9 @@ struct PayrollDashboardView: View {
                                     .lineLimit(2)
                             }
                         }
-                        
+
                         Spacer()
-                        
+
                         if faceEmbeddingData != nil {
                             Button(role: .destructive, action: {
                                 APHaptic.trigger()
@@ -1475,7 +1632,7 @@ struct PayrollDashboardView: View {
         }
         .apColorScheme()
     }
-    
+
     private var roleSuggestions: [String] {
         if appLanguage == "th" {
             return ["แคชเชียร์", "กุ๊ก/คนครัว", "พนักงานเสิร์ฟ", "ผู้จัดการ", "บาริสต้า", "พนักงานทำความสะอาด"]
@@ -1499,9 +1656,9 @@ struct PayrollDashboardView: View {
                                     .foregroundColor(.appAccent)
                             }
                             .buttonStyle(.borderless)
-                            
+
                             Spacer()
-                            
+
                             Button(action: {
                                 selectedEmployeeIds.removeAll()
                             }) {
@@ -1513,7 +1670,7 @@ struct PayrollDashboardView: View {
                             .buttonStyle(.borderless)
                         }
                         .padding(.vertical, 4)
-                        
+
                         ForEach(employees) { emp in
                             HStack {
                                 Text("\(emp.firstName) \(emp.lastName)")
@@ -1547,12 +1704,12 @@ struct PayrollDashboardView: View {
                         }
                     }
                 }
-                
+
                 Section(header: Text("time_date_header".localized(for: appLanguage))) {
                     DatePicker("starts_field".localized(for: appLanguage), selection: $shiftStart)
                     DatePicker("ends_field".localized(for: appLanguage), selection: $shiftEnd)
                 }
-                
+
                 Section(header: Text("role_notes_header".localized(for: appLanguage))) {
                     HStack {
                         TextField("role_field_placeholder".localized(for: appLanguage), text: $shiftRole)
@@ -1589,7 +1746,7 @@ struct PayrollDashboardView: View {
         }
         .apColorScheme()
     }
-    
+
     private var timecardFormSheet: some View {
         NavigationStack {
             Form {
@@ -1601,12 +1758,12 @@ struct PayrollDashboardView: View {
                         }
                     }
                 }
-                
+
                 Section(header: Text("shift_duration_header".t)) {
                     DatePicker("Clock In", selection: $tcClockIn)
                     DatePicker("Clock Out", selection: $tcClockOut)
                 }
-                
+
                 Section(header: Text("break_overtime_header".t)) {
                     HStack {
                         Text("break_minutes_label".t)
@@ -1623,7 +1780,7 @@ struct PayrollDashboardView: View {
                             .multilineTextAlignment(.trailing)
                     }
                 }
-                
+
                 Section(header: Text("review_status_header".t)) {
                     Picker("Status", selection: $tcStatus) {
                         Text("approved_status_tag".t).tag("approved")
@@ -1631,7 +1788,7 @@ struct PayrollDashboardView: View {
                         Text("rejected_status_tag".t).tag("rejected")
                     }
                     .pickerStyle(SegmentedPickerStyle())
-                    
+
                     TextField("Manager Notes", text: $tcNotes)
                 }
             }
@@ -1661,19 +1818,19 @@ struct PayrollReportView: View {
     let slips: [LocalPayrollSlip]
     let start: Date
     let end: Date
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("payroll_report_title".t)
                 .font(.title).fontWeight(.bold)
                 .foregroundColor(.black)
-                
+
             Text("Period: \(start.formatted(date: .numeric, time: .omitted)) - \(end.formatted(date: .numeric, time: .omitted))")
                 .font(.subheadline)
                 .foregroundColor(.gray)
-                
+
             Divider()
-            
+
             // Slips Table
             VStack(spacing: 12) {
                 ForEach(slips) { slip in
@@ -1699,7 +1856,7 @@ struct PayrollReportView: View {
                     Divider()
                 }
             }
-            
+
             Spacer()
         }
         .padding(40)
@@ -1730,7 +1887,7 @@ struct ThaiBank: Identifiable, Hashable {
     let code: String
     let englishName: String
     let thaiName: String
-    
+
     func displayName(for language: String) -> String {
         let name = (language == "th" ? thaiName : englishName)
         return "\(code) - \(name)"
@@ -1766,14 +1923,14 @@ struct ThaiProvince: Codable, Identifiable, Hashable {
     let nameTh: String
     let nameEn: String
     let districts: [ThaiDistrict]
-    
+
     enum CodingKeys: String, CodingKey {
         case id
         case nameTh = "name_th"
         case nameEn = "name_en"
         case districts
     }
-    
+
     func displayName(for language: String) -> String {
         return language == "th" ? nameTh : nameEn
     }
@@ -1784,14 +1941,14 @@ struct ThaiDistrict: Codable, Identifiable, Hashable {
     let nameTh: String
     let nameEn: String
     let subDistricts: [ThaiSubDistrict]
-    
+
     enum CodingKeys: String, CodingKey {
         case id
         case nameTh = "name_th"
         case nameEn = "name_en"
         case subDistricts = "sub_districts"
     }
-    
+
     func displayName(for language: String) -> String {
         return language == "th" ? nameTh : nameEn
     }
@@ -1802,14 +1959,14 @@ struct ThaiSubDistrict: Codable, Identifiable, Hashable {
     let nameTh: String
     let nameEn: String
     let zipCode: Int
-    
+
     enum CodingKeys: String, CodingKey {
         case id
         case nameTh = "name_th"
         case nameEn = "name_en"
         case zipCode = "zip_code"
     }
-    
+
     func displayName(for language: String) -> String {
         return language == "th" ? nameTh : nameEn
     }
@@ -1817,9 +1974,9 @@ struct ThaiSubDistrict: Codable, Identifiable, Hashable {
 
 class ThailandAddressManager {
     static let shared = ThailandAddressManager()
-    
+
     let provinces: [ThaiProvince]
-    
+
     private init() {
         guard let asset = NSDataAsset(name: "thailand_address") else {
             print("Error: thailand_address asset not found")

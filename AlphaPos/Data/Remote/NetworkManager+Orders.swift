@@ -379,7 +379,7 @@ extension NetworkManager {
         _ = try await sendSupabaseRequest(
             method: "POST",
             endpoint: "restaurant_tables",
-            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+            queryItems: [URLQueryItem(name: "on_conflict", value: "merchant_id,table_number")],
             payload: payload
         )
         return true

@@ -27,21 +27,8 @@ extension SyncEngine {
     }
 
     func syncRolePermissions(_ modelContext: ModelContext) async {
-        var descriptor = FetchDescriptor<Role>(
-            predicate: #Predicate<Role> { $0.isSynced == false }
-        )
-        descriptor.fetchLimit = 500  // Prevent OOM on large datasets
-        guard let roles = try? modelContext.fetch(descriptor), !roles.isEmpty else { return }
-        for role in roles {
-            do {
-                let success = try await NetworkManager.shared.replaceRolePermissions(role: role)
-                if success { role.isSynced = true }
-            } catch {
-                encounteredSyncError = true
-                print("SyncEngine [RolePermission Sync Error]: \(error.localizedDescription)")
-            }
-        }
-        modelContext.saveWithLogging(label: #function)
+        // Deprecated: Roles and their permissions are synced atomically in syncRoles().
+        // We keep this function as a no-op to maintain orchestration compatibility.
     }
 
     func syncMerchantDevices(_ modelContext: ModelContext) async {
@@ -776,40 +763,40 @@ extension SyncEngine {
             descriptor.fetchLimit = 500
             let locals = (try? modelContext.fetch(descriptor)) ?? []
             var localById = Dictionary(uniqueKeysWithValues: locals.map { ($0.id.uuidString.lowercased(), $0) })
-            
+
             // Pre-fetch all branches
             let allBranches = (try? modelContext.fetch(FetchDescriptor<Branch>())) ?? []
             let branchMap = Dictionary(uniqueKeysWithValues: allBranches.map { ($0.id.uuidString.lowercased(), $0) })
-            
+
             for remote in remoteSessions {
                 guard let idStr = remote["id"] as? String,
                       let id = UUID(uuidString: idStr) else { continue }
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
-                
+
                 var branch: Branch? = nil
                 if let branchIdStr = remote["branch_id"] as? String {
                     branch = branchMap[branchIdStr.lowercased()]
                 }
-                
+
                 let openedByUserIdStr = remote["opened_by_user_id"] as? String ?? ""
                 guard let openedByUserId = UUID(uuidString: openedByUserIdStr) else { continue }
-                
+
                 let closedByUserIdStr = remote["closed_by_user_id"] as? String
                 let closedByUserId = closedByUserIdStr.flatMap { UUID(uuidString: $0) }
-                
+
                 let openedAtStr = remote["opened_at"] as? String ?? ""
                 let openedAt = parseISO8601Date(openedAtStr)
-                
+
                 let closedAtStr = remote["closed_at"] as? String
                 let closedAt = closedAtStr.flatMap { parseISO8601Date($0) }
-                
+
                 let openingCash = remoteDouble(remote["opening_cash"])
                 let expectedClosingCash = remoteDouble(remote["expected_closing_cash"])
                 let actualClosingCash = remoteDouble(remote["actual_closing_cash"])
                 let cashDiscrepancy = remoteDouble(remote["cash_discrepancy"])
                 let notes = remote["notes"] as? String
                 let isDeleted = remote["is_deleted"] as? Bool ?? false
-                
+
                 if let local = localById[idStr.lowercased()] {
                     guard local.isSynced, updatedAt > local.updatedAt else { continue }
                     if isDeleted {
@@ -864,13 +851,13 @@ extension SyncEngine {
         )
         descriptor.fetchLimit = 500
         guard let movements = try? modelContext.fetch(descriptor), !movements.isEmpty else { return }
-        
+
         // Pre-fetch all sessions once
         var sessDescriptor = FetchDescriptor<RegisterSession>()
         sessDescriptor.fetchLimit = 500
         let allSessions = (try? modelContext.fetch(sessDescriptor)) ?? []
         let sessionMap = Dictionary(uniqueKeysWithValues: allSessions.map { ($0.id, $0) })
-        
+
         for movement in movements {
             do {
                 if let sess = movement.registerSession {
@@ -897,29 +884,29 @@ extension SyncEngine {
             descriptor.fetchLimit = 500
             let locals = (try? modelContext.fetch(descriptor)) ?? []
             var localById = Dictionary(uniqueKeysWithValues: locals.map { ($0.id.uuidString.lowercased(), $0) })
-            
+
             // Pre-fetch all sessions
             let allSessions = (try? modelContext.fetch(FetchDescriptor<RegisterSession>())) ?? []
             let sessionMap = Dictionary(uniqueKeysWithValues: allSessions.map { ($0.id.uuidString.lowercased(), $0) })
-            
+
             for remote in remoteMovements {
                 guard let idStr = remote["id"] as? String,
                       let id = UUID(uuidString: idStr) else { continue }
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
-                
+
                 var session: RegisterSession? = nil
                 if let sessionIdStr = remote["register_session_id"] as? String {
                     session = sessionMap[sessionIdStr.lowercased()]
                 }
-                
+
                 let movementType = remote["movement_type"] as? String ?? ""
                 let amount = remoteDouble(remote["amount"])
                 let reason = remote["reason"] as? String ?? ""
-                
+
                 let performedByEmployeeIdStr = remote["performed_by_employee_id"] as? String
                 let performedByEmployeeId = performedByEmployeeIdStr.flatMap { UUID(uuidString: $0) }
                 let isDeleted = remote["is_deleted"] as? Bool ?? false
-                
+
                 if let local = localById[idStr.lowercased()] {
                     guard local.isSynced, updatedAt > local.updatedAt else { continue }
                     if isDeleted {

@@ -1,66 +1,119 @@
 import SwiftUI
+import Foundation
+import UIKit
+import CryptoKit
 
-// MARK: - In-memory image cache (L5)
-// NSCache is thread-safe and auto-purges under memory pressure
-private final class ImageCache {
-    static let shared = ImageCache()
-    private let cache = NSCache<NSString, UIImage>()
+// MARK: - RemoteImageManager (High-Performance Memory & Disk Cache)
+
+final class RemoteImageManager: @unchecked Sendable {
+    static let shared = RemoteImageManager()
+
+    let memoryCache = NSCache<NSString, UIImage>()
+    private var diskCacheURL: URL? = nil
+
     private init() {
-        cache.countLimit = 150
-        cache.totalCostLimit = 50 * 1024 * 1024  // 50 MB
+        memoryCache.countLimit = 250
+        memoryCache.totalCostLimit = 64 * 1024 * 1024  // 64 MB
+
+        let fileManager = FileManager.default
+        if let cacheDir = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            let dir = cacheDir.appendingPathComponent("ProductImages", isDirectory: true)
+            try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            diskCacheURL = dir
+        }
     }
-    func get(_ key: String) -> UIImage? { cache.object(forKey: key as NSString) }
-    func set(_ key: String, image: UIImage) { cache.setObject(image, forKey: key as NSString) }
+
+    private func cacheFilename(for urlString: String) -> String? {
+        guard let data = urlString.data(using: .utf8) else { return nil }
+        let hash = SHA256.hash(data: data)
+        return hash.map { String(format: "%02hhx", $0) }.joined()
+    }
+
+    /// Synchronously check if the image is in the memory cache
+    func getFromMemory(key: String) -> UIImage? {
+        return memoryCache.object(forKey: key as NSString)
+    }
+
+    /// Loads the image from memory cache, disk cache, or downloads it from network if not cached.
+    func loadImage(from urlString: String) async -> UIImage? {
+        if let cached = getFromMemory(key: urlString) {
+            return cached
+        }
+
+        guard let filename = cacheFilename(for: urlString) else { return nil }
+        let diskURL = diskCacheURL?.appendingPathComponent(filename)
+
+        // Check disk cache
+        if let diskURL = diskURL, FileManager.default.fileExists(atPath: diskURL.path) {
+            if let data = try? Data(contentsOf: diskURL), let image = UIImage(data: data) {
+                memoryCache.setObject(image, forKey: urlString as NSString)
+                return image
+            }
+        }
+
+        // Fetch from network
+        guard let url = URL(string: urlString) else { return nil }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            guard let image = UIImage(data: data) else { return nil }
+
+            // Save to memory cache
+            memoryCache.setObject(image, forKey: urlString as NSString)
+
+            // Save to disk cache in background
+            if let diskURL = diskURL {
+                Task.detached(priority: .background) {
+                    try? data.write(to: diskURL)
+                }
+            }
+
+            return image
+        } catch {
+            return nil
+        }
+    }
+
+    /// Enqueues background prefetching tasks for a list of URLs
+    func prefetchImages(urls: [String]) {
+        Task.detached(priority: .background) {
+            for urlString in urls {
+                if urlString.isEmpty { continue }
+                _ = await self.loadImage(from: urlString)
+            }
+        }
+    }
 }
 
-// MARK: - Cached Remote Image (replaces bare AsyncImage)
+// MARK: - CachedRemoteImage (Synchronous Cache Check + Asynchronous Task Loader)
 
 private struct CachedRemoteImage<Fallback: View>: View {
     let urlString: String
     let fallbackIconView: Fallback
 
-    // Start nil; populate from cache or network in task(id:) below
     @State private var uiImage: UIImage? = nil
 
     var body: some View {
         Group {
-            if let uiImage {
+            if let uiImage = uiImage {
                 Image(uiImage: uiImage)
                     .resizable()
                     .scaledToFill()
             } else {
-                AsyncImage(url: URL(string: urlString)) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                            .onAppear {
-                                // Render and cache the UIImage on first load
-                                Task.detached(priority: .background) {
-                                    if let url = URL(string: urlString),
-                                       let data = try? Data(contentsOf: url),
-                                       let img = UIImage(data: data) {
-                                        ImageCache.shared.set(urlString, image: img)
-                                        await MainActor.run { uiImage = img }
-                                    }
-                                }
-                            }
-                    case .failure(_):
-                        fallbackIconView
-                    case .empty:
-                        ProgressView()
-                            .tint(.white.opacity(0.6))
-                    @unknown default:
-                        fallbackIconView
+                fallbackIconView
+                    .onAppear {
+                        // Check memory cache synchronously to prevent any flicker during cell reuse/scrolling
+                        if let cached = RemoteImageManager.shared.getFromMemory(key: urlString) {
+                            self.uiImage = cached
+                        }
                     }
-                }
             }
         }
         .task(id: urlString) {
-            // Check cache on first appearance (and when urlString changes)
-            if let cached = ImageCache.shared.get(urlString) {
-                uiImage = cached
+            if uiImage == nil {
+                let img = await RemoteImageManager.shared.loadImage(from: urlString)
+                if !Task.isCancelled {
+                    self.uiImage = img
+                }
             }
         }
     }
@@ -68,33 +121,34 @@ private struct CachedRemoteImage<Fallback: View>: View {
 
 // MARK: - RemoteImageView
 
-/// A reusable async image view that loads images from remote URLs with fallback to local data or placeholder
+/// A high-performance async image view that loads images from remote URLs with dual caching and instant fallback
 struct RemoteImageView: View {
     let imageUrl: String?
     let imageData: Data?
     let fallbackColor: Color
     let fallbackIcon: String
+    var iconSize: CGFloat = 32
 
     var body: some View {
         ZStack {
-            // Fallback gradient background
+            // Fallback background
             LinearGradient(
                 colors: [fallbackColor, fallbackColor.opacity(0.5)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
 
-            // Try to display local image data first
+            // 1. Local/Database Image Binary Data (Instant)
             if let imageData = imageData, let uiImage = UIImage(data: imageData) {
                 Image(uiImage: uiImage)
                     .resizable()
                     .scaledToFill()
             }
-            // Then try to load from URL with caching
+            // 2. Remote URL Image (Double-Cached)
             else if let urlString = imageUrl, !urlString.isEmpty {
                 CachedRemoteImage(urlString: urlString, fallbackIconView: fallbackIconView)
             }
-            // Fallback icon if no image available
+            // 3. Fallback Placeholder Icon
             else {
                 fallbackIconView
             }
@@ -103,7 +157,7 @@ struct RemoteImageView: View {
 
     private var fallbackIconView: some View {
         Image(systemName: fallbackIcon)
-            .font(.system(size: 32, weight: .light))
+            .font(.system(size: iconSize, weight: .light))
             .foregroundColor(.white.opacity(0.8))
     }
 }

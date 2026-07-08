@@ -11,7 +11,8 @@ struct SalesDashboardView: View {
     @Query private var allInventory: [InventoryItem]
     @Query private var allEmployees: [Employee]
     @Query private var allTimecards: [Timecard]
-    @EnvironmentObject private var lm: LocalizationManager
+    @Query(filter: #Predicate<Expense> { !$0.isDeleted }) private var allExpenses: [Expense]
+
 
     @State private var viewModel = SalesViewModel()
     @State private var selectedTab: AnalyticsTab = .overview
@@ -977,7 +978,8 @@ struct SalesDashboardView: View {
             orders: allOrders,
             inventoryItems: allInventory,
             employees: allEmployees,
-            timecards: allTimecards
+            timecards: allTimecards,
+            expenses: allExpenses
         )
         APHaptic.trigger()
     }

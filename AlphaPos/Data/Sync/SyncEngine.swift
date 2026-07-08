@@ -53,22 +53,23 @@ final class SyncEngine: NSObject, ObservableObject {
     }
 
     // Thread-safe alert deduplication table
-    static let alertTimesLock = OSAllocatedUnfairLock()
-    static var _lastAlertTimes: [UUID: Date] = [:]
-    static func getAlertTime(_ key: UUID) -> Date? {
+    nonisolated static let alertTimesLock = OSAllocatedUnfairLock()
+    nonisolated(unsafe) static var _lastAlertTimes: [UUID: Date] = [:]
+    nonisolated static func getAlertTime(_ key: UUID) -> Date? {
         alertTimesLock.lock(); defer { alertTimesLock.unlock() }
         return _lastAlertTimes[key]
     }
-    static func setAlertTime(_ key: UUID, _ value: Date) {
+    nonisolated static func setAlertTime(_ key: UUID, _ value: Date) {
         alertTimesLock.lock(); defer { alertTimesLock.unlock() }
         _lastAlertTimes[key] = value
     }
-    static func removeAlertTime(_ key: UUID) {
+    nonisolated static func removeAlertTime(_ key: UUID) {
         alertTimesLock.lock(); defer { alertTimesLock.unlock() }
         _lastAlertTimes.removeValue(forKey: key)
     }
 
     var notifiedRequestIds = Set<String>()
+    var notifiedReadyOrderIds = Set<UUID>()
     var isFirstSync = true
     var consecutiveSyncFailures = 0
 
@@ -167,12 +168,12 @@ final class SyncEngine: NSObject, ObservableObject {
         let cleanStr = stringValue.replacingOccurrences(of: " ", with: "T")
         if let d = SyncEngine.iso8601WithFractionals.date(from: cleanStr) { return d }
         if let d = SyncEngine.iso8601Standard.date(from: cleanStr) { return d }
-        
+
         for df in SyncEngine.fallbackFormatters {
             let input = df.dateFormat.contains("'T'") ? cleanStr : stringValue
             if let d = df.date(from: input) { return d }
         }
-        
+
         return nil
     }
 

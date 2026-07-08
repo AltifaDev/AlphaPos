@@ -382,28 +382,5 @@ final class NetworkManager {
         }
         return mappedOrders
     }
-    
-    // MARK: - Auth: Change Password (Real API integration)
-    func changeMerchantPassword(newPassword: String) async throws {
-        guard let token = MerchantAuthManager.shared.currentToken else {
-            throw NetworkError.serverError("No active session token.")
-        }
-        let url = config.supabaseURL.appendingPathComponent("auth/v1/user")
-        var request = URLRequest(url: url)
-        request.httpMethod = "PUT"
-        request.setValue(anonKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let payload: [String: Any] = ["password": newPassword]
-        let jsonData = try JSONSerialization.data(withJSONObject: payload)
-        request.httpBody = jsonData
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let httpStatusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200...299).contains(httpStatusCode) else {
-            let errorMsg = String(data: data, encoding: .utf8) ?? "HTTP Password update failed"
-            throw NetworkError.serverError(errorMsg)
-        }
-    }
+
 }

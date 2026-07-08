@@ -14,7 +14,7 @@ import ExternalAccessory
 final class PrintService: ObservableObject {
 
     static let shared = PrintService()
-    
+
     var modelContext: ModelContext? {
         didSet {
             #if DEBUG
@@ -29,6 +29,7 @@ final class PrintService: ObservableObject {
     nonisolated func configure(modelContext: ModelContext) {
         Task { @MainActor in
             PrintService.shared.modelContext = modelContext
+            await PrintService.shared.retryPendingPrintJobs()
         }
     }
 
@@ -48,6 +49,7 @@ final class PrintService: ObservableObject {
     /// Dispatch kitchen-side tickets when an order is sent to the kitchen.
     /// Call this from processCheckout(createPayment: false).
     func dispatchKitchenOrder(_ order: Order) async {
+        await retryPendingPrintJobs()
         let newItems = order.items.filter { !$0.isDeleted && $0.status == "cooking" }
         guard !newItems.isEmpty else { return }
         async let k: () = printKitchenTickets(order, items: newItems, trigger: .onOrder)
@@ -66,6 +68,7 @@ final class PrintService: ObservableObject {
     /// Dispatch receipt (and optional kitchen re-print) after payment is confirmed.
     /// Call this from processCheckout(createPayment: true).
     func dispatchReceipt(_ order: Order) async {
+        await retryPendingPrintJobs()
         async let r: () = printReceipt(order)
         // Also send to kitchen/bar/sticker printers that opt in to printOnPayment
         // (covers takeout/delivery stores that don't use "send to kitchen" flow)
@@ -73,7 +76,16 @@ final class PrintService: ObservableObject {
         async let k: () = printKitchenTickets(order, items: allItems, trigger: .onPayment)
         async let b: () = printBarTickets(order, items: allItems, trigger: .onPayment)
         async let s: () = printStickerLabels(order, items: allItems, trigger: .onPayment)
-        _ = await (r, k, b, s)
+
+        let hasCashPayment = order.payments.contains { payment in
+            !payment.isDeleted && payment.status == "completed" && payment.paymentMethod.lowercased() == "cash"
+        }
+        if hasCashPayment {
+            async let d: () = openCashDrawer()
+            _ = await (r, k, b, s, d)
+        } else {
+            _ = await (r, k, b, s)
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -97,10 +109,13 @@ final class PrintService: ObservableObject {
     // MARK: - Role-level print functions (internal, trigger-aware)
     // ─────────────────────────────────────────────────────────────────────────
 
-    private enum PrintTrigger { case onOrder, onPayment }
+    private enum PrintTrigger: String { case onOrder, onPayment, legacy }
 
     /// Print receipt — always fires regardless of routing rules.
     private func printReceipt(_ order: Order) async {
+        let receiptEnabled = UserDefaults.standard.value(forKey: "receipt_printer_enabled") as? Bool ?? true
+        guard receiptEnabled else { return }
+        guard !UserDefaults.standard.bool(forKey: "disable_receipt_printing") else { return }
         guard let printers = activePrinters(forRole: "receipt"), !printers.isEmpty else { return }
         let template = defaultTemplate(forRole: "receipt")
         // Load logo bitmap once — reuse across all receipt printers
@@ -110,7 +125,7 @@ final class PrintService: ObservableObject {
         for printer in printers {
             var job = PrintJob(order: order, role: "receipt", template: template)
             job.logoBitmap = logoBitmap
-            _ = await sendJob(job, to: printer)
+            _ = await enqueueAndSend(job, to: printer, trigger: .onPayment)
         }
     }
 
@@ -120,6 +135,8 @@ final class PrintService: ObservableObject {
         items: [OrderItem],
         trigger: PrintTrigger?
     ) async {
+        let kitchenEnabled = UserDefaults.standard.value(forKey: "kitchen_printer_enabled") as? Bool ?? true
+        guard kitchenEnabled else { return }
         guard !items.isEmpty,
               let printers = activePrinters(forRole: "kitchen"),
               !printers.isEmpty else { return }
@@ -130,7 +147,10 @@ final class PrintService: ObservableObject {
             let filtered = routedItems(items: items, printer: printer)
             guard !filtered.isEmpty else { continue }
             let job = PrintJob(order: order, role: "kitchen", template: template)
-            _ = await sendJob(job, to: printer, customItems: filtered)
+            let result = await enqueueAndSend(job, to: printer, customItems: filtered, trigger: trigger ?? .legacy)
+            if !result.success {
+                await postFailureNotification(printerName: printer.name, role: "ครัว", itemCount: filtered.count, message: result.message, order: order)
+            }
         }
     }
 
@@ -140,6 +160,8 @@ final class PrintService: ObservableObject {
         items: [OrderItem],
         trigger: PrintTrigger?
     ) async {
+        let kitchenEnabled = UserDefaults.standard.value(forKey: "kitchen_printer_enabled") as? Bool ?? true
+        guard kitchenEnabled else { return }
         guard !items.isEmpty,
               let printers = activePrinters(forRole: "bar"),
               !printers.isEmpty else { return }
@@ -149,7 +171,10 @@ final class PrintService: ObservableObject {
             let filtered = routedItems(items: items, printer: printer)
             guard !filtered.isEmpty else { continue }
             let job = PrintJob(order: order, role: "bar", template: template)
-            _ = await sendJob(job, to: printer, customItems: filtered)
+            let result = await enqueueAndSend(job, to: printer, customItems: filtered, trigger: trigger ?? .legacy)
+            if !result.success {
+                await postFailureNotification(printerName: printer.name, role: "บาร์", itemCount: filtered.count, message: result.message, order: order)
+            }
         }
     }
 
@@ -159,6 +184,8 @@ final class PrintService: ObservableObject {
         items: [OrderItem],
         trigger: PrintTrigger?
     ) async {
+        let kitchenEnabled = UserDefaults.standard.value(forKey: "kitchen_printer_enabled") as? Bool ?? true
+        guard kitchenEnabled else { return }
         guard !items.isEmpty,
               let printers = activePrinters(forRole: "label"),
               !printers.isEmpty else { return }
@@ -168,7 +195,26 @@ final class PrintService: ObservableObject {
             let filtered = routedItems(items: items, printer: printer)
             guard !filtered.isEmpty else { continue }
             let job = PrintJob(order: order, role: "label", template: template)
-            _ = await sendJob(job, to: printer, customItems: filtered)
+            let result = await enqueueAndSend(job, to: printer, customItems: filtered, trigger: trigger ?? .legacy)
+            if !result.success {
+                await postFailureNotification(printerName: printer.name, role: "สติกเกอร์", itemCount: filtered.count, message: result.message, order: order)
+            }
+        }
+    }
+
+    private func postFailureNotification(printerName: String, role: String, itemCount: Int, message: String, order: Order) async {
+        await MainActor.run {
+            let title = "เครื่องพิมพ์\(role) (\(printerName)) ล้มเหลว"
+            let body = "ไม่สามารถพิมพ์รายการออเดอร์ \(itemCount) รายการได้: \(message)"
+            InAppNotificationManager.shared.post(
+                InAppNotification(
+                    type: .printerAlert,
+                    title: title,
+                    body: body,
+                    tableNumber: order.tableSession?.table?.tableNumber
+                )
+            )
+
         }
     }
 
@@ -180,6 +226,7 @@ final class PrintService: ObservableObject {
         switch trigger {
         case .onOrder:   return activeRules.contains { $0.printOnOrder }
         case .onPayment: return activeRules.contains { $0.printOnPayment }
+        case .legacy:    return true
         }
     }
 
@@ -248,13 +295,13 @@ final class PrintService: ObservableObject {
         let type = previewType ?? printer.role
         let template = defaultTemplate(forRole: type)
         let emulation = getEffectiveEmulation(for: printer)
-        
+
         logger.append("[1] Resolving printer configuration...")
         logger.append("    Name: \(printer.name)")
         logger.append("    Interface: \(printer.connectionType.uppercased())")
         logger.append("    Width: \(printer.paperWidth)")
         logger.append("    Emulation: \(emulation.uppercased())")
-        
+
         logger.append("[2] Compiling print payload...")
         let data: Data
         switch type {
@@ -272,14 +319,32 @@ final class PrintService: ObservableObject {
             data = ESCPOSBuilder.buildTestReceipt(printer: printer, template: template, emulation: emulation)
         }
         logger.append("    Compiled \(data.count) bytes of print payload.")
-        
+
         logger.append("[3] Establishing connection...")
         let transport = getTransport(for: printer)
         let result = await transport.deliver(data: data, printer: printer, logger: logger)
-        
+
         logger.append(result.success ? "✓ Test print successful!" : "✗ Test print failed.")
         logger.append("    Detail: \(result.message)")
-        
+
+        return (result.success, logger.logs)
+    }
+
+    func testCashDrawer(to printer: Printer) async -> (success: Bool, log: [String]) {
+        let logger = PrintLogger()
+        logger.append("[1] Resolving cash drawer printer...")
+        logger.append("    Name: \(printer.name)")
+        logger.append("    Interface: \(printer.connectionType.uppercased())")
+
+        let emulation = getEffectiveEmulation(for: printer)
+        let data = CashDrawerBuilder.buildOpenDrawer(emulation: emulation)
+        logger.append("[2] Compiled \(data.count) bytes of drawer pulse command.")
+        logger.append("[3] Sending drawer pulse...")
+
+        let transport = getTransport(for: printer)
+        let result = await transport.deliver(data: data, printer: printer, logger: logger)
+        logger.append(result.success ? "✓ Cash drawer pulse sent." : "✗ Cash drawer pulse failed.")
+        logger.append("    Detail: \(result.message)")
         return (result.success, logger.logs)
     }
 
@@ -287,11 +352,64 @@ final class PrintService: ObservableObject {
     // MARK: - Internal Pipeline Dispatcher
     // ─────────────────────────────────────────────────────────────────────────
 
-    private func sendJob(_ job: PrintJob, to printer: Printer, customItems: [OrderItem]? = nil) async -> PrintResult {
+    private func enqueueAndSend(
+        _ job: PrintJob,
+        to printer: Printer,
+        customItems: [OrderItem]? = nil,
+        trigger: PrintTrigger
+    ) async -> PrintResult {
+        guard let ctx = modelContext else {
+            return await deliverJob(job, to: printer, customItems: customItems)
+        }
+
+        let key = idempotencyKey(order: job.order, printer: printer, role: job.role, trigger: trigger, items: customItems)
+        let record = existingPrintJob(key: key) ?? PrintJobRecord(
+            idempotencyKey: key,
+            orderId: job.order.id,
+            orderNumber: job.order.orderNumber,
+            printerId: printer.id,
+            printerName: printer.name,
+            role: job.role,
+            trigger: trigger.rawValue,
+            itemIdsCSV: itemIdsCSV(customItems)
+        )
+
+        if record.status == "succeeded" {
+            return PrintResult(success: true, message: "Already printed.")
+        }
+
+        if record.modelContext == nil {
+            ctx.insert(record)
+        }
+
+        record.status = "printing"
+        record.attempts += 1
+        record.updatedAt = Date()
+        try? ctx.save()
+
+        let result = await deliverJob(job, to: printer, customItems: customItems)
+        let now = Date()
+        record.updatedAt = now
+        if result.success {
+            record.status = "succeeded"
+            record.lastError = nil
+            record.deliveredAt = now
+            record.nextAttemptAt = nil
+            markPrinted(items: customItems, role: job.role, at: now)
+        } else {
+            record.status = "failed"
+            record.lastError = result.message
+            record.nextAttemptAt = now.addingTimeInterval(retryDelay(forAttempt: record.attempts))
+        }
+        try? ctx.save()
+        return result
+    }
+
+    private func deliverJob(_ job: PrintJob, to printer: Printer, customItems: [OrderItem]? = nil) async -> PrintResult {
         let logger = PrintLogger()
         let emulation = getEffectiveEmulation(for: printer)
         let renderer = getRenderer(for: printer, emulation: emulation)
-        
+
         let data: Data
         if let customItems = customItems, (job.role == "kitchen" || job.role == "bar") {
             let stationLabel = job.role == "bar" ? "BAR TICKET" : "KITCHEN TICKET"
@@ -302,12 +420,121 @@ final class PrintService: ObservableObject {
                 template: job.template,
                 emulation: emulation
             )
+        } else if let customItems = customItems, job.role == "label" || job.role == "sticker" {
+            data = buildLabelPayload(order: job.order, items: customItems, template: job.template, emulation: emulation)
         } else {
             data = renderer.render(job: job, emulation: emulation)
         }
-        
+
         let transport = getTransport(for: printer)
         return await transport.deliver(data: data, printer: printer, logger: logger)
+    }
+
+    func retryPendingPrintJobs(limit: Int = 20) async {
+        guard let ctx = modelContext else { return }
+        let now = Date()
+        let records = ((try? ctx.fetch(FetchDescriptor<PrintJobRecord>())) ?? [])
+            .filter {
+                $0.status != "succeeded"
+                    && $0.attempts < $0.maxAttempts
+                    && ($0.nextAttemptAt == nil || $0.nextAttemptAt! <= now)
+            }
+            .sorted { $0.createdAt < $1.createdAt }
+            .prefix(limit)
+
+        for record in records {
+            guard let order = fetchOrder(id: record.orderId),
+                  let printer = fetchPrinter(id: record.printerId) else {
+                record.status = "failed"
+                record.lastError = "Missing order or printer for retry."
+                record.updatedAt = Date()
+                continue
+            }
+
+            let template = defaultTemplate(forRole: record.role)
+            var job = PrintJob(order: order, role: record.role, template: template)
+            if record.role == "receipt" {
+                let paperWidth = template?.paperWidth ?? printer.paperWidth
+                let maxDots = paperWidth == "58mm" ? 150 : 200
+                job.logoBitmap = ESCPOSBuilder.loadLogoBitmap(maxWidthDots: maxDots)
+            }
+            let customItems = record.role == "receipt" ? nil : items(from: order, csv: record.itemIdsCSV)
+            _ = await enqueueAndSend(job, to: printer, customItems: customItems, trigger: PrintTrigger(rawValue: record.trigger) ?? .legacy)
+        }
+        try? ctx.save()
+    }
+
+    private func existingPrintJob(key: String) -> PrintJobRecord? {
+        guard let ctx = modelContext else { return nil }
+        return ((try? ctx.fetch(FetchDescriptor<PrintJobRecord>())) ?? []).first { $0.idempotencyKey == key }
+    }
+
+    private func idempotencyKey(order: Order, printer: Printer, role: String, trigger: PrintTrigger, items: [OrderItem]?) -> String {
+        let itemPart = itemIdsCSV(items)
+        return [order.id.uuidString, printer.id.uuidString, role, trigger.rawValue, itemPart].joined(separator: "|")
+    }
+
+    private func itemIdsCSV(_ items: [OrderItem]?) -> String {
+        guard let items, !items.isEmpty else { return "all" }
+        return items.map { $0.id.uuidString }.sorted().joined(separator: ",")
+    }
+
+    private func items(from order: Order, csv: String) -> [OrderItem] {
+        guard csv != "all" else { return order.items.filter { !$0.isDeleted } }
+        let ids = Set(csv.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+        return order.items.filter { ids.contains($0.id) && !$0.isDeleted }
+    }
+
+    private func retryDelay(forAttempt attempts: Int) -> TimeInterval {
+        min(300, pow(2.0, Double(max(0, attempts - 1))) * 15)
+    }
+
+    private func markPrinted(items: [OrderItem]?, role: String, at date: Date) {
+        guard let items else { return }
+        for item in items {
+            switch role {
+            case "kitchen":
+                item.kitchenPrintedAt = date
+            case "bar":
+                item.barPrintedAt = date
+            case "label", "sticker":
+                item.labelPrintedAt = date
+            default:
+                break
+            }
+            item.updatedAt = date
+        }
+    }
+
+    private func buildLabelPayload(order: Order, items: [OrderItem], template: ReceiptTemplate?, emulation: String) -> Data {
+        let tableLabel = order.tableSession?.table?.tableNumber ?? "Takeaway"
+        let queueNumber = order.queueNumber ?? ""
+        var data = Data()
+
+        for (index, item) in items.enumerated() {
+            if emulation == "tspl" {
+                data.append(TSPLBuilder.buildSticker(
+                    item: item,
+                    tableLabel: tableLabel,
+                    queueNumber: queueNumber,
+                    cupIndex: index + 1,
+                    totalCups: items.count,
+                    template: template
+                ))
+            } else {
+                data.append(ESCPOSBuilder.buildItemLabel(
+                    item: item,
+                    tableLabel: tableLabel,
+                    queueNumber: queueNumber,
+                    cupIndex: index + 1,
+                    totalCups: items.count,
+                    template: template,
+                    emulation: emulation
+                ))
+            }
+        }
+
+        return data
     }
 
     private func getRenderer(for printer: Printer, emulation: String) -> PrinterRenderer {
@@ -347,7 +574,7 @@ final class PrintService: ObservableObject {
         if printer.connectionType == "usb" {
             let manager = EAAccessoryManager.shared()
             let accessories = manager.connectedAccessories
-            
+
             for brand in PrinterBrand.allCases {
                 let protocols = brand.mfiProtocols
                 if accessories.contains(where: { acc in
@@ -360,16 +587,30 @@ final class PrintService: ObservableObject {
         return printer.emulation
     }
 
+    func hasActiveReceiptPrinters() -> Bool {
+        return !(activePrinters(forRole: "receipt")?.isEmpty ?? true)
+    }
+
     private func activePrinters(forRole role: String) -> [Printer]? {
         guard let ctx = modelContext else { return nil }
         let all = (try? ctx.fetch(FetchDescriptor<Printer>())) ?? []
         return all.filter { !$0.isDeleted && $0.isActive && $0.role == role }
     }
 
+    private func fetchOrder(id: UUID) -> Order? {
+        guard let ctx = modelContext else { return nil }
+        return ((try? ctx.fetch(FetchDescriptor<Order>())) ?? []).first { $0.id == id && !$0.isDeleted }
+    }
+
+    private func fetchPrinter(id: UUID) -> Printer? {
+        guard let ctx = modelContext else { return nil }
+        return ((try? ctx.fetch(FetchDescriptor<Printer>())) ?? []).first { $0.id == id && !$0.isDeleted && $0.isActive }
+    }
+
     private func defaultTemplate(forRole role: String) -> ReceiptTemplate? {
         guard let ctx = modelContext else { return nil }
         let templateType = (role == "label" || role == "sticker") ? "sticker" : role
-        
+
         let descriptor = FetchDescriptor<ReceiptTemplate>(
             predicate: #Predicate<ReceiptTemplate> { !$0.isDeleted }
         )
@@ -380,12 +621,53 @@ final class PrintService: ObservableObject {
 
     private func routedItems(items: [OrderItem], printer: Printer) -> [OrderItem] {
         let activeRules = printer.routingRules.filter { !$0.isDeleted }
-        if activeRules.isEmpty { return items }
         let allowedSlugs = Set(activeRules.compactMap { $0.categoryId })
         return items.filter { item in
+            if !matchesPrinterStation(item: item, role: printer.role) { return false }
+            if activeRules.isEmpty { return true }
             guard let cat = item.menuItem?.category?.name else { return false }
-            let slug = cat.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-            return allowedSlugs.contains(slug)
+            return allowedSlugs.contains(OrderRoutingResolver.slug(cat))
+        }
+    }
+
+    private func matchesPrinterStation(item: OrderItem, role: String) -> Bool {
+        let stations = OrderRoutingResolver.stations(for: item)
+        switch role {
+        case "kitchen":
+            return stations.contains(.kitchen)
+        case "bar", "label", "sticker":
+            return stations.contains(.bar)
+        default:
+            return true
+        }
+    }
+
+    /// Exposes cash drawer pulse trigger to active receipt printers
+    func openCashDrawer() async {
+        guard let printers = activePrinters(forRole: "receipt"), !printers.isEmpty else { return }
+        for printer in printers {
+            let emulation = getEffectiveEmulation(for: printer)
+            let data = CashDrawerBuilder.buildOpenDrawer(emulation: emulation)
+            let transport = getTransport(for: printer)
+            let logger = PrintLogger()
+            _ = await transport.deliver(data: data, printer: printer, logger: logger)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - CashDrawerBuilder
+// Generates printer-specific command codes to kick the cash drawer.
+// ─────────────────────────────────────────────────────────────────────────────
+enum CashDrawerBuilder {
+    static func buildOpenDrawer(emulation: String) -> Data {
+        if emulation.lowercased() == "star" {
+            // Star command to kick drawer 1 is ASCII BEL [0x07]
+            return Data([0x07])
+        } else {
+            // ESC/POS command: ESC p m t1 t2
+            // m = 0 (Pin 2), t1 = 25 (50ms on), t2 = 250 (500ms off)
+            return Data([0x1B, 0x70, 0x00, 0x19, 0xFA])
         }
     }
 }

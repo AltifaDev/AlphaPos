@@ -817,7 +817,7 @@ struct InventoryAnalytics {
         for txn in periodTxns where txn.transactionType == InventoryMovementType.waste.rawValue {
             guard let item = txn.item else { continue }
             let cost = txn.quantity * (txn.costPrice ?? item.costPrice)
-            if var existing = byItem[item.id] {
+            if let existing = byItem[item.id] {
                 let newCost = existing.cost + cost
                 let newQty  = existing.quantity + txn.quantity
                 byItem[item.id] = WasteBreakdownPoint(

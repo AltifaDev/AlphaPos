@@ -7,14 +7,20 @@ import SwiftData
 struct RecipeCatalogView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
-    @Query(sort: \Category.name) private var categories: [Category]
-    @Query(sort: \MenuItem.name) private var menuItems: [MenuItem]
-    
+    @Query(
+        filter: #Predicate<Category> { !$0.isDeleted },
+        sort: \Category.name
+    ) private var categories: [Category]
+    @Query(
+        filter: #Predicate<MenuItem> { !$0.isDeleted },
+        sort: \MenuItem.name
+    ) private var menuItems: [MenuItem]
+
     @State private var selectedItem: MenuItem?
     @State private var showingBuilder = false
     @State private var searchText = ""
     @State private var selectedCategoryId: UUID? = nil
-    
+
     private var filteredItems: [MenuItem] {
         menuItems.filter { item in
             let matchesSearch = searchText.isEmpty || item.name.localizedCaseInsensitiveContains(searchText)
@@ -22,19 +28,19 @@ struct RecipeCatalogView: View {
             return matchesSearch && matchesCategory
         }
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Filter Bar
             filterBar
-            
+
             Divider().background(Color.appDivider)
-            
+
             if filteredItems.isEmpty {
                 emptyState
             } else {
                 ScrollView {
-                    LazyVStack(spacing: APSpacing.md) {
+                    LazyVStack(spacing: 4) {
                         ForEach(filteredItems) { item in
                             menuItemRecipeCard(item: item)
                                 .onTapGesture {
@@ -43,7 +49,7 @@ struct RecipeCatalogView: View {
                                 }
                         }
                     }
-                    .padding(APSpacing.md)
+                    .padding(APSpacing.sm)
                 }
             }
         }
@@ -53,10 +59,18 @@ struct RecipeCatalogView: View {
             }
         }
         .background(Color.appBackground)
+        .onAppear {
+            let urls = menuItems.compactMap { $0.imageUrl }
+            RemoteImageManager.shared.prefetchImages(urls: urls)
+        }
+        .onChange(of: menuItems) { _, newMenuItems in
+            let urls = newMenuItems.compactMap { $0.imageUrl }
+            RemoteImageManager.shared.prefetchImages(urls: urls)
+        }
     }
-    
+
     // MARK: - Filter Bar
-    
+
     private var filterBar: some View {
         VStack(spacing: APSpacing.sm) {
             HStack(spacing: APSpacing.sm) {
@@ -85,7 +99,7 @@ struct RecipeCatalogView: View {
                         .stroke(Color.appBorderSubtle, lineWidth: 1)
                 )
             }
-            
+
             // Category capsules
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: APSpacing.xs) {
@@ -100,7 +114,7 @@ struct RecipeCatalogView: View {
         .padding(.vertical, APSpacing.sm)
         .background(Color.appSurface)
     }
-    
+
     private func categoryButton(title: String, id: UUID?) -> some View {
         Button(action: { selectedCategoryId = id }) {
             Text(title)
@@ -119,15 +133,15 @@ struct RecipeCatalogView: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     // MARK: - Menu Item Row Card
-    
+
     private func menuItemRecipeCard(item: MenuItem) -> some View {
         // Calculate tracking mode and costing
         let recipes = item.recipes
         let trackingMode: String
         let costPrice: Double
-        
+
         if recipes.isEmpty {
             trackingMode = "Not Tracked"
             costPrice = 0.0
@@ -138,34 +152,32 @@ struct RecipeCatalogView: View {
             trackingMode = "Recipe-Based"
             costPrice = recipes.reduce(0.0) { $0 + ($1.inventoryItem?.costPrice ?? 0.0) * $1.quantityRequired }
         }
-        
+
         let foodCostPercent = item.price > 0 ? (costPrice / item.price) * 100.0 : 0.0
         let marginPercent = 100.0 - foodCostPercent
-        
-        return HStack(spacing: APSpacing.md) {
-            // Icon
-            ZStack {
-                RoundedRectangle(cornerRadius: APRadius.sm, style: .continuous)
-                    .fill(Color.appSurfaceHigh)
-                    .frame(width: 46, height: 46)
-                
-                Image(systemName: recipes.isEmpty ? "slash.circle" : (recipes.count == 1 && recipes.first?.quantityRequired == 1.0 ? "shippingbox" : "fork.knife"))
-                    .font(.title3)
-                    .foregroundColor(recipes.isEmpty ? .textTertiary : (recipes.count == 1 ? .appTeal : .appAccent))
-            }
-            
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
+
+        return HStack(spacing: APSpacing.sm) {
+            RemoteImageView(
+                imageUrl: item.imageUrl,
+                imageData: item.imageData,
+                fallbackColor: Color.appSurfaceHigh,
+                fallbackIcon: recipes.isEmpty ? "slash.circle" : (recipes.count == 1 && recipes.first?.quantityRequired == 1.0 ? "shippingbox" : "fork.knife"),
+                iconSize: 10
+            )
+            .frame(width: 28, height: 28)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
                     Text(item.name)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.textPrimary)
-                    
+
                     // Badge for tracking mode
                     Text(trackingMode == "Not Tracked" ? "catalog_not_tracked".t : (trackingMode == "Finished Good" ? "catalog_finished_good".t : "catalog_recipe_based".t))
-                        .font(.system(size: 9, weight: .bold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
+                        .font(.system(size: 7, weight: .bold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
                         .background(
                             trackingMode == "Not Tracked" ? Color.appSurfaceHigh :
                             (trackingMode == "Finished Good" ? Color.appTeal.opacity(0.12) : Color.appAccent.opacity(0.12))
@@ -176,57 +188,56 @@ struct RecipeCatalogView: View {
                         )
                         .clipShape(Capsule())
                 }
-                
+
                 if !recipes.isEmpty {
                     Text(LocalizationManager.shared.t("ingredients_linked_template", recipes.count))
-                        .font(.caption2)
+                        .font(.system(size: 9))
                         .foregroundColor(.textSecondary)
                 } else {
                     Text("no_stock_setup".t)
-                        .font(.caption2)
+                        .font(.system(size: 9))
                         .foregroundColor(.textTertiary)
                 }
             }
-            
+
             Spacer()
-            
+
             // Financial Costing indicators
-            HStack(spacing: APSpacing.md) {
-                VStack(alignment: .trailing, spacing: 2) {
+            HStack(spacing: APSpacing.sm) {
+                VStack(alignment: .trailing, spacing: 1) {
                     Text(LocalizationManager.shared.t("price_template", item.price))
-                        .font(.caption)
+                        .font(.system(size: 9))
                         .foregroundColor(.textPrimary)
                     if !recipes.isEmpty {
                         Text(LocalizationManager.shared.t("cost_template", costPrice))
-                            .font(.caption2)
+                            .font(.system(size: 9))
                             .foregroundColor(.textSecondary)
                     }
                 }
-                
+
                 if !recipes.isEmpty {
-                    VStack(alignment: .trailing, spacing: 2) {
+                    VStack(alignment: .trailing, spacing: 1) {
                         Text(LocalizationManager.shared.t("margin_template", Int(marginPercent)))
-                            .font(.caption)
-                            .fontWeight(.bold)
+                            .font(.system(size: 9, weight: .bold))
                             .foregroundColor(marginPercent >= 60 ? .appTeal : (marginPercent >= 30 ? .appAmber : .appRose))
                         Text(LocalizationManager.shared.t("food_cost_template", Int(foodCostPercent)))
-                            .font(.system(size: 9))
+                            .font(.system(size: 8))
                             .foregroundColor(.textTertiary)
                     }
-                    .frame(width: 80, alignment: .trailing)
+                    .frame(width: 60, alignment: .trailing)
                 }
-                
+
                 Image(systemName: "chevron.right")
-                    .font(.footnote)
+                    .font(.system(size: 8))
                     .foregroundColor(.textTertiary)
             }
         }
-        .padding(APSpacing.md)
+        .padding(APSpacing.sm)
         .apCard()
     }
-    
+
     // MARK: - Empty State
-    
+
     private var emptyState: some View {
         VStack(spacing: APSpacing.md) {
             Image(systemName: "fork.knife.circle.fill")

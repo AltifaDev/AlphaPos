@@ -30,7 +30,8 @@ enum SecurityTests {
             test_verify_wrongPasswordReturnsFalse(),
             test_verify_hashMismatchReturnsFalse(),
             test_verify_withSalt(),
-            test_pin_verification()
+            test_pin_verification(),
+            test_lockout_persistence()
         ]
     }
 
@@ -39,10 +40,10 @@ enum SecurityTests {
         let name = #function
         let enteredPin = "1234"
         let hashedPin = SecurityHelper.sha256(enteredPin)
-        
+
         // Hashed check
         let isHashedMatch = SecurityHelper.verify(value: enteredPin, againstHash: hashedPin)
-        
+
         guard isHashedMatch else {
             return .failure(name, "PIN validation failed")
         }
@@ -146,7 +147,7 @@ enum SecurityTests {
         let hash1 = SecurityHelper.sha256("password", salt: "salt1")
         let hash2 = SecurityHelper.sha256("password", salt: "salt2")
         let hash3 = SecurityHelper.sha256("password", salt: "salt1")
-        
+
         guard hash1.count == 64 else {
             return .failure(name, "Salted hash length should be 64")
         }
@@ -196,16 +197,32 @@ enum SecurityTests {
         let password = "secret123"
         let salt = "myAppSalt"
         let hash = SecurityHelper.sha256(password, salt: salt)
-        
+
         let verifyPass = SecurityHelper.verify(value: password, salt: salt, againstHash: hash)
         let verifyFail = SecurityHelper.verify(value: "wrong", salt: salt, againstHash: hash)
-        
+
         guard verifyPass else {
             return .failure(name, "verify with salt failed for correct password")
         }
         guard !verifyFail else {
             return .failure(name, "verify with salt passed for wrong password")
         }
+        return .success(name)
+    }
+
+    /// Verifies that saving a lockout timestamp persists across View resets (simulated via UserDefaults).
+    private static func test_lockout_persistence() -> TestResult {
+        let name = #function
+        let testTime = Date().addingTimeInterval(300).timeIntervalSince1970
+        UserDefaults.standard.set(testTime, forKey: "staff_lockout_until_time")
+
+        let retrievedTime = UserDefaults.standard.double(forKey: "staff_lockout_until_time")
+        guard retrievedTime == testTime else {
+            UserDefaults.standard.removeObject(forKey: "staff_lockout_until_time")
+            return .failure(name, "Persisted lockout time mismatch (lockout can be bypassed)")
+        }
+
+        UserDefaults.standard.removeObject(forKey: "staff_lockout_until_time")
         return .success(name)
     }
 }

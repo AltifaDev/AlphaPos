@@ -12,17 +12,17 @@ struct MerchantAuthView: View {
     @AppStorage("active_merchant_id") private var activeMerchantId = "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
     @AppStorage("logged_in_email") private var loggedInEmail = "owner@alphapos.com"
     @AppStorage("logged_in_name") private var loggedInName = "Somchai Lertwit"
-    
+
     // Auth Mode: "login" or "signup"
     @State private var authMode: String = "login"
-    
+
     // Form Inputs
     @State private var email = ""
     @State private var password = ""
     @State private var confirmPassword = ""
     @State private var firstName = ""
     @State private var lastName = ""
-    
+
     // Shop Registration Inputs (Step 2)
     @State private var signupStep = 1 // Step 1: User Account, Step 2: Shop Info
     @State private var shopName = ""
@@ -30,11 +30,11 @@ struct MerchantAuthView: View {
     @State private var currency = "THB" // THB (฿), USD ($), EUR (€)
     @State private var taxId = ""
     @State private var shopPhone = ""
-    
+
     // Pricing Package Inputs (Step 3)
     @State private var selectedPlanId: String = "offline_perpetual"
     @State private var isAnnualBilling = false
-    
+
     // Feedback States
     @State private var errorMessage = ""
     @State private var isLoading = false
@@ -43,34 +43,34 @@ struct MerchantAuthView: View {
     @State private var logoFloat = false
     @State private var cardFloat = false
     @State private var buttonFloat = false
-    
+
     // Password toggles & sheets
     @State private var showPassword = false
     @State private var showingForgotPasswordSheet = false
     @State private var resetEmail = ""
     @State private var resetSuccessMessage = ""
     @State private var isSendingReset = false
-    
+
     // Field focus highlight animations
     @FocusState private var focusedField: AuthField?
-    
+
     enum AuthField {
         case email, password, confirmPassword, firstName, lastName
         case shopName, taxId, shopPhone
     }
-    
+
     var body: some View {
         ZStack {
             // 1. Restaurant Kitchen image background
             KitchenBackgroundView()
                 .ignoresSafeArea()
-            
+
             // 2. Main Container
             GeometryReader { geometry in
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 0) {
                         Spacer(minLength: 20)
-                        
+
                         // Brand Header
                         HStack(spacing: 12) {
                             ZStack {
@@ -88,7 +88,7 @@ struct MerchantAuthView: View {
                                     .font(.system(size: 20, weight: .bold))
                                     .foregroundColor(.white)
                             }
-                            
+
                             VStack(alignment: .leading, spacing: 1) {
                                 HStack(spacing: 0) {
                                     Text("Alpha")
@@ -107,7 +107,7 @@ struct MerchantAuthView: View {
                         .padding(.bottom, 24)
                         .scaleEffect(authCardAppeared ? 1 : 0.96)
                         .opacity(authCardAppeared ? 1 : 0)
-                        
+
                         // Frosted Glass / Glassmorphism modal container
                         VStack(spacing: 0) {
                             if authMode == "login" {
@@ -134,9 +134,9 @@ struct MerchantAuthView: View {
                         .offset(y: authCardAppeared ? 0 : 18)
                         .animation(.spring(response: 0.5, dampingFraction: 0.82), value: authMode)
                         .animation(.spring(response: 0.5, dampingFraction: 0.82), value: signupStep)
-                        
+
                         Spacer(minLength: 20)
-                        
+
                         // Footer Credits
                         VStack(spacing: 4) {
                             Text(L.Auth.sysOnlineSsl.t)
@@ -185,17 +185,17 @@ struct MerchantAuthView: View {
                     .foregroundColor(.white.opacity(0.7))
             }
             .padding(.bottom, 8)
-            
+
             if !errorMessage.isEmpty {
                 errorMessageBanner
             }
-            
+
             // Email Input
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.emailLbl.t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.white.opacity(0.85))
-                
+
                 HStack {
                     Image(systemName: "envelope")
                         .premiumAuthIconStyle(isFocused: focusedField == .email)
@@ -209,17 +209,17 @@ struct MerchantAuthView: View {
                 }
                 .premiumAuthInputStyle(isFocused: focusedField == .email)
             }
-            
+
             // Password Input
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.passwordLbl.t)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.white.opacity(0.85))
-                
+
                 HStack {
                     Image(systemName: "lock")
                         .premiumAuthIconStyle(isFocused: focusedField == .password)
-                    
+
                     if showPassword {
                         TextField("", text: $password, prompt: Text("Password").foregroundColor(.white.opacity(0.45)))
                             .font(.system(size: 14))
@@ -233,7 +233,7 @@ struct MerchantAuthView: View {
                             .foregroundColor(.white)
                             .focused($focusedField, equals: .password)
                     }
-                    
+
                     Button(action: {
                         triggerHapticFeedback(.light)
                         showPassword.toggle()
@@ -246,7 +246,7 @@ struct MerchantAuthView: View {
                 }
                 .premiumAuthInputStyle(isFocused: focusedField == .password)
             }
-            
+
             // Forgot Password Link
             HStack {
                 Spacer()
@@ -261,7 +261,7 @@ struct MerchantAuthView: View {
                 .buttonStyle(.plain)
             }
             .padding(.top, -10)
-            
+
             // Remember checkbox
             HStack(spacing: 8) {
                 Image(systemName: "checkmark.square")
@@ -272,7 +272,7 @@ struct MerchantAuthView: View {
                     .foregroundColor(.white.opacity(0.8))
             }
             .padding(.top, 2)
-            
+
             // Action Button (Primary Orange Gradient CTA)
             Button(action: handleLogin) {
                 HStack {
@@ -309,7 +309,7 @@ struct MerchantAuthView: View {
             .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
             .disabled(email.isEmpty || password.isEmpty || isLoading)
             .padding(.top, 6)
-            
+
             // Mode switcher styled as a premium secondary button
             VStack(spacing: 12) {
                 HStack {
@@ -350,7 +350,7 @@ struct MerchantAuthView: View {
             }
         }
     }
-    
+
     // MARK: - Sign Up Form (Wizard Steps)
     private var signupForm: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -365,7 +365,7 @@ struct MerchantAuthView: View {
                         .foregroundColor(Color(hex: "FF9500"))
                 }
                 Spacer()
-                
+
                 // Dots representing steps
                 HStack(spacing: 6) {
                     Circle()
@@ -380,11 +380,11 @@ struct MerchantAuthView: View {
                 }
             }
             .padding(.bottom, 8)
-            
+
             if !errorMessage.isEmpty {
                 errorMessageBanner
             }
-            
+
             if signupStep == 1 {
                 accountDetailsStep
             } else if signupStep == 2 {
@@ -394,7 +394,7 @@ struct MerchantAuthView: View {
             }
         }
     }
-    
+
     // Account details fields
     @ViewBuilder
     private var accountDetailsStep: some View {
@@ -415,7 +415,7 @@ struct MerchantAuthView: View {
                     }
                     .premiumAuthInputStyle(isFocused: focusedField == .firstName)
                 }
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Auth.lastName.t)
                         .font(.system(size: 11, weight: .bold))
@@ -431,7 +431,7 @@ struct MerchantAuthView: View {
                     .premiumAuthInputStyle(isFocused: focusedField == .lastName)
                 }
             }
-            
+
             // Email Input
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.emailLbl.t)
@@ -450,7 +450,7 @@ struct MerchantAuthView: View {
                 }
                 .premiumAuthInputStyle(isFocused: focusedField == .email)
             }
-            
+
             // Password Input
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.passwordLbl.t)
@@ -466,7 +466,7 @@ struct MerchantAuthView: View {
                 }
                 .premiumAuthInputStyle(isFocused: focusedField == .password)
             }
-            
+
             // Password Confirmation Input
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.confirmPassword.t)
@@ -482,7 +482,7 @@ struct MerchantAuthView: View {
                 }
                 .premiumAuthInputStyle(isFocused: focusedField == .confirmPassword)
             }
-            
+
             // CTA Button to Step 2 (Primary Orange Gradient Capsule CTA)
             Button(action: validateAndGoToStep2) {
                 Text(L.Auth.continueStore.t)
@@ -512,7 +512,7 @@ struct MerchantAuthView: View {
             .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
             .disabled(firstName.isEmpty || lastName.isEmpty || email.isEmpty || password.isEmpty)
             .padding(.top, 6)
-            
+
             // Mode switcher styled as a pill-shaped secondary button
             Button(action: {
                 errorMessage = ""
@@ -542,7 +542,7 @@ struct MerchantAuthView: View {
             .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
         }
     }
-    
+
     // Store configuration details
     @ViewBuilder
     private var shopDetailsStep: some View {
@@ -562,14 +562,14 @@ struct MerchantAuthView: View {
                 }
                 .premiumAuthInputStyle(isFocused: focusedField == .shopName)
             }
-            
+
             // Business Type & Currency
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Auth.businessType.t)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.white.opacity(0.85))
-                    
+
                     Picker("Business Type", selection: $businessType) {
                         Text("business_type_restaurant".t).tag("Restaurant")
                         Text("business_type_cafe".t).tag("Cafe")
@@ -588,12 +588,12 @@ struct MerchantAuthView: View {
                             .stroke(Color.white.opacity(0.35), lineWidth: 1)
                     )
                 }
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Auth.currency.t)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.white.opacity(0.85))
-                    
+
                     Picker("Currency", selection: $currency) {
                         Text("THB (฿)").tag("THB")
                         Text("USD ($)").tag("USD")
@@ -613,7 +613,7 @@ struct MerchantAuthView: View {
                     )
                 }
             }
-            
+
             // Tax ID / Business Reg No
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.taxId.t)
@@ -630,7 +630,7 @@ struct MerchantAuthView: View {
                 }
                 .premiumAuthInputStyle(isFocused: focusedField == .taxId)
             }
-            
+
             // Contact Phone
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.Auth.contactPhone.t)
@@ -647,7 +647,7 @@ struct MerchantAuthView: View {
                 }
                 .premiumAuthInputStyle(isFocused: focusedField == .shopPhone)
             }
-            
+
             // Action Buttons
             HStack(spacing: 12) {
                 // Back Button (Secondary Arrow CTA)
@@ -671,7 +671,7 @@ struct MerchantAuthView: View {
                         .shadow(color: Color.black.opacity(0.05), radius: 4, x: 0, y: 2)
                 }
                 .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
-                
+
                 // Submit Button (Primary Orange Gradient Capsule CTA)
                 Button(action: handleSignUp) {
                     HStack {
@@ -720,19 +720,19 @@ struct MerchantAuthView: View {
                 Text("รายเดือน")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(isAnnualBilling ? .white.opacity(0.6) : .white)
-                
+
                 Toggle("", isOn: $isAnnualBilling)
                     .toggleStyle(SwitchToggleStyle(tint: Color(hex: "FF9500")))
                     .labelsHidden()
                     .padding(.horizontal, 4)
-                
+
                 Text("รายปี (ประหยัด 20%)")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(isAnnualBilling ? .white : .white.opacity(0.6))
             }
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity)
-            
+
             // Plan Cards
             VStack(spacing: 10) {
                 // Plan 1: Offline Perpetual
@@ -745,7 +745,7 @@ struct MerchantAuthView: View {
                     features: ["ใช้งานถาวรระดับเครื่องแม่", "ไม่ต้องใช้อินเทอร์เน็ต", "สำรองข้อมูลแบบ Manual", "จำกัดเฉพาะฟีเจอร์ปัจจุบัน"],
                     color: Color(hex: "6366F1")
                 )
-                
+
                 // Plan 2: Offline Subscription
                 planCard(
                     id: "offline_subscription",
@@ -756,7 +756,7 @@ struct MerchantAuthView: View {
                     features: ["ใช้งานออฟไลน์ 1 เครื่องแม่", "อัปเดตฟีเจอร์ใหม่ฟรีในสัญญา", "แก้ไขสิทธิ์ / พนักงาน", "บริการความช่วยเหลือ 24/7"],
                     color: .appTeal
                 )
-                
+
                 // Plan 3: Online Cloud Subscription
                 planCard(
                     id: "online_subscription",
@@ -768,7 +768,7 @@ struct MerchantAuthView: View {
                     color: Color(hex: "FF9500")
                 )
             }
-            
+
             // Continue button
             Button(action: handleSelectPlan) {
                 HStack {
@@ -828,9 +828,9 @@ struct MerchantAuthView: View {
                             .foregroundColor(.white.opacity(0.6))
                     }
                 }
-                
+
                 Divider().background(Color.white.opacity(0.15))
-                
+
                 // Mini features
                 HStack(spacing: 12) {
                     ForEach(features.prefix(2), id: \.self) { feat in
@@ -855,7 +855,7 @@ struct MerchantAuthView: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     private var errorMessageBanner: some View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -873,7 +873,7 @@ struct MerchantAuthView: View {
                 .stroke(Color(hex: "FF453A").opacity(0.4), lineWidth: 1)
         )
     }
-    
+
     // MARK: - Logic Handlers
     private func handleLogin() {
         errorMessage = ""
@@ -897,13 +897,13 @@ struct MerchantAuthView: View {
                 }
                 let session = try await AuthService.shared.signIn(email: cleanEmail, password: cleanPassword)
                 let mId = UUID(uuidString: session.user.merchantId ?? "") ?? UUID()
-                
+
                 // Authenticate with Edge Function to obtain the JWT token and save it to the Keychain
                 try await MerchantAuthManager.shared.authenticate(
                     merchantId: mId.uuidString.lowercased(),
                     deviceSecret: AppConfig.shared.defaultDeviceSecret
                 )
-                
+
                 await MainActor.run {
                     isLoading = false
                     triggerNotificationFeedback(.success)
@@ -923,7 +923,7 @@ struct MerchantAuthView: View {
             }
         }
     }
-    
+
     private func validateAndGoToStep2() {
         errorMessage = ""
         if !email.contains("@") {
@@ -941,18 +941,18 @@ struct MerchantAuthView: View {
             errorMessage = "auth_error_mismatched_passwords".t
             return
         }
-        
+
         triggerHapticFeedback(.medium)
         withAnimation {
             signupStep = 2
         }
     }
-    
+
     private func handleSignUp() {
         errorMessage = ""
         isLoading = true
         triggerHapticFeedback(.medium)
-        
+
         Task {
             do {
                 // บังคับ Online สำหรับ Sign Up — ต้องสร้างบัญชีบน server
@@ -969,15 +969,15 @@ struct MerchantAuthView: View {
                     password: password,
                     userData: ["first_name": firstName, "last_name": lastName]
                 )
-                
+
                 let newMerchantUUID = UUID()
-                
+
                 // Authenticate new merchant to obtain and save JWT in Keychain
                 try await MerchantAuthManager.shared.authenticate(
                     merchantId: newMerchantUUID.uuidString.lowercased(),
                     deviceSecret: AppConfig.shared.defaultDeviceSecret
                 )
-                
+
                 await MainActor.run {
                     isLoading = false
                     triggerNotificationFeedback(.success)
@@ -998,16 +998,16 @@ struct MerchantAuthView: View {
             }
         }
     }
-    
+
     private func handleSelectPlan() {
         isLoading = true
         errorMessage = ""
         triggerHapticFeedback(.medium)
-        
+
         Task {
             do {
                 let mId = activeMerchantId
-                
+
                 // 1. Calculate subscription parameters
                 let tier = selectedPlanId
                 let status = "active"
@@ -1019,7 +1019,7 @@ struct MerchantAuthView: View {
                         return Date().addingTimeInterval(TimeInterval(days * 24 * 60 * 60)).timeIntervalSince1970
                     }
                 }()
-                
+
                 // 2. If online and has internet, update database on Supabase
                 if await NetworkManager.shared.isConnected() {
                     let isoExpiry = expiry.map { NetworkManager.iso8601.string(from: Date(timeIntervalSince1970: $0)) }
@@ -1028,7 +1028,7 @@ struct MerchantAuthView: View {
                         "subscription_status": status
                     ]
                     if let isoExpiry = isoExpiry { payload["subscription_expires_at"] = isoExpiry }
-                    
+
                     _ = try await NetworkManager.shared.sendSupabaseRequest(
                         method: "PATCH",
                         endpoint: "merchants",
@@ -1036,14 +1036,14 @@ struct MerchantAuthView: View {
                         payload: payload
                     )
                 }
-                
+
                 // 3. Save subscription details locally in Keychain
                 MerchantAuthManager.shared.saveSubscription(tier: tier, status: status, expiry: expiry)
-                
+
                 // 4. Force offlineSyncMode depending on plan choice
                 let isOfflinePlan = (tier == "offline_perpetual" || tier == "offline_subscription")
                 UserDefaults.standard.set(isOfflinePlan, forKey: "offline_sync_mode")
-                
+
                 await MainActor.run {
                     isLoading = false
                     triggerNotificationFeedback(.success)
@@ -1059,40 +1059,40 @@ struct MerchantAuthView: View {
             }
         }
     }
-    
+
     private func seedNewMerchantData(merchantId: UUID) {
         // Only seed if we don't have roles/employees seeded yet to avoid duplicates
         let existingEmployees = (try? modelContext.fetch(FetchDescriptor<Employee>())) ?? []
         guard existingEmployees.isEmpty else { return }
 
 
-        
+
         // Seed default tables in memory/SwiftData container
         let t1 = RestaurantTable(id: UUID(), tableNumber: "1", capacity: 4, status: "vacant", qrCodeIdentifier: nil, positionX: 200, positionY: 200, floor: 1, isSynced: false, isDeleted: false, updatedAt: Date())
         let t2 = RestaurantTable(id: UUID(), tableNumber: "2", capacity: 4, status: "vacant", qrCodeIdentifier: nil, positionX: 400, positionY: 200, floor: 1, isSynced: false, isDeleted: false, updatedAt: Date())
         let t3 = RestaurantTable(id: UUID(), tableNumber: "3", capacity: 6, status: "vacant", qrCodeIdentifier: nil, positionX: 600, positionY: 200, floor: 1, isSynced: false, isDeleted: false, updatedAt: Date())
         let t4 = RestaurantTable(id: UUID(), tableNumber: "4", capacity: 2, status: "vacant", qrCodeIdentifier: nil, positionX: 200, positionY: 400, floor: 1, isSynced: false, isDeleted: false, updatedAt: Date())
         let t5 = RestaurantTable(id: UUID(), tableNumber: "5", capacity: 8, status: "vacant", qrCodeIdentifier: nil, positionX: 500, positionY: 400, floor: 1, isSynced: false, isDeleted: false, updatedAt: Date())
-        
+
         modelContext.insert(t1)
         modelContext.insert(t2)
         modelContext.insert(t3)
         modelContext.insert(t4)
         modelContext.insert(t5)
-        
+
         // Seed some default Thai category items
         let catFood = Category(id: UUID(), name: "Burgers & Mains", isSynced: false, isDeleted: false, updatedAt: Date())
         let catDrinks = Category(id: UUID(), name: "Beverages", isSynced: false, isDeleted: false, updatedAt: Date())
-        
+
         modelContext.insert(catFood)
         modelContext.insert(catDrinks)
-        
+
         let item1 = MenuItem(id: UUID().uuidString.lowercased(), name: "Classic Pad Thai", itemDescription: "Stir-fried rice noodles with tofu, shrimp, and peanuts.", price: 120.0, imageUrl: nil, isAvailable: true, taxRate: 7.0, category: catFood, isSynced: false, isDeleted: false, updatedAt: Date())
         let item2 = MenuItem(id: UUID().uuidString.lowercased(), name: "Iced Milk Tea", itemDescription: "Traditional sweet Thai tea served over shaved ice.", price: 65.0, imageUrl: nil, isAvailable: true, taxRate: 7.0, category: catDrinks, isSynced: false, isDeleted: false, updatedAt: Date())
-        
+
         modelContext.insert(item1)
         modelContext.insert(item2)
-        
+
         // Seed default Roles
         let roleManager = Role(
             id: UUID(),
@@ -1117,8 +1117,8 @@ struct MerchantAuthView: View {
 
         // Seed default Users
         // Fixed UUIDs — must match SampleDataSeeder constants so employeeId FK references stay valid after re-seed
-        let seedEmp1Id  = UUID(uuidString: "9a5767a4-6f30-4614-94d9-5ea85e282775")!
-        let seedEmp2Id  = UUID(uuidString: "193df239-104d-4e2d-b2e5-9f2b4ff30ddc")!
+        let seedEmp1Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let seedEmp2Id  = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
         let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
         let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
         // Use plain sha256 for seed users — verifyPIN supports the legacy format.
@@ -1133,7 +1133,7 @@ struct MerchantAuthView: View {
         let emp2 = Employee(id: seedEmp2Id, user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, isSynced: false, isDeleted: false, updatedAt: Date())
         modelContext.insert(emp1)
         modelContext.insert(emp2)
-        
+
         // Save database
         modelContext.saveWithLogging(label: #function)
     }
@@ -1142,13 +1142,13 @@ struct MerchantAuthView: View {
 // MARK: - Premium Kitchen Background
 struct KitchenBackgroundView: View {
     @State private var animateBlobs = false
-    
+
     var body: some View {
         ZStack {
             // Video Kitchen base
             LoopingVideoPlayer(videoName: "LoginBG", videoExtension: "mp4")
                 .ignoresSafeArea()
-            
+
             // Motion Blobs (Drifting light leaks)
             GeometryReader { geo in
                 ZStack {
@@ -1167,7 +1167,7 @@ struct KitchenBackgroundView: View {
                             x: animateBlobs ? geo.size.width * 0.15 : geo.size.width * 0.4,
                             y: animateBlobs ? geo.size.height * 0.2 : geo.size.height * -0.1
                         )
-                    
+
                     // Blob 2: Mint Green light leak (bottom-left to top-left)
                     Circle()
                         .fill(
@@ -1183,7 +1183,7 @@ struct KitchenBackgroundView: View {
                             x: animateBlobs ? geo.size.width * -0.4 : geo.size.width * -0.2,
                             y: animateBlobs ? geo.size.height * 0.3 : geo.size.height * 0.6
                         )
-                    
+
                     // Blob 3: Soft Gold/Yellow leak (center breathing)
                     Circle()
                         .fill(
@@ -1205,7 +1205,7 @@ struct KitchenBackgroundView: View {
                 .blur(radius: 80)
             }
             .ignoresSafeArea()
-            
+
             // Subtle dark overlay to ensure readability for text elements outside the glass panel
             Color.black.opacity(0.12)
                 .ignoresSafeArea()
@@ -1222,12 +1222,12 @@ struct KitchenBackgroundView: View {
 // MARK: - Visual Effect Blur (UIKit bridge for premium blur depth)
 struct VisualEffectBlur: UIViewRepresentable {
     var material: UIBlurEffect.Style
-    
+
     func makeUIView(context: Context) -> UIVisualEffectView {
         let view = UIVisualEffectView(effect: UIBlurEffect(style: material))
         return view
     }
-    
+
     func updateUIView(_ uiView: UIVisualEffectView, context: Context) {
         uiView.effect = UIBlurEffect(style: material)
     }
@@ -1293,7 +1293,7 @@ private extension View {
 // MARK: - Scale Button Style
 struct ScaleButtonStyle: ButtonStyle {
     var floatAnimation: Bool = false
-    
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
@@ -1306,7 +1306,7 @@ struct ScaleButtonStyle: ButtonStyle {
 // MARK: - Premium Auth Input Modifier
 struct PremiumAuthInputModifier: ViewModifier {
     var isFocused: Bool
-    
+
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 14)
@@ -1326,7 +1326,7 @@ struct PremiumAuthInputModifier: ViewModifier {
 struct PremiumAuthIconModifier: ViewModifier {
     var isFocused: Bool
     var activeColor: Color = Color(hex: "FF9500")
-    
+
     func body(content: Content) -> some View {
         content
             .foregroundColor(isFocused ? activeColor : Color.white.opacity(0.6))
@@ -1340,7 +1340,7 @@ extension View {
     func premiumAuthInputStyle(isFocused: Bool) -> some View {
         modifier(PremiumAuthInputModifier(isFocused: isFocused))
     }
-    
+
     func premiumAuthIconStyle(isFocused: Bool) -> some View {
         modifier(PremiumAuthIconModifier(isFocused: isFocused))
     }
@@ -1359,7 +1359,7 @@ extension MerchantAuthView {
         generator.prepare()
         generator.impactOccurred()
     }
-    
+
     private func triggerNotificationFeedback(_ type: UINotificationFeedbackGenerator.FeedbackType) {
         let generator = UINotificationFeedbackGenerator()
         generator.prepare()
@@ -1381,23 +1381,23 @@ extension MerchantAuthView {
                 }
                 .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
             }
-            
+
             VStack(spacing: 8) {
                 Image(systemName: "key") // Outline key icon
                     .font(.system(size: 44))
                     .foregroundColor(Color(hex: "FF9500"))
-                
+
                 Text(L.Auth.resetTitle.t)
                     .font(.system(size: 20, weight: .black, design: .rounded))
                     .foregroundColor(.primary)
-                
+
                 Text(L.Auth.resetDesc.t)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(Color.primary.opacity(0.7))
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
-            
+
             if !resetSuccessMessage.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "checkmark.circle") // Outline checkmark
@@ -1417,7 +1417,7 @@ extension MerchantAuthView {
                     Text(L.Auth.emailLbl.t)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(Color.primary.opacity(0.8))
-                    
+
                     HStack {
                         Image(systemName: "envelope") // Outline envelope
                             .foregroundColor(Color.primary.opacity(0.5))
@@ -1438,7 +1438,7 @@ extension MerchantAuthView {
                             .stroke(Color.primary.opacity(0.15), lineWidth: 1)
                     )
                 }
-                
+
                 Button(action: handleResetPassword) {
                     if isSendingReset {
                         ProgressView()
@@ -1475,19 +1475,19 @@ extension MerchantAuthView {
                 .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
                 .disabled(resetEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSendingReset)
             }
-            
+
             Spacer()
         }
         .padding(32)
         .presentationDetents([.medium])
     }
-    
+
     private func handleResetPassword() {
         let cleanResetEmail = resetEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !cleanResetEmail.isEmpty else { return }
         isSendingReset = true
         triggerHapticFeedback(.medium)
-        
+
         Task {
             do {
                 try await AuthService.shared.resetPassword(email: cleanResetEmail)

@@ -16,6 +16,7 @@ import {
   create,
   verify,
 } from "djwt";
+import { createClient } from "@supabase/supabase-js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -56,8 +57,10 @@ Deno.serve(async (req: Request) => {
   try {
     const JWT_SECRET = Deno.env.get("ALPHAPOS_JWT_SECRET");
     const PROJECT_REF = Deno.env.get("ALPHAPOS_PROJECT_REF");
+    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
+    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-    if (!JWT_SECRET || !PROJECT_REF) {
+    if (!JWT_SECRET || !PROJECT_REF || !SUPABASE_URL || !SERVICE_ROLE_KEY) {
       return new Response(
         JSON.stringify({ error: "Server configuration error" }),
         {
@@ -113,6 +116,29 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // ── Enforce sliding window policy (Must be within 3 hours of expiry) ─
+    const exp = payload.exp as number | undefined;
+    if (exp) {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const timeLeft = exp - nowSeconds;
+      const THREE_HOURS_SECONDS = 3 * 3600; // 3 hours
+
+      // If token is still fresh (more than 3 hours remaining), reject refresh request
+      if (timeLeft > THREE_HOURS_SECONDS) {
+        return new Response(
+          JSON.stringify({
+            error: "Token is still active and cannot be refreshed yet",
+            time_left_seconds: timeLeft,
+            min_seconds_required: THREE_HOURS_SECONDS
+          }),
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          },
+        );
+      }
+    }
+
     // ── Issue fresh token ──────────────────────────────────────────
     const TOKEN_TTL_SECONDS = 86400;
     const now = Math.floor(Date.now() / 1000);
@@ -129,6 +155,22 @@ Deno.serve(async (req: Request) => {
       },
       key,
     );
+
+    // ── Log refresh event into audit_logs (Login History) ─────────────
+    try {
+      const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+        auth: { persistSession: false },
+      });
+      const clientIp = req.headers.get("x-forwarded-for") || "unknown";
+      const userAgent = req.headers.get("user-agent") || "unknown";
+      await supabase.from("audit_logs").insert({
+        merchant_id: merchantId,
+        action_type: "refresh_merchant_token",
+        details: `Merchant token refreshed. IP: ${clientIp}, Agent: ${userAgent}`,
+      });
+    } catch (logErr) {
+      console.error("Failed to write to audit_logs during refresh:", logErr);
+    }
 
     return new Response(
       JSON.stringify({

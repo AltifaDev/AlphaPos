@@ -4,23 +4,23 @@ import SwiftData
 struct ExpenseTrackerView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
-    
+
     @Query(sort: \Expense.date, order: .reverse) private var expenses: [Expense]
     @Query(sort: \Supplier.name) private var suppliers: [Supplier]
     @Query(sort: \Branch.name) private var branches: [Branch]
-    
+
     @AppStorage("active_branch_id") private var activeBranchId = ""
-    
+
     // Filters & Navigation States
     @State private var searchText = ""
     @State private var selectedCategoryFilter = "All"
     @State private var periodFilter = 1 // 0: Daily, 1: Monthly (Default to Monthly ledger)
     @State private var selectedExpense: Expense? = nil
-    
+
     // Sheet States
     @State private var showingForm = false
     @State private var editingExpense: Expense? = nil
-    
+
     // Form Inputs
     @State private var titleInput = ""
     @State private var invoiceNoInput = ""
@@ -35,13 +35,13 @@ struct ExpenseTrackerView: View {
     @State private var isCapExInput = false
     @State private var notesInput = ""
     @State private var dateInput = Date()
-    
+
     init() {}
-    
+
     private var activeBranch: Branch? {
         branches.first(where: { $0.id.uuidString == activeBranchId })
     }
-    
+
     // Filtered Ledger List
     private var filteredExpenses: [Expense] {
         let branchFiltered = expenses.filter { expense in
@@ -51,7 +51,7 @@ struct ExpenseTrackerView: View {
             }
             return true
         }
-        
+
         let searchFiltered = branchFiltered.filter { expense in
             if searchText.isEmpty { return true }
             let term = searchText.lowercased()
@@ -59,12 +59,12 @@ struct ExpenseTrackerView: View {
                    (expense.invoiceNo ?? "").lowercased().contains(term) ||
                    (expense.notes ?? "").lowercased().contains(term)
         }
-        
+
         let categoryFiltered = searchFiltered.filter { expense in
             if selectedCategoryFilter == "All" { return true }
             return expense.category == selectedCategoryFilter
         }
-        
+
         let periodFiltered = categoryFiltered.filter { expense in
             let calendar = Calendar.current
             if periodFilter == 0 {
@@ -75,10 +75,10 @@ struct ExpenseTrackerView: View {
                 return calendar.isDate(expense.date, equalTo: Date(), toGranularity: .month)
             }
         }
-        
+
         return periodFiltered
     }
-    
+
     // Computed Summary Metrics
     private var monthlyTotal: Double {
         let calendar = Calendar.current
@@ -88,7 +88,7 @@ struct ExpenseTrackerView: View {
             calendar.isDate(expense.date, equalTo: Date(), toGranularity: .month)
         }.reduce(0.0) { $0 + $1.amount }
     }
-    
+
     private var opExTotal: Double {
         let calendar = Calendar.current
         return expenses.filter { expense in
@@ -98,7 +98,7 @@ struct ExpenseTrackerView: View {
             calendar.isDate(expense.date, equalTo: Date(), toGranularity: .month)
         }.reduce(0.0) { $0 + $1.amount }
     }
-    
+
     private var capExTotal: Double {
         let calendar = Calendar.current
         return expenses.filter { expense in
@@ -108,13 +108,13 @@ struct ExpenseTrackerView: View {
             calendar.isDate(expense.date, equalTo: Date(), toGranularity: .month)
         }.reduce(0.0) { $0 + $1.amount }
     }
-    
+
     // Dynamic values computed during Form entry
     private var formCalculatedValues: (subtotal: Double, vat: Double, total: Double) {
         let qty = Double(quantityInput) ?? 0.0
         let price = Double(unitPriceInput) ?? 0.0
         let baseAmount = qty * price
-        
+
         switch vatOption {
         case 1: // 7% Inclusive
             let total = baseAmount
@@ -130,19 +130,19 @@ struct ExpenseTrackerView: View {
             return (baseAmount, 0.0, baseAmount)
         }
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Sleek Compact Header (Metrics Bar)
             compactMetricsBar
-            
+
             Divider().background(Color.appDivider)
-            
+
             // Advanced Filters Toolbar
             advancedFilterToolbar
-            
+
             Divider().background(Color.appDivider)
-            
+
             // Master-Detail Split Workspace
             HStack(spacing: 0) {
                 // Left Panel: Ledger Table (Master List)
@@ -154,9 +154,9 @@ struct ExpenseTrackerView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                
+
                 Divider().background(Color.appDivider)
-                
+
                 // Right Panel: Detail Inspector (Detail Panel)
                 detailInspectorView
                     .frame(width: 380)
@@ -173,80 +173,81 @@ struct ExpenseTrackerView: View {
             }
         }
     }
-    
+
     // MARK: - Compact Metrics Bar
     private var compactMetricsBar: some View {
-        HStack(spacing: APSpacing.xl) {
+        HStack(spacing: APSpacing.lg) {
             HStack(spacing: APSpacing.xs) {
                 Image(systemName: "banknote")
                     .foregroundColor(.textSecondary)
-                    .font(.subheadline)
+                    .font(.system(size: 10))
                 Text("expense_monthly".t + ":")
-                    .font(.subheadline)
+                    .font(.system(size: 10))
                     .foregroundColor(.textSecondary)
                 Text(String(format: "฿%.2f", monthlyTotal))
-                    .font(.system(.subheadline, design: .rounded)).fontWeight(.bold)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
                     .foregroundColor(.textPrimary)
             }
-            
+
             HStack(spacing: APSpacing.xs) {
                 Image(systemName: "briefcase")
                     .foregroundColor(.textSecondary)
-                    .font(.subheadline)
+                    .font(.system(size: 10))
                 Text("OpEx:")
-                    .font(.subheadline)
+                    .font(.system(size: 10))
                     .foregroundColor(.textSecondary)
                 Text(String(format: "฿%.2f", opExTotal))
-                    .font(.system(.subheadline, design: .rounded)).fontWeight(.bold)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
                     .foregroundColor(.appTeal)
             }
-            
+
             HStack(spacing: APSpacing.xs) {
                 Image(systemName: "wrench.and.screwdriver")
                     .foregroundColor(.textSecondary)
-                    .font(.subheadline)
+                    .font(.system(size: 10))
                 Text("CapEx:")
-                    .font(.subheadline)
+                    .font(.system(size: 10))
                     .foregroundColor(.textSecondary)
                 Text(String(format: "฿%.2f", capExTotal))
-                    .font(.system(.subheadline, design: .rounded)).fontWeight(.bold)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
                     .foregroundColor(.appAccent)
             }
-            
+
             Spacer()
         }
-        .padding(.horizontal, APSpacing.md)
-        .padding(.vertical, 12)
+        .padding(.horizontal, APSpacing.sm)
+        .padding(.vertical, 6)
         .background(Color.appSurface)
     }
-    
+
     // MARK: - Advanced Filters Toolbar
     private var advancedFilterToolbar: some View {
-        HStack(spacing: APSpacing.md) {
+        HStack(spacing: APSpacing.sm) {
             // Search Text Field
             HStack(spacing: APSpacing.xs) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.textSecondary)
-                    .font(.footnote)
+                    .font(.system(size: 9))
                 TextField("search_hint".t + " (Inv #, Item)", text: $searchText)
-                    .font(.subheadline)
+                    .font(.system(size: 10))
                     .foregroundColor(.textPrimary)
                 if !searchText.isEmpty {
                     Button(action: { searchText = "" }) {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.textSecondary)
+                            .font(.system(size: 9))
                     }
                 }
             }
-            .padding(8)
+            .padding(4)
             .background(Color.appSurfaceHigh)
             .cornerRadius(APRadius.md)
             .overlay(
                 RoundedRectangle(cornerRadius: APRadius.md)
                     .stroke(Color.appBorderSubtle, lineWidth: 1)
             )
-            .frame(width: 280)
-            
+            .frame(width: 200)
+
             // Category Selector
             Picker("Category", selection: $selectedCategoryFilter) {
                 Text("All").tag("All")
@@ -257,45 +258,47 @@ struct ExpenseTrackerView: View {
                 Text("expense_category_other".t).tag("Other")
             }
             .pickerStyle(.menu)
-            .padding(.horizontal, APSpacing.sm)
-            .padding(.vertical, 6)
+            .font(.system(size: 9))
+            .padding(.horizontal, APSpacing.xs)
+            .padding(.vertical, 3)
             .background(Color.appSurfaceHigh)
             .cornerRadius(APRadius.md)
             .overlay(
                 RoundedRectangle(cornerRadius: APRadius.md)
                     .stroke(Color.appBorderSubtle, lineWidth: 1)
             )
-            
+
             // Period Segmented View
             Picker("Period", selection: $periodFilter) {
                 Text("expense_today".t).tag(0)
                 Text("expense_monthly".t).tag(1)
             }
             .pickerStyle(.segmented)
-            .frame(width: 220)
-            
+            .scaleEffect(0.9)
+            .frame(width: 160)
+
             Spacer()
-            
+
             // Add Expense Button
             Button(action: { openAddExpenseForm() }) {
-                HStack(spacing: 8) {
+                HStack(spacing: 4) {
                     Image(systemName: "plus")
-                        .fontWeight(.bold)
+                        .font(.system(size: 9, weight: .bold))
                     Text("expense_add".t)
-                        .fontWeight(.bold)
+                        .font(.system(size: 9, weight: .bold))
                 }
                 .foregroundColor(.white)
-                .padding(.horizontal, APSpacing.md)
-                .padding(.vertical, 8)
+                .padding(.horizontal, APSpacing.sm)
+                .padding(.vertical, 4)
                 .background(APGradient.accent)
                 .cornerRadius(APRadius.pill)
             }
             .buttonStyle(.plain)
         }
-        .padding(APSpacing.md)
+        .padding(APSpacing.sm)
         .background(Color.appSurface)
     }
-    
+
     // MARK: - Ledger Table List
     private var ledgerTableListView: some View {
         ScrollView {
@@ -303,100 +306,100 @@ struct ExpenseTrackerView: View {
                 // Table Columns Header
                 HStack(spacing: 0) {
                     Text("expense_date".t)
-                        .font(.caption2).fontWeight(.heavy)
+                        .font(.system(size: 8, weight: .heavy))
                         .foregroundColor(.textSecondary)
-                        .frame(width: 110, alignment: .leading)
-                    
+                        .frame(width: 70, alignment: .leading)
+
                     Text("Ref No")
-                        .font(.caption2).fontWeight(.heavy)
+                        .font(.system(size: 8, weight: .heavy))
                         .foregroundColor(.textSecondary)
-                        .frame(width: 120, alignment: .leading)
-                    
+                        .frame(width: 80, alignment: .leading)
+
                     Text("expense_title".t)
-                        .font(.caption2).fontWeight(.heavy)
+                        .font(.system(size: 8, weight: .heavy))
                         .foregroundColor(.textSecondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    
+
                     Text("expense_category".t)
-                        .font(.caption2).fontWeight(.heavy)
+                        .font(.system(size: 8, weight: .heavy))
                         .foregroundColor(.textSecondary)
-                        .frame(width: 140, alignment: .leading)
-                    
+                        .frame(width: 90, alignment: .leading)
+
                     Text("expense_amount".t)
-                        .font(.caption2).fontWeight(.heavy)
-                        .foregroundColor(.textSecondary)
-                        .frame(width: 110, alignment: .trailing)
-                    
-                    Text("Status")
-                        .font(.caption2).fontWeight(.heavy)
+                        .font(.system(size: 8, weight: .heavy))
                         .foregroundColor(.textSecondary)
                         .frame(width: 80, alignment: .trailing)
+
+                    Text("Status")
+                        .font(.system(size: 8, weight: .heavy))
+                        .foregroundColor(.textSecondary)
+                        .frame(width: 60, alignment: .trailing)
                 }
-                .padding(.horizontal, APSpacing.md)
-                .padding(.vertical, 10)
+                .padding(.horizontal, APSpacing.sm)
+                .padding(.vertical, 6)
                 .background(Color.appSurfaceHigh.opacity(0.4))
-                
+
                 // Rows
                 ForEach(filteredExpenses) { expense in
                     HStack(spacing: 0) {
                         // Date
                         Text(formatShortDate(expense.date))
-                            .font(.subheadline)
+                            .font(.system(size: 9))
                             .foregroundColor(.textSecondary)
-                            .frame(width: 110, alignment: .leading)
-                        
+                            .frame(width: 70, alignment: .leading)
+
                         // Invoice No
                         Text(expense.invoiceNo ?? "—")
-                            .font(.system(.subheadline, design: .monospaced))
+                            .font(.system(size: 9, design: .monospaced))
                             .foregroundColor(.textSecondary)
-                            .frame(width: 120, alignment: .leading)
-                        
+                            .frame(width: 80, alignment: .leading)
+
                         // Title
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 1) {
                             Text(expense.title)
-                                .font(.subheadline).fontWeight(.bold)
+                                .font(.system(size: 9, weight: .bold))
                                 .foregroundColor(.textPrimary)
                             if let supplierName = expense.supplier?.name {
                                 Text("Supplier: \(supplierName)")
-                                    .font(.caption2)
+                                    .font(.system(size: 7))
                                     .foregroundColor(.textSecondary)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        
+
                         // Category Tag
-                        HStack(spacing: 4) {
+                        HStack(spacing: 3) {
                             Circle()
                                 .fill(getCategoryColor(expense.category))
-                                .frame(width: 6, height: 6)
+                                .frame(width: 4, height: 4)
                             Text(getLocalizedCategoryName(expense.category))
-                                .font(.caption2).fontWeight(.medium)
+                                .font(.system(size: 8, weight: .medium))
                                 .foregroundColor(.textPrimary)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
                         .background(getCategoryColor(expense.category).opacity(0.1))
                         .cornerRadius(APRadius.sm)
-                        .frame(width: 140, alignment: .leading)
-                        
+                        .frame(width: 90, alignment: .leading)
+
                         // Amount
                         Text(String(format: "฿%.2f", expense.amount))
-                            .font(.system(.subheadline, design: .rounded)).fontWeight(.bold)
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
                             .foregroundColor(.textPrimary)
-                            .frame(width: 110, alignment: .trailing)
-                        
+                            .frame(width: 80, alignment: .trailing)
+
                         // Status Badge
                         Text(expense.status.uppercased())
-                            .font(.system(size: 9, weight: .heavy))
+                            .font(.system(size: 7, weight: .heavy))
                             .foregroundColor(expense.status == "Paid" ? .appTeal : .appRose)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1.5)
                             .background(expense.status == "Paid" ? Color.appTeal.opacity(0.12) : Color.appRose.opacity(0.12))
                             .cornerRadius(APRadius.sm)
-                            .frame(width: 80, alignment: .trailing)
+                            .frame(width: 60, alignment: .trailing)
                     }
-                    .padding(.horizontal, APSpacing.md)
-                    .padding(.vertical, 12)
+                    .padding(.horizontal, APSpacing.sm)
+                    .padding(.vertical, 6)
                     .background(selectedExpense?.id == expense.id ? Color.appAccent.opacity(0.08) : Color.appSurface)
                     .overlay(
                         Rectangle().fill(Color.appDivider).frame(height: 1), alignment: .bottom
@@ -409,195 +412,202 @@ struct ExpenseTrackerView: View {
             }
         }
     }
-    
+
     // MARK: - Detail Inspector View
     private var detailInspectorView: some View {
         VStack(spacing: 0) {
             if let expense = selectedExpense {
                 // Header Details
-                VStack(alignment: .leading, spacing: APSpacing.sm) {
+                VStack(alignment: .leading, spacing: APSpacing.xs) {
                     Text("EXPENSE DETAILS")
-                        .font(.caption2).fontWeight(.bold)
+                        .font(.system(size: 8, weight: .bold))
                         .foregroundColor(.textSecondary)
-                    
+
                     Text(expense.title)
-                        .font(.title2).fontWeight(.bold)
+                        .font(.system(size: 13, weight: .bold))
                         .foregroundColor(.textPrimary)
-                    
+
                     if let invNo = expense.invoiceNo {
                         Text(formatLongDate(expense.date) + " | #" + invNo)
-                            .font(.caption)
+                            .font(.system(size: 9))
                             .foregroundColor(.textSecondary)
                     } else {
                         Text(formatLongDate(expense.date))
-                            .font(.caption)
+                            .font(.system(size: 9))
                             .foregroundColor(.textSecondary)
                     }
-                    
-                    HStack(spacing: 6) {
+
+                    HStack(spacing: 4) {
                         Text(getLocalizedCategoryName(expense.category))
-                            .font(.caption2).fontWeight(.medium)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
+                            .font(.system(size: 8, weight: .medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
                             .background(getCategoryColor(expense.category).opacity(0.12))
                             .cornerRadius(APRadius.sm)
-                        
+
                         Text(expense.isCapEx ? "CAPITAL ASSET (CAPEX)" : "OPERATING EXPENSE (OPEX)")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: 7, weight: .bold))
                             .foregroundColor(expense.isCapEx ? .appAccent : .appTeal)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
                             .background(expense.isCapEx ? Color.appAccent.opacity(0.12) : Color.appTeal.opacity(0.12))
                             .cornerRadius(APRadius.sm)
                     }
                 }
-                .padding(APSpacing.md)
-                
+                .padding(APSpacing.sm)
+
                 Divider().background(Color.appDivider)
-                
+
                 // Content Information
                 ScrollView {
-                    VStack(alignment: .leading, spacing: APSpacing.md) {
+                    VStack(alignment: .leading, spacing: APSpacing.sm) {
                         // Supplier Info
                         if let supplier = expense.supplier {
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: 2) {
                                 Text("Supplier")
-                                    .font(.caption).foregroundColor(.textSecondary)
+                                    .font(.system(size: 8)).foregroundColor(.textSecondary)
                                 Text(supplier.name)
-                                    .font(.body).fontWeight(.semibold).foregroundColor(.textPrimary)
+                                    .font(.system(size: 10, weight: .semibold)).foregroundColor(.textPrimary)
                                 if let contact = supplier.contactName {
                                     Text("Contact: " + contact)
-                                        .font(.caption2).foregroundColor(.textSecondary)
+                                        .font(.system(size: 8)).foregroundColor(.textSecondary)
                                 }
                             }
                         }
-                        
+
                         // Item Details & Quantities
-                        VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 6) {
                             Text("Line Calculations")
-                                .font(.caption).foregroundColor(.textSecondary)
-                            
+                                .font(.system(size: 8)).foregroundColor(.textSecondary)
+
                             HStack {
                                 Text("Qty:")
+                                    .font(.system(size: 9))
                                 Spacer()
                                 Text(String(format: "%.1f %@", expense.quantity, expense.unit ?? ""))
-                                    .fontWeight(.medium)
+                                    .font(.system(size: 9, weight: .medium))
                             }
-                            
+
                             HStack {
                                 Text("Unit Price:")
+                                    .font(.system(size: 9))
                                 Spacer()
                                 Text(String(format: "฿%.2f", expense.unitPrice))
-                                    .fontWeight(.medium)
+                                    .font(.system(size: 9, weight: .medium))
                             }
-                            
+
                             HStack {
                                 Text("Subtotal:")
+                                    .font(.system(size: 9))
                                 Spacer()
                                 Text(String(format: "฿%.2f", expense.amount - expense.vatAmount))
-                                    .fontWeight(.medium)
+                                    .font(.system(size: 9, weight: .medium))
                             }
-                            
+
                             HStack {
                                 Text(String(format: "VAT (%.0f%%):", expense.vatRate))
+                                    .font(.system(size: 9))
                                 Spacer()
                                 Text(String(format: "+ ฿%.2f", expense.vatAmount))
+                                    .font(.system(size: 9))
                                     .foregroundColor(.textSecondary)
                             }
-                            
+
                             Divider()
-                            
+
                             HStack {
                                 Text("Total Amount:")
-                                    .fontWeight(.bold)
+                                    .font(.system(size: 9, weight: .bold))
                                 Spacer()
                                 Text(String(format: "฿%.2f", expense.amount))
-                                    .font(.system(.body, design: .rounded)).fontWeight(.heavy)
+                                    .font(.system(size: 10, weight: .heavy, design: .rounded))
                                     .foregroundColor(.textPrimary)
                             }
                         }
-                        .padding(APSpacing.md)
+                        .padding(APSpacing.sm)
                         .background(Color.appSurfaceHigh)
                         .cornerRadius(APRadius.md)
-                        
+
                         // Payment Details
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: 2) {
                             infoRow(label: "Payment Method", value: expense.paymentMethod)
                             infoRow(label: "Status", value: expense.status)
                         }
-                        
+
                         // Notes
                         if let notes = expense.notes, !notes.isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: 2) {
                                 Text("Notes")
-                                    .font(.caption).foregroundColor(.textSecondary)
+                                    .font(.system(size: 8)).foregroundColor(.textSecondary)
                                 Text(notes)
-                                    .font(.subheadline)
+                                    .font(.system(size: 9))
                                     .foregroundColor(.textPrimary)
-                                    .padding(APSpacing.sm)
+                                    .padding(APSpacing.xs)
                                     .background(Color.appSurfaceHigh)
                                     .cornerRadius(APRadius.sm)
                             }
                         }
                     }
-                    .padding(APSpacing.md)
+                    .padding(APSpacing.sm)
                 }
-                
+
                 Spacer()
-                
+
                 Divider().background(Color.appDivider)
-                
+
                 // Action Buttons
-                HStack(spacing: APSpacing.md) {
+                HStack(spacing: APSpacing.sm) {
                     Button(action: { deleteSelectedExpense(expense) }) {
                         Image(systemName: "trash")
                             .foregroundColor(.appRose)
-                            .padding(12)
+                            .font(.system(size: 10))
+                            .padding(8)
                             .background(Color.appRose.opacity(0.12))
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    
+
                     Button(action: { openEditExpenseForm(expense) }) {
                         HStack {
                             Image(systemName: "pencil")
+                                .font(.system(size: 10))
                             Text("Edit Expense")
-                                .fontWeight(.bold)
+                                .font(.system(size: 10, weight: .bold))
                         }
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 8)
                         .background(APGradient.accent)
                         .cornerRadius(APRadius.md)
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(APSpacing.md)
+                .padding(APSpacing.sm)
             } else {
                 Spacer()
                 Image(systemName: "doc.plaintext")
-                    .font(.system(size: 48))
+                    .font(.system(size: 32))
                     .foregroundColor(.textSecondary.opacity(0.5))
                     .padding()
                 Text("Select an item to view details")
-                    .font(.subheadline)
+                    .font(.system(size: 10))
                     .foregroundColor(.textSecondary)
                 Spacer()
             }
         }
     }
-    
+
     private func infoRow(label: String, value: String) -> some View {
         HStack {
             Text(label)
-                .font(.caption).foregroundColor(.textSecondary)
+                .font(.system(size: 8)).foregroundColor(.textSecondary)
             Spacer()
             Text(value)
-                .font(.subheadline).fontWeight(.semibold).foregroundColor(.textPrimary)
+                .font(.system(size: 9, weight: .semibold)).foregroundColor(.textPrimary)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
     }
-    
+
     // MARK: - Add/Edit Expense Form View
     private var addEditExpenseFormView: some View {
         NavigationStack {
@@ -605,10 +615,10 @@ struct ExpenseTrackerView: View {
                 Section(header: Text("Basic Information")) {
                     TextField("Title (e.g. Wooden Chairs)", text: $titleInput)
                         .foregroundColor(.textPrimary)
-                    
+
                     TextField("Invoice / Ref Number", text: $invoiceNoInput)
                         .foregroundColor(.textPrimary)
-                    
+
                     Picker("Category", selection: $categoryInput) {
                         Text("expense_category_raw_materials".t).tag("Raw Materials")
                         Text("expense_category_equipment".t).tag("Equipment")
@@ -618,7 +628,7 @@ struct ExpenseTrackerView: View {
                     }
                     .pickerStyle(.menu)
                 }
-                
+
                 Section(header: Text("Quantities & Cost (Calculated)")) {
                     HStack {
                         Text("Quantity")
@@ -629,7 +639,7 @@ struct ExpenseTrackerView: View {
                             .foregroundColor(.textPrimary)
                             .frame(width: 100)
                     }
-                    
+
                     HStack {
                         Text("Unit of Measure")
                         Spacer()
@@ -638,7 +648,7 @@ struct ExpenseTrackerView: View {
                             .foregroundColor(.textPrimary)
                             .frame(width: 100)
                     }
-                    
+
                     HStack {
                         Text("Unit Price")
                         Spacer()
@@ -648,7 +658,7 @@ struct ExpenseTrackerView: View {
                             .foregroundColor(.textPrimary)
                             .frame(width: 150)
                     }
-                    
+
                     Picker("VAT Taxation", selection: $vatOption) {
                         Text("None (0%)").tag(0)
                         Text("7% Inclusive").tag(1)
@@ -656,7 +666,7 @@ struct ExpenseTrackerView: View {
                     }
                     .pickerStyle(.segmented)
                     .padding(.vertical, 4)
-                    
+
                     // Live Calculation Display
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -672,7 +682,7 @@ struct ExpenseTrackerView: View {
                     }
                     .padding(.vertical, 6)
                 }
-                
+
                 Section(header: Text("Accounting & Supplier Details")) {
                     Picker("Supplier", selection: $selectedSupplierId) {
                         Text("None").tag(nil as UUID?)
@@ -681,7 +691,7 @@ struct ExpenseTrackerView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    
+
                     Picker("Payment Method", selection: $paymentMethodInput) {
                         Text("Cash").tag("Cash")
                         Text("Credit Card").tag("Credit Card")
@@ -689,13 +699,13 @@ struct ExpenseTrackerView: View {
                         Text("Accounts Payable (Unpaid)").tag("Accounts Payable")
                     }
                     .pickerStyle(.menu)
-                    
+
                     Picker("Payment Status", selection: $statusInput) {
                         Text("Paid").tag("Paid")
                         Text("Unpaid").tag("Unpaid")
                     }
                     .pickerStyle(.segmented)
-                    
+
                     Toggle(isOn: $isCapExInput) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Capital Expenditure (CapEx)")
@@ -704,10 +714,10 @@ struct ExpenseTrackerView: View {
                                 .font(.caption2).foregroundColor(.textSecondary)
                         }
                     }
-                    
+
                     DatePicker("Expense Date", selection: $dateInput, displayedComponents: [.date, .hourAndMinute])
                 }
-                
+
                 Section(header: Text("Notes")) {
                     TextField("Write any specific details...", text: $notesInput, axis: .vertical)
                         .lineLimit(3...5)
@@ -732,38 +742,37 @@ struct ExpenseTrackerView: View {
         }
         .presentationDetents([.large])
     }
-    
-    // MARK: - Empty State View
+
     private var emptyStateView: some View {
-        VStack(spacing: APSpacing.md) {
-            Spacer().frame(height: 80)
+        VStack(spacing: APSpacing.sm) {
+            Spacer().frame(height: 40)
             Image(systemName: "book.pages")
-                .font(.system(size: 64))
+                .font(.system(size: 32))
                 .foregroundColor(.textSecondary.opacity(0.6))
-                .padding(APSpacing.lg)
+                .padding(APSpacing.md)
                 .background(Color.appSurfaceHigh)
                 .clipShape(Circle())
-            
+
             Text("No Expense Records Found")
-                .font(.title3).fontWeight(.bold)
+                .font(.system(size: 11, weight: .bold))
                 .foregroundColor(.textPrimary)
-            
+
             Text("Add expense records to track invoice details, suppliers, VAT and equipment purchases.")
-                .font(.subheadline)
+                .font(.system(size: 9))
                 .foregroundColor(.textSecondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 380)
-            
+                .frame(maxWidth: 280)
+
             Button(action: { openAddExpenseForm() }) {
-                HStack(spacing: 8) {
+                HStack(spacing: 4) {
                     Image(systemName: "plus")
-                        .fontWeight(.bold)
+                        .font(.system(size: 9, weight: .bold))
                     Text("expense_add".t)
-                        .fontWeight(.bold)
+                        .font(.system(size: 9, weight: .bold))
                 }
                 .foregroundColor(.white)
-                .padding(.horizontal, APSpacing.lg)
-                .padding(.vertical, 10)
+                .padding(.horizontal, APSpacing.md)
+                .padding(.vertical, 6)
                 .background(APGradient.accent)
                 .cornerRadius(APRadius.pill)
             }
@@ -771,7 +780,7 @@ struct ExpenseTrackerView: View {
             Spacer()
         }
     }
-    
+
     // MARK: - Helpers & Database Mutations
     private func openAddExpenseForm() {
         editingExpense = nil
@@ -790,7 +799,7 @@ struct ExpenseTrackerView: View {
         dateInput = Date()
         showingForm = true
     }
-    
+
     private func openEditExpenseForm(_ expense: Expense) {
         editingExpense = expense
         titleInput = expense.title
@@ -799,7 +808,7 @@ struct ExpenseTrackerView: View {
         quantityInput = String(format: "%.1f", expense.quantity)
         unitInput = expense.unit ?? "pcs"
         unitPriceInput = String(format: "%.2f", expense.unitPrice)
-        
+
         // Match VAT options
         if expense.vatRate > 0 {
             // Check if amount == subtotal + vat or inclusive
@@ -813,7 +822,7 @@ struct ExpenseTrackerView: View {
         } else {
             vatOption = 0
         }
-        
+
         selectedSupplierId = expense.supplier?.id
         paymentMethodInput = expense.paymentMethod
         statusInput = expense.status
@@ -822,15 +831,15 @@ struct ExpenseTrackerView: View {
         dateInput = expense.date
         showingForm = true
     }
-    
+
     private func saveFormExpense() {
         let calculations = formCalculatedValues
         let qty = Double(quantityInput) ?? 1.0
         let price = Double(unitPriceInput) ?? 0.0
         let vatRateValue = vatOption > 0 ? 7.0 : 0.0
-        
+
         let targetSupplier = suppliers.first(where: { $0.id == selectedSupplierId })
-        
+
         if let editing = editingExpense {
             // Edit mode
             editing.title = titleInput.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -850,10 +859,10 @@ struct ExpenseTrackerView: View {
             if editing.notes?.isEmpty == true { editing.notes = nil }
             editing.supplier = targetSupplier
             editing.date = dateInput
-            
+
             editing.isSynced = false
             editing.updatedAt = Date()
-            
+
             // Re-assign selected to trigger UI updates
             selectedExpense = editing
         } else {
@@ -875,19 +884,19 @@ struct ExpenseTrackerView: View {
                 supplier: targetSupplier,
                 branch: activeBranch
             )
-            
+
             modelContext.insert(newExpense)
             selectedExpense = newExpense
         }
-        
+
         showingForm = false
     }
-    
+
     private func deleteSelectedExpense(_ expense: Expense) {
         expense.isDeleted = true
         expense.updatedAt = Date()
         expense.isSynced = false
-        
+
         // Select another row
         if let idx = filteredExpenses.firstIndex(where: { $0.id == expense.id }) {
             if filteredExpenses.count > 1 {
@@ -903,21 +912,21 @@ struct ExpenseTrackerView: View {
             selectedExpense = filteredExpenses.first
         }
     }
-    
+
     // Formatting Helpers
     private func formatShortDate(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM dd, yyyy"
         return formatter.string(from: date)
     }
-    
+
     private func formatLongDate(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: date)
     }
-    
+
     private func getLocalizedCategoryName(_ rawValue: String) -> String {
         switch rawValue {
         case "Raw Materials": return "expense_category_raw_materials".t
@@ -927,7 +936,7 @@ struct ExpenseTrackerView: View {
         default:              return "expense_category_other".t
         }
     }
-    
+
     private func getCategoryColor(_ rawValue: String) -> Color {
         switch rawValue {
         case "Raw Materials": return Color.appTeal

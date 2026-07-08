@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS public.expenses (
     payment_method VARCHAR(50) NOT NULL DEFAULT 'Cash', -- Cash, Credit Card, Bank Transfer, Accounts Payable
     status VARCHAR(50) NOT NULL DEFAULT 'Paid', -- Paid, Unpaid
     is_capex BOOLEAN NOT NULL DEFAULT FALSE,
+    date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     notes TEXT,
     is_synced BOOLEAN NOT NULL DEFAULT FALSE,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE,

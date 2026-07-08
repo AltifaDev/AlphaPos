@@ -17,16 +17,73 @@ struct TaxReportView: View {
     @Bindable var viewModel: ReportsViewModel
     @EnvironmentObject private var lm: LocalizationManager
 
+    @State private var showingShareSheet = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: APSpacing.lg) {
+            // Header with Export button
+            HStack {
+                Text("รายงานภาษี (Tax Report)")
+                    .font(.title3.bold())
+                Spacer()
+                Button {
+                    showingShareSheet = true
+                } label: {
+                    Label("ส่งรายงานทางอีเมล (Email)", systemImage: "envelope.fill")
+                        .font(.caption.bold())
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.appAccent)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                }
+            }
+
             // Summary Cards
             taxSummaryCards
+
+            // Split Tax Category Summary
+            VStack(alignment: .leading, spacing: APSpacing.sm) {
+                Text("สรุปแยกประเภทภาษี (Tax Type Summary)")
+                    .font(.headline)
+
+                HStack(spacing: APSpacing.md) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("สินค้ากลุ่มมีภาษี (VAT 7%)")
+                            .font(.caption).foregroundColor(.secondary)
+                        Text(viewModel.formatCurrency(viewModel.vatSalesAmount))
+                            .font(.title3.bold())
+                        Text("ภาษีมูลค่าเพิ่ม: \(viewModel.formatCurrency(viewModel.vatTaxAmount))")
+                            .font(.caption).foregroundColor(.orange)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.08))
+                    .cornerRadius(10)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("สินค้ากลุ่มยกเว้นภาษี (Non-VAT)")
+                            .font(.caption).foregroundColor(.secondary)
+                        Text(viewModel.formatCurrency(viewModel.nonVatSalesAmount))
+                            .font(.title3.bold())
+                        Text("ได้รับยกเว้นภาษี")
+                            .font(.caption).foregroundColor(.appTeal)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.appTeal.opacity(0.08))
+                    .cornerRadius(10)
+                }
+            }
 
             // Daily breakdown chart
             dailyVATChart
 
             // Detailed table
             dailyBreakdownTable
+        }
+        .sheet(isPresented: $showingShareSheet) {
+            ShareSheet(activityItems: [plainTextTaxReport])
         }
     }
 
@@ -113,7 +170,7 @@ struct TaxReportView: View {
                         AxisGridLine()
                         AxisValueLabel {
                             if let v = value.as(Double.self) {
-                                Text(abbreviatedCurrency(v))
+                                  Text(abbreviatedCurrency(v))
                             }
                         }
                     }
@@ -198,6 +255,7 @@ struct TaxReportView: View {
                         .foregroundStyle(.orange)
                     Text(viewModel.formatCurrency(viewModel.totalSalesExcVAT))
                         .frame(maxWidth: .infinity, alignment: .trailing)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 .font(.subheadline.weight(.bold).monospacedDigit())
                 .padding(.horizontal, APSpacing.sm)
@@ -226,5 +284,22 @@ struct TaxReportView: View {
             return String(format: "%.0fK", value / 1000)
         }
         return String(format: "%.0f", value)
+    }
+
+    private var plainTextTaxReport: String {
+        var lines: [String] = []
+        lines.append("รายงานภาษีมูลค่าเพิ่ม (VAT Tax Report)")
+        lines.append("ช่วงเวลา: \(formatDateShort(viewModel.effectiveStartDate)) - \(formatDateShort(viewModel.effectiveEndDate))")
+        lines.append("------------------------------------------------")
+        lines.append("ยอดขายรวมภาษี: \(viewModel.formatCurrency(viewModel.totalSalesIncVAT))")
+        lines.append("ยอดขายกลุ่ม VAT: \(viewModel.formatCurrency(viewModel.vatSalesAmount))")
+        lines.append("ภาษีมูลค่าเพิ่ม (VAT 7%): \(viewModel.formatCurrency(viewModel.vatTaxAmount))")
+        lines.append("ยอดขายกลุ่มยกเว้นภาษี (Non-VAT): \(viewModel.formatCurrency(viewModel.nonVatSalesAmount))")
+        lines.append("------------------------------------------------")
+        lines.append("รายละเอียดรายวัน:")
+        for entry in viewModel.dailyTaxEntries {
+            lines.append("- \(formatDateShort(entry.date)): \(entry.orderCount) ออเดอร์, ยอดขาย \(viewModel.formatCurrency(entry.salesIncVAT)), ภาษี \(viewModel.formatCurrency(entry.vatAmount))")
+        }
+        return lines.joined(separator: "\n")
     }
 }

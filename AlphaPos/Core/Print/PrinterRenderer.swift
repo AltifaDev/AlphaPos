@@ -39,7 +39,7 @@ struct ESCPosRenderer: PrinterRenderer {
 struct StarRenderer: PrinterRenderer {
     func render(job: PrintJob, emulation: String) -> Data {
         // Under Star-native path, this would use StarXpandCommand builder.
-        // For now, as a dynamic transition stub, it delegates to the optimized ESC/POS payload 
+        // For now, as a dynamic transition stub, it delegates to the optimized ESC/POS payload
         // using Star's specific command adjustments.
         return ESCPosRenderer().render(job: job, emulation: emulation)
     }
@@ -52,10 +52,10 @@ struct TSPLRenderer: PrinterRenderer {
     func render(job: PrintJob, emulation: String) -> Data {
         let items = job.order.items.filter { !$0.isDeleted }
         var combinedData = Data()
-        
+
         let tableLabel = job.order.tableSession?.table?.tableNumber ?? "Takeaway"
         let queueNum = job.order.queueNumber ?? ""
-        
+
         for (index, item) in items.enumerated() {
             let stickerBytes = TSPLBuilder.buildSticker(
                 item: item,
@@ -94,16 +94,16 @@ enum ESCPOSBuilder {
         var b = buf()
         let paperWidthStr = template?.paperWidth ?? "80mm"
         let width = (paperWidthStr == "58mm") ? 32 : 42
-        
-        let showLogo = template?.showLogo ?? true
+
+        let showLogo = (template?.showLogo ?? true) && (UserDefaults.standard.object(forKey: "show_logo_on_receipt") as? Bool ?? true)
         let showTaxId = template?.showTaxId ?? true
         let showCustomerInfo = template?.showCustomerInfo ?? true
-        let showQRCode = template?.showQRCode ?? true
+        let showQRCode = (template?.showQRCode ?? true) && (UserDefaults.standard.object(forKey: "show_qr_on_receipt") as? Bool ?? true)
         let showServiceCharge = template?.showServiceCharge ?? true
         let showTableInfo = template?.showTableInfo ?? true
         let showOrderType = template?.showOrderType ?? true
         let showItemModifiers = template?.showItemModifiers ?? true
-        
+
         let storeName = UserDefaults.standard.string(forKey: "store_name") ?? "AlphaPos Restaurant"
         let storePhone = UserDefaults.standard.string(forKey: "store_phone") ?? "02-123-4567"
         let storeAddress = UserDefaults.standard.string(forKey: "store_address") ?? "123 Sukhumvit Rd, Bangkok"
@@ -134,7 +134,7 @@ enum ESCPOSBuilder {
             }
             b += text(divider("-", width: width))
         }
-        
+
         if showCustomerInfo {
             b += ALIGN_LEFT
             if let customer = order.customer {
@@ -150,14 +150,14 @@ enum ESCPOSBuilder {
         b += ALIGN_LEFT
         let df = dateFormatter()
         b += text("DATE : \(df.string(from: order.createdAt))\nORDER: \(order.orderNumber)\n")
-        
+
         if showTableInfo {
             var tableLine = ""
             if let table = order.tableSession?.table?.tableNumber { tableLine += "TABLE: \(table)  " }
             if let q = order.queueNumber, !q.isEmpty { tableLine += "QUEUE: #\(q)" }
             if !tableLine.isEmpty { b += text("\(tableLine)\n") }
         }
-        
+
         if showOrderType {
             let typeLabel = order.orderType.uppercased()
             b += text("TYPE : \(typeLabel)  |  GUESTS: \(order.guestCount)\n")
@@ -172,7 +172,7 @@ enum ESCPOSBuilder {
             let name = item.menuItem?.name ?? "Item"
             let price = String(format: "%.2f", item.unitPrice * Double(item.quantity))
             b += BOLD_ON + text(lineItem(name, qty: item.quantity, price: price, width: width)) + BOLD_OFF
-            
+
             if showItemModifiers {
                 for mod in item.modifiers.filter({ !$0.isDeleted }) {
                     let modName = mod.modifier?.name ?? ""
@@ -194,7 +194,7 @@ enum ESCPOSBuilder {
         if showServiceCharge && order.serviceCharge > 0 { b += text(lineTotal("SERVICE CHARGE", value: order.serviceCharge, width: width)) }
         if order.discount > 0 { b += text(lineTotal("DISCOUNT", value: -order.discount, width: width)) }
         b += text(divider("-", width: width))
-        
+
         // TOTAL: label double-height, value right-aligned normal width
         let totalStr = String(format: "%.2f", order.total)
         let totalLabelW = width - totalStr.count - 1
@@ -217,7 +217,7 @@ enum ESCPOSBuilder {
         if let footer = template?.footerText, !footer.isEmpty {
             b += text(divider("-", width: width)) + text("\(footer)\n")
         }
-        
+
         b += FEED_3 + cutSequence(emulation: emulation)
         return Data(b)
     }
@@ -232,7 +232,7 @@ enum ESCPOSBuilder {
         var b = buf()
         let paperWidthStr = template?.paperWidth ?? "80mm"
         let width = (paperWidthStr == "58mm") ? 32 : 42
-        
+
         let showTableInfo = template?.showTableInfo ?? true
         let showOrderType = template?.showOrderType ?? true
         let showItemModifiers = template?.showItemModifiers ?? true
@@ -241,7 +241,7 @@ enum ESCPOSBuilder {
 
         let df = timeFormatter()
         b += text("Time : \(df.string(from: order.createdAt))\nORDER: \(order.orderNumber)\n")
-        
+
         if showTableInfo {
             if let table = order.tableSession?.table?.tableNumber { b += text("Table: \(table)\n") }
             if let q = order.queueNumber, !q.isEmpty { b += text("Queue: #\(q)\n") }
@@ -256,7 +256,7 @@ enum ESCPOSBuilder {
         for item in items {
             let name = item.menuItem?.name ?? "Item"
             b += BOLD_ON + DOUBLE_HEIGHT_ON + text("x\(item.quantity) \(name)\n") + DOUBLE_HEIGHT_OFF + BOLD_OFF
-            
+
             if showItemModifiers {
                 for mod in item.modifiers.filter({ !$0.isDeleted }) { b += text("  >> \(mod.modifier?.name ?? "")\n") }
                 if let notes = item.notes, !notes.isEmpty { b += text("  ** \(notes)\n") }
@@ -267,6 +267,67 @@ enum ESCPOSBuilder {
             b += text(divider("-", width: width)) + ALIGN_CENTER + BOLD_ON + text("\(customFooter)\n") + ALIGN_LEFT + BOLD_OFF
         }
 
+        b += FEED_3 + CUT
+        return Data(b)
+    }
+
+    static func buildItemLabel(
+        item: OrderItem,
+        tableLabel: String,
+        queueNumber: String,
+        cupIndex: Int,
+        totalCups: Int,
+        template: ReceiptTemplate?,
+        emulation: String
+    ) -> Data {
+        var b = buf()
+        let paperWidthStr = template?.paperWidth ?? "80mm"
+        let width = (paperWidthStr == "58mm") ? 32 : 42
+
+        let showTable = template?.showTableInfo ?? true
+        let showMods = template?.showItemModifiers ?? true
+        let showQueue = template?.showOrderType ?? true
+
+        b += INIT
+
+        // Header
+        b += ALIGN_CENTER + BOLD_ON + text("[ LABEL TICKET ]\n") + BOLD_OFF
+
+        var headerInfo = ""
+        if showTable {
+            headerInfo += "Table: \(tableLabel)  "
+        }
+        headerInfo += "Item: \(cupIndex)/\(totalCups)\n"
+        b += text(headerInfo)
+
+        if showQueue && !queueNumber.isEmpty {
+            b += text("Queue: #\(queueNumber)\n")
+        }
+        let df = DateFormatter()
+        df.dateFormat = "HH:mm"
+        let timeStr = df.string(from: Date())
+        b += text("Time: \(timeStr)\n")
+        b += text(divider("-", width: width))
+
+
+
+
+        // Item Name
+        let name = item.menuItem?.name ?? "Item"
+        b += ALIGN_LEFT + BOLD_ON + DOUBLE_HEIGHT_ON + text("x\(item.quantity) \(name)\n") + DOUBLE_HEIGHT_OFF + BOLD_OFF
+
+        // Modifiers & Notes
+        if showMods {
+            let activeMods = item.modifiers.filter { !$0.isDeleted }
+            for mod in activeMods {
+                b += text("  >> \(mod.modifier?.name ?? "")\n")
+            }
+            if let notes = item.notes, !notes.isEmpty {
+                b += text("  ** \(notes)\n")
+            }
+        }
+
+        b += text(divider("-", width: width))
         b += FEED_3 + CUT
         return Data(b)
     }
@@ -338,10 +399,10 @@ enum ESCPOSBuilder {
         let promptPayNumber = UserDefaults.standard.string(forKey: "promptpay_number") ?? ""
 
         // ── Mirror ทุก toggle เหมือน buildReceipt ──────────────────────
-        let showLogo          = template?.showLogo          ?? true
+        let showLogo          = (template?.showLogo          ?? true) && (UserDefaults.standard.object(forKey: "show_logo_on_receipt") as? Bool ?? true)
         let showTaxId         = template?.showTaxId         ?? true
         let showCustomerInfo  = template?.showCustomerInfo  ?? true
-        let showQRCode        = template?.showQRCode        ?? true
+        let showQRCode        = (template?.showQRCode        ?? true) && (UserDefaults.standard.object(forKey: "show_qr_on_receipt") as? Bool ?? true)
         let showServiceCharge = template?.showServiceCharge ?? true
         let showTableInfo     = template?.showTableInfo     ?? true
         let showOrderType     = template?.showOrderType     ?? true
@@ -535,7 +596,7 @@ enum ESCPOSBuilder {
         b += FEED_3 + cutSequence(emulation: emulation)
         return Data(b)
     }
-    
+
     private static func cutSequence(emulation: String) -> [UInt8] {
         if let brand = PrinterBrand(rawValue: emulation) { return brand.cutCommand }
         return [0x1D, 0x56, 0x42, 0x00]
@@ -682,7 +743,7 @@ enum ESCPOSBuilder {
         let numBytes = dataBytes.count
         let pL = UInt8((numBytes + 3) & 0xFF)
         let pH = UInt8(((numBytes + 3) >> 8) & 0xFF)
-        
+
         var b = [UInt8]()
         b += [0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]
         b += [0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, 0x05]
@@ -865,8 +926,11 @@ enum TSPLBuilder {
         let itemName  = item.menuItem?.name ?? "Item"
         let modLines  = item.modifiers.filter { !$0.isDeleted }.compactMap { $0.modifier?.name }
         let notes     = item.notes ?? ""
-        let timeStr   = timeNow()
+        let timeStr   = TSPLBuilder.timeNow()
         let queueShort = queueNumber.prefix(12)
+
+
+
         let cupLabel  = "\(cupIndex)/\(totalCups)"
 
         let showTable = template?.showTableInfo ?? true
@@ -897,13 +961,18 @@ enum TSPLBuilder {
         lines.append("TEXT 4,34,\"\(nameFont)\",0,1,1,\"\(escapeTS(itemName))\"")
 
         var yPos = 68
-        let maxMods = 3
         if showMods {
+            let footerLineY = h * 8 - 22
+            let availableDots = footerLineY - yPos
+            let maxTextLines = max(1, availableDots / 16)
+            let hasNotes = !notes.isEmpty
+            let maxMods = hasNotes ? max(1, maxTextLines - 1) : maxTextLines
+
             for (_, mod) in modLines.prefix(maxMods).enumerated() {
                 lines.append("TEXT 4,\(yPos),\"2\",0,1,1,\"- \(escapeTS(mod))\"")
                 yPos += 16
             }
-            if !notes.isEmpty {
+            if hasNotes {
                 let noteClip = String(notes.prefix(28))
                 lines.append("TEXT 4,\(yPos),\"2\",0,1,1,\"* \(escapeTS(noteClip))\"")
                 yPos += 16
@@ -925,7 +994,7 @@ enum TSPLBuilder {
         let parts = size.split(separator: "x")
         let w = parts.count == 2 ? (Int(parts[0]) ?? labelWidth) : labelWidth
         let h = parts.count == 2 ? (Int(parts[1]) ?? labelHeight) : labelHeight
-        
+
         var lines: [String] = []
         lines.append("SIZE \(w) mm, \(h) mm")
         lines.append("GAP 2 mm, 0 mm")
@@ -936,24 +1005,24 @@ enum TSPLBuilder {
         lines.append("SET CUTTER OFF")
         lines.append("CLS")
         lines.append("CODEPAGE 874")
-        
+
         // Match visually StickerPreviewCard:
         lines.append("TEXT 4,4,\"3\",0,1,1,\"T-08 [TICKET 1/3]\"")
         lines.append("TEXT 290,4,\"3\",0,1,1,\"QUE: #32\"")
         lines.append("BAR 4,28,380,2")
-        
+
         lines.append("TEXT 4,34,\"4\",0,1,1,\"Matcha Latte (Oat)\"")
         lines.append("TEXT 4,68,\"2\",0,1,1,\"- Sweet 50%\"")
         lines.append("TEXT 4,84,\"2\",0,1,1,\"- Extra Oat Milk (+฿30)\"")
-        
+
         let footerY = h * 8 - 18
         lines.append("BAR 4,\(footerY - 4),380,1")
         lines.append("TEXT 4,\(footerY),\"1\",0,1,1,\"2026-06-10 12:15\"")
         lines.append("TEXT 160,\(footerY),\"1\",0,1,1,\"AlphaPOS Cafe & Grill\"")
-        
+
         // Mock barcode for TSPL
         lines.append("BARCODE 260,\(footerY - 14),\"128\",16,0,0,1,1,\"32\"")
-        
+
         lines.append("PRINT 1,1\n")
         let tsplString = lines.joined(separator: "\r\n")
         return tsplString.data(using: .ascii) ?? Data()

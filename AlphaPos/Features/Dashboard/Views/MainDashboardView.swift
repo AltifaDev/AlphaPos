@@ -27,12 +27,12 @@ struct MainDashboardView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @Query(sort: \InventoryItem.name) private var inventoryItems: [InventoryItem]
     @ObservedObject private var syncEngine = SyncEngine.shared
-    
+
     // Manual connect/cancel prevents timer leak when view leaves hierarchy
     private let timer = Timer.publish(every: 5.0, on: .main, in: .common)
     @State private var timerCancellable: Cancellable? = nil
 
-    
+
     private var visibleTabs: [DashboardTab] {
         DashboardTab.allCases.filter { tab in
             if tab == .syncHealth && offlineSyncMode {
@@ -252,8 +252,9 @@ struct MainDashboardView: View {
             case .payments:      return .paymentsManage
             case .reports:       return .reportsView
             case .sales:         return .reportsView
-            case .promotions:    return .discountApply
+            case .promotions:    return .posSell
             case .loyalty:       return .posSell
+
             case .giftCards:     return .posSell
             case .customers:     return .customersView
             case .payroll:       return .payrollManage
@@ -361,13 +362,13 @@ struct MainDashboardView: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: APSpacing.xs) {
                         let sections: [DashboardTab.SidebarSection] = [.overview, .operations, .management, .people, .enterprise, .system]
-                        
+
                         ForEach(sections, id: \.rawValue) { section in
                             let sectionTabs = visibleTabs.filter { $0.section == section }
                             if !sectionTabs.isEmpty {
                                 // Section header label
                                 sectionHeader(section.rawValue)
-                                
+
                                 ForEach(sectionTabs) { tab in sidebarRow(tab) }
                             }
                         }
@@ -377,7 +378,7 @@ struct MainDashboardView: View {
                 }
 
                 Spacer()
-                
+
                 // ── Inventory Health Widget ────────────────────────────────
                 inventoryHealthWidget
 
@@ -389,9 +390,9 @@ struct MainDashboardView: View {
         }
         .listStyle(.sidebar)
     }
-    
+
     // MARK: - Section Header
-    
+
     private func sectionHeader(_ title: String) -> some View {
         HStack {
             Text(title)
@@ -568,7 +569,7 @@ struct MainDashboardView: View {
             .padding(.bottom, 4)
         }
     }
-    
+
     private var syncIcon: String {
         switch syncEngine.syncStatus {
         case .idle:
@@ -581,7 +582,7 @@ struct MainDashboardView: View {
             return "wifi.slash"
         }
     }
-    
+
     private var syncColor: Color {
         switch syncEngine.syncStatus {
         case .idle:
@@ -594,7 +595,7 @@ struct MainDashboardView: View {
             return Color(hex: "9CA3AF")
         }
     }
-    
+
     private var syncStatusText: String {
         switch syncEngine.syncStatus {
         case .idle:
@@ -607,7 +608,7 @@ struct MainDashboardView: View {
             return L.Dashboard.offlineMode.t
         }
     }
-    
+
     private func formatTime(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
@@ -618,9 +619,9 @@ struct MainDashboardView: View {
         let letters = name.split(separator: " ").prefix(2).compactMap { $0.first }
         return letters.isEmpty ? "S" : String(letters).uppercased()
     }
-    
+
     // MARK: - Inventory Health Widget
-    
+
     private var inventoryHealthWidget: some View {
         let activeBranchUUID = UUID(uuidString: activeBranchId)
         let branchItems = inventoryItems.filter { item in
@@ -798,7 +799,7 @@ private struct SidebarTabRow: View {
         .animation(.easeOut(duration: 0.15), value: isHovered)
         .onHover { isHovered = $0 }
     }
-    
+
     @ViewBuilder
     private var lowStockBadge: some View {
         EmptyView() // Badge rendered at parent level; placeholder for extensibility

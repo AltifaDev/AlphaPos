@@ -5,7 +5,7 @@ import SwiftData
 extension NetworkManager {
     // MARK: - Menu Items Sync
 
-    private func uploadProductMedia(
+    func uploadProductMedia(
         _ data: Data,
         merchantId: String,
         itemId: String,
@@ -35,7 +35,7 @@ extension NetworkManager {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NetworkError.serverError("Invalid HTTP response")
         }
-        
+
         guard (200...299).contains(httpResponse.statusCode) else {
             let message = String(data: responseData, encoding: .utf8) ?? "Storage upload failed"
             if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 || message.contains("PGRST301") || message.contains("AccessDenied") || message.contains("violates row-level security") || message.contains("Unauthorized") {
@@ -44,6 +44,46 @@ extension NetworkManager {
                 #endif
                 MerchantAuthManager.shared.logout()
             }
+            throw NetworkError.serverError(message)
+        }
+
+        var publicURL = config.supabaseURL
+        for component in ["storage", "v1", "object", "public", "product-media"] + objectPath.split(separator: "/").map(String.init) {
+            publicURL.appendPathComponent(component)
+        }
+        return publicURL.absoluteString
+    }
+
+    func uploadStoreLogo(
+        _ data: Data,
+        merchantId: String,
+        contentType: String = "image/png"
+    ) async throws -> String {
+        await MerchantAuthManager.shared.refreshTokenIfNeeded()
+
+        let objectPath = "\(merchantId.lowercased())/logo/store_logo.png"
+        var uploadURL = config.supabaseURL
+        for component in ["storage", "v1", "object", "product-media"] + objectPath.split(separator: "/").map(String.init) {
+            uploadURL.appendPathComponent(component)
+        }
+
+        var request = URLRequest(url: uploadURL)
+        request.httpMethod = "POST"
+        let token = MerchantAuthManager.shared.currentToken ?? anonKey
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.setValue("true", forHTTPHeaderField: "x-upsert")
+        request.httpBody = data
+        request.timeoutInterval = 60
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NetworkError.serverError("Invalid HTTP response")
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let message = String(data: responseData, encoding: .utf8) ?? "Storage upload failed"
             throw NetworkError.serverError(message)
         }
 

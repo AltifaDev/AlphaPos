@@ -55,7 +55,8 @@ final class SalesViewModel {
     var laborCostPct: Double = 0.0         // laborCost / grossRevenue × 100
     var revenuePerLaborHour: Double = 0.0
     var totalWasteCost: Double = 0.0       // InventoryTransaction type="waste" × costPrice
-    var estimatedNetProfit: Double = 0.0   // grossProfit − laborCost − wasteCost
+    var totalOperatingExpenses: Double = 0.0 // C-3: Expense model (cash expenses, bills, etc.)
+    var estimatedNetProfit: Double = 0.0   // grossProfit − laborCost − wasteCost − operatingExpenses
     var netProfitMarginPct: Double = 0.0
 
     // ─────────────────────────────────────────────────
@@ -126,17 +127,19 @@ final class SalesViewModel {
     // ─────────────────────────────────────────────────
 
     /// Master analytics update — calls all sub-analyzers
-    func updateAnalytics(
+func updateAnalytics(
         orders: [Order],
         inventoryItems: [InventoryItem] = [],
         employees: [Employee] = [],
-        timecards: [Timecard] = []
+        timecards: [Timecard] = [],
+        expenses: [Expense] = []
     ) {
         self.runAnalytics(
             orders: orders,
             inventoryItems: inventoryItems,
             employees: employees,
-            timecards: timecards
+            timecards: timecards,
+            expenses: expenses
         )
     }
 
@@ -145,7 +148,8 @@ final class SalesViewModel {
         orders: [Order],
         inventoryItems: [InventoryItem],
         employees: [Employee],
-        timecards: [Timecard]
+        timecards: [Timecard],
+        expenses: [Expense] = []
     ) {
         let calendar = Calendar.current
 
@@ -192,7 +196,7 @@ final class SalesViewModel {
 
         if !inventoryItems.isEmpty {
             computeInventoryAnalytics(inventoryItems: inventoryItems, filtered: filtered)
-            computeProfitability(filtered: filtered, inventoryItems: inventoryItems)
+            computeProfitability(filtered: filtered, inventoryItems: inventoryItems, expenses: expenses)
         }
 
         if !timecards.isEmpty && !employees.isEmpty {
@@ -502,7 +506,7 @@ final class SalesViewModel {
     // ─────────────────────────────────────────────────
     // MARK: Profitability — COGS from Recipe
     // ─────────────────────────────────────────────────
-    private func computeProfitability(filtered: [Order], inventoryItems: [InventoryItem]) {
+    private func computeProfitability(filtered: [Order], inventoryItems: [InventoryItem], expenses: [Expense] = []) {
         // Build ingredient cost lookup: menuItemId → COGS per unit sold
         var cogsPerMenuItem: [String: Double] = [:]
         for inv in inventoryItems {
@@ -547,6 +551,20 @@ final class SalesViewModel {
         self.grossProfit      = grossRevenue - directCOGS
         self.grossMarginPct   = grossRevenue > 0 ? grossProfit / grossRevenue * 100 : 0
         self.productSales     = updatedProducts
+
+        // C-3: Aggregate operating expenses for the selected period
+        let expensesInPeriod = expenses.filter { exp in
+            guard !exp.isDeleted else { return false }
+            switch summaryMode {
+            case .daily:
+                return Calendar.current.isDate(exp.date, inSameDayAs: selectedDate)
+            case .monthly:
+                let m = Calendar.current.component(.month, from: exp.date)
+                let y = Calendar.current.component(.year, from: exp.date)
+                return m == selectedMonth && y == selectedYear
+            }
+        }
+        self.totalOperatingExpenses = expensesInPeriod.reduce(0) { $0 + $1.amount }
 
         recomputeNetProfit()
         computeMenuEngineering()  // recompute with COGS data
@@ -672,7 +690,8 @@ final class SalesViewModel {
     // MARK: Net Profit (called after each sub-analyzer)
     // ─────────────────────────────────────────────────
     private func recomputeNetProfit() {
-        self.estimatedNetProfit  = grossProfit - totalLaborCost - totalWasteCost
+        // C-3: Include operating expenses in net profit calculation
+        self.estimatedNetProfit  = grossProfit - totalLaborCost - totalWasteCost - totalOperatingExpenses
         self.netProfitMarginPct  = grossRevenue > 0 ? estimatedNetProfit / grossRevenue * 100 : 0
     }
 }

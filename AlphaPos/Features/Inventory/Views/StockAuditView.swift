@@ -8,9 +8,9 @@ struct StockAuditView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
     @Query(sort: \InventoryItem.name) private var ingredients: [InventoryItem]
-    
+
     @State private var viewModel = InventoryViewModel()
-    
+
     struct AuditLineItem: Identifiable {
         let id = UUID()
         let item: InventoryItem
@@ -18,13 +18,13 @@ struct StockAuditView: View {
         var physicalString: String
         var notes: String
     }
-    
+
     @State private var auditLines: [AuditLineItem] = []
     @State private var showingSuccessAlert = false
     @State private var searchPattern = ""
     @State private var selectedLocation = "All"
     @State private var showingScanner = false
-    
+
     private var activeBranch: Branch? {
         if let activeIdString = UserDefaults.standard.string(forKey: "active_branch_id"),
            let activeUUID = UUID(uuidString: activeIdString) {
@@ -35,25 +35,25 @@ struct StockAuditView: View {
         }
         return nil
     }
-    
+
     private var filteredAuditLines: [Binding<AuditLineItem>] {
         var lines: [Binding<AuditLineItem>] = []
         for index in $auditLines.indices {
             let item = auditLines[index].item
-            let matchesSearch = searchPattern.isEmpty || 
+            let matchesSearch = searchPattern.isEmpty ||
                 item.name.localizedCaseInsensitiveContains(searchPattern) ||
                 (item.sku ?? "").localizedCaseInsensitiveContains(searchPattern) ||
                 (item.barcode ?? "").localizedCaseInsensitiveContains(searchPattern)
-            
+
             let matchesLocation = selectedLocation == "All" || item.storageLocation == selectedLocation
-            
+
             if matchesSearch && matchesLocation {
                 lines.append($auditLines[index])
             }
         }
         return lines
     }
-    
+
     // Summary Calculations
     private var totalVarianceCost: Double {
         auditLines.reduce(0.0) { sum, line in
@@ -61,11 +61,11 @@ struct StockAuditView: View {
             return sum + (diff * line.item.costPrice)
         }
     }
-    
+
     private var adjustedItemsCount: Int {
         auditLines.filter { $0.physicalCount != $0.item.currentQuantity }.count
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header Search & Statistics
@@ -80,7 +80,7 @@ struct StockAuditView: View {
                         color: totalVarianceCost < 0 ? .appRose : (totalVarianceCost > 0 ? .appTeal : .textSecondary)
                     )
                 }
-                
+
                 HStack(spacing: APSpacing.md) {
                     // Search bar
                     HStack(spacing: APSpacing.sm) {
@@ -89,13 +89,13 @@ struct StockAuditView: View {
                         TextField("filter_ingredients_audit".t, text: $searchPattern)
                             .font(.subheadline)
                             .foregroundColor(.textPrimary)
-                        
+
                         Button(action: { showingScanner = true }) {
                             Image(systemName: "barcode.viewfinder")
                                 .foregroundColor(.appTeal)
                         }
                         .padding(.horizontal, 4)
-                        
+
                         if !searchPattern.isEmpty {
                             Button(action: { searchPattern = "" }) {
                                 Image(systemName: "xmark.circle.fill")
@@ -110,7 +110,7 @@ struct StockAuditView: View {
                         RoundedRectangle(cornerRadius: APRadius.md)
                             .stroke(Color.appBorderSubtle, lineWidth: 1)
                     )
-                    
+
                     // Location filter picker
                     let locations = ["All"] + Array(Set(ingredients.compactMap { $0.storageLocation })).sorted()
                     if locations.count > 1 {
@@ -139,9 +139,9 @@ struct StockAuditView: View {
             }
             .padding(APSpacing.md)
             .background(Color.appSurface)
-            
+
             Divider().background(Color.appDivider)
-            
+
             if auditLines.isEmpty {
                 VStack(spacing: APSpacing.md) {
                     Image(systemName: "tray.circle")
@@ -156,15 +156,15 @@ struct StockAuditView: View {
             } else {
                 // List of Audit Lines
                 ScrollView {
-                    LazyVStack(spacing: APSpacing.sm) {
+                    LazyVStack(spacing: 4) {
                         ForEach(filteredAuditLines) { $line in
                             auditItemCard(line: $line)
                         }
                     }
-                    .padding(APSpacing.md)
+                    .padding(APSpacing.sm)
                 }
                 .background(Color.appBackground)
-                
+
                 // Bottom Action Panel
                 bottomActionPanel
             }
@@ -182,9 +182,9 @@ struct StockAuditView: View {
             BarcodeScannerView(onScan: handleBarcodeScan)
         }
     }
-    
+
     // MARK: - Subviews
-    
+
     private func statRow(title: String, value: String, icon: String, color: Color) -> some View {
         HStack(spacing: APSpacing.sm) {
             Image(systemName: icon)
@@ -209,34 +209,32 @@ struct StockAuditView: View {
                 .stroke(Color.appBorderSubtle, lineWidth: 1)
         )
     }
-    
+
     private func auditItemCard(line: Binding<AuditLineItem>) -> some View {
         let diff = line.wrappedValue.physicalCount - line.wrappedValue.item.currentQuantity
         let diffCost = diff * line.wrappedValue.item.costPrice
-        
-        return VStack(spacing: APSpacing.sm) {
+
+        return VStack(spacing: APSpacing.xs) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(line.wrappedValue.item.name)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.textPrimary)
                     Text(LocalizationManager.shared.t("system_stock_cost_template", line.wrappedValue.item.currentQuantity, line.wrappedValue.item.unit, line.wrappedValue.item.costPrice, line.wrappedValue.item.unit))
-                        .font(.caption)
+                        .font(.system(size: 9))
                         .foregroundColor(.textSecondary)
                 }
-                
+
                 Spacer()
-                
+
                 // Quantity edit field
                 HStack(spacing: 4) {
                     TextField("0.0", text: line.physicalString)
-                        .font(.subheadline)
-                        .fontWeight(.bold)
+                        .font(.system(size: 11, weight: .bold))
                         .keyboardType(.decimalPad)
                         .multilineTextAlignment(.trailing)
-                        .frame(width: 80)
-                        .padding(6)
+                        .frame(width: 60)
+                        .padding(4)
                         .background(Color.appSurfaceHigh)
                         .cornerRadius(APRadius.sm)
                         .foregroundColor(.textPrimary)
@@ -247,47 +245,46 @@ struct StockAuditView: View {
                                 line.wrappedValue.physicalCount = 0.0
                             }
                         }
-                    
+
                     Text(line.wrappedValue.item.unit)
-                        .font(.caption)
+                        .font(.system(size: 9))
                         .foregroundColor(.textSecondary)
                         .frame(width: 40, alignment: .leading)
                 }
             }
-            
+
             // Variance indicator and notes
-            HStack(spacing: APSpacing.md) {
+            HStack(spacing: APSpacing.sm) {
                 // Variance Info
                 HStack(spacing: 4) {
                     Text("variance_label".t)
-                        .font(.caption2)
+                        .font(.system(size: 8))
                         .foregroundColor(.textSecondary)
-                    
+
                     if diff == 0 {
                         Text("no_discrepancy_label".t)
-                            .font(.caption2)
+                            .font(.system(size: 8))
                             .foregroundColor(.textTertiary)
                     } else {
                         let prefix = diff > 0 ? "+" : ""
                         Text(String(format: "%@%.1f %@ (%@฿%.2f)", prefix, diff, line.wrappedValue.item.unit, prefix, diffCost))
-                            .font(.caption2)
-                            .fontWeight(.bold)
+                            .font(.system(size: 8, weight: .bold))
                             .foregroundColor(diff < 0 ? .appRose : .appTeal)
                     }
                 }
-                
+
                 Spacer()
-                
+
                 // Quick notes input
                 if diff != 0 {
                     HStack(spacing: 4) {
                         Image(systemName: "pencil")
-                            .font(.system(size: 10))
+                            .font(.system(size: 8))
                             .foregroundColor(.textTertiary)
                         TextField("discrepancy_reason_placeholder".t, text: line.notes)
-                            .font(.system(size: 11))
+                            .font(.system(size: 9))
                             .foregroundColor(.textPrimary)
-                            .frame(width: 180)
+                            .frame(width: 140)
                             .textFieldStyle(.plain)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 2)
@@ -297,14 +294,14 @@ struct StockAuditView: View {
                 }
             }
         }
-        .padding(APSpacing.md)
+        .padding(APSpacing.sm)
         .apCard()
     }
-    
+
     private var bottomActionPanel: some View {
         HStack {
             Spacer()
-            
+
             Button(action: {
                 initializeAudit()
             }) {
@@ -318,7 +315,7 @@ struct StockAuditView: View {
                     .cornerRadius(APRadius.md)
             }
             .buttonStyle(.plain)
-            
+
             Button(action: commitAudit) {
                 Text("commit_audit_adjustments_btn".t)
                     .font(.subheadline)
@@ -337,9 +334,9 @@ struct StockAuditView: View {
         .background(Color.appSurface)
         .overlay(Rectangle().fill(Color.appDivider).frame(height: 1), alignment: .top)
     }
-    
+
     // MARK: - Logic
-    
+
     private func initializeAudit() {
         let active = activeBranch
         let branchIngredients = ingredients.filter { $0.branch?.id == active?.id }
@@ -352,7 +349,7 @@ struct StockAuditView: View {
             )
         }
     }
-    
+
     private func handleBarcodeScan(code: String) {
         if let idx = auditLines.firstIndex(where: { $0.item.barcode == code || $0.item.sku == code }) {
             auditLines[idx].physicalCount += 1.0
@@ -361,11 +358,11 @@ struct StockAuditView: View {
             searchPattern = auditLines[idx].item.name
         }
     }
-    
+
     private func commitAudit() {
         let itemsToCommit = auditLines.filter { $0.physicalCount != $0.item.currentQuantity }
         let linesData = itemsToCommit.map { (item: $0.item, physicalCount: $0.physicalCount, notes: $0.notes) }
-        
+
         viewModel.commitAudit(auditLines: linesData)
         showingSuccessAlert = true
     }

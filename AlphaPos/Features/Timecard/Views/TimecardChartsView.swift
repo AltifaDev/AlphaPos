@@ -111,7 +111,7 @@ struct TimecardChartsView: View {
         var onTime = 0
         var late = 0
         var absent = 0
-        var leave = 0
+        let leave = 0
         
         let workingDays = countWorkingDays(from: startOfMonth, to: min(Date(), endOfMonth))
         let totalExpected = workingDays * employees.count

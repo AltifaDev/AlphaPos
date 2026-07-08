@@ -118,6 +118,29 @@ final class AuthService {
         }
     }
 
+    func changePassword(email: String, currentPassword: String, newPassword: String) async throws {
+        let session = try await signIn(email: email, password: currentPassword)
+        guard !session.accessToken.isEmpty else { throw AuthServiceError.invalidResponse }
+
+        let url = URL(string: config.supabaseURL.absoluteString + "/auth/v1/user")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(config.supabaseAnonKey, forHTTPHeaderField: "apikey")
+        req.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["password": newPassword])
+        req.timeoutInterval = 10
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw AuthServiceError.invalidResponse
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? "Password update failed"
+            throw AuthServiceError.serverError(body)
+        }
+    }
+
     // MARK: - Private Helpers
 
     private func parseSession(from json: [String: Any]) throws -> AuthSession {

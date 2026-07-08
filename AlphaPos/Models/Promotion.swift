@@ -43,6 +43,11 @@ final class Promotion {
     var isDeleted: Bool
     var updatedAt: Date
 
+    // M-2: Coupon Code support
+    var couponCode: String?           // nil = auto-apply only; set = requires code entry
+    var couponMaxRedemptions: Int?    // nil = unlimited; per-code redemption cap
+    var couponExpiresAt: Date?        // nil = follows promotion end date
+
     init(
         id: UUID = UUID(),
         title: String,

@@ -31,6 +31,7 @@ struct InventoryView: View {
     @State private var showingPOManager = false
     @State private var showingTransferSheet = false
     @State private var showingDocumentScanner = false
+    @State private var showingMenuPreview = false   // L-8
 
     // High-Volume filters state
     @State private var statusFilter = "All" // "All", "Low Stock", "Out of Stock"
@@ -71,6 +72,11 @@ struct InventoryView: View {
     @State private var safetyStockManager = SafetyStockManager()
     @State private var showingReorderSuggestions = false
 
+    // Decoupled stats computation to prevent Main Thread freeze on render
+    @State private var localLowStockCount: Int = 0
+    @State private var localFilteredTransactionsCount: Int = 0
+    @State private var localReorderSuggestions: [ReorderSuggestion] = []
+
     // Debounce timer
     @State private var searchDebounceTask: Task<Void, Never>?
 
@@ -84,7 +90,7 @@ struct InventoryView: View {
     private var branchInventory: [InventoryItem] {
         let activeItems = inventory.filter { !$0.isDeleted }
         if let branch = activeBranch {
-            return activeItems.filter { $0.branch?.id == branch.id }
+            return activeItems.filter { $0.branch == nil || $0.branch?.id == branch.id }
         }
         return activeItems
     }
@@ -182,10 +188,14 @@ struct InventoryView: View {
                 safetyStockManager.modelContext = modelContext
                 recalculateABC()
                 refreshExpiryCount()
+                refreshStats()
                 withAnimation(.easeOut(duration: 0.4)) {
                     isAnimatedIn = true
                 }
             }
+            .onChange(of: activeBranchId) { _, _ in refreshStats() }
+            .onChange(of: inventory) { _, _ in refreshStats() }
+            .onChange(of: transactions) { _, _ in refreshStats() }
             .onChange(of: searchText) { _, newValue in
                 debounceSearch(newValue)
             }
@@ -208,6 +218,10 @@ struct InventoryView: View {
             }
             .sheet(isPresented: $showingBranchManager) {
                 BranchManagerView()
+            }
+            // L-8: Menu Preview
+            .sheet(isPresented: $showingMenuPreview) {
+                MenuPreviewView()
             }
             .sheet(isPresented: $showingPOManager) {
                 if let active = activeBranch {
@@ -380,7 +394,7 @@ private var sectionPicker: some View {
                             .foregroundColor(.appTeal)
                     }
                 }
-                
+
                 // Manage Categories Button
                 if selectedSection == 0 && activeBranch != nil {
                     Button(action: { showingCategoryManager = true }) {
@@ -388,7 +402,7 @@ private var sectionPicker: some View {
                             .foregroundColor(.appTeal)
                     }
                 }
-                
+
                 // AI Receipt Scanner
                 if selectedSection == 0 && activeBranch != nil {
                     Button(action: { showingDocumentScanner = true }) {
@@ -398,6 +412,15 @@ private var sectionPicker: some View {
                 }
             }
         }
+
+        // L-8: Menu Preview button (show only on Products tab)
+        ToolbarItem(placement: .secondaryAction) {
+            Button(action: { showingMenuPreview = true }) {
+                Label("menu_preview_title".t, systemImage: "eye.fill")
+                    .foregroundColor(.appAccent)
+            }
+        }
+
     }
 
     // MARK: - Sheet Router
@@ -493,11 +516,11 @@ private var sectionPicker: some View {
 
     // MARK: - Stats Header
 
-private var inventoryStatsHeader: some View {
+    private var inventoryStatsHeader: some View {
         HStack(spacing: APSpacing.md) {
             statCard(title: "total_items".t, value: "\(branchInventory.count)", icon: "shippingbox.fill", color: Color.appAccent)
-            statCard(title: "filter_low_stock".t, value: "\(lowStockCount)", icon: "exclamationmark.triangle.fill", color: .appRose)
-            statCard(title: "transactions".t, value: "\(filteredTransactionsList.count)", icon: "arrow.left.and.right.circle.fill", color: .appTeal)
+            statCard(title: "filter_low_stock".t, value: "\(localLowStockCount)", icon: "exclamationmark.triangle.fill", color: .appRose)
+            statCard(title: "transactions".t, value: "\(localFilteredTransactionsCount)", icon: "arrow.left.and.right.circle.fill", color: .appTeal)
             expiryStatCard
             reorderStatCard
         }
@@ -506,20 +529,20 @@ private var inventoryStatsHeader: some View {
     }
 
     private func statCard(title: String, value: String, icon: String, color: Color) -> some View {
-        HStack(spacing: APSpacing.sm) {
+        HStack(spacing: APSpacing.xs) {
             Image(systemName: icon)
-                .font(.title3)
+                .font(.system(size: 11))
                 .foregroundColor(color)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(value)
-                    .font(.headline).fontWeight(.bold)
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.textPrimary)
                 Text(title)
-                    .font(.caption2)
+                    .font(.system(size: 8))
                     .foregroundColor(.textSecondary)
             }
         }
-        .padding(10)
+        .padding(6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.appSurfaceHigh)
         .clipShape(RoundedRectangle(cornerRadius: APRadius.sm, style: .continuous))
@@ -540,30 +563,30 @@ private var inventoryStatsHeader: some View {
             Button {
                 showingExpiryAlerts = true
             } label: {
-                HStack(spacing: APSpacing.sm) {
+                HStack(spacing: APSpacing.xs) {
                     Image(systemName: expiryAlertCount.expired > 0
                           ? "xmark.circle.fill"
                           : "clock.badge.exclamationmark.fill")
-                        .font(.title3)
+                        .font(.system(size: 11))
                         .foregroundColor(expiryAlertCount.expired > 0 ? Color.appRose : .orange)
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 1) {
                         Text("\(total)")
-                            .font(.headline).fontWeight(.bold)
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.textPrimary)
                         Text(expiryAlertCount.expired > 0 ? "หมดอายุ/วิกฤต" : "ใกล้หมดอายุ")
-                            .font(.caption2)
+                            .font(.system(size: 8))
                             .foregroundColor(.textSecondary)
                     }
                 }
-                .padding(10)
+                .padding(6)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     (expiryAlertCount.expired > 0 ? Color.appRose : Color.orange)
                         .opacity(0.10)
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: APRadius.sm, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: APRadius.sm, style: .continuous)
                         .stroke((expiryAlertCount.expired > 0 ? Color.appRose : Color.orange).opacity(0.35), lineWidth: 1)
                 )
             }
@@ -580,36 +603,35 @@ private var inventoryStatsHeader: some View {
 
     @ViewBuilder
     private var reorderStatCard: some View {
-        let suggestions = safetyStockManager.generateSuggestions(branch: activeBranch)
-        let urgent = suggestions.filter { $0.status == .outOfStock || $0.status == .atReorderPoint }.count
-        if !suggestions.isEmpty {
+        let urgent = localReorderSuggestions.filter { $0.status == .outOfStock || $0.status == .atReorderPoint }.count
+        if !localReorderSuggestions.isEmpty {
             Button { showingReorderSuggestions = true } label: {
-                HStack(spacing: APSpacing.sm) {
+                HStack(spacing: APSpacing.xs) {
                     Image(systemName: urgent > 0 ? "cart.badge.plus" : "cart")
-                        .font(.title3)
+                        .font(.system(size: 11))
                         .foregroundColor(urgent > 0 ? Color("appYellow") : Color.appTeal)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("\(suggestions.count)")
-                            .font(.headline).fontWeight(.bold)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("\(localReorderSuggestions.count)")
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.textPrimary)
                         Text("สั่งซื้อ")
-                            .font(.caption2)
+                            .font(.system(size: 8))
                             .foregroundColor(.textSecondary)
                     }
                 }
-                .padding(10)
+                .padding(6)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background((urgent > 0 ? Color("appYellow") : Color.appTeal).opacity(0.10))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: APRadius.sm, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: APRadius.sm, style: .continuous)
                         .stroke((urgent > 0 ? Color("appYellow") : Color.appTeal).opacity(0.35), lineWidth: 1)
                 )
             }
             .buttonStyle(.plain)
             .sheet(isPresented: $showingReorderSuggestions) {
                 ReorderSuggestionListSheet(
-                    suggestions: suggestions,
+                    suggestions: localReorderSuggestions,
                     safetyStockManager: safetyStockManager
                 )
             }
@@ -1076,7 +1098,13 @@ private var inventoryStatsHeader: some View {
     }
 
     private func sortItems(_ items: [InventoryItem]) -> [InventoryItem] {
-        items.sorted { a, b in
+        if sortKey == .expiry {
+            expiryManager.preloadLots()
+        }
+        defer {
+            expiryManager.clearLotsCache()
+        }
+        return items.sorted { a, b in
             let result: Bool
             switch sortKey {
             case .name:
@@ -1182,24 +1210,46 @@ private var inventoryStatsHeader: some View {
         .buttonStyle(.plain)
     }
 
+    // MARK: - Decoupled Stats Refresher
+    private func refreshStats() {
+        let activeItems = inventory.filter { !$0.isDeleted }
+        let filteredItems: [InventoryItem]
+        if let branch = activeBranch {
+            filteredItems = activeItems.filter { $0.branch == nil || $0.branch?.id == branch.id }
+        } else {
+            filteredItems = activeItems
+        }
+
+        localLowStockCount = filteredItems.filter { $0.currentQuantity > 0 && $0.currentQuantity <= $0.reorderLevel }.count
+
+        let activeTransactions = transactions.filter { !$0.isDeleted }
+        if let branch = activeBranch {
+            localFilteredTransactionsCount = activeTransactions.filter { $0.branch?.id == branch.id }.count
+        } else {
+            localFilteredTransactionsCount = activeTransactions.count
+        }
+
+        localReorderSuggestions = safetyStockManager.generateSuggestions(branch: activeBranch)
+    }
+
     // MARK: - ABC Recalculation
     private func recalculateABC() {
         let items = branchInventory
         guard !items.isEmpty else { return }
-        
+
         // Calculate value: costPrice × currentQuantity
         let itemValues = items.map { (id: $0.id, value: $0.costPrice * max($0.currentQuantity, 0)) }
         let sorted = itemValues.sorted { $0.value > $1.value }
         let totalValue = sorted.reduce(0.0) { $0 + $1.value }
-        
+
         guard totalValue > 0 else {
             abcClassification = Dictionary(uniqueKeysWithValues: items.map { ($0.id, "C") })
             return
         }
-        
+
         var cumulative = 0.0
         var result: [UUID: String] = [:]
-        
+
         for item in sorted {
             cumulative += item.value
             let pct = cumulative / totalValue
@@ -1211,7 +1261,7 @@ private var inventoryStatsHeader: some View {
                 result[item.id] = "C"
             }
         }
-        
+
         abcClassification = result
     }
 
@@ -1243,20 +1293,20 @@ private struct InventoryListHeader: View {
                 sortableColumn("item_header".t, key: .name, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("category_location_header".t)
-                    .frame(width: 150, alignment: .leading)
+                    .frame(width: 90, alignment: .leading)
                 sortableColumn("on_hand_label".t, key: .quantity, alignment: .trailing)
-                    .frame(width: 130, alignment: .trailing)
+                    .frame(width: 80, alignment: .trailing)
                 sortableColumn("reorder_cost_header".t, key: .cost, alignment: .trailing)
-                    .frame(width: 150, alignment: .trailing)
+                    .frame(width: 90, alignment: .trailing)
                 Text("status_label".t)
-                    .frame(width: 100, alignment: .center)
+                    .frame(width: 70, alignment: .center)
                 Text("actions_header".t)
-                    .frame(width: 132, alignment: .trailing)
+                    .frame(width: 90, alignment: .trailing)
             }
             .font(.caption2.weight(.bold))
             .foregroundColor(.textSecondary)
             .textCase(.uppercase)
-            .padding(.horizontal, APSpacing.md)
+            .padding(.horizontal, APSpacing.sm)
             .padding(.top, 10)
             .padding(.bottom, 8)
             .background(Color.appSurface)
@@ -1331,50 +1381,52 @@ private struct InventoryItemTableRow: View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 // Item name + SKU column
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.name)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundColor(.textPrimary)
-                        .lineLimit(1)
-                    if let abc = abcClass {
-                        Text(abc)
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(abc == "A" ? Color.red.opacity(0.8) : abc == "B" ? Color.orange.opacity(0.8) : Color.green.opacity(0.8))
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text(item.name)
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.textPrimary)
+                            .lineLimit(2)
+                        if let abc = abcClass {
+                            Text(abc)
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 3)
+                                .padding(.vertical, 0.5)
+                                .background(abc == "A" ? Color.red.opacity(0.8) : abc == "B" ? Color.orange.opacity(0.8) : Color.green.opacity(0.8))
+                                .clipShape(RoundedRectangle(cornerRadius: 2))
+                        }
                     }
-                    HStack(spacing: 6) {
+                    HStack(spacing: 4) {
                         Text(item.sku ?? "N/A")
                         if let barcode = item.barcode, !barcode.isEmpty {
                             Text("•")
                             Text(barcode)
                         }
                     }
-                    .font(.caption2)
+                    .font(.system(size: 9))
                     .foregroundColor(.textSecondary)
                     .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 // Category + Location
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(item.category ?? "uncategorized".t)
-                        .font(.caption.weight(.medium))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(.textPrimary)
                         .lineLimit(1)
                     Text(item.storageLocation ?? "no_location".t)
-                        .font(.caption2)
+                        .font(.system(size: 9))
                         .foregroundColor(.textSecondary)
                         .lineLimit(1)
                 }
-                .frame(width: 150, alignment: .leading)
+                .frame(width: 90, alignment: .leading)
 
                 // On Hand + mini stock bar
-                VStack(alignment: .trailing, spacing: 4) {
+                VStack(alignment: .trailing, spacing: 2) {
                     Text(String(format: "%.1f %@", item.currentQuantity, item.unit))
-                        .font(.subheadline.weight(.bold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(isLow || isOut ? .appRose : .textPrimary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -1382,37 +1434,38 @@ private struct InventoryItemTableRow: View {
                     // Mini color-coded stock bar
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 2)
+                            RoundedRectangle(cornerRadius: 1.5)
                                 .fill(Color.appSurfaceHigh)
-                                .frame(height: 3)
-                            RoundedRectangle(cornerRadius: 2)
+                                .frame(height: 2)
+                            RoundedRectangle(cornerRadius: 1.5)
                                 .fill(stockBarColor)
-                                .frame(width: geo.size.width * fillRatio, height: 3)
+                                .frame(width: geo.size.width * fillRatio, height: 2)
                         }
                     }
-                    .frame(width: 60, height: 3)
+                    .frame(width: 60, height: 2)
                 }
-                .frame(width: 130, alignment: .trailing)
+                .frame(width: 80, alignment: .trailing)
 
                 // Reorder + Cost
-                VStack(alignment: .trailing, spacing: 3) {
+                VStack(alignment: .trailing, spacing: 2) {
                     Text(LocalizationManager.shared.t("reorder_at_template", Int(item.reorderLevel), item.unit))
-                        .font(.caption2)
+                        .font(.system(size: 9))
                         .foregroundColor(.textSecondary)
                         .lineLimit(1)
                     Text(String(format: "฿%.2f/%@", item.costPrice, item.unit))
-                        .font(.caption2.weight(.medium))
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(.textPrimary)
                         .lineLimit(1)
                 }
-                .frame(width: 150, alignment: .trailing)
+                .frame(width: 90, alignment: .trailing)
 
                 // Status badge
                 APBadge(text: statusText, color: statusColor)
-                    .frame(width: 100, alignment: .center)
+                    .scaleEffect(0.85)
+                    .frame(width: 70, alignment: .center)
 
                 // Actions
-                HStack(spacing: 6) {
+                HStack(spacing: 4) {
                     iconAction("inventory_receive".t, "plus.circle.fill", .appTeal, onReceive)
                     iconAction("inventory_waste".t, "minus.circle.fill", .appRose, onWaste)
                     Menu {
@@ -1421,18 +1474,19 @@ private struct InventoryItemTableRow: View {
                         Button(action: onHistory) { Label("movement_history".t, systemImage: "clock.arrow.circlepath") }
                     } label: {
                         Image(systemName: "ellipsis.circle.fill")
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(.textPrimary)
-                            .frame(width: 32, height: 32)
+                            .frame(width: 24, height: 24)
                             .background(Color.appSurfaceHigh)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
                     .help("more_actions".t)
                 }
-                .frame(width: 132, alignment: .trailing)
+                .frame(width: 90, alignment: .trailing)
             }
-            .padding(.horizontal, APSpacing.md)
-            .frame(minHeight: 64)
+            .padding(.horizontal, APSpacing.sm)
+            .padding(.vertical, 4)
+            .frame(minHeight: 40)
             .background(Color.appSurface)
             .overlay(Divider().background(Color.appDivider), alignment: .bottom)
         }
@@ -1441,11 +1495,11 @@ private struct InventoryItemTableRow: View {
     private func iconAction(_ title: String, _ icon: String, _ color: Color, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(color)
-                .frame(width: 32, height: 32)
+                .frame(width: 24, height: 24)
                 .background(color.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .buttonStyle(.plain)
         .help(title)
@@ -2344,8 +2398,22 @@ struct ItemMovementHistorySheet: View {
             }
 
             VStack(alignment: .leading, spacing: 3) {
-                HStack {
+                HStack(spacing: APSpacing.xs) {
                     APBadge(text: typeConfig.label, color: typeConfig.color)
+
+                    let isVerified = InventoryAuditSigner.verifyTransaction(txn)
+                    HStack(spacing: 2) {
+                        Image(systemName: isVerified ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                            .font(.system(size: 7))
+                        Text(isVerified ? "SECURE" : "UNVERIFIED")
+                            .font(.system(size: 6, weight: .black))
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(isVerified ? Color.appTeal.opacity(0.15) : Color.appRose.opacity(0.15))
+                    .foregroundColor(isVerified ? .appTeal : .appRose)
+                    .cornerRadius(3)
+
                     Spacer()
                     Text(String(format: "%@%.1f %@",
                                 txn.quantity >= 0 ? "+" : "",
@@ -2356,7 +2424,7 @@ struct ItemMovementHistorySheet: View {
                 }
 
                 HStack {
-                    Text(txn.notes ?? "no_details".t)
+                    Text(InventoryAuditSigner.cleanNotes(txn.notes) ?? "no_details".t)
                         .font(.caption)
                         .foregroundColor(.textSecondary)
                         .lineLimit(1)

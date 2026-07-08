@@ -20,28 +20,29 @@ struct PaymentGatewayView: View {
     @AppStorage("active_branch_id") private var activeBranchId = ""
     @AppStorage("payment_test_mode") private var paymentTestMode = false
     @AppStorage("app_currency_symbol") private var currencySymbol = "฿"
-    
+    @AppStorage("promptpay_number") private var promptPayNumber = ""
+
     @AppStorage("payment_method_cash_enabled") private var cashEnabled = true
     @AppStorage("payment_method_card_enabled") private var cardEnabled = true
     @AppStorage("payment_method_qr_enabled") private var qrEnabled = true
     @AppStorage("payment_method_truemoney_enabled") private var trueMoneyEnabled = true
     @AppStorage("payment_method_linepay_enabled") private var linePayEnabled = false
     @AppStorage("payment_method_grabpay_enabled") private var grabPayEnabled = false
-    
+
     @Query(sort: \Payment.paidAt, order: .reverse) private var recentPayments: [Payment]
-    
+
     @State private var selectedSection: PaymentSection = .methods
     @State private var showAddGateway = false
     @State private var showGatewayDetail: GatewayProvider? = nil
-    
+
     enum PaymentSection: String, CaseIterable, Identifiable {
         case methods = "Payment Methods"
         case gateways = "Gateways"
         case transactions = "Transactions"
         case settings = "Settings"
-        
+
         var id: String { rawValue }
-        
+
         var icon: String {
             switch self {
             case .methods: return "creditcard.fill"
@@ -51,9 +52,9 @@ struct PaymentGatewayView: View {
             }
         }
     }
-    
+
     // MARK: - Gateway Providers
-    
+
     enum GatewayProvider: String, CaseIterable, Identifiable {
         case omise = "Omise"
         case twoCTwoP = "2C2P"
@@ -65,9 +66,9 @@ struct PaymentGatewayView: View {
         case linePay = "LINE Pay"
         case grabPay = "GrabPay"
         case shopeePayLater = "ShopeePay"
-        
+
         var id: String { rawValue }
-        
+
         var icon: String {
             switch self {
             case .omise: return "building.columns.fill"
@@ -82,7 +83,7 @@ struct PaymentGatewayView: View {
             case .shopeePayLater: return "bag.fill"
             }
         }
-        
+
         var color: Color {
             switch self {
             case .omise: return Color(hex: "1A56DB")
@@ -97,7 +98,7 @@ struct PaymentGatewayView: View {
             case .shopeePayLater: return Color(hex: "EE4D2D")
             }
         }
-        
+
         var category: PaymentCategory {
             switch self {
             case .omise, .twoCTwoP, .stripe: return .cardGateway
@@ -105,7 +106,7 @@ struct PaymentGatewayView: View {
             case .trueMoney, .linePay, .grabPay, .shopeePayLater: return .eWallet
             }
         }
-        
+
         var feeDescription: String {
             switch self {
             case .omise: return "3.65% + ฿0"
@@ -121,22 +122,22 @@ struct PaymentGatewayView: View {
             }
         }
     }
-    
+
     enum PaymentCategory: String, CaseIterable {
         case cardGateway = "Card Gateways"
         case qrPayment = "QR Payments"
         case eWallet = "E-Wallets"
     }
-    
-    
+
+
     var body: some View {
         HStack(spacing: 0) {
             // Left nav
             sectionNav
                 .frame(width: 200)
-            
+
             Divider().background(Color.appDivider)
-            
+
             // Content
             mainContent
                 .frame(maxWidth: .infinity)
@@ -152,9 +153,9 @@ struct PaymentGatewayView: View {
             GatewayConfigSheet(provider: provider)
         }
     }
-    
+
     // MARK: - Section Nav
-    
+
     private var sectionNav: some View {
         VStack(alignment: .leading, spacing: 4) {
             // Header
@@ -177,9 +178,9 @@ struct PaymentGatewayView: View {
                 }
             }
             .padding()
-            
+
             Divider().background(Color.appDivider).padding(.horizontal)
-            
+
             // Sections
             ForEach(PaymentSection.allCases) { section in
                 Button {
@@ -203,23 +204,23 @@ struct PaymentGatewayView: View {
                 .buttonStyle(.plain)
                 .padding(.horizontal, 8)
             }
-            
+
             Spacer()
-            
+
             // Stats summary
             paymentStatsWidget
         }
         .background(Color.appSurface)
     }
-    
+
     // MARK: - Stats Widget
-    
+
     private var paymentStatsWidget: some View {
         let todayPayments = recentPayments.filter {
             Calendar.current.isDateInToday($0.paidAt) && $0.status == "completed"
         }
         let todayTotal = todayPayments.reduce(0.0) { $0 + $1.amount }
-        
+
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 4) {
                 Image(systemName: "chart.line.uptrend.xyaxis")
@@ -255,9 +256,9 @@ struct PaymentGatewayView: View {
         .padding(.horizontal, 10)
         .padding(.bottom, 10)
     }
-    
+
     // MARK: - Main Content
-    
+
     @ViewBuilder
     private var mainContent: some View {
         ScrollView {
@@ -276,9 +277,9 @@ struct PaymentGatewayView: View {
             .padding(24)
         }
     }
-    
+
     // MARK: - Payment Methods Section
-    
+
     private var paymentMethodsSection: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
@@ -292,7 +293,7 @@ struct PaymentGatewayView: View {
                 }
                 Spacer()
             }
-            
+
             paymentMethodRow(name: "Cash", subtitle: "payment_cash_desc".t, icon: "banknote.fill", color: Color(hex: "10B981"), fee: "0%", isEnabled: $cashEnabled)
             paymentMethodRow(name: "Credit/Debit Card", subtitle: "payment_card_desc".t, icon: "creditcard.fill", color: Color(hex: "3B82F6"), fee: "3.65%", isEnabled: $cardEnabled)
             paymentMethodRow(name: "PromptPay QR", subtitle: "payment_promptpay_desc".t, icon: "qrcode", color: Color(hex: "003B71"), fee: "0%", isEnabled: $qrEnabled)
@@ -301,14 +302,14 @@ struct PaymentGatewayView: View {
             paymentMethodRow(name: "GrabPay", subtitle: "payment_grabpay_desc".t, icon: "car.fill", color: Color(hex: "00B14F"), fee: "2.5%", isEnabled: $grabPayEnabled)
         }
     }
-    
+
     private func paymentMethodRow(name: String, subtitle: String, icon: String, color: Color, fee: String, isEnabled: Binding<Bool>) -> some View {
         HStack(spacing: 14) {
             // Drag handle
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 12))
                 .foregroundColor(.textTertiary)
-            
+
             // Icon
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -318,7 +319,7 @@ struct PaymentGatewayView: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(color)
             }
-            
+
             // Info
             VStack(alignment: .leading, spacing: 2) {
                 Text(name)
@@ -328,9 +329,9 @@ struct PaymentGatewayView: View {
                     .font(.system(size: 11))
                     .foregroundColor(.textTertiary)
             }
-            
+
             Spacer()
-            
+
             // Fee
             if !fee.isEmpty {
                 Text(fee)
@@ -341,7 +342,7 @@ struct PaymentGatewayView: View {
                     .background(Color.appSurfaceHigh)
                     .cornerRadius(6)
             }
-            
+
             // Toggle
             Toggle("", isOn: isEnabled)
                 .labelsHidden()
@@ -355,9 +356,9 @@ struct PaymentGatewayView: View {
                 .stroke(isEnabled.wrappedValue ? color.opacity(0.2) : Color.appBorderSubtle, lineWidth: 1)
         )
     }
-    
+
     // MARK: - Gateways Section
-    
+
     private var gatewaysSection: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
@@ -386,17 +387,17 @@ struct PaymentGatewayView: View {
                 }
                 .buttonStyle(.plain)
             }
-            
+
             // Group by category
             ForEach(PaymentCategory.allCases, id: \.rawValue) { category in
                 let providers = GatewayProvider.allCases.filter { $0.category == category }
-                
+
                 VStack(alignment: .leading, spacing: 10) {
                     Text(category.rawValue)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.textTertiary)
                         .tracking(1)
-                    
+
                     LazyVGrid(columns: [
                         GridItem(.flexible()),
                         GridItem(.flexible()),
@@ -410,7 +411,7 @@ struct PaymentGatewayView: View {
             }
         }
     }
-    
+
     private func gatewayCard(_ provider: GatewayProvider) -> some View {
         Button {
             showGatewayDetail = provider
@@ -424,17 +425,17 @@ struct PaymentGatewayView: View {
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundColor(provider.color)
                 }
-                
+
                 Text(provider.rawValue)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.textPrimary)
                     .lineLimit(1)
-                
+
                 Text(provider.feeDescription)
                     .font(.system(size: 9))
                     .foregroundColor(.textTertiary)
                     .lineLimit(1)
-                
+
                 // Connection status
                 HStack(spacing: 4) {
                     Circle()
@@ -456,9 +457,9 @@ struct PaymentGatewayView: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     // MARK: - Transactions Section
-    
+
     private var transactionsSection: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
@@ -466,7 +467,7 @@ struct PaymentGatewayView: View {
                     .font(.title2.weight(.bold))
                     .foregroundColor(.textPrimary)
                 Spacer()
-                
+
                 // Summary
                 HStack(spacing: 12) {
                     transactionStat(label: "payment_completed".t, count: completedPayments.count, color: .green)
@@ -474,7 +475,7 @@ struct PaymentGatewayView: View {
                     transactionStat(label: "payment_refunded".t, count: refundedPayments.count, color: .orange)
                 }
             }
-            
+
             // Transaction list
             if recentPayments.isEmpty {
                 VStack(spacing: 12) {
@@ -494,7 +495,7 @@ struct PaymentGatewayView: View {
             }
         }
     }
-    
+
     private func transactionStat(label: String, count: Int, color: Color) -> some View {
         HStack(spacing: 4) {
             Circle().fill(color).frame(width: 6, height: 6)
@@ -502,7 +503,7 @@ struct PaymentGatewayView: View {
             Text(label).font(.system(size: 10)).foregroundColor(.textSecondary)
         }
     }
-    
+
     private func transactionRow(_ payment: Payment) -> some View {
         HStack(spacing: 12) {
             // Method icon
@@ -514,7 +515,7 @@ struct PaymentGatewayView: View {
                     .font(.system(size: 14))
                     .foregroundColor(methodColor(payment.paymentMethod))
             }
-            
+
             // Details
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -535,9 +536,9 @@ struct PaymentGatewayView: View {
                         .foregroundColor(.textTertiary)
                 }
             }
-            
+
             Spacer()
-            
+
             // Amount
             VStack(alignment: .trailing, spacing: 2) {
                 Text("\(currencySymbol)\(payment.amount.formatted(.number.precision(.fractionLength(2))))")
@@ -554,7 +555,7 @@ struct PaymentGatewayView: View {
         .background(Color.appSurface)
         .cornerRadius(10)
     }
-    
+
     private func statusBadge(_ status: String) -> some View {
         let color: Color = {
             switch status {
@@ -564,7 +565,7 @@ struct PaymentGatewayView: View {
             default: return .gray
             }
         }()
-        
+
         return Text(status.capitalized)
             .font(.system(size: 9, weight: .bold))
             .foregroundColor(color)
@@ -573,15 +574,15 @@ struct PaymentGatewayView: View {
             .background(color.opacity(0.1))
             .cornerRadius(4)
     }
-    
+
     // MARK: - Settings Section
-    
+
     private var settingsSection: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("payment_settings_title".t)
                 .font(.title2.weight(.bold))
                 .foregroundColor(.textPrimary)
-            
+
             // Test mode toggle
             settingRow(
                 icon: "flask.fill",
@@ -593,57 +594,17 @@ struct PaymentGatewayView: View {
                     .labelsHidden()
                     .tint(.orange)
             }
-            
-            // Auto-reconciliation
-            settingRow(
-                icon: "arrow.triangle.2.circlepath",
-                title: "payment_auto_reconcile_title".t,
-                subtitle: "payment_auto_reconcile_desc".t,
-                color: .blue
-            ) {
-                Toggle("", isOn: .constant(true))
-                    .labelsHidden()
-                    .tint(.appAccent)
-            }
-            
-            // Receipt auto-print
-            settingRow(
-                icon: "printer.fill",
-                title: "payment_auto_receipt_title".t,
-                subtitle: "payment_auto_receipt_desc".t,
-                color: .purple
-            ) {
-                Toggle("", isOn: .constant(true))
-                    .labelsHidden()
-                    .tint(.appAccent)
-            }
-            
-            // Tipping
-            settingRow(
-                icon: "heart.fill",
-                title: "payment_tipping_title".t,
-                subtitle: "payment_tipping_desc".t,
-                color: .pink
-            ) {
-                Toggle("", isOn: .constant(true))
-                    .labelsHidden()
-                    .tint(.appAccent)
-            }
-            
-            // Multi-currency
-            settingRow(
-                icon: "coloncurrencysign.circle.fill",
-                title: "payment_multi_currency_title".t,
-                subtitle: "payment_multi_currency_desc".t,
-                color: .teal
-            ) {
-                Toggle("", isOn: .constant(false))
-                    .labelsHidden()
-                    .tint(.appAccent)
-            }
+
+            Text("Automatic reconciliation, tipping, and multi-currency settlement require a configured payment provider and are not active in this build.")
+                .font(.caption)
+                .foregroundColor(.textSecondary)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.appSurface)
+                .cornerRadius(12)
         }
     }
-    
+
     private func settingRow(icon: String, title: String, subtitle: String, color: Color, @ViewBuilder trailing: () -> some View) -> some View {
         HStack(spacing: 14) {
             Image(systemName: icon)
@@ -652,7 +613,7 @@ struct PaymentGatewayView: View {
                 .frame(width: 36, height: 36)
                 .background(color.opacity(0.1))
                 .cornerRadius(8)
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 14, weight: .medium))
@@ -661,7 +622,7 @@ struct PaymentGatewayView: View {
                     .font(.system(size: 11))
                     .foregroundColor(.textTertiary)
             }
-            
+
             Spacer()
             trailing()
         }
@@ -669,22 +630,17 @@ struct PaymentGatewayView: View {
         .background(Color.appSurface)
         .cornerRadius(12)
     }
-    
+
     // MARK: - Helpers
-    
+
     private var completedPayments: [Payment] { recentPayments.filter { $0.status == "completed" } }
     private var failedPayments: [Payment] { recentPayments.filter { $0.status == "failed" } }
     private var refundedPayments: [Payment] { recentPayments.filter { $0.status == "refunded" } }
-    
+
     private func isGatewayConnected(_ provider: GatewayProvider) -> Bool {
-        // In production, check UserDefaults/Keychain for stored credentials
-        switch provider {
-        case .promptpay: return true  // Always available (built-in)
-        case .kasikornQR: return true // Demo: pre-connected
-        default: return false
-        }
+        provider == .promptpay && !promptPayNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
-    
+
     private func methodColor(_ method: String) -> Color {
         switch method {
         case "cash": return Color(hex: "10B981")
@@ -694,7 +650,7 @@ struct PaymentGatewayView: View {
         default: return .appAccent
         }
     }
-    
+
     private func methodIcon(_ method: String) -> String {
         switch method {
         case "cash": return "banknote.fill"
@@ -704,7 +660,7 @@ struct PaymentGatewayView: View {
         default: return "creditcard.fill"
         }
     }
-    
+
     private func methodDisplayName(_ method: String) -> String {
         switch method {
         case "cash": return "Cash"
@@ -727,7 +683,7 @@ struct PaymentMethodConfig: Identifiable {
     var fee: String
     var isEnabled: Bool
     var methodKey: String
-    
+
     static var defaults: [PaymentMethodConfig] {
         [
             PaymentMethodConfig(name: "Cash", subtitle: "payment_cash_desc".t, icon: "banknote.fill", color: Color(hex: "10B981"), fee: "0%", isEnabled: true, methodKey: "cash"),
@@ -745,7 +701,7 @@ struct PaymentMethodConfig: Identifiable {
 private struct AddGatewaySheet: View {
     @Environment(\.dismiss) private var dismiss
     let onSelect: (PaymentGatewayView.GatewayProvider) -> Void
-    
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -754,7 +710,7 @@ private struct AddGatewaySheet: View {
                         .font(.subheadline)
                         .foregroundColor(.textSecondary)
                         .padding(.horizontal)
-                    
+
                     ForEach(PaymentGatewayView.PaymentCategory.allCases, id: \.rawValue) { category in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(category.rawValue)
@@ -762,7 +718,7 @@ private struct AddGatewaySheet: View {
                                 .foregroundColor(.textTertiary)
                                 .tracking(1)
                                 .padding(.horizontal)
-                            
+
                             ForEach(PaymentGatewayView.GatewayProvider.allCases.filter { $0.category == category }) { provider in
                                 Button { onSelect(provider) } label: {
                                     HStack(spacing: 12) {
@@ -806,11 +762,11 @@ private struct AddGatewaySheet: View {
 private struct GatewayConfigSheet: View {
     @Environment(\.dismiss) private var dismiss
     let provider: PaymentGatewayView.GatewayProvider
-    
+
     @State private var apiKey = ""
     @State private var secretKey = ""
     @State private var testMode = true
-    
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -830,15 +786,15 @@ private struct GatewayConfigSheet: View {
                                 .foregroundColor(.textSecondary)
                         }
                     }
-                    
+
                     Divider().background(Color.appDivider)
-                    
+
                     // API Keys
                     VStack(alignment: .leading, spacing: 12) {
                         Text("payment_credentials".t)
                             .font(.headline)
                             .foregroundColor(.textPrimary)
-                        
+
                         VStack(alignment: .leading, spacing: 4) {
                             Text("API Key (Public)")
                                 .font(.system(size: 11, weight: .medium))
@@ -849,7 +805,7 @@ private struct GatewayConfigSheet: View {
                                 .background(Color.appSurfaceHigh)
                                 .cornerRadius(8)
                         }
-                        
+
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Secret Key (Private)")
                                 .font(.system(size: 11, weight: .medium))
@@ -861,7 +817,7 @@ private struct GatewayConfigSheet: View {
                                 .cornerRadius(8)
                         }
                     }
-                    
+
                     // Test mode
                     Toggle(isOn: $testMode) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -877,27 +833,14 @@ private struct GatewayConfigSheet: View {
                     .padding(14)
                     .background(Color.appSurface)
                     .cornerRadius(12)
-                    
-                    // Connect button
-                    Button {
-                        // Save credentials to Keychain & connect
-                        dismiss()
-                    } label: {
-                        HStack {
-                            Spacer()
-                            Image(systemName: "link.badge.plus")
-                            Text("payment_connect_gateway".t)
-                                .fontWeight(.semibold)
-                            Spacer()
-                        }
+
+                    Label("Provider integration unavailable", systemImage: "link.badge.plus")
+                        .fontWeight(.semibold)
+                        .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .background(provider.color)
+                        .background(provider.color.opacity(0.35))
                         .foregroundColor(.white)
                         .cornerRadius(12)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(apiKey.isEmpty || secretKey.isEmpty)
-                    .opacity(apiKey.isEmpty || secretKey.isEmpty ? 0.5 : 1.0)
                 }
                 .padding(20)
             }

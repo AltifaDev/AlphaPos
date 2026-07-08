@@ -24,7 +24,11 @@ struct StaffLockView: View {
     @State private var passcode = ""
     @State private var errorMessage = ""
     @State private var attempts = 0
-    @State private var lockedUntil: Date?
+    @AppStorage("staff_lockout_until_time") private var lockedUntilTime: Double = 0.0
+    private var lockedUntil: Date? {
+        get { lockedUntilTime > 0 ? Date(timeIntervalSince1970: lockedUntilTime) : nil }
+        set { lockedUntilTime = newValue?.timeIntervalSince1970 ?? 0.0 }
+    }
     @State private var isShowingPasscode = false
     @State private var isOwnerPasscodeEntry = false
     @State private var shakeAttempts = 0
@@ -325,9 +329,6 @@ struct StaffLockView: View {
                             iconName: "crown.fill"
                           )
                         : themeForEmployee(selectedEmployee!)
-                    let initials = isOwnerPasscodeEntry
-                        ? String(storeDisplayName.split(separator: " ").prefix(2).compactMap { $0.first }).uppercased()
-                        : employeeInitials(selectedEmployee!)
                     let displayName = isOwnerPasscodeEntry ? storeDisplayName : employeeDisplayName(selectedEmployee!)
                     let roleName = isOwnerPasscodeEntry ? "store_owner".t : (selectedEmployee!.user?.role?.name ?? "Staff")
 
@@ -376,14 +377,14 @@ struct StaffLockView: View {
                                 Circle()
                                     .stroke(Color.white.opacity(0.45), lineWidth: 1.5)
                                     .frame(width: 44, height: 44)
-                                
+
                                 Circle()
                                     .fill(
                                         LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
                                     )
                                     .frame(width: 14, height: 14)
                                     .offset(y: -4)
-                                
+
                                 Circle()
                                     .fill(
                                         LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -521,9 +522,9 @@ struct StaffLockView: View {
         Task.detached(priority: .userInitiated) {
             let isOwner = await MainActor.run { isOwnerPasscodeEntry }
             if isOwner {
-                if KeychainManager.shared.verifyOwnerPin(capturedPasscode) {
+                if await KeychainManager.shared.verifyOwnerPin(capturedPasscode) {
                     await MainActor.run {
-                        attempts = 0; lockedUntil = nil; passcode = ""
+                        attempts = 0; lockedUntilTime = 0.0; passcode = ""
                         onUseStoreAccount()
                     }
                 } else {
@@ -531,7 +532,7 @@ struct StaffLockView: View {
                         withAnimation { shakeAttempts += 1 }
                         attempts += 1; passcode = ""
                         if attempts >= maxAttempts {
-                            lockedUntil = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60))
+                            lockedUntilTime = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60)).timeIntervalSince1970
                             errorMessage = "ล็อคชั่วคราว — พยายามหลายครั้งเกินไป"
                         } else {
                             errorMessage = LocalizationManager.shared.currentLanguage == .thai
@@ -550,7 +551,7 @@ struct StaffLockView: View {
                         withAnimation { shakeAttempts += 1 }
                         attempts += 1; passcode = ""
                         if attempts >= maxAttempts {
-                            lockedUntil = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60))
+                            lockedUntilTime = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60)).timeIntervalSince1970
                             errorMessage = "ล็อคชั่วคราว — พยายามหลายครั้งเกินไป"
                         } else {
                             errorMessage = attempts >= 3
@@ -565,7 +566,7 @@ struct StaffLockView: View {
                         passcode = ""; errorMessage = "Staff profile unavailable."
                         return
                     }
-                    attempts = 0; lockedUntil = nil; passcode = ""
+                    attempts = 0; lockedUntilTime = 0.0; passcode = ""
                     onUnlock(employee)
                 }
             }
@@ -613,11 +614,11 @@ private struct GlassProfileButton: View {
                                 RoundedRectangle(cornerRadius: 1.5)
                                     .fill(Color.white.opacity(0.85))
                                     .frame(width: 6, height: 18)
-                                
+
                                 RoundedRectangle(cornerRadius: 1.5)
                                     .fill(Color.white.opacity(0.4))
                                     .frame(width: 6, height: 18)
-                                
+
                                 RoundedRectangle(cornerRadius: 1.5)
                                     .fill(Color.white.opacity(0.25))
                                     .frame(width: 6, height: 18)
@@ -638,14 +639,14 @@ private struct GlassProfileButton: View {
                         Circle()
                             .stroke(Color.white.opacity(0.45), lineWidth: 2)
                             .frame(width: 52, height: 52)
-                        
+
                         Circle()
                             .fill(
                                 LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
                             )
                             .frame(width: 17, height: 17)
                             .offset(y: -4)
-                        
+
                         Circle()
                             .fill(
                                 LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing)

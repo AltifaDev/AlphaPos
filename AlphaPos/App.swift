@@ -69,22 +69,24 @@ struct AlphaPosApp: App {
             EmployeeShift.self, Timecard.self, RegisterSession.self,
             Branch.self, PurchaseOrder.self, PurchaseOrderItem.self,
             Promotion.self, PromotionBundleItem.self, Printer.self,
-            PrintRoutingRule.self, AuditLog.self, Customer.self,
+            PrintJobRecord.self, PrintRoutingRule.self, AuditLog.self, Customer.self,
             OrderDiscount.self, OrderTaxLine.self, Tip.self,
             RefundTransaction.self, CashMovement.self, LoyaltyTransaction.self,
             GiftCard.self, MerchantDevice.self, StaffSessionRecord.self,
             SecurityPolicy.self, FloorPlanImage.self, TableLayoutPreset.self,
             CurrencyExchangeRate.self, TaxRate.self, ShiftReport.self, ReceiptTemplate.self,
-            InventoryLot.self
+            InventoryLot.self,
+            EmployeeLeave.self,
+            WaitlistEntry.self
         ])
-        
+
         // Locate default.store and run direct SQLite cleanup on orphaned OrderItems
         // before initializing ModelContainer, allowing safe automatic migration.
         let fm = FileManager.default
         if let appSupportURL = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             // Ensure the Application Support directory is created first on physical devices
             try? fm.createDirectory(at: appSupportURL, withIntermediateDirectories: true, attributes: nil)
-            
+
             let storeURL = appSupportURL.appendingPathComponent("default.store")
             if fm.fileExists(atPath: storeURL.path) {
                 var db: OpaquePointer?
@@ -109,26 +111,8 @@ struct AlphaPosApp: App {
                 configurations: [modelConfiguration]
             )
         } catch {
-            // Attempt recovery: remove only SwiftData store files, then retry.
-            if let appSupportURL = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-                let storeFiles = (try? fm.contentsOfDirectory(at: appSupportURL, includingPropertiesForKeys: nil)) ?? []
-                let swiftDataExtensions = [".store", ".store-shm", ".store-wal",
-                                           ".sqlite", ".sqlite-shm", ".sqlite-wal"]
-                for file in storeFiles {
-                    if swiftDataExtensions.contains(where: { file.lastPathComponent.hasSuffix($0) }) {
-                        try? fm.removeItem(at: file)
-                    }
-                }
-            }
-
-            do {
-                return try ModelContainer(
-                    for: schema,
-                    configurations: [modelConfiguration]
-                )
-            } catch {
-                fatalError("Could not create ModelContainer after reset: \(error.localizedDescription)")
-            }
+            // Never delete a POS store automatically: migration failure must preserve sales data.
+            fatalError("Persistent store migration failed; local data was preserved: \(error.localizedDescription)")
         }
     }()
 
@@ -140,7 +124,8 @@ struct AlphaPosApp: App {
         _ = SyncEngine.shared
         PrintService.shared.configure(modelContext: sharedModelContainer.mainContext)
         cleanupDuplicateSeedEmployees(sharedModelContainer.mainContext)
-        
+        cleanupDuplicateCategoriesAndBranchlessItems(sharedModelContainer.mainContext)
+
         // Native URLCache setup for image caching (RAM 50MB, Disk 200MB)
         let imageCache = URLCache(
             memoryCapacity: 50 * 1024 * 1024,
@@ -172,6 +157,64 @@ struct AlphaPosApp: App {
             }
         }
         modelContext.saveWithLogging(label: #function)
+    }
+
+    private func cleanupDuplicateCategoriesAndBranchlessItems(_ modelContext: ModelContext) {
+        // 1. Link branchless inventory items to Main Branch
+        let branchDesc = FetchDescriptor<Branch>()
+        let branches = (try? modelContext.fetch(branchDesc)) ?? []
+        let mainBranch: Branch
+        if let first = branches.first {
+            mainBranch = first
+        } else {
+            mainBranch = Branch(name: "Main Branch", location: "Headquarters", phone: "02-123-4567")
+            modelContext.insert(mainBranch)
+        }
+
+        let itemDesc = FetchDescriptor<InventoryItem>()
+        if let items = try? modelContext.fetch(itemDesc) {
+            var itemsUpdated = 0
+            for item in items {
+                if item.branch == nil {
+                    item.branch = mainBranch
+                    itemsUpdated += 1
+                }
+            }
+            if itemsUpdated > 0 {
+                #if DEBUG
+                print("AppInit [Cleanup]: Linked \(itemsUpdated) branchless inventory item(s) to Main Branch.")
+                #endif
+            }
+        }
+
+        // 2. Clean up duplicate categories
+        let categoryDesc = FetchDescriptor<Category>()
+        if let categories = try? modelContext.fetch(categoryDesc) {
+            var seenNames: [String: Category] = [:]
+            var categoriesDeleted = 0
+            for cat in categories {
+                let nameKey = cat.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if let existing = seenNames[nameKey] {
+                    // Re-link its menu items to the existing category, then delete it.
+                    for item in cat.menuItems {
+                        item.category = existing
+                        item.isSynced = false
+                    }
+                    cat.menuItems.removeAll()
+                    modelContext.delete(cat)
+                    categoriesDeleted += 1
+                } else {
+                    seenNames[nameKey] = cat
+                }
+            }
+            if categoriesDeleted > 0 {
+                #if DEBUG
+                print("AppInit [Cleanup]: Merged and deleted \(categoriesDeleted) duplicate category record(s).")
+                #endif
+            }
+        }
+
+        try? modelContext.save()
     }
 
     var body: some Scene {

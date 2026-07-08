@@ -12,9 +12,9 @@ enum RefundReason: String, CaseIterable, Identifiable {
     case qualityIssue    = "Quality Issue"
     case overcharge      = "Overcharge"
     case other           = "Other"
-    
+
     var id: String { rawValue }
-    
+
     var icon: String {
         switch self {
         case .customerRequest: return "person.crop.circle.badge.questionmark"
@@ -41,27 +41,33 @@ final class RefundViewModel {
     var pinError: String?
     var isProcessing: Bool = false
     var isComplete: Bool = false
-    
+    var restockItems: Bool = false
+
     var refundableItems: [OrderItem] {
         guard let order = selectedOrder else { return [] }
         return order.items.filter { !$0.isDeleted && $0.status != "cancelled" }
     }
-    
+
     var refundAmount: Double {
         guard let order = selectedOrder else { return 0 }
-        if isFullRefund {
-            return order.total
-        }
+        let alreadyRefunded = order.refunds
+            .filter { !$0.isDeleted && $0.status == "completed" }
+            .reduce(0.0) { $0 + $1.refundAmount }
+        let remainingRefundable = max(0, order.total - alreadyRefunded)
+        if isFullRefund { return remainingRefundable }
         let items = order.items.filter { selectedItemIds.contains($0.id) && !$0.isDeleted }
-        return items.reduce(0.0) { $0 + $1.subtotal }
+        guard order.subtotal > 0 else { return 0 }
+        let selectedSubtotal = items.reduce(0.0) { $0 + $1.subtotal }
+        // Allocate order-level tax, service charge, and discount proportionally.
+        return min(remainingRefundable, order.total * selectedSubtotal / order.subtotal)
     }
-    
+
     var canProcess: Bool {
         guard selectedOrder != nil else { return false }
         if isFullRefund { return true }
         return !selectedItemIds.isEmpty
     }
-    
+
     func toggleItem(_ itemId: UUID) {
         if selectedItemIds.contains(itemId) {
             selectedItemIds.remove(itemId)
@@ -74,29 +80,32 @@ final class RefundViewModel {
             isFullRefund = selectedItemIds == allIds
         }
     }
-    
+
     func selectFullRefund() {
         isFullRefund = true
         selectedItemIds = Set(refundableItems.map { $0.id })
     }
-    
+
     func deselectFullRefund() {
         isFullRefund = false
         selectedItemIds.removeAll()
     }
-    
+
     func validatePIN() -> Bool {
         pinError = "Use manager authorization to continue."
         pinCode = ""
         return false
     }
-    
+
     func processRefund(modelContext: ModelContext) {
-        guard let order = selectedOrder else { return }
+        guard let order = selectedOrder, refundAmount > 0 else { return }
         isProcessing = true
-        
+        let itemsBeingRefunded = order.items.filter {
+            !$0.isDeleted && (isFullRefund || selectedItemIds.contains($0.id))
+        }
+
         let reasonText = selectedReason == .other ? otherReasonText : selectedReason.rawValue
-        
+
         // Mark selected items as cancelled
         if isFullRefund {
             order.status = "cancelled"
@@ -112,18 +121,7 @@ final class RefundViewModel {
                 item.updatedAt = Date()
             }
         }
-        
-        // Update payment status
-        for payment in order.payments {
-            if isFullRefund {
-                payment.status = "refunded"
-            } else {
-                payment.status = "partially_refunded"
-            }
-            payment.isSynced = false
-            payment.updatedAt = Date()
-        }
-        
+
         // Create audit log
         let auditLog = AuditLog(
             actionType: "refund",
@@ -132,35 +130,70 @@ final class RefundViewModel {
             newValue: refundAmount
         )
         modelContext.insert(auditLog)
-        
+
         // Retrieve current active employee session from DB
         let records = (try? modelContext.fetch(FetchDescriptor<StaffSessionRecord>())) ?? []
         let activeRecord = records.filter { $0.endedAt == nil }.max(by: { $0.startedAt < $1.startedAt })
         let employeeId = activeRecord?.employeeId
-        
-        // Instantiate and persist a RefundTransaction record
-        let refundTx = RefundTransaction(
-            order: order,
-            originalPayment: order.payments.first,
-            refundAmount: refundAmount,
-            refundMethod: order.payments.first?.paymentMethod ?? "cash",
-            reasonCode: selectedReason.rawValue,
-            reasonNotes: reasonText,
-            refundedByEmployeeId: employeeId,
-            approvedByEmployeeId: employeeId,
-            status: "completed"
-        )
-        modelContext.insert(refundTx)
-        
+
+        // Allocate the refund across original tenders without exceeding any payment.
+        var amountToAllocate = refundAmount
+        for payment in order.payments.sorted(by: { $0.paidAt < $1.paidAt }) where amountToAllocate > 0.005 {
+            let previouslyRefunded = order.refunds
+                .filter { $0.originalPayment?.id == payment.id && !$0.isDeleted && $0.status == "completed" }
+                .reduce(0.0) { $0 + $1.refundAmount }
+            let allocation = min(max(0, payment.amount - previouslyRefunded), amountToAllocate)
+            guard allocation > 0.005 else { continue }
+
+            modelContext.insert(RefundTransaction(
+                order: order,
+                originalPayment: payment,
+                refundAmount: allocation,
+                refundMethod: "original_tender",
+                reasonCode: selectedReason.rawValue.lowercased().replacingOccurrences(of: " ", with: "_"),
+                reasonNotes: reasonText,
+                refundedByEmployeeId: employeeId,
+                approvedByEmployeeId: employeeId,
+                status: "completed"
+            ))
+
+            let paymentRefundedTotal = previouslyRefunded + allocation
+            payment.status = paymentRefundedTotal >= payment.amount - 0.005 ? "refunded" : "partially_refunded"
+            payment.isSynced = false
+            payment.updatedAt = Date()
+            amountToAllocate -= allocation
+        }
+
+        // Legacy orders may not have a Payment relationship; retain an auditable cash refund.
+        if amountToAllocate > 0.005 {
+            modelContext.insert(RefundTransaction(
+                order: order,
+                refundAmount: amountToAllocate,
+                refundMethod: "cash",
+                reasonCode: selectedReason.rawValue.lowercased().replacingOccurrences(of: " ", with: "_"),
+                reasonNotes: reasonText,
+                refundedByEmployeeId: employeeId,
+                approvedByEmployeeId: employeeId,
+                status: "completed"
+            ))
+        }
+
         order.isSynced = false
         order.updatedAt = Date()
         modelContext.saveWithLogging(label: #function)
-        
+
+        if restockItems {
+            POSViewModel(modelContext: modelContext).reverseInventoryDeduction(
+                for: order,
+                specificItems: itemsBeingRefunded
+            )
+        }
+
         // Trigger sync
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
-        
+
         isProcessing = false
         isComplete = true
     }
@@ -173,7 +206,7 @@ struct RefundView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var sessionManager: AppSessionManager
     @AppStorage("require_manager_override_for_refund") private var requireManagerOverrideForRefund = true
-    
+
     @Query(
         filter: #Predicate<Order> { order in
             order.status == "completed" && !order.isDeleted
@@ -182,28 +215,28 @@ struct RefundView: View {
         order: .reverse
     )
     private var completedOrders: [Order]
-    
+
     @State private var viewModel = RefundViewModel()
     @State private var searchText = ""
-    
+
     private var filteredOrders: [Order] {
         if searchText.isEmpty { return completedOrders }
         return completedOrders.filter {
             $0.orderNumber.localizedCaseInsensitiveContains(searchText)
         }
     }
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 HStack(spacing: 0) {
                     // Left: Order list
                     orderListPanel
-                    
+
                     Divider().background(Color.appDivider)
-                    
+
                     // Right: Refund details
                     if viewModel.selectedOrder != nil {
                         refundDetailPanel
@@ -248,9 +281,9 @@ struct RefundView: View {
         }
         .apColorScheme()
     }
-    
+
     // MARK: - Order List Panel
-    
+
     private var orderListPanel: some View {
         VStack(spacing: 0) {
             // Search
@@ -276,7 +309,7 @@ struct RefundView: View {
                     .stroke(Color.appBorderSubtle, lineWidth: 1)
             )
             .padding(APSpacing.md)
-            
+
             Text("refund_recent_orders_title".t)
                 .font(.caption.weight(.bold))
                 .foregroundColor(.textSecondary)
@@ -284,9 +317,9 @@ struct RefundView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, APSpacing.md)
                 .padding(.bottom, APSpacing.sm)
-            
+
             Divider().background(Color.appDivider)
-            
+
             if filteredOrders.isEmpty {
                 VStack(spacing: APSpacing.md) {
                     Image(systemName: "doc.text.magnifyingglass")
@@ -311,7 +344,7 @@ struct RefundView: View {
         .frame(width: 360)
         .background(Color.appBackground)
     }
-    
+
     private func orderCard(order: Order) -> some View {
         let isSelected = viewModel.selectedOrder?.id == order.id
         return Button(action: {
@@ -332,7 +365,7 @@ struct RefundView: View {
                         .font(.subheadline.weight(.bold))
                         .foregroundColor(.textPrimary)
                 }
-                
+
                 HStack {
                     Label(
                         DateFormatter.shortDateTimeFormat().string(from: order.createdAt),
@@ -340,14 +373,14 @@ struct RefundView: View {
                     )
                     .font(.caption)
                     .foregroundColor(.textSecondary)
-                    
+
                     Spacer()
-                    
+
                     Text("\(order.items.filter { !$0.isDeleted }.count) items")
                         .font(.caption)
                         .foregroundColor(.textSecondary)
                 }
-                
+
                 if let table = order.tableSession?.table?.tableNumber {
                     Label("Table \(table)", systemImage: "tablecells")
                         .font(.caption)
@@ -366,9 +399,9 @@ struct RefundView: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     // MARK: - Empty Detail State
-    
+
     private var emptyDetailState: some View {
         VStack(spacing: APSpacing.lg) {
             ZStack {
@@ -391,37 +424,49 @@ struct RefundView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.appBackground)
     }
-    
+
     // MARK: - Refund Detail Panel
-    
+
     private var refundDetailPanel: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(spacing: APSpacing.lg) {
                     // Refund type selector
                     refundTypeSelector
-                    
+
                     // Items list
                     itemsSection
-                    
+
                     // Reason picker
                     reasonSection
-                    
+
+                    Toggle(isOn: $viewModel.restockItems) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Return ingredients to inventory")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Enable only when the returned product can safely be restocked.")
+                                .font(.caption)
+                                .foregroundColor(.textSecondary)
+                        }
+                    }
+                    .tint(.appTeal)
+                    .apCard()
+
                     // Refund summary
                     refundSummary
                 }
                 .padding(APSpacing.lg)
             }
-            
+
             // Process button
             processRefundBar
         }
         .frame(maxWidth: .infinity)
         .background(Color.appBackground)
     }
-    
+
     // MARK: - Refund Type Selector
-    
+
     private var refundTypeSelector: some View {
         HStack(spacing: APSpacing.md) {
             Button(action: {
@@ -438,7 +483,7 @@ struct RefundView: View {
                 }
                 .apChip(selected: viewModel.isFullRefund, gradient: APGradient.destructive)
             }
-            
+
             Button(action: {
                 withAnimation(.spring(response: 0.3)) {
                     viewModel.deselectFullRefund()
@@ -453,23 +498,23 @@ struct RefundView: View {
                 }
                 .apChip(selected: !viewModel.isFullRefund)
             }
-            
+
             Spacer()
         }
     }
-    
+
     // MARK: - Items Section
-    
+
     private var itemsSection: some View {
         VStack(alignment: .leading, spacing: APSpacing.sm) {
             Text("refund_order_items_header".t)
                 .font(.caption.weight(.bold))
                 .foregroundColor(.textSecondary)
                 .textCase(.uppercase)
-            
+
             ForEach(viewModel.refundableItems) { item in
                 let isSelected = viewModel.isFullRefund || viewModel.selectedItemIds.contains(item.id)
-                
+
                 Button(action: {
                     if !viewModel.isFullRefund {
                         withAnimation(.spring(response: 0.3)) {
@@ -482,12 +527,12 @@ struct RefundView: View {
                         Image(systemName: isSelected ? "checkmark.square.fill" : "square")
                             .font(.system(size: 20))
                             .foregroundColor(isSelected ? .appRose : .textTertiary)
-                        
+
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.menuItem?.localizedName ?? "Unknown")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundColor(.textPrimary)
-                            
+
                             let modNames = item.modifiers.compactMap { $0.modifier?.name }.joined(separator: ", ")
                             if !modNames.isEmpty {
                                 Text(modNames)
@@ -495,9 +540,9 @@ struct RefundView: View {
                                     .foregroundColor(.textSecondary)
                             }
                         }
-                        
+
                         Spacer()
-                        
+
                         VStack(alignment: .trailing, spacing: 2) {
                             Text("×\(item.quantity)")
                                 .font(.caption.weight(.bold))
@@ -522,16 +567,16 @@ struct RefundView: View {
             }
         }
     }
-    
+
     // MARK: - Reason Section
-    
+
     private var reasonSection: some View {
         VStack(alignment: .leading, spacing: APSpacing.sm) {
             Text("refund_reason_header".t)
                 .font(.caption.weight(.bold))
                 .foregroundColor(.textSecondary)
                 .textCase(.uppercase)
-            
+
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: APSpacing.sm) {
                 ForEach(RefundReason.allCases) { reason in
                     let isSelected = viewModel.selectedReason == reason
@@ -559,7 +604,7 @@ struct RefundView: View {
                     }
                 }
             }
-            
+
             if viewModel.selectedReason == .other {
                 TextField("Enter reason...", text: $viewModel.otherReasonText)
                     .font(.subheadline)
@@ -575,9 +620,9 @@ struct RefundView: View {
             }
         }
     }
-    
+
     // MARK: - Refund Summary
-    
+
     private var refundSummary: some View {
         VStack(spacing: APSpacing.sm) {
             HStack {
@@ -589,7 +634,7 @@ struct RefundView: View {
                     .font(.system(size: 28, weight: .black, design: .rounded))
                     .foregroundColor(.appRose)
             }
-            
+
             if let order = viewModel.selectedOrder {
                 HStack {
                     Text("refund_original_total_lbl".t)
@@ -600,7 +645,7 @@ struct RefundView: View {
                         .font(.caption.weight(.medium))
                         .foregroundColor(.textSecondary)
                 }
-                
+
                 if let payment = order.payments.first {
                     HStack {
                         Text("refund_payment_method_lbl".t)
@@ -616,13 +661,13 @@ struct RefundView: View {
         }
         .apCard()
     }
-    
+
     // MARK: - Process Refund Bar
-    
+
     private var processRefundBar: some View {
         VStack(spacing: 0) {
             Divider().background(Color.appDivider)
-            
+
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("refund_total_lbl".t)
@@ -632,9 +677,9 @@ struct RefundView: View {
                         .font(.title3.weight(.bold))
                         .foregroundColor(.appRose)
                 }
-                
+
                 Spacer()
-                
+
                 Button(action: {
                     if requireManagerOverrideForRefund && !sessionManager.can(.managerOverride) {
                         viewModel.showPINSheet = true
@@ -657,17 +702,17 @@ struct RefundView: View {
         }
         .background(Color.appSurface)
     }
-    
+
     // MARK: - PIN Entry Sheet
-    
+
     private var pinEntrySheet: some View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 VStack(spacing: APSpacing.xl) {
                     Spacer()
-                    
+
                     ZStack {
                         Circle()
                             .fill(Color.appRose.opacity(0.12))
@@ -676,7 +721,7 @@ struct RefundView: View {
                             .font(.system(size: 36))
                             .foregroundColor(.appRose)
                     }
-                    
+
                     VStack(spacing: APSpacing.sm) {
                         Text("manager_approval_required".t)
                             .font(.title3.weight(.bold))
@@ -687,7 +732,7 @@ struct RefundView: View {
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: 300)
                     }
-                    
+
                     // PIN dots
                     HStack(spacing: APSpacing.md) {
                         ForEach(0..<4, id: \.self) { i in
@@ -701,16 +746,16 @@ struct RefundView: View {
                                 .animation(.spring(response: 0.2), value: viewModel.pinCode.count)
                         }
                     }
-                    
+
                     if let error = viewModel.pinError {
                         Text(error)
                             .font(.caption.weight(.semibold))
                             .foregroundColor(.appRose)
                     }
-                    
+
                     // Number pad
                     pinPad
-                    
+
                     Spacer()
                 }
                 .padding(APSpacing.xl)
@@ -731,7 +776,7 @@ struct RefundView: View {
         .apColorScheme()
         .presentationDetents([.medium, .large])
     }
-    
+
     private var pinPad: some View {
         let buttons = [
             ["1", "2", "3"],
@@ -739,7 +784,7 @@ struct RefundView: View {
             ["7", "8", "9"],
             ["", "0", "⌫"]
         ]
-        
+
         return VStack(spacing: APSpacing.sm) {
             ForEach(buttons, id: \.self) { row in
                 HStack(spacing: APSpacing.sm) {
@@ -767,7 +812,7 @@ struct RefundView: View {
             }
         }
     }
-    
+
     private func handlePINKey(_ key: String) {
         APHaptic.trigger()
         if key == "⌫" {

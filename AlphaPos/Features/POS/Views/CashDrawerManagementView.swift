@@ -4,40 +4,45 @@ import SwiftData
 struct CashDrawerManagementView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
-    
+    @EnvironmentObject private var sessionManager: AppSessionManager
+    @AppStorage("logged_in_email") private var loggedInEmail = ""
+
     // Fetch all non-deleted sessions (active and past)
     @Query(filter: #Predicate<RegisterSession> { !$0.isDeleted }, sort: \RegisterSession.openedAt, order: .reverse)
     private var allSessions: [RegisterSession]
-    
+
     // Fetch payments and cash movements for calculations
     @Query(sort: \Payment.paidAt, order: .reverse) private var allPayments: [Payment]
     @Query(sort: \CashMovement.updatedAt, order: .reverse) private var allCashMovements: [CashMovement]
     @Query(sort: \User.username) private var users: [User]
     @Query private var employees: [Employee]
     @Query private var allRefunds: [RefundTransaction]
-    
+
     @State private var openingCashString = "1000"
     @State private var openingNotes = ""
     @State private var selectedSubTab = 0 // 0: Current Shift, 1: Shift History
     @State private var animateHistory = false
-    
+
     // Add movement modal states
     @State private var showMovementModal = false
     @State private var movementAmountString = ""
     @State private var movementReason = ""
     @State private var movementType = "paid_in" // "paid_in", "paid_out"
-    
+
     // Close shift states
     @State private var showCloseModal = false
     @State private var actualCashString = ""
     @State private var closingNotes = ""
     @State private var zReportSession: RegisterSession? = nil
-    
+    @State private var operationError: String?
+    // H-1: No-Sale
+    @State private var showNoSaleConfirm = false
+
     // Active session helper
     private var activeSession: RegisterSession? {
         allSessions.first { $0.closedAt == nil }
     }
-    
+
     // Financial calculations for active session
     private var cashSalesAmount: Double {
         guard let session = activeSession else { return 0.0 }
@@ -50,7 +55,7 @@ struct CashDrawerManagementView: View {
             }
             .reduce(0.0) { $0 + $1.amount }
     }
-    
+
     private var cashInAmount: Double {
         guard let session = activeSession else { return 0.0 }
         return allCashMovements
@@ -61,7 +66,7 @@ struct CashDrawerManagementView: View {
             }
             .reduce(0.0) { $0 + $1.amount }
     }
-    
+
     private var cashOutAmount: Double {
         guard let session = activeSession else { return 0.0 }
         return allCashMovements
@@ -72,7 +77,7 @@ struct CashDrawerManagementView: View {
             }
             .reduce(0.0) { $0 + $1.amount }
     }
-    
+
     private var cardSalesAmount: Double {
         guard let session = activeSession else { return 0.0 }
         return allPayments
@@ -84,7 +89,7 @@ struct CashDrawerManagementView: View {
             }
             .reduce(0.0) { $0 + $1.amount }
     }
-    
+
     private var qrSalesAmount: Double {
         guard let session = activeSession else { return 0.0 }
         return allPayments
@@ -107,12 +112,12 @@ struct CashDrawerManagementView: View {
             }
             .reduce(0.0) { $0 + $1.refundAmount }
     }
-    
+
     private var expectedCash: Double {
         guard let session = activeSession else { return 0.0 }
         return session.openingCash + cashSalesAmount + cashInAmount - cashOutAmount
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             Picker("", selection: Binding(
@@ -132,10 +137,10 @@ struct CashDrawerManagementView: View {
             .padding(.horizontal)
             .padding(.top, 10)
             .padding(.bottom, 6)
-            
+
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 Group {
                     if selectedSubTab == 0 {
                         Group {
@@ -171,8 +176,25 @@ struct CashDrawerManagementView: View {
         .sheet(item: $zReportSession) { session in
             zReportView(session)
         }
+        // H-1: No-Sale confirmation dialog
+        .confirmationDialog("no_sale_confirm_title".t, isPresented: $showNoSaleConfirm, titleVisibility: .visible) {
+            Button("no_sale_confirm_action".t) {
+                performNoSale()
+            }
+            Button("cancel_btn".t, role: .cancel) {}
+        } message: {
+            Text("no_sale_confirm_msg".t)
+        }
+        .alert("Unable to Open Shift", isPresented: Binding(
+            get: { operationError != nil },
+            set: { if !$0 { operationError = nil } }
+        )) {
+            Button("OK", role: .cancel) { operationError = nil }
+        } message: {
+            Text(operationError ?? "")
+        }
     }
-    
+
     // MARK: - Closed State View
     private var closedSessionView: some View {
         ScrollView {
@@ -189,23 +211,23 @@ struct CashDrawerManagementView: View {
                                 )
                             )
                             .frame(width: 100, height: 100)
-                        
+
                         Circle()
                             .fill(Color.appSurface)
                             .frame(width: 80, height: 80)
                             .shadow(color: Color.appRose.opacity(0.18), radius: 12, x: 0, y: 6)
                             .overlay(Circle().stroke(Color.appBorderSubtle, lineWidth: 1))
-                        
+
                         Image(systemName: "lock.fill")
                             .font(.system(size: 32, weight: .bold))
                             .foregroundStyle(APGradient.destructive)
                     }
                     .padding(.top, 30)
-                    
+
                     Text("drawer_locked_title".t)
                         .font(.title3).fontWeight(.bold)
                         .foregroundColor(.textPrimary)
-                    
+
                     Text("drawer_locked_subtitle".t)
                         .font(.subheadline)
                         .foregroundColor(.textSecondary)
@@ -213,19 +235,19 @@ struct CashDrawerManagementView: View {
                         .lineSpacing(4)
                         .padding(.horizontal, 32)
                 }
-                
+
                 // Open Shift Form
                 VStack(alignment: .leading, spacing: 20) {
                     Text("start_shift_header".t)
                         .font(.caption).fontWeight(.bold)
                         .foregroundColor(.appAccent)
                         .tracking(1.0)
-                    
+
                     VStack(alignment: .leading, spacing: 8) {
                         Text("starting_cash_float_label".t)
                             .font(.caption).fontWeight(.bold)
                             .foregroundColor(.textSecondary)
-                        
+
                         HStack {
                             Text("฿")
                                 .font(.title3)
@@ -245,12 +267,12 @@ struct CashDrawerManagementView: View {
                                 .stroke(Color.appBorderSubtle, lineWidth: 1)
                         )
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 8) {
                         Text("opening_notes_label".t)
                             .font(.caption).fontWeight(.bold)
                             .foregroundColor(.textSecondary)
-                        
+
                         TextField("opening_notes_placeholder".t, text: $openingNotes)
                             .padding(14)
                             .background(Color.appSurface)
@@ -261,7 +283,7 @@ struct CashDrawerManagementView: View {
                             )
                             .textFieldStyle(.plain)
                     }
-                    
+
                     Button(action: openRegisterSession) {
                         Label("open_session_btn".t, systemImage: "lock.open.fill")
                             .apGradientButton(gradient: APGradient.positive, shadow: APShadow.positiveGlow)
@@ -277,7 +299,7 @@ struct CashDrawerManagementView: View {
             .padding(.bottom, 30)
         }
     }
-    
+
     // MARK: - Open State View
     private func openSessionView(_ session: RegisterSession) -> some View {
         ScrollView {
@@ -296,7 +318,26 @@ struct CashDrawerManagementView: View {
                             .foregroundColor(.textSecondary)
                     }
                     Spacer()
-                    
+
+                    // H-1: No-Sale Button — เปิดลิ้นชักเงินสดโดยไม่มีการขาย
+                    Button(action: {
+                        showNoSaleConfirm = true
+                        APHaptic.trigger()
+                    }) {
+                        Label("no_sale_btn".t, systemImage: "dollarsign.arrow.circlepath")
+                            .font(.subheadline).fontWeight(.bold)
+                            .foregroundColor(.appAmber)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.appAmber.opacity(0.15))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.appAmber.opacity(0.4), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+
                     Button(action: {
                         closingNotes = ""
                         actualCashString = String(format: "%.2f", expectedCash)
@@ -315,7 +356,7 @@ struct CashDrawerManagementView: View {
                 }
                 .padding(.horizontal)
                 .padding(.top)
-                
+
                 // Reconciliation figures Grid
                 Grid(horizontalSpacing: APSpacing.sm, verticalSpacing: APSpacing.sm) {
                     GridRow {
@@ -328,14 +369,14 @@ struct CashDrawerManagementView: View {
                     }
                 }
                 .padding(.horizontal)
-                
+
                 // Expected Cash Highlight
                 VStack(spacing: 4) {
                     Text("expected_cash_drawer".t)
                         .font(.caption2).fontWeight(.black)
                         .foregroundColor(.textSecondary)
                         .tracking(1.0)
-                    
+
                     Text("฿\(expectedCash.formatted(.number.precision(.fractionLength(2))))")
                         .font(.system(size: 32, weight: .black, design: .monospaced))
                         .foregroundColor(.appTeal)
@@ -346,7 +387,7 @@ struct CashDrawerManagementView: View {
                 .cornerRadius(APRadius.lg)
                 .overlay(RoundedRectangle(cornerRadius: APRadius.lg).stroke(Color.appBorderSubtle, lineWidth: 1))
                 .padding(.horizontal)
-                
+
                 // Cash Movements list
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
@@ -354,9 +395,9 @@ struct CashDrawerManagementView: View {
                             .font(.caption).fontWeight(.bold)
                             .foregroundColor(.appAccent)
                             .tracking(1.0)
-                        
+
                         Spacer()
-                        
+
                         Button(action: {
                             movementAmountString = ""
                             movementReason = ""
@@ -370,9 +411,9 @@ struct CashDrawerManagementView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    
+
                     let sessionMovements = allCashMovements.filter { !$0.isDeleted && $0.registerSession?.id == session.id }
-                    
+
                     if sessionMovements.isEmpty {
                         Text("no_manual_movements".t)
                             .font(.caption)
@@ -387,16 +428,18 @@ struct CashDrawerManagementView: View {
                                         Text(mov.reason)
                                             .font(.subheadline).fontWeight(.semibold)
                                             .foregroundColor(.textPrimary)
-                                        Text(mov.movementType == "paid_in" || mov.movementType == "cash_in" ? "paid_in".t : "paid_out".t)
+                                        Text(mov.movementType == "no_sale" ? "no_sale_btn".t
+                                            : (mov.movementType == "paid_in" || mov.movementType == "cash_in" ? "paid_in".t : "paid_out".t))
                                             .font(.caption2)
                                             .foregroundColor(.textSecondary)
                                     }
                                     Spacer()
-                                    
+
+                                    let isNoSale = mov.movementType == "no_sale"
                                     let isPositive = mov.movementType == "paid_in" || mov.movementType == "cash_in"
-                                    Text("\(isPositive ? "+" : "-")฿\(mov.amount.formatted(.number.precision(.fractionLength(2))))")
+                                    Text(isNoSale ? "—" : "\(isPositive ? "+" : "-")฿\(mov.amount.formatted(.number.precision(.fractionLength(2))))")
                                         .font(.system(.subheadline, design: .monospaced)).fontWeight(.bold)
-                                        .foregroundColor(isPositive ? .appTeal : .appRose)
+                                        .foregroundColor(isNoSale ? .appAmber : (isPositive ? .appTeal : .appRose))
                                 }
                                 .padding(.vertical, 8)
                                 .padding(.horizontal, 10)
@@ -414,18 +457,18 @@ struct CashDrawerManagementView: View {
             .padding(.bottom, 30)
         }
     }
-    
+
     private func reconcileCard(title: String, amount: Double, subtitle: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.system(size: 10, weight: .bold))
                 .foregroundColor(.textSecondary)
                 .tracking(0.5)
-            
+
             Text("฿\(amount.formatted(.number.precision(.fractionLength(2))))")
                 .font(.system(.title3, design: .monospaced)).fontWeight(.bold)
                 .foregroundColor(color)
-            
+
             Text(subtitle)
                 .font(.system(size: 9))
                 .foregroundColor(.textTertiary)
@@ -433,7 +476,7 @@ struct CashDrawerManagementView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .apCard()
     }
-    
+
     // MARK: - Add Movement Modal
     private var addMovementModal: some View {
         NavigationStack {
@@ -444,7 +487,7 @@ struct CashDrawerManagementView: View {
                         Text("paid_out_withdraw_cash".t).tag("paid_out")
                     }
                     .pickerStyle(.segmented)
-                    
+
                     HStack {
                         Text("amount_baht".t).foregroundColor(.textSecondary)
                         Spacer()
@@ -452,7 +495,7 @@ struct CashDrawerManagementView: View {
                             .keyboardType(.decimalPad)
                             .multilineTextAlignment(.trailing)
                     }
-                    
+
                     TextField("reason_description_placeholder".t, text: $movementReason)
                 }
             }
@@ -472,7 +515,7 @@ struct CashDrawerManagementView: View {
             }
         }
     }
-    
+
     // MARK: - Close Shift Modal
     private var closeShiftModal: some View {
         NavigationStack {
@@ -485,7 +528,7 @@ struct CashDrawerManagementView: View {
                             .font(.system(.body, design: .monospaced)).fontWeight(.bold)
                     }
                 }
-                
+
                 Section("physical_cash_count".t) {
                     HStack {
                         Text("actual_cash_counted_label".t)
@@ -495,7 +538,7 @@ struct CashDrawerManagementView: View {
                             .multilineTextAlignment(.trailing)
                             .font(.system(.body, design: .monospaced)).fontWeight(.bold)
                     }
-                    
+
                     // Live Discrepancy indicator
                     let actual = Double(actualCashString) ?? 0.0
                     let discrepancy = actual - expectedCash
@@ -510,7 +553,7 @@ struct CashDrawerManagementView: View {
                                 .foregroundColor(discrepancy > 0 ? .appTeal : .appRose).fontWeight(.bold)
                         }
                     }
-                    
+
                     TextField("closing_notes_label".t, text: $closingNotes)
                 }
             }
@@ -529,7 +572,7 @@ struct CashDrawerManagementView: View {
             }
         }
     }
-    
+
     // MARK: - Z-Report Receipt View Simulation
     private func zReportView(_ session: RegisterSession) -> some View {
         NavigationStack {
@@ -538,14 +581,14 @@ struct CashDrawerManagementView: View {
                     Text("z_report_header".t)
                         .font(.caption).fontWeight(.bold)
                         .foregroundColor(.textSecondary)
-                    
+
                     VStack(spacing: 8) {
                         Text("z_report_title".t)
                             .font(.system(.body, design: .monospaced)).fontWeight(.bold)
-                        
+
                         Text("----------------------------------------")
                             .foregroundColor(.gray)
-                        
+
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text("shift_id_label".t)
@@ -564,10 +607,10 @@ struct CashDrawerManagementView: View {
                             }
                         }
                         .font(.system(size: 10, design: .monospaced))
-                        
+
                         Text("----------------------------------------")
                             .foregroundColor(.gray)
-                        
+
                         VStack(spacing: 4) {
                             HStack {
                                 Text("opening_float_label".t)
@@ -596,10 +639,10 @@ struct CashDrawerManagementView: View {
                             }
                         }
                         .font(.system(size: 11, design: .monospaced))
-                        
+
                         Text("----------------------------------------")
                             .foregroundColor(.gray)
-                        
+
                         VStack(spacing: 4) {
                             HStack {
                                 Text("actual_cash_counted_label_colon".t)
@@ -616,7 +659,7 @@ struct CashDrawerManagementView: View {
                             }
                         }
                         .font(.system(size: 11, design: .monospaced))
-                        
+
                         if let notes = session.notes, !notes.isEmpty {
                             Text("----------------------------------------")
                                 .foregroundColor(.gray)
@@ -631,7 +674,7 @@ struct CashDrawerManagementView: View {
                     .cornerRadius(8)
                     .shadow(radius: 4)
                     .frame(width: 320)
-                    
+
                     Button("print_z_report_btn".t) {
                         APHaptic.trigger()
                     }
@@ -650,33 +693,21 @@ struct CashDrawerManagementView: View {
             }
         }
     }
-    
+
     // MARK: - Actions Logic
-    
+
     private func openRegisterSession() {
         let amount = Double(openingCashString) ?? 0.0
-        // Use the first active user; fall back to a random UUID if not available to prevent silent failure on iPad
-        let userId = users.first?.id ?? UUID()
-
-        // Auto-close any other active sessions to prevent duplicate open shifts
-        let descriptor = FetchDescriptor<RegisterSession>(
-            predicate: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted }
-        )
-        if let activeSessions = try? modelContext.fetch(descriptor) {
-            for session in activeSessions {
-                session.closedAt = Date()
-                session.expectedClosingCash = session.openingCash
-                session.actualClosingCash = session.openingCash
-                session.cashDiscrepancy = 0.0
-                session.closedByUserId = userId
-                session.isSynced = false
-                session.updatedAt = Date()
-                
-                let sessionToUpload = session
-                Task {
-                    _ = try? await NetworkManager.shared.uploadRegisterSession(sessionToUpload)
-                }
-            }
+        guard activeSession == nil else {
+            operationError = "An active shift already exists. Close and reconcile it before opening another shift."
+            return
+        }
+        let sessionEmployeeId = sessionManager.currentStaffSession?.employeeId
+        let operatorUser = employees.first(where: { $0.id == sessionEmployeeId })?.user
+            ?? users.first(where: { $0.email?.localizedCaseInsensitiveCompare(loggedInEmail) == .orderedSame })
+        guard let userId = operatorUser?.id else {
+            operationError = "No staff user is available. Create or sync a staff account before opening a shift."
+            return
         }
 
         let newSession = RegisterSession(
@@ -688,20 +719,20 @@ struct CashDrawerManagementView: View {
             updatedAt: Date()
         )
         newSession.notes = openingNotes.isEmpty ? nil : openingNotes
-        
+
         modelContext.insert(newSession)
         modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
-        
+
         Task {
             _ = try? await NetworkManager.shared.uploadRegisterSession(newSession)
         }
     }
-    
+
     private func saveCashMovement() {
         guard let session = activeSession else { return }
         let amount = Double(movementAmountString) ?? 0.0
-        
+
         let newMovement = CashMovement(
             registerSession: session,
             movementType: movementType,
@@ -711,21 +742,57 @@ struct CashDrawerManagementView: View {
             isDeleted: false,
             updatedAt: Date()
         )
-        
+
         modelContext.insert(newMovement)
         modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
-        
+
         Task {
             _ = try? await NetworkManager.shared.uploadCashMovement(newMovement)
         }
     }
-    
+
+    // H-1: No-Sale — เปิดลิ้นชักเงินสดโดยไม่มีการขาย
+    private func performNoSale() {
+        guard let session = activeSession else { return }
+
+        // 1. บันทึก CashMovement ประเภท "no_sale" amount 0 เพื่อ audit trail
+        let movement = CashMovement(
+            registerSession: session,
+            movementType: "no_sale",
+            amount: 0.0,
+            reason: "no_sale_reason".t,
+            isSynced: false,
+            isDeleted: false,
+            updatedAt: Date()
+        )
+        modelContext.insert(movement)
+
+        // 2. AuditLog
+        let audit = AuditLog(
+            actionType: "no_sale",
+            details: "Cash drawer opened — No Sale",
+            originalValue: 0,
+            newValue: 0
+        )
+        modelContext.insert(audit)
+        modelContext.saveWithLogging(label: #function)
+        APHaptic.trigger()
+
+        // 3. Kick cash drawer physically
+        Task {
+            await PrintService.shared.openCashDrawer()
+        }
+
+        // 4. Sync
+        Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+    }
+
     private func closeRegisterSession() {
         guard let session = activeSession else { return }
         let actual = Double(actualCashString) ?? 0.0
         let discrepancy = actual - expectedCash
-        
+
         session.closedAt = Date()
         session.expectedClosingCash = expectedCash
         session.actualClosingCash = actual
@@ -735,7 +802,7 @@ struct CashDrawerManagementView: View {
         session.notes = closingNotes.isEmpty ? nil : closingNotes
         session.isSynced = false
         session.updatedAt = Date()
-        
+
         // Create ShiftReport
         let report = ShiftReport(
             registerSession: session,
@@ -751,13 +818,13 @@ struct CashDrawerManagementView: View {
             generatedByEmployee: employees.first(where: { $0.user?.id == session.closedByUserId })
         )
         modelContext.insert(report)
-        
+
         modelContext.saveWithLogging(label: #function)
-        
+
         // Open Z-Report modal
         zReportSession = session
         APHaptic.trigger()
-        
+
         // ── Auto-print Z-Report ────────────────────────────────────────
         // พิมพ์อัตโนมัติเฉพาะเมื่อ "print_close_shift" = true ใน Settings
         let capturedSession  = session
@@ -796,16 +863,16 @@ struct CashDrawerManagementView: View {
             }
         }
     }
-    
+
     // MARK: - Formatting Helpers
-    
+
     private func formatDate(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         formatter.timeStyle = .short
         return formatter.string(from: date)
     }
-    
+
     private func formatDateRange(opened: Date, closed: Date?) -> String {
         let df = DateFormatter()
         df.dateStyle = .short
@@ -819,7 +886,7 @@ struct CashDrawerManagementView: View {
         }
         return openedStr
     }
-    
+
     private func localT(_ key: String) -> String {
         let isThai = lm.currentLanguage == .thai
         switch key {
@@ -849,12 +916,12 @@ struct CashDrawerManagementView: View {
             return key
         }
     }
-    
+
     private var shiftHistoryView: some View {
         ScrollView {
             VStack(spacing: APSpacing.md) {
                 let pastSessions = allSessions.filter { $0.closedAt != nil }
-                
+
                 if pastSessions.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "folder.badge.minus")
@@ -880,7 +947,7 @@ struct CashDrawerManagementView: View {
                                         .foregroundColor(.textTertiary)
                                 }
                                 Spacer()
-                                
+
                                 // Sync Icon
                                 HStack(spacing: 4) {
                                     Image(systemName: session.isSynced ? "checkmark.icloud.fill" : "exclamationmark.icloud.fill")
@@ -895,9 +962,9 @@ struct CashDrawerManagementView: View {
                                 .background(Color.appSurfaceHigh)
                                 .cornerRadius(6)
                             }
-                            
+
                             Divider().background(Color.appDivider)
-                            
+
                             // Cash Details Row
                             Grid(horizontalSpacing: 16, verticalSpacing: 8) {
                                 GridRow {
@@ -924,9 +991,9 @@ struct CashDrawerManagementView: View {
                                     }
                                 }
                             }
-                            
+
                             Divider().background(Color.appDivider)
-                            
+
                             // Discrepancy & Staff
                             HStack {
                                 let discrepancy = session.cashDiscrepancy
@@ -944,9 +1011,9 @@ struct CashDrawerManagementView: View {
                                             .foregroundColor(discrepancy > 0 ? .appTeal : .appRose)
                                     }
                                 }
-                                
+
                                 Spacer()
-                                
+
                                 Button(action: {
                                     zReportSession = session
                                     APHaptic.trigger()
@@ -960,7 +1027,7 @@ struct CashDrawerManagementView: View {
                                 }
                                 .buttonStyle(.plain)
                             }
-                            
+
                             if let notes = session.notes, !notes.isEmpty {
                                 Text("\("notes_field".t): \(notes)")
                                     .font(.caption2)

@@ -27,23 +27,35 @@ struct ReportsView: View {
     @Query(filter: #Predicate<InventoryLot> { !$0.isDeleted })         private var allInventoryLots: [InventoryLot]
     @Query(filter: #Predicate<Employee> { !$0.isDeleted }) private var allEmployees: [Employee]
     @Query(filter: #Predicate<Timecard> { !$0.isDeleted }) private var allTimecards: [Timecard]
+    @Query(filter: #Predicate<Promotion> { !$0.isDeleted }) private var allPromotions: [Promotion]
+    @Query(filter: #Predicate<OrderDiscount> { !$0.isDeleted }) private var allOrderDiscounts: [OrderDiscount]
 
     @State private var viewModel = ReportsViewModel()
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
         ZStack {
             Color.appBackground.ignoresSafeArea()
-            GeometryReader { _ in
-                HStack(spacing: APSpacing.md) {
-                    // LEFT PANEL — Report Type Selection + Date Filters
-                    leftPanel
-                        .frame(width: 320)
+            if horizontalSizeClass == .regular {
+                GeometryReader { _ in
+                    HStack(spacing: APSpacing.md) {
+                        // LEFT PANEL — Report Type Selection + Date Filters
+                        leftPanel
+                            .frame(width: 320)
 
-                    // RIGHT PANEL — Report Content
-                    rightPanel
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        // RIGHT PANEL — Report Content
+                        rightPanel
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .padding(APSpacing.md)
                 }
-                .padding(APSpacing.md)
+            } else {
+                NavigationStack {
+                    leftPanel
+                        .padding(APSpacing.md)
+                        .navigationTitle(L.Reports.title.t)
+                        .background(Color.appBackground)
+                }
             }
         }
         .navigationTitle(L.Reports.title.t)
@@ -54,6 +66,7 @@ struct ReportsView: View {
         .onChange(of: viewModel.selectedDate) { refreshCurrentReport() }
         .onChange(of: viewModel.rangeStart) { refreshCurrentReport() }
         .onChange(of: viewModel.rangeEnd) { refreshCurrentReport() }
+        .onChange(of: viewModel.comparisonMonths) { refreshCurrentReport() }
         .sheet(isPresented: $viewModel.showingShareSheet) {
             if let url = viewModel.generatedPDFURL {
                 ShareSheet(activityItems: [url])
@@ -93,31 +106,49 @@ struct ReportsView: View {
                 .textCase(.uppercase)
 
             ForEach(ReportType.allCases) { reportType in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        viewModel.selectedReport = reportType
+                if horizontalSizeClass == .compact {
+                    NavigationLink {
+                        rightPanel
+                            .navigationTitle(localizedReportName(reportType))
+                            .background(Color.appBackground)
+                            .onAppear {
+                                viewModel.selectedReport = reportType
+                                refreshCurrentReport()
+                            }
+                    } label: {
+                        reportTypeRow(reportType)
                     }
-                } label: {
-                    HStack(spacing: APSpacing.sm) {
-                        Image(systemName: reportType.icon)
-                            .frame(width: 24)
-                            .foregroundStyle(viewModel.selectedReport == reportType ? Color.appAccent : .secondary)
-                        Text(localizedReportName(reportType))
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(viewModel.selectedReport == reportType ? Color.primary : .secondary)
-                        Spacer()
+                } else {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.selectedReport = reportType
+                        }
+                    } label: {
+                        reportTypeRow(reportType)
                     }
-                    .padding(.horizontal, APSpacing.sm)
-                    .padding(.vertical, APSpacing.sm)
-                    .background(
-                        viewModel.selectedReport == reportType ?
-                        Color.appAccent.opacity(0.1) : Color.clear
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
+    }
+
+    private func reportTypeRow(_ reportType: ReportType) -> some View {
+        HStack(spacing: APSpacing.sm) {
+            Image(systemName: reportType.icon)
+                .frame(width: 24)
+                .foregroundStyle(viewModel.selectedReport == reportType ? Color.appAccent : .secondary)
+            Text(localizedReportName(reportType))
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(viewModel.selectedReport == reportType ? Color.primary : .secondary)
+            Spacer()
+        }
+        .padding(.horizontal, APSpacing.sm)
+        .padding(.vertical, APSpacing.sm)
+        .background(
+            viewModel.selectedReport == reportType ?
+            Color.appAccent.opacity(0.1) : Color.clear
+        )
+        .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
     }
 
     private var periodControls: some View {
@@ -239,6 +270,10 @@ struct ReportsView: View {
                     }
         case .employeeHours:
             EmployeeHoursReportView(viewModel: viewModel)
+        case .monthlyComparison:
+            MonthlyComparisonReportView(viewModel: viewModel)
+        case .promotionPerformance:
+            PromotionPerformanceReportView(viewModel: viewModel)
         }
     }
 
@@ -247,6 +282,7 @@ struct ReportsView: View {
     // ─────────────────────────────────────────────────────────────────────────
 
     private func refreshCurrentReport() {
+        viewModel.modelContext = modelContext
         switch viewModel.selectedReport {
         case .dailySales:
             viewModel.computeDailySales(orders: allOrders, payments: allPayments)
@@ -261,6 +297,11 @@ struct ReportsView: View {
             // Analytics view uses allInventoryLots passed directly — no extra compute step needed
         case .employeeHours:
             viewModel.computeEmployeeHours(employees: allEmployees, timecards: allTimecards)
+        case .monthlyComparison:
+            // L-2: trigger re-computation when range or data changes
+            viewModel.computeMonthlyComparison(orders: allOrders, payments: allPayments, taxLines: allTaxLines)
+        case .promotionPerformance:
+            viewModel.computePromotionPerformance(orders: allOrders, promotions: allPromotions, discounts: allOrderDiscounts)
         }
     }
 
@@ -294,6 +335,8 @@ struct ReportsView: View {
         case .menuProfitability: return L.Reports.menuProfit.t
         case .inventoryStock:   return L.Reports.inventory.t
         case .employeeHours:    return L.Reports.employeeHours.t
+        case .monthlyComparison: return "report_monthly_comparison_title".t
+        case .promotionPerformance: return "report_promotion_performance_title".t.isEmpty ? "ประสิทธิภาพโปรโมชั่น" : "report_promotion_performance_title".t
         }
     }
 }

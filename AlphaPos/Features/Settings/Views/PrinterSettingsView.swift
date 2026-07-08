@@ -4,7 +4,7 @@ import CoreImage
 
 struct PrinterSettingsView: View {
     @Environment(\.modelContext) private var modelContext
-    
+
     // Printer settings
     @AppStorage("receipt_printer_enabled") private var receiptPrinterEnabled = true
     @AppStorage("kitchen_printer_enabled") private var kitchenPrinterEnabled = true
@@ -12,14 +12,17 @@ struct PrinterSettingsView: View {
     // ── Shift auto-print toggles ──────────────────────────────────────────
     @AppStorage("print_open_shift")  private var printOpenShift  = false
     @AppStorage("print_close_shift") private var printCloseShift = true
-    
+    @AppStorage("auto_print_receipt_on_payment") private var autoPrintReceipt = false
+
+    @State private var localAutoPrintReceipt = false
+
     @Query(sort: \Printer.name) private var printersList: [Printer]
     @Query(sort: \Category.name) private var appCategories: [Category]
-    
+
     @State private var showingAddPrinterSheet = false
     @State private var showingEditPrinterSheet = false
     @State private var selectedPrinterForEdit: Printer? = nil
-    
+
     // Form fields for adding/editing printer
     @State private var printerName = ""
     @State private var connectionType = "network" // network, bluetooth, usb
@@ -29,11 +32,11 @@ struct PrinterSettingsView: View {
     @State private var paperWidth = "80mm" // 80mm, 58mm, 40mm Sticker
     @State private var printerRole = "kitchen" // receipt, kitchen, label
     @State private var selectedCategoriesForRouting = Set<String>() // Set of Category names/IDs
-    
+
     // Print preview simulation state
     @State private var showingPreviewSheet = false
     @State private var selectedPrinterForPreview: Printer? = nil
-    
+
     // Alert state for print simulation
     @State private var showingPrintAlert = false
     @State private var printAlertMessage = ""
@@ -42,7 +45,7 @@ struct PrinterSettingsView: View {
     var body: some View {
         ZStack {
             Color.appBackground.ignoresSafeArea()
-            
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 12) {
@@ -53,6 +56,19 @@ struct PrinterSettingsView: View {
                                 .foregroundColor(.appAccent)
                                 .tracking(1.0)
                             Spacer()
+                            Button(action: runHardwareVerification) {
+                                if isTestingPrint {
+                                    ProgressView()
+                                        .scaleEffect(0.75)
+                                } else {
+                                    Label("Verify", systemImage: "checkmark.seal.fill")
+                                        .font(.caption)
+                                        .fontWeight(.bold)
+                                }
+                            }
+                            .disabled(isTestingPrint)
+                            .foregroundColor(isTestingPrint ? .textTertiary : .appTeal)
+
                             Button(action: {
                                 printerName = ""
                                 connectionType = "network"
@@ -71,10 +87,10 @@ struct PrinterSettingsView: View {
                                     .foregroundColor(.appAccent)
                             }
                         }
-                        
+
                         VStack(spacing: 16) {
                             let activePrinters = printersList.filter { !$0.isDeleted }
-                            
+
                             if activePrinters.isEmpty {
                                 VStack(spacing: 12) {
                                     Image(systemName: "printer.slash")
@@ -109,12 +125,12 @@ struct PrinterSettingsView: View {
                                             bluetoothName = printer.bluetoothName ?? ""
                                             paperWidth = printer.paperWidth
                                             printerRole = printer.role
-                                            
+
                                             selectedCategoriesForRouting = Set(printer.routingRules.filter { !$0.isDeleted }.compactMap { $0.categoryId })
                                             showingEditPrinterSheet = true
                                         }
                                     )
-                                    
+
                                     if printer.id != activePrinters.last?.id {
                                         Divider()
                                             .background(Color.appDivider)
@@ -182,6 +198,31 @@ struct PrinterSettingsView: View {
                             }
                             .padding(.vertical, 10)
                             .padding(.horizontal, 12)
+
+                            Divider().background(Color.appDivider).padding(.leading, 58)
+
+                            // Auto Print Receipt toggle
+                            HStack(spacing: 14) {
+                                Image(systemName: "printer.dotmatrix.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.appAccent)
+                                    .frame(width: 32, height: 32)
+                                    .background(Color.appAccent.opacity(0.12))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Auto Print Receipt on Payment")
+                                        .font(.body).foregroundColor(.textPrimary)
+                                    Text("Automatically open printer dialog when payment is completed")
+                                        .font(.caption).foregroundColor(.textSecondary)
+                                }
+                                Spacer()
+                                Toggle("", isOn: $localAutoPrintReceipt)
+                                    .labelsHidden()
+                                    .tint(.appAccent)
+                            }
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 12)
                         }
                         .apCard()
                     }
@@ -193,6 +234,12 @@ struct PrinterSettingsView: View {
         .navigationTitle(L.Sections.printer.t)
         .navigationBarTitleDisplayMode(.inline)
         .apNavBar(background: Color.appBackground)
+        .onAppear {
+            localAutoPrintReceipt = autoPrintReceipt
+        }
+        .onChange(of: localAutoPrintReceipt) { _, newValue in
+            autoPrintReceipt = newValue
+        }
         .alert("Printer Connection Test", isPresented: $showingPrintAlert) {
             Button("Done", role: .cancel) { }
         } message: {
@@ -221,7 +268,63 @@ struct PrinterSettingsView: View {
             }
         }
     }
-    
+
+    private func runHardwareVerification() {
+        let printers = printersList.filter { !$0.isDeleted && $0.isActive }
+        guard !printers.isEmpty else {
+            printAlertMessage = "No active printers configured. Add and activate at least one printer first."
+            showingPrintAlert = true
+            return
+        }
+
+        isTestingPrint = true
+        Task {
+            var lines: [String] = ["Production Hardware Verification"]
+            let roles = Set(printers.map { $0.role })
+
+            for printer in printers.sorted(by: { $0.name < $1.name }) {
+                let role = printer.role
+                let result = await PrintService.shared.printTest(to: printer, previewType: role)
+                lines.append("\(result.success ? "PASS" : "FAIL") \(hardwareRoleLabel(role)): \(printer.name)")
+                if let detail = result.log.last {
+                    lines.append("  \(detail)")
+                }
+
+                if role == "receipt" {
+                    let drawer = await PrintService.shared.testCashDrawer(to: printer)
+                    lines.append("\(drawer.success ? "PASS" : "FAIL") Cash Drawer: \(printer.name)")
+                    if let detail = drawer.log.last {
+                        lines.append("  \(detail)")
+                    }
+                }
+            }
+
+            if !roles.contains("kitchen") {
+                lines.append("MISSING Kitchen printer")
+            }
+            if !roles.contains("bar") && !roles.contains("label") {
+                lines.append("MISSING Bar or label printer")
+            }
+            if !roles.contains("receipt") {
+                lines.append("MISSING Receipt printer / cash drawer route")
+            }
+
+            printAlertMessage = lines.joined(separator: "\n")
+            isTestingPrint = false
+            showingPrintAlert = true
+        }
+    }
+
+    private func hardwareRoleLabel(_ role: String) -> String {
+        switch role {
+        case "receipt": return "Receipt"
+        case "kitchen": return "Kitchen"
+        case "bar": return "Bar"
+        case "label", "sticker": return "Label"
+        default: return role.capitalized
+        }
+    }
+
     private func savePrinterAction(
         id: UUID?,
         name: String,
@@ -267,14 +370,14 @@ struct PrinterSettingsView: View {
             )
             modelContext.insert(printer)
         }
-        
+
         // Remove existing routing rules (soft delete)
         for rule in printer.routingRules {
             rule.isDeleted = true
             rule.isSynced = false
             rule.updatedAt = Date()
         }
-        
+
         // Add new rules
         for categoryName in selectedCategories {
             let slug = categoryName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -296,31 +399,62 @@ struct PrinterSettingsView: View {
                 printer.routingRules.append(rule)
             }
         }
-        
+
         modelContext.saveWithLogging(label: #function)
-        
+        syncKDSRoutingFromPrinters()
+
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
     }
-    
+
     private func deletePrinterAction(id: UUID) {
         if let printer = printersList.first(where: { $0.id == id }) {
             printer.isDeleted = true
             printer.isSynced = false
             printer.updatedAt = Date()
-            
+
             for rule in printer.routingRules {
                 rule.isDeleted = true
                 rule.isSynced = false
                 rule.updatedAt = Date()
             }
-            
+
             modelContext.saveWithLogging(label: #function)
-            
+            syncKDSRoutingFromPrinters()
+
             Task {
                 await SyncEngine.shared.syncAll(modelContext: modelContext)
             }
+        }
+    }
+
+    private func syncKDSRoutingFromPrinters() {
+        var routing: [String: Set<String>] = [:]
+        for printer in printersList where !printer.isDeleted && printer.isActive {
+            let station: String?
+            switch printer.role {
+            case "kitchen":
+                station = "kitchen"
+            case "bar", "label", "sticker":
+                station = "bar"
+            default:
+                station = nil
+            }
+            guard let station else { continue }
+
+            for rule in printer.routingRules where !rule.isDeleted {
+                guard let category = rule.categoryId else { continue }
+                routing[category, default: []].insert(station)
+            }
+        }
+
+        let encoded = routing.mapValues { stations -> String in
+            stations.contains("kitchen") && stations.contains("bar") ? "both" : (stations.first ?? "kitchen")
+        }
+        if let data = try? JSONEncoder().encode(encoded),
+           let json = String(data: data, encoding: .utf8) {
+            UserDefaults.standard.set(json, forKey: "kds_category_routing_json")
         }
     }
 }
@@ -334,7 +468,7 @@ struct PrinterConfigSheet: View {
     var onSave: (UUID?, String, String, String?, Int, String?, String, String, Bool, String, Set<String>) -> Void
     var onDelete: ((UUID) -> Void)? = nil
     var appCategories: [Category]
-    
+
     @State private var name: String = ""
     @State private var connectionType: String = "network" // network, bluetooth, usb
     @State private var ipAddress: String = ""
@@ -345,33 +479,33 @@ struct PrinterConfigSheet: View {
     @State private var isActive: Bool = true
     @State private var emulation: String = "epson" // epson, star, generic, tspl
     @State private var selectedCategories = Set<String>()
-    
+
     @State private var showingValidationAlert = false
     @State private var validationMessage = ""
-    
+
     @State private var isTesting = false
     @State private var showingTestResultAlert = false
     @State private var testResultMessage = ""
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         identitySection
                         connectionSection
                         mediaSection
                         routingSection
-                        
+
                         // ── ACTIONS ──────────────────────────────────────────
                         VStack(spacing: 12) {
                             Button(action: validateAndSave) {
                                 Text("Save Configuration")
                             }
                             .apGradientButton(gradient: APGradient.accent)
-                            
+
                             Button(action: runTestPrint) {
                                 HStack {
                                     if isTesting {
@@ -385,7 +519,7 @@ struct PrinterConfigSheet: View {
                             }
                             .disabled(isTesting)
                             .padding(.vertical, 8)
-                            
+
                             if let onDelete = onDelete, let printerId = printerToEdit?.id {
                                 Button(action: {
                                     onDelete(printerId)
@@ -427,7 +561,7 @@ struct PrinterConfigSheet: View {
                     role = printer.role
                     isActive = printer.isActive
                     emulation = printer.emulation
-                    
+
                     selectedCategories = Set(printer.routingRules.filter { !$0.isDeleted }.compactMap { $0.categoryId })
                 }
             }
@@ -453,12 +587,12 @@ struct PrinterConfigSheet: View {
             }
         }
     }
-    
+
     private func runTestPrint() {
         print("[Xcode Console] User tapped Test Connection & Print")
         let portInt = Int(portString.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 9100
         print("[Xcode Console] Configured inputs: connectionType=\(connectionType), ip=\(ipAddress), port=\(portInt), emulation=\(emulation), role=\(role)")
-        
+
         let tempPrinter = Printer(
             name: name.isEmpty ? "Test Printer" : name,
             connectionType: connectionType,
@@ -470,7 +604,7 @@ struct PrinterConfigSheet: View {
             isActive: isActive,
             emulation: emulation
         )
-        
+
         print("[Xcode Console] Spawning print test task...")
         isTesting = true
         Task {
@@ -483,14 +617,14 @@ struct PrinterConfigSheet: View {
             print("[Xcode Console] Presenting test result alert.")
         }
     }
-    
+
     private func validateAndSave() {
         if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             validationMessage = "Please specify a printer name."
             showingValidationAlert = true
             return
         }
-        
+
         if connectionType == "network" {
             let ipTrimmed = ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
             if ipTrimmed.isEmpty {
@@ -498,7 +632,7 @@ struct PrinterConfigSheet: View {
                 showingValidationAlert = true
                 return
             }
-            
+
             let parts = ipTrimmed.split(separator: ".")
             if parts.count != 4 {
                 validationMessage = "Invalid IP address format. (e.g. 192.168.1.100)"
@@ -506,9 +640,9 @@ struct PrinterConfigSheet: View {
                 return
             }
         }
-        
+
         let portInt = Int(portString.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 9100
-        
+
         onSave(
             printerToEdit?.id,
             name,
@@ -536,7 +670,7 @@ extension PrinterConfigSheet {
                 .fontWeight(.bold)
                 .foregroundColor(.appAccent)
                 .tracking(1.0)
-            
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("Printer Brand / Emulation")
                     .font(.caption)
@@ -553,7 +687,7 @@ extension PrinterConfigSheet {
                 .foregroundColor(.textPrimary)
                 .cornerRadius(8)
             }
-            
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("Printer Name")
                     .font(.caption)
@@ -566,7 +700,7 @@ extension PrinterConfigSheet {
                     .foregroundColor(.textPrimary)
                     .cornerRadius(8)
             }
-            
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("Printer Role")
                     .font(.caption)
@@ -580,13 +714,13 @@ extension PrinterConfigSheet {
                 }
                 .pickerStyle(SegmentedPickerStyle())
             }
-            
+
             Toggle("Printer Active Status", isOn: $isActive)
                 .tint(.appAccent)
         }
         .apCard()
     }
-    
+
     @ViewBuilder
     private var connectionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -595,7 +729,7 @@ extension PrinterConfigSheet {
                 .fontWeight(.bold)
                 .foregroundColor(.appAccent)
                 .tracking(1.0)
-            
+
             if emulation == "generic" {
                 Picker("Connection Type", selection: $connectionType) {
                     Text("TCP/IP LAN").tag("network")
@@ -610,7 +744,7 @@ extension PrinterConfigSheet {
                 }
                 .pickerStyle(SegmentedPickerStyle())
             }
-            
+
             if connectionType == "network" {
                 VStack(alignment: .leading, spacing: 12) {
                     VStack(alignment: .leading, spacing: 6) {
@@ -626,7 +760,7 @@ extension PrinterConfigSheet {
                             .foregroundColor(.textPrimary)
                             .cornerRadius(8)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Port")
                             .font(.caption)
@@ -640,7 +774,7 @@ extension PrinterConfigSheet {
                             .foregroundColor(.textPrimary)
                             .cornerRadius(8)
                     }
-                    
+
                     Text("Recommended connection for local router setups. Ensure the printer and iPad are connected to the same local Wi-Fi router network.")
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
@@ -660,7 +794,7 @@ extension PrinterConfigSheet {
                             .foregroundColor(.textPrimary)
                             .cornerRadius(8)
                     }
-                    
+
                     Text("Requires standard Bluetooth pairing inside iPad Settings first. Only MFi-certified Bluetooth printers are supported.")
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
@@ -676,7 +810,7 @@ extension PrinterConfigSheet {
                             .fontWeight(.bold)
                             .foregroundColor(.appTeal)
                     }
-                    
+
                     Text("Connect your MFi-compatible printer (e.g. Star TSP143IIIU, Epson TM-m30) directly using a Lightning/USB data cable. No networking setup needed.")
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
@@ -685,7 +819,7 @@ extension PrinterConfigSheet {
                 .background(Color.appTeal.opacity(0.1))
                 .cornerRadius(6)
             }
-            
+
             if emulation == "generic" {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
@@ -696,7 +830,7 @@ extension PrinterConfigSheet {
                             .fontWeight(.bold)
                             .foregroundColor(.appAmber)
                     }
-                    
+
                     Text("Xprinter, Rongta, and generic printers do NOT support USB direct printing on iPad due to Apple's MFi security restrictions. Please connect the printer to your router via Ethernet cable and choose TCP/IP LAN.")
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
@@ -709,7 +843,7 @@ extension PrinterConfigSheet {
         }
         .apCard()
     }
-    
+
     @ViewBuilder
     private var mediaSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -718,7 +852,7 @@ extension PrinterConfigSheet {
                 .fontWeight(.bold)
                 .foregroundColor(.appAccent)
                 .tracking(1.0)
-            
+
             Picker("Paper Width", selection: $paperWidth) {
                 Text("80 mm Thermal").tag("80mm")
                 Text("58 mm Thermal").tag("58mm")
@@ -728,7 +862,7 @@ extension PrinterConfigSheet {
         }
         .apCard()
     }
-    
+
     @ViewBuilder
     private var routingSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -737,11 +871,11 @@ extension PrinterConfigSheet {
                 .fontWeight(.bold)
                 .foregroundColor(.appAccent)
                 .tracking(1.0)
-            
+
             Text("Map menu categories to this printer. If none are selected, all categories will default to printing here.")
                 .font(.caption2)
                 .foregroundColor(.textSecondary)
-            
+
             if appCategories.isEmpty {
                 Text("No categories registered in system database.")
                     .font(.caption)
@@ -795,10 +929,10 @@ struct PrintPreviewSheet: View {
     @Binding var isPresented: Bool
     var printer: Printer
     @State private var previewType: String = "" // "receipt", "kitchen", "bar", "label"
-    
+
     @State private var isPrinting = false
     @State private var printResultSuccess = false
-    
+
     // ── Store info (อ่านค่าจริงจาก AppStorage เหมือน ReceiptTemplateSettingsView) ──
     @AppStorage("store_name")        private var storeName       = "AlphaPos Restaurant"
     @AppStorage("store_phone")       private var storePhone      = "02-123-4567"
@@ -832,7 +966,7 @@ struct PrintPreviewSheet: View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 VStack(spacing: 0) {
                     Picker("Preview Format", selection: $previewType) {
                         Text("FOH Receipt").tag("receipt")
@@ -843,7 +977,7 @@ struct PrintPreviewSheet: View {
                     .pickerStyle(SegmentedPickerStyle())
                     .padding()
                     .background(Color.appSurface)
-                    
+
                     ScrollView {
                         VStack(spacing: 24) {
                             ReceiptLivePreview(
@@ -879,7 +1013,7 @@ struct PrintPreviewSheet: View {
                     Button("Close") { isPresented = false }
                         .foregroundColor(.textPrimary)
                 }
-                
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button(action: startTestPrint) {
                         if isPrinting {
@@ -899,7 +1033,7 @@ struct PrintPreviewSheet: View {
             }
         }
     }
-    
+
     private func startTestPrint() {
         isPrinting = true
         Task {
@@ -917,14 +1051,14 @@ struct PrintPreviewSheet: View {
 // ── Receipt Preview Card
 struct ReceiptPreviewCard: View {
     var paperWidth: String
-    
+
     var body: some View {
         VStack(spacing: 0) {
             PaperEdgePattern()
                 .fill(Color.appDivider)
                 .frame(height: 8)
                 .opacity(0.3)
-            
+
             VStack(alignment: .leading, spacing: 12) {
                 VStack(spacing: 4) {
                     Text("ALPHAPOS CAFE & GRILL")
@@ -940,9 +1074,9 @@ struct ReceiptPreviewCard: View {
                 .frame(maxWidth: .infinity, alignment: .center)
                 .foregroundColor(.black)
                 .padding(.top, 16)
-                
+
                 DividerPattern()
-                
+
                 VStack(alignment: .leading, spacing: 2) {
                     Text("DATE: 2026-06-10 12:15:00")
                     Text("POS ID: AP-IPAD-01")
@@ -953,9 +1087,9 @@ struct ReceiptPreviewCard: View {
                 }
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundColor(.black)
-                
+
                 DividerPattern()
-                
+
                 HStack {
                     Text("ITEM")
                     Spacer()
@@ -965,9 +1099,9 @@ struct ReceiptPreviewCard: View {
                 .font(.system(.caption, design: .monospaced))
                 .fontWeight(.bold)
                 .foregroundColor(.black)
-                
+
                 DividerPattern()
-                
+
                 VStack(alignment: .leading, spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
@@ -983,7 +1117,7 @@ struct ReceiptPreviewCard: View {
                             .font(.system(.caption2, design: .monospaced))
                             .foregroundColor(.gray)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
                             Text("Crispy French Fries")
@@ -995,7 +1129,7 @@ struct ReceiptPreviewCard: View {
                             .font(.system(.caption2, design: .monospaced))
                             .foregroundColor(.gray)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
                             Text("Matcha Green Tea Latte")
@@ -1013,9 +1147,9 @@ struct ReceiptPreviewCard: View {
                 }
                 .font(.system(.caption, design: .monospaced))
                 .foregroundColor(.black)
-                
+
                 DividerPattern()
-                
+
                 VStack(spacing: 2) {
                     HStack {
                         Text("SUBTOTAL")
@@ -1037,10 +1171,10 @@ struct ReceiptPreviewCard: View {
                         Spacer()
                         Text("-฿42.50")
                     }
-                    
+
                     DividerPattern()
                         .padding(.vertical, 4)
-                    
+
                     HStack {
                         Text("GRAND TOTAL")
                             .fontWeight(.bold)
@@ -1051,26 +1185,26 @@ struct ReceiptPreviewCard: View {
                 }
                 .font(.system(.caption, design: .monospaced))
                 .foregroundColor(.black)
-                
+
                 DividerPattern()
-                
+
                 VStack(spacing: 8) {
                     Text("PAID VIA DYNAMIC QR PROMPTPAY")
                         .font(.system(.caption2, design: .monospaced))
                         .fontWeight(.bold)
-                    
+
                     ZStack {
                         Rectangle()
                             .fill(Color.white)
                             .frame(width: 100, height: 100)
                             .border(Color.black, width: 1)
-                        
+
                         GridPattern()
                             .stroke(Color.black, lineWidth: 2)
                             .frame(width: 80, height: 80)
                     }
                     .padding(.vertical, 6)
-                    
+
                     Text("THANK YOU FOR YOUR PATRONAGE")
                         .font(.system(.caption, design: .monospaced))
                         .fontWeight(.bold)
@@ -1081,7 +1215,7 @@ struct ReceiptPreviewCard: View {
             }
             .padding(.horizontal, paperWidth == "58mm" ? 20 : 32)
             .background(Color(hex: "FCFCF9"))
-            
+
             PaperEdgePattern()
                 .fill(Color.appDivider)
                 .frame(height: 8)
@@ -1111,7 +1245,7 @@ struct KitchenTicketPreviewCard: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
             .background(Color.appRose)
-            
+
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1132,9 +1266,9 @@ struct KitchenTicketPreviewCard: View {
                     }
                 }
                 .foregroundColor(.black)
-                
+
                 DividerPattern()
-                
+
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -1146,7 +1280,7 @@ struct KitchenTicketPreviewCard: View {
                                 .font(.system(.caption2, design: .monospaced))
                                 .foregroundColor(.gray)
                         }
-                        
+
                         VStack(alignment: .leading, spacing: 2) {
                             Text("- ** EXTRA CHEESE (x2)")
                                 .font(.system(.caption, design: .monospaced))
@@ -1159,7 +1293,7 @@ struct KitchenTicketPreviewCard: View {
                         }
                         .padding(.leading, 12)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
                             Text("1 x CRISPY FRENCH FRIES")
@@ -1170,7 +1304,7 @@ struct KitchenTicketPreviewCard: View {
                                 .font(.system(.caption2, design: .monospaced))
                                 .foregroundColor(.gray)
                         }
-                        
+
                         Text("- SPICY SEASONING")
                             .font(.system(.caption, design: .monospaced))
                             .foregroundColor(.black.opacity(0.8))
@@ -1178,9 +1312,9 @@ struct KitchenTicketPreviewCard: View {
                     }
                 }
                 .foregroundColor(.black)
-                
+
                 DividerPattern()
-                
+
                 Text("PRINT JOB: #AP-PRNT-4592\nSTAFF: Somchai Lertwit")
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundColor(.black.opacity(0.6))
@@ -1190,7 +1324,7 @@ struct KitchenTicketPreviewCard: View {
             .padding(.horizontal, paperWidth == "58mm" ? 20 : 32)
             .padding(.top, 16)
             .background(Color(hex: "FCFCF9"))
-            
+
             PaperEdgePattern()
                 .fill(Color.appDivider)
                 .frame(height: 8)
@@ -1219,25 +1353,25 @@ struct StickerPreviewCard: View {
                         .foregroundColor(.appAccent)
                 }
                 .foregroundColor(.black)
-                
+
                 Rectangle()
                     .fill(Color.black.opacity(0.2))
                     .frame(height: 1)
-                
+
                 Text("Matcha Latte (Oat)")
                     .font(.system(.headline, design: .monospaced))
                     .fontWeight(.black)
                     .foregroundColor(.black)
-                
+
                 VStack(alignment: .leading, spacing: 2) {
                     Text("- Sweet 50%")
                     Text("- Extra Oat Milk (+฿30)")
                 }
                 .font(.system(.caption, design: .monospaced))
                 .foregroundColor(.black.opacity(0.8))
-                
+
                 Spacer()
-                
+
                 HStack(alignment: .bottom) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("2026-06-10 12:15")
@@ -1245,9 +1379,9 @@ struct StickerPreviewCard: View {
                     }
                     .font(.system(size: 8, design: .monospaced))
                     .foregroundColor(.black.opacity(0.6))
-                    
+
                     Spacer()
-                    
+
                     HStack(spacing: 2) {
                         ForEach(0..<12) { i in
                             Rectangle()
@@ -1289,7 +1423,7 @@ struct PaperEdgePattern: Shape {
         let triangleWidth: CGFloat = 8
         let triangleHeight: CGFloat = 6
         var currentX: CGFloat = 0
-        
+
         while currentX < width {
             path.addLine(to: CGPoint(x: currentX + triangleWidth/2, y: rect.minY + triangleHeight))
             path.addLine(to: CGPoint(x: currentX + triangleWidth, y: rect.maxY))
@@ -1307,11 +1441,11 @@ struct GridPattern: Shape {
         let steps = 6
         let w = rect.width / CGFloat(steps)
         let h = rect.height / CGFloat(steps)
-        
+
         for i in 0...steps {
             path.move(to: CGPoint(x: rect.minX + CGFloat(i)*w, y: rect.minY))
             path.addLine(to: CGPoint(x: rect.minX + CGFloat(i)*w, y: rect.maxY))
-            
+
             path.move(to: CGPoint(x: rect.minX, y: rect.minY + CGFloat(i)*h))
             path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + CGFloat(i)*h))
         }
@@ -1324,7 +1458,7 @@ struct PrinterRowView: View {
     let printer: Printer
     var onPreview: () -> Void
     var onEdit: () -> Void
-    
+
     private var iconName: String {
         switch printer.role {
         case "receipt": return "printer.fill"
@@ -1333,7 +1467,7 @@ struct PrinterRowView: View {
         default: return "tag.fill"
         }
     }
-    
+
     private var iconColor: Color {
         switch printer.role {
         case "receipt": return Color.appAccent
@@ -1342,7 +1476,7 @@ struct PrinterRowView: View {
         default: return Color.appAmber
         }
     }
-    
+
     private var connectionText: String {
         if printer.connectionType == "network" {
             return "\(printer.ipAddress ?? "No IP"):\(printer.port)"
@@ -1352,7 +1486,7 @@ struct PrinterRowView: View {
             return "USB Connection"
         }
     }
-    
+
     private var roleLabel: String {
         switch printer.role {
         case "receipt": return "Receipt"
@@ -1361,7 +1495,7 @@ struct PrinterRowView: View {
         default: return "Sticker"
         }
     }
-    
+
     var body: some View {
         HStack(spacing: 16) {
             ZStack {
@@ -1372,19 +1506,19 @@ struct PrinterRowView: View {
                     .foregroundColor(iconColor)
                     .font(.title3)
             }
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(printer.name)
                     .font(.headline)
                     .foregroundColor(.textPrimary)
-                
+
                 Text("\(connectionText) • \(printer.paperWidth)")
                     .font(.caption)
                     .foregroundColor(.textSecondary)
             }
-            
+
             Spacer()
-            
+
             Text(roleLabel)
                 .font(.caption2)
                 .fontWeight(.bold)
@@ -1393,7 +1527,7 @@ struct PrinterRowView: View {
                 .padding(.vertical, 4)
                 .background(iconColor.opacity(0.12))
                 .cornerRadius(APRadius.sm)
-            
+
             HStack(spacing: 8) {
                 Button(action: onPreview) {
                     Image(systemName: "eye.fill")
@@ -1402,7 +1536,7 @@ struct PrinterRowView: View {
                         .background(Color.appSurfaceHigh)
                         .clipShape(Circle())
                 }
-                
+
                 Button(action: onEdit) {
                     Image(systemName: "pencil")
                         .foregroundColor(.appAccent)
@@ -1415,4 +1549,3 @@ struct PrinterRowView: View {
         .padding(.vertical, 4)
     }
 }
-

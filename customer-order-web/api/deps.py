@@ -11,6 +11,7 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import hashlib
+import hmac
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager, closing
 from typing import Optional, Any
@@ -64,6 +65,38 @@ def sha256_hash(string: str) -> str:
     if not string:
         return ""
     return hashlib.sha256(string.encode('utf-8')).hexdigest()
+
+
+def verify_pin(pin: str, stored_hash: str) -> bool:
+    """
+    Verifies a PIN against a stored hash using constant-time comparison.
+    Supports both legacy SHA-256 and stretched hash (iter:10000:salt:hash) formats.
+    """
+    if not stored_hash or not pin:
+        return False
+
+    # Support new key-stretching format: iter:<iterations>:<salt_b64>:<hash_hex>
+    if stored_hash.startswith("iter:"):
+        parts = stored_hash.split(":", 3)
+        if len(parts) != 4:
+            return False
+        try:
+            iterations = int(parts[1])
+        except ValueError:
+            return False
+        salt = parts[2]
+        expected_hash = parts[3]
+
+        # Recreate iterated SHA-256 hash
+        current_hash = salt + pin
+        for _ in range(iterations):
+            current_hash = hashlib.sha256(current_hash.encode('utf-8')).hexdigest()
+
+        return hmac.compare_digest(current_hash.encode('utf-8'), expected_hash.encode('utf-8'))
+
+    # Legacy SHA-256 format
+    input_hash = sha256_hash(pin)
+    return hmac.compare_digest(input_hash.encode('utf-8'), stored_hash.encode('utf-8'))
 
 
 def clean_string(value, name: str, max_length: int, required: bool = False, pattern: str = None) -> str:

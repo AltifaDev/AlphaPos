@@ -7,7 +7,7 @@ import uuid
 
 from .deps import (
     get_db_connection, get_db_row_connection, get_utc_now_iso,
-    clean_string, sha256_hash, MERCHANT_ID, supabase_post, log_event
+    clean_string, verify_pin, MERCHANT_ID, supabase_post, log_event
 )
 
 router = APIRouter(prefix="/v1", tags=["staff"])
@@ -40,17 +40,17 @@ async def verify_employee(request: Request):
         if not employee_id or not pin:
             raise HTTPException(status_code=400, detail="employee_id and pin are required")
 
-        pin_hash = sha256_hash(pin)
-
         with closing(get_db_row_connection()) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id, first_name, last_name, role FROM employees WHERE id = ? AND passcode_hash = ?",
-                (employee_id, pin_hash)
+                "SELECT id, first_name, last_name, role, passcode_hash FROM employees WHERE id = ?",
+                (employee_id,)
             )
             row = cursor.fetchone()
-            if row:
-                return {"success": True, "employee": dict(row)}
+            if row and verify_pin(pin, row["passcode_hash"] or ""):
+                employee_data = dict(row)
+                employee_data.pop("passcode_hash", None)
+                return {"success": True, "employee": employee_data}
             else:
                 return {"success": False, "error": "Invalid PIN"}
     except HTTPException:

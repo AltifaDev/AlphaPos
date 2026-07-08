@@ -37,6 +37,17 @@ extension SyncEngine {
             var __desclocals = FetchDescriptor<Category>()
             __desclocals.fetchLimit = 500  // N3: prevent OOM
             let locals = (try? modelContext.fetch(__desclocals)) ?? []
+
+            // Deduplicate: If any local category has the same name but a different ID, delete it.
+            for remote in remoteCategories {
+                guard let idStr = remote["id"] as? String,
+                      let id = UUID(uuidString: idStr),
+                      let name = remote["name"] as? String else { continue }
+                if let conflict = locals.first(where: { $0.id != id && $0.name.lowercased() == name.lowercased() }) {
+                    modelContext.delete(conflict)
+                }
+            }
+            try? modelContext.save()
             var localById = Dictionary(uniqueKeysWithValues: locals.map { ($0.id.uuidString.lowercased(), $0) })
 
             for remote in remoteCategories {
@@ -174,11 +185,33 @@ extension SyncEngine {
                 }
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let remoteQty = remoteDouble(remote["current_quantity"])
+                    let wasSynced = local.isSynced
+                    if local.isSynced {
+                        guard updatedAt > local.updatedAt else { continue }
+                        local.currentQuantity = remoteQty
+                    } else {
+                        // Merging: compute local unsynced delta to overlay on remote quantity
+                        let itemId = local.id
+                        let unsyncedTxDesc = FetchDescriptor<InventoryTransaction>(
+                            predicate: #Predicate<InventoryTransaction> { $0.item?.id == itemId && !$0.isSynced && !$0.isDeleted }
+                        )
+                        let unsyncedTxs = (try? modelContext.fetch(unsyncedTxDesc)) ?? []
+                        let delta = unsyncedTxs.reduce(0.0) { sum, tx in
+                            let mType = tx.movementType
+                            switch mType {
+                            case .adjust:
+                                return sum + tx.quantity
+                            default:
+                                return sum + (mType.isInbound ? tx.quantity : -tx.quantity)
+                            }
+                        }
+                        local.currentQuantity = remoteQty + delta
+                    }
+
                     local.name = name
                     local.sku = remote["sku"] as? String
                     local.unit = remote["unit"] as? String ?? local.unit
-                    local.currentQuantity = remoteDouble(remote["current_quantity"])
                     local.reorderLevel = remoteDouble(remote["reorder_level"])
                     local.costPrice = remoteDouble(remote["cost_price"])
                     local.supplier = supplier
@@ -194,7 +227,7 @@ extension SyncEngine {
                     local.expiryWarningDays  = (remote["expiry_warning_days"]  as? Int) ?? 7
                     local.expiryCriticalDays = (remote["expiry_critical_days"] as? Int) ?? 3
                     local.updatedAt = updatedAt
-                    local.isSynced = true
+                    local.isSynced = wasSynced
                 } else {
                     let item = InventoryItem(
                         id: id,

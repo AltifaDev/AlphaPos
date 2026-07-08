@@ -1333,7 +1333,8 @@ struct ReceiptLivePreview: View {
                 }
             }
 
-            await MainActor.run { self.logoImage = img }
+            let loadedImage = img
+            await MainActor.run { self.logoImage = loadedImage }
         }
     }
 

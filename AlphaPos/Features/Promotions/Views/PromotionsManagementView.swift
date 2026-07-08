@@ -30,6 +30,9 @@ struct PromotionsManagementView: View {
 
     @State private var showingAddSheet = false
     @State private var promotionToEdit: Promotion? = nil
+    // M-2: Coupon Code
+    @State private var showingCouponSheet = false
+
     @State private var deletingPromotionIds = Set<UUID>()
     @State private var promotionPendingDelete: Promotion? = nil
     @State private var errorMessage = ""
@@ -58,6 +61,10 @@ struct PromotionsManagementView: View {
         }
         .sheet(item: $promotionToEdit) { promotion in
             PromotionFormSheet(promotion: promotion)
+        }
+        // M-2: Coupon Code sheet
+        .sheet(isPresented: $showingCouponSheet) {
+            CouponCodeSheet()
         }
         .onAppear {
             Task {
@@ -120,6 +127,25 @@ struct PromotionsManagementView: View {
                     .foregroundColor(.textSecondary)
             }
             Spacer()
+
+            // M-2: Coupon Codes button
+            Button(action: { showingCouponSheet = true }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "ticket.fill")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("coupon_codes_btn".t)
+                        .font(.headline)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(Color.appSurfaceHigh)
+                .foregroundColor(.appAccent)
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.appAccent.opacity(0.4), lineWidth: 1)
+                )
+            }
 
             Button(action: { showingAddSheet = true }) {
                 HStack(spacing: 8) {
@@ -1116,5 +1142,190 @@ struct PromotionFormSheet: View {
         UIGraphicsEndImageContext()
 
         return newImage ?? image
+    }
+}
+
+// MARK: - M-2: Coupon Code Sheet
+
+struct CouponCodeSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
+
+    @Query(
+        filter: #Predicate<Promotion> { $0.isDeleted == false && $0.couponCode != nil },
+        sort: \Promotion.updatedAt, order: .reverse
+    ) private var couponPromotions: [Promotion]
+
+    @State private var showingNewCouponForm = false
+    @State private var copiedCode: String? = nil
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.appBackground.ignoresSafeArea()
+                if couponPromotions.isEmpty && !showingNewCouponForm {
+                    emptyState
+                } else if showingNewCouponForm {
+                    NewCouponForm(onSave: { showingNewCouponForm = false })
+                        .transition(.move(edge: .trailing))
+                } else {
+                    couponList
+                }
+            }
+            .navigationTitle("coupon_codes_btn".t)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("cancel_btn".t) { dismiss() }.foregroundColor(.textSecondary)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: { withAnimation { showingNewCouponForm = true } }) {
+                        Image(systemName: "plus").fontWeight(.bold)
+                    }
+                }
+            }
+        }
+        .presentationDetents([.large])
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "ticket").font(.system(size: 50)).foregroundColor(.textTertiary)
+            Text("coupon_codes_btn".t).font(.title3.bold()).foregroundColor(.textSecondary)
+            Button(action: { showingNewCouponForm = true }) {
+                Label("coupon_new_btn".t, systemImage: "plus")
+                    .font(.headline).padding(.horizontal, 24).padding(.vertical, 12)
+                    .background(APGradient.accent).foregroundColor(.white).cornerRadius(12)
+            }
+        }
+    }
+
+    private var couponList: some View {
+        ScrollView {
+            VStack(spacing: 10) {
+                ForEach(couponPromotions) { promo in
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(promo.couponCode ?? "")
+                                .font(.system(size: 18, weight: .black, design: .monospaced))
+                                .foregroundColor(.appAccent)
+                            Text(promo.title).font(.caption).foregroundColor(.textSecondary)
+                            HStack(spacing: 8) {
+                                if let max = promo.couponMaxRedemptions {
+                                    Text("\(promo.currentRedemptions)/\(max) " + "coupon_uses_lbl".t)
+                                        .font(.caption2).foregroundColor(.textTertiary)
+                                } else {
+                                    Text("\(promo.currentRedemptions) " + "coupon_uses_lbl".t)
+                                        .font(.caption2).foregroundColor(.textTertiary)
+                                }
+                                if let exp = promo.couponExpiresAt {
+                                    Text("coupon_expires_lbl".t + ": \(exp.formatted(date: .abbreviated, time: .omitted))")
+                                        .font(.caption2).foregroundColor(.appAmber)
+                                }
+                            }
+                        }
+                        Spacer()
+                        Button {
+                            UIPasteboard.general.string = promo.couponCode
+                            copiedCode = promo.couponCode
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copiedCode = nil }
+                        } label: {
+                            Image(systemName: copiedCode == promo.couponCode ? "checkmark.circle.fill" : "doc.on.doc")
+                                .foregroundColor(copiedCode == promo.couponCode ? .appTeal : .appAccent)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(14)
+                    .background(Color.appSurface)
+                    .cornerRadius(12)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.appBorderSubtle, lineWidth: 1))
+                }
+            }
+            .padding()
+        }
+    }
+}
+
+// MARK: - New Coupon Form
+
+private struct NewCouponForm: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \Promotion.title) private var promotions: [Promotion]
+
+    let onSave: () -> Void
+
+    @State private var selectedPromoId: UUID? = nil
+    @State private var couponCode = ""
+    @State private var maxRedemptions = ""
+    @State private var hasExpiry = false
+    @State private var expiresAt = Date().addingTimeInterval(86400 * 30)
+
+    private func generateCode() -> String {
+        let chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        return String((0..<8).map { _ in chars.randomElement()! })
+    }
+
+    var body: some View {
+        Form {
+            Section("coupon_code_lbl".t) {
+                HStack {
+                    TextField("ALPHA2025", text: $couponCode)
+                        .textCase(.uppercase)
+                        .font(.system(.body, design: .monospaced))
+                    Button("coupon_generate_btn".t) { couponCode = generateCode() }
+                        .font(.caption.bold()).foregroundColor(.appAccent)
+                }
+            }
+            Section("coupon_promo_link_lbl".t) {
+                Picker("", selection: $selectedPromoId) {
+                    Text("coupon_no_promo".t).tag(UUID?.none)
+                    ForEach(promotions.filter { $0.isDeleted == false && $0.couponCode == nil }) { promo in
+                        Text(promo.title).tag(Optional(promo.id))
+                    }
+                }
+            }
+            Section("coupon_max_use_lbl".t) {
+                TextField("∞", text: $maxRedemptions).keyboardType(.numberPad)
+            }
+            Section {
+                Toggle("coupon_has_expiry_lbl".t, isOn: $hasExpiry)
+                if hasExpiry {
+                    DatePicker("coupon_expires_lbl".t, selection: $expiresAt, displayedComponents: .date)
+                }
+            }
+            Section {
+                Button(action: saveCoupon) {
+                    Text("coupon_save_btn".t).frame(maxWidth: .infinity)
+                        .foregroundColor(couponCode.isEmpty ? .textTertiary : .white)
+                }
+                .listRowBackground(couponCode.isEmpty ? AnyView(Color.appSurfaceHigh) : AnyView(APGradient.accent.opacity(1)))
+                .disabled(couponCode.isEmpty)
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(Color.appBackground)
+    }
+
+    private func saveCoupon() {
+        if let promoId = selectedPromoId,
+           let promo = promotions.first(where: { $0.id == promoId }) {
+            promo.couponCode = couponCode.uppercased()
+            promo.couponMaxRedemptions = Int(maxRedemptions)
+            promo.couponExpiresAt = hasExpiry ? expiresAt : nil
+            promo.isSynced = false; promo.updatedAt = Date()
+            modelContext.saveWithLogging(label: "CouponCodeSheet.saveCoupon")
+            Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+        } else {
+            // Create a standalone coupon-only Promotion
+            let p = Promotion(title: couponCode.uppercased(), isActive: true)
+            p.couponCode = couponCode.uppercased()
+            p.couponMaxRedemptions = Int(maxRedemptions)
+            p.couponExpiresAt = hasExpiry ? expiresAt : nil
+            modelContext.insert(p)
+            modelContext.saveWithLogging(label: "CouponCodeSheet.saveCoupon")
+            Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+        }
+        onSave()
     }
 }

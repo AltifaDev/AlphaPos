@@ -58,13 +58,29 @@ final class POSViewModel {
     var guestCount: Int = 2
     var cashierName: String = "Alex M."
     var selectedCustomer: Customer? = nil
+    var useLoyaltyPoints: Bool = false
+    var redeemLoyaltyPoints: Int = 0
+
+    var loyaltyPointsDiscount: Double {
+        guard useLoyaltyPoints, let customer = selectedCustomer else { return 0.0 }
+        let pointsToRedeem = min(redeemLoyaltyPoints, customer.loyaltyPoints)
+        let rate = Double(UserDefaults.standard.string(forKey: "loyalty_redeem_value_per_point") ?? "0.25") ?? 0.25
+        return Double(pointsToRedeem) * rate
+    }
+
     var currentQueueNumber: String = ""
     var currentBillNumber: String = ""
+
+    // C-1: Gift Card at checkout
+    var selectedGiftCard: GiftCard? = nil
+    var giftCardRedeemAmount: Double = 0.0
+
     var currentOrderDateString: String = ""
     var recentlySubmittedTableOrder: Order?
 
     // L6: Checkout error state — nil means no error, non-nil contains error description
     var lastCheckoutError: String? = nil
+    var alertMessage: String? = nil
 
     var deliveryBrand: String? = nil
     var deliveryGP: Double = 0.0
@@ -137,14 +153,24 @@ final class POSViewModel {
         cart.reduce(0.0) { $0 + $1.totalPrice }
     }
 
+    private var taxAppliesToSelectedOrderType: Bool {
+        let key: String
+        switch selectedOrderType {
+        case "take_out": key = "tax_apply_take_out"
+        case "delivery": key = "tax_apply_delivery"
+        default: key = "tax_apply_dine_in"
+        }
+        return UserDefaults.standard.object(forKey: key) as? Bool ?? true
+    }
+
     private func getTaxRateAndInclusion(for item: MenuItem) -> (rate: Double, isInclusive: Bool) {
-        guard UserDefaults.standard.bool(forKey: "enable_tax") else {
+        guard UserDefaults.standard.bool(forKey: "enable_tax"), taxAppliesToSelectedOrderType else {
             return (0.0, true)
         }
         let priceBasis = UserDefaults.standard.string(forKey: "tax_price_basis") ?? "itemDefault"
         let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
         let globalTaxType = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
-        
+
         switch priceBasis {
         case "forceInclusive":
             return (globalTaxRate, true)
@@ -160,7 +186,7 @@ final class POSViewModel {
     }
 
     var cartTax: Double {
-        guard UserDefaults.standard.bool(forKey: "enable_tax") else {
+        guard UserDefaults.standard.bool(forKey: "enable_tax"), taxAppliesToSelectedOrderType else {
             return 0.0
         }
         if selectedCustomer?.isTaxExempt == true {
@@ -206,9 +232,9 @@ final class POSViewModel {
     }
 
     var cartTotal: Double {
-        let taxEnabled = UserDefaults.standard.bool(forKey: "enable_tax")
+        let taxEnabled = UserDefaults.standard.bool(forKey: "enable_tax") && taxAppliesToSelectedOrderType
         if selectedCustomer?.isTaxExempt == true || !taxEnabled {
-            return max(0, cartSubtotal + cartServiceCharge - cartDiscount)
+            return max(0, cartSubtotal + cartServiceCharge - cartDiscount - loyaltyPointsDiscount)
         }
 
         var totalAmount = 0.0
@@ -226,7 +252,7 @@ final class POSViewModel {
         let serviceChargeTaxable = UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true
         let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
         let serviceChargeTax = serviceChargeTaxable ? cartServiceCharge * (globalTaxRate / 100.0) : 0.0
-        return max(0, totalAmount + cartServiceCharge + serviceChargeTax - cartDiscount)
+        return max(0, totalAmount + cartServiceCharge + serviceChargeTax - cartDiscount - loyaltyPointsDiscount)
     }
 
     private func bestPromotion() -> Promotion? {
@@ -330,6 +356,11 @@ final class POSViewModel {
     func selectItem(_ item: MenuItem) {
         // If menu item has recipes/modifier groups, open customize screen, else add straight to cart
         if item.modifierGroupsRelations.isEmpty {
+            let (allowed, reason) = checkStockBeforeAdding(item, modifiers: [], quantity: 1)
+            guard allowed else {
+                alertMessage = reason
+                return
+            }
             addToCart(item, modifiers: [])
         } else {
             selectedItemForCustomization = item
@@ -337,6 +368,11 @@ final class POSViewModel {
     }
 
     func addToCart(_ item: MenuItem, modifiers: [Modifier]) {
+        let (allowed, reason) = checkStockBeforeAdding(item, modifiers: modifiers, quantity: 1)
+        guard allowed else {
+            alertMessage = reason
+            return
+        }
         let cartItem = CartItem(item: item, selectedModifiers: modifiers)
         withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
             if let idx = cart.firstIndex(where: { $0.isEqual(to: cartItem) }) {
@@ -352,6 +388,11 @@ final class POSViewModel {
 
     func increaseQty(_ item: CartItem) {
         if let idx = cart.firstIndex(where: { $0.id == item.id }) {
+            let (allowed, reason) = checkStockBeforeAdding(cart[idx].item, modifiers: cart[idx].selectedModifiers, quantity: cart[idx].quantity + 1)
+            guard allowed else {
+                alertMessage = reason
+                return
+            }
             withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                 cart[idx].quantity += 1
                 lastAddedItem = FocusTarget(itemId: cart[idx].id)
@@ -390,6 +431,12 @@ final class POSViewModel {
         return nil
     }
 
+    private func makeOrderNumber() -> String {
+        let date = DateFormatter.orderDateFormat().string(from: Date())
+        let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)
+        return "ORD-\(date)-\(suffix)"
+    }
+
     @discardableResult func processCheckout(
         tableSession: TableSession? = nil,
         createPayment: Bool = false,
@@ -409,8 +456,8 @@ final class POSViewModel {
 
     // 1. Create the Order
     let finalOrderNum: String
-    if currentBillNumber == "AP-NEW" {
-        finalOrderNum = "ORD-\(DateFormatter.orderDateFormat().string(from: Date()))-\(Int.random(in: 100...999))"
+    if currentBillNumber.isEmpty || currentBillNumber == "AP-NEW" {
+        finalOrderNum = makeOrderNumber()
     } else if let session = tableSession {
         // H-8 FIX: Prevent unique constraint violation on (merchant_id, order_number)
         // by appending a suffix if this is a subsequent order in the same session.
@@ -472,21 +519,49 @@ final class POSViewModel {
         // Increment promotion usage counter
         appliedPromotion.incrementRedemption()
     }
-    
+
     // Create OrderTaxLines if tax is enabled
-    if UserDefaults.standard.bool(forKey: "enable_tax") && selectedCustomer?.isTaxExempt != true {
+    if UserDefaults.standard.bool(forKey: "enable_tax"),
+       taxAppliesToSelectedOrderType,
+       selectedCustomer?.isTaxExempt != true {
         let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
         let taxName = UserDefaults.standard.string(forKey: "store_tax_name") ?? "VAT"
-        let globalTaxType = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
-        
-        if cartTax > 0 {
+        var taxGroups: [String: (rate: Double, inclusive: Bool, taxable: Double, tax: Double)] = [:]
+
+        for cartItem in cart {
+            let lineTotal = cartItem.totalPrice
+            let taxConfig = getTaxRateAndInclusion(for: cartItem.item)
+            guard taxConfig.rate > 0 else { continue }
+            let tax = taxConfig.isInclusive
+                ? lineTotal * taxConfig.rate / (100.0 + taxConfig.rate)
+                : lineTotal * taxConfig.rate / 100.0
+            let key = "\(taxConfig.rate)|\(taxConfig.isInclusive)"
+            var group = taxGroups[key] ?? (taxConfig.rate, taxConfig.isInclusive, 0, 0)
+            group.taxable += taxConfig.isInclusive ? lineTotal - tax : lineTotal
+            group.tax += tax
+            taxGroups[key] = group
+        }
+
+        if (UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true),
+           cartServiceCharge > 0,
+           globalTaxRate > 0 {
+            let key = "service|\(globalTaxRate)"
+            taxGroups[key] = (
+                globalTaxRate,
+                false,
+                cartServiceCharge,
+                cartServiceCharge * globalTaxRate / 100.0
+            )
+        }
+
+        for group in taxGroups.values where group.tax > 0 {
             let taxLine = OrderTaxLine(
                 order: order,
-                taxName: "\(taxName) \(Int(globalTaxRate))%",
-                taxRate: globalTaxRate,
-                taxableAmount: cartSubtotal,
-                taxAmount: cartTax,
-                isInclusive: (globalTaxType == "inclusive")
+                taxName: "\(taxName) \(String(format: "%g", group.rate))%",
+                taxRate: group.rate,
+                taxableAmount: group.taxable,
+                taxAmount: group.tax,
+                isInclusive: group.inclusive
             )
             modelContext.insert(taxLine)
             order.taxLines.append(taxLine)
@@ -518,7 +593,7 @@ final class POSViewModel {
         )
         modelContext.insert(orderItem)
         orderItem.order = order
-        
+
         // Explicitly update relationship in-memory
         order.items.append(orderItem)
 
@@ -528,10 +603,10 @@ final class POSViewModel {
             let orderItemMod = OrderItemModifier(orderItem: orderItem, modifier: mod, price: mod.extraPrice)
             modelContext.insert(orderItemMod)
             orderItemMod.orderItem = orderItem
-            
+
             // Explicitly update relationship in-memory
             orderItem.modifiers.append(orderItemMod)
-            
+
             modifierReferenceIds.append(orderItemMod.id)
         }
 
@@ -560,6 +635,40 @@ final class POSViewModel {
     if createPayment {
         let payment = Payment(paymentMethod: paymentMethod ?? selectedPaymentMethod, amount: cartTotal)
         payment.order = order
+
+        // C-1: Gift Card Redeem — deduct balance before saving payment
+        if let giftCard = selectedGiftCard, giftCardRedeemAmount > 0 {
+            let deductAmount = min(giftCardRedeemAmount, giftCard.balance)
+            giftCard.balance -= deductAmount
+            giftCard.isSynced = false
+            giftCard.updatedAt = Date()
+            if giftCard.balance <= 0 {
+                giftCard.status = "exhausted"
+            }
+            // Payment covers only the remaining amount after gift card
+            payment.amount = max(0, cartTotal - deductAmount)
+        }
+
+        // C-2.5: Loyalty Points Redeem — deduct points and save transaction
+        if useLoyaltyPoints, let customer = selectedCustomer, redeemLoyaltyPoints > 0 {
+            let pointsToRedeem = min(redeemLoyaltyPoints, customer.loyaltyPoints)
+            if pointsToRedeem > 0 {
+                customer.loyaltyPoints -= pointsToRedeem
+                customer.isSynced = false
+                customer.updatedAt = Date()
+
+                let loyaltyTx = LoyaltyTransaction(
+                    customer: customer,
+                    order: order,
+                    transactionType: "redeem",
+                    points: -pointsToRedeem,
+                    pointsBalanceAfter: customer.loyaltyPoints,
+                    transactionDescription: "Redeemed points on order \(order.orderNumber)"
+                )
+                modelContext.insert(loyaltyTx)
+            }
+        }
+
         modelContext.insert(payment)
     }
 
@@ -572,29 +681,54 @@ final class POSViewModel {
             try? errMsg.write(to: fileURL, atomically: true, encoding: .utf8)
         }
         print(errMsg)
-        
-        // Rollback: delete the failed insertions to keep SwiftData context consistent
-        modelContext.delete(order)
-        for item in order.items {
-            modelContext.delete(item)
-            for mod in item.modifiers {
-                modelContext.delete(mod)
-            }
-        }
-        if let session = tableSession {
-            if let index = session.orders.firstIndex(where: { $0.id == order.id }) {
-                session.orders.remove(at: index)
-            }
-        }
-        try? modelContext.save() // save the deletions
-        
+
+        // Revert the entire checkout unit, including stock and promotion counters.
+        modelContext.rollback()
         lastCheckoutError = "Failed to save checkout: \(error.localizedDescription)"
         return nil
     }
     cart.removeAll()
     selectedCustomer = nil
+    selectedGiftCard = nil
+    giftCardRedeemAmount = 0.0
+    useLoyaltyPoints = false
+    redeemLoyaltyPoints = 0
     if tableSession == nil {
         currentQueueNumber = ""
+    }
+
+    // C-2: Loyalty Points Accrue — only on actual payment (not send-to-kitchen)
+    if createPayment, let customer = order.customer {
+        let pointsPerBaht = Double(
+            UserDefaults.standard.string(forKey: "loyalty_points_per_baht") ?? "0.05"
+        ) ?? 0.05
+        let earnedPoints = Int((order.total * pointsPerBaht).rounded(.down))
+        if earnedPoints > 0 {
+            customer.loyaltyPoints += earnedPoints
+            customer.totalSpend   += order.total
+            // M-3: Loyalty Tier Auto-Upgrade — resolve tier from accumulated spend
+            customer.membershipTier = resolvedTier(for: customer.totalSpend)
+            customer.visitCount   += 1
+            customer.isSynced      = false
+            customer.updatedAt     = Date()
+            let loyaltyTx = LoyaltyTransaction(
+                customer: customer,
+                order: order,
+                transactionType: "earn",
+                points: earnedPoints,
+                pointsBalanceAfter: customer.loyaltyPoints,
+                transactionDescription: "Earned from order \(order.orderNumber)",
+                // M-4: set expiresAt = 1 year from now (configurable via "loyalty_points_expiry_days")
+                expiresAt: {
+                    let days = UserDefaults.standard.integer(forKey: "loyalty_points_expiry_days")
+                    return days > 0
+                        ? Calendar.current.date(byAdding: .day, value: days, to: Date())
+                        : Calendar.current.date(byAdding: .year, value: 1, to: Date())
+                }(),
+                earnedAt: Date()
+            )
+            modelContext.insert(loyaltyTx)
+        }
     }
 
     // Close dine-in table session only after actual payment, not when sending to kitchen.
@@ -786,7 +920,7 @@ final class POSViewModel {
         guard let modelContext = modelContext, !cart.isEmpty else { return }
         let activeBranch = fetchActiveBranch(context: modelContext)
 
-        let finalOrderNum = currentBillNumber == "AP-NEW" ? "ORD-\(DateFormatter.orderDateFormat().string(from: Date()))-\(Int.random(in: 100...999))" : currentBillNumber
+        let finalOrderNum = currentBillNumber.isEmpty || currentBillNumber == "AP-NEW" ? makeOrderNumber() : currentBillNumber
         let appliedPromotion = activePromotion
         let appliedDiscount = cartDiscount
         let order = Order(
@@ -864,6 +998,52 @@ final class POSViewModel {
         APHaptic.trigger()
     }
 
+    /// Checks if adding a menuItem and its modifiers is allowed based on ingredient/modifier stock levels.
+    func checkStockBeforeAdding(_ item: MenuItem, modifiers: [Modifier], quantity: Int = 1) -> (allowed: Bool, reason: String?) {
+        guard let modelContext = modelContext else { return (true, nil) }
+
+        // If negative stock is allowed, skip check
+        if UserDefaults.standard.bool(forKey: "allow_negative_stock") {
+            return (true, nil)
+        }
+
+        let activeBranch = fetchActiveBranch(context: modelContext)
+
+        // 1. Check base recipe
+        for recipe in item.recipes {
+            if let ingredient = recipe.inventoryItem {
+                let localItem = findBranchInventoryItem(
+                    ingredient: ingredient,
+                    activeBranch: activeBranch,
+                    modelContext: modelContext
+                )
+                let required = recipe.quantityRequired * Double(quantity)
+                if localItem.currentQuantity < required {
+                    let text = String(format: "วัตถุดิบ '%@' ในสต็อกไม่เพียงพอ (คงเหลือ %.1f, ต้องการ %.1f)", localItem.name, localItem.currentQuantity, required)
+                    return (false, text)
+                }
+            }
+        }
+
+        // 2. Check modifiers
+        for mod in modifiers {
+            if let ingredient = mod.inventoryItemLink, let reqQty = mod.quantityRequired {
+                let localItem = findBranchInventoryItem(
+                    ingredient: ingredient,
+                    activeBranch: activeBranch,
+                    modelContext: modelContext
+                )
+                let required = reqQty * Double(quantity)
+                if localItem.currentQuantity < required {
+                    let text = String(format: "วัตถุดิบพิเศษ '%@' ไม่เพียงพอ (คงเหลือ %.1f, ต้องการ %.1f)", localItem.name, localItem.currentQuantity, required)
+                    return (false, text)
+                }
+            }
+        }
+
+        return (true, nil)
+    }
+
     private func deductIngredientsLocally(
         for cartItem: CartItem,
         activeBranch: Branch?,
@@ -889,7 +1069,7 @@ final class POSViewModel {
             localItem.currentQuantity -= qtyDeducted
             localItem.updatedAt = Date()
             localItem.isSynced = false
-            
+
             // Consume from FEFO lots to keep lots in sync with currentQuantity
             let expiryManager = InventoryExpiryManager.shared(for: modelContext)
             expiryManager.consumeFEFO(item: localItem, quantity: qtyDeducted)
@@ -921,7 +1101,7 @@ final class POSViewModel {
             localItem.currentQuantity -= qtyDeducted
             localItem.updatedAt = Date()
             localItem.isSynced = false
-            
+
             // Consume from FEFO lots to keep lots in sync with currentQuantity
             let expiryManager = InventoryExpiryManager.shared(for: modelContext)
             expiryManager.consumeFEFO(item: localItem, quantity: qtyDeducted)
@@ -972,6 +1152,14 @@ final class POSViewModel {
                 branch: activeBranch
             )
             modelContext.insert(txn)
+            modelContext.insert(InventoryLot(
+                inventoryItem: localItem,
+                branch: activeBranch,
+                lotNumber: "RETURN-\(order.orderNumber)",
+                initialQuantity: qtyToRestore,
+                lotCostPrice: localItem.costPrice,
+                sourceTransactionId: txn.id
+            ))
         }
 
         // Reverse modifier deductions
@@ -1000,6 +1188,14 @@ final class POSViewModel {
                 branch: activeBranch
             )
             modelContext.insert(txn)
+            modelContext.insert(InventoryLot(
+                inventoryItem: localItem,
+                branch: activeBranch,
+                lotNumber: "RETURN-\(order.orderNumber)",
+                initialQuantity: qtyToRestore,
+                lotCostPrice: localItem.costPrice,
+                sourceTransactionId: txn.id
+            ))
         }
     }
 
@@ -1191,43 +1387,66 @@ final class SampleDataSeeder {
     }
 
     static func seedRolesAndEmployeesIfEmpty(modelContext: ModelContext) {
-        let roles = (try? modelContext.fetch(FetchDescriptor<Role>())) ?? []
-        if roles.isEmpty {
-            let roleManager = Role(name: "Store Manager", roleDescription: "Full administrative and settings access.", permissionKeys: PermissionService.permissionCSV(for: PermissionService.permissions(forRoleName: "Store Manager")))
-            let roleCashier = Role(name: "Cashier", roleDescription: "Checkout, payments, and order entry.", permissionKeys: PermissionService.permissionCSV(for: PermissionService.permissions(forRoleName: "Cashier")))
-            let roleWaitstaff = Role(name: "Waitstaff", roleDescription: "Table ordering and service requests.", permissionKeys: PermissionService.permissionCSV(for: PermissionService.permissions(forRoleName: "Waitstaff")))
-            let roleKitchen = Role(name: "Kitchen Staff", roleDescription: "Kitchen display system access.", permissionKeys: PermissionService.permissionCSV(for: PermissionService.permissions(forRoleName: "Kitchen Staff")))
-
-            modelContext.insert(roleManager)
-            modelContext.insert(roleCashier)
-            modelContext.insert(roleWaitstaff)
-            modelContext.insert(roleKitchen)
-
-            // Seed default users and employees if empty
-            let employees = (try? modelContext.fetch(FetchDescriptor<Employee>())) ?? []
-            if employees.isEmpty {
-                // Fixed UUIDs ensure that employeeId references stored in staff_sessions,
-                // audit_logs and timecards remain valid after a re-seed.
-                // DO NOT change these constants — they are the canonical seed identities.
-                let seedEmp1Id  = UUID(uuidString: "9a5767a4-6f30-4614-94d9-5ea85e282775")!
-                let seedEmp2Id  = UUID(uuidString: "193df239-104d-4e2d-b2e5-9f2b4ff30ddc")!
-                let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
-                let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
-
-                // Use plain sha256 for seed users — verifyPIN supports legacy format.
-                // This avoids blocking the main thread with key-stretching on first launch.
-                let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: roleManager, isSynced: false, isDeleted: false, updatedAt: Date())
-                let user2 = User(id: seedUser2Id, username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: roleWaitstaff, isSynced: false, isDeleted: false, updatedAt: Date())
-                modelContext.insert(user1)
-                modelContext.insert(user2)
-
-                let emp1 = Employee(id: seedEmp1Id, user: user1, firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, isSynced: false, isDeleted: false, updatedAt: Date())
-                let emp2 = Employee(id: seedEmp2Id, user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, isSynced: false, isDeleted: false, updatedAt: Date())
-                modelContext.insert(emp1)
-                modelContext.insert(emp2)
+        // 1. Clean up old duplicate mock employees and users with mismatched UUIDs
+        let oldId1 = UUID(uuidString: "9a5767a4-6f30-4614-94d9-5ea85e282775")!
+        let oldId2 = UUID(uuidString: "193df239-104d-4e2d-b2e5-9f2b4ff30ddc")!
+        var removedAny = false
+        if let emps = try? modelContext.fetch(FetchDescriptor<Employee>()) {
+            for emp in emps {
+                if emp.id == oldId1 || emp.id == oldId2 {
+                    modelContext.delete(emp)
+                    removedAny = true
+                }
             }
-            modelContext.saveWithLogging(label: #function)
         }
+        let oldUserId1 = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
+        let oldUserId2 = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
+        if let users = try? modelContext.fetch(FetchDescriptor<User>()) {
+            for user in users {
+                if user.id == oldUserId1 || user.id == oldUserId2 {
+                    modelContext.delete(user)
+                    removedAny = true
+                }
+            }
+        }
+        if removedAny {
+            try? modelContext.save()
+        }
+
+        // 2. Fetch or seed necessary roles to associate with employees
+        var matchedRoleManager = (try? modelContext.fetch(FetchDescriptor<Role>(predicate: #Predicate<Role> { $0.name == "Store Manager" })))?.first
+        var matchedRoleWaitstaff = (try? modelContext.fetch(FetchDescriptor<Role>(predicate: #Predicate<Role> { $0.name == "Waitstaff" })))?.first
+
+        if matchedRoleManager == nil {
+            let roleManager = Role(name: "Store Manager", roleDescription: "Full administrative and settings access.", permissionKeys: PermissionService.permissionCSV(for: PermissionService.permissions(forRoleName: "Store Manager")))
+            modelContext.insert(roleManager)
+            matchedRoleManager = roleManager
+        }
+        if matchedRoleWaitstaff == nil {
+            let roleWaitstaff = Role(name: "Waitstaff", roleDescription: "Table ordering and service requests.", permissionKeys: PermissionService.permissionCSV(for: PermissionService.permissions(forRoleName: "Waitstaff")))
+            modelContext.insert(roleWaitstaff)
+            matchedRoleWaitstaff = roleWaitstaff
+        }
+
+        // 3. Seed default users and employees if empty using canonical Supabase IDs
+        let employees = (try? modelContext.fetch(FetchDescriptor<Employee>())) ?? []
+        if employees.isEmpty {
+            let seedEmp1Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+            let seedEmp2Id  = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+            let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
+            let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
+
+            let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: matchedRoleManager, isSynced: false, isDeleted: false, updatedAt: Date())
+            let user2 = User(id: seedUser2Id, username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: matchedRoleWaitstaff, isSynced: false, isDeleted: false, updatedAt: Date())
+            modelContext.insert(user1)
+            modelContext.insert(user2)
+
+            let emp1 = Employee(id: seedEmp1Id, user: user1, firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, isSynced: false, isDeleted: false, updatedAt: Date())
+            let emp2 = Employee(id: seedEmp2Id, user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, isSynced: false, isDeleted: false, updatedAt: Date())
+            modelContext.insert(emp1)
+            modelContext.insert(emp2)
+        }
+        modelContext.saveWithLogging(label: #function)
     }
 
     static func clearCatalogOnly(modelContext: ModelContext) {
@@ -1366,6 +1585,93 @@ final class SampleDataSeeder {
         modelContext.insert(mango)
         modelContext.insert(sweetRice)
         modelContext.insert(teaLeaves)
+
+        // 2.1 Seed Inventory Lots for FEFO and Expiry testing
+        let calendar = Calendar.current
+        let today = Date()
+
+        // Prawn Lots
+        let prawnLot1 = InventoryLot(
+            lotNumber: "LOT-PR-001",
+            receivedDate: calendar.date(byAdding: .day, value: -3, to: today) ?? today,
+            expiryDate: calendar.date(byAdding: .day, value: 2, to: today),
+            initialQuantity: 100.0,
+            remainingQuantity: 100.0,
+            lotCostPrice: 48.0
+        )
+        prawnLot1.inventoryItem = prawns
+
+        let prawnLot2 = InventoryLot(
+            lotNumber: "LOT-PR-002",
+            receivedDate: today,
+            expiryDate: calendar.date(byAdding: .day, value: 10, to: today),
+            initialQuantity: 100.0,
+            remainingQuantity: 100.0,
+            lotCostPrice: 52.0
+        )
+        prawnLot2.inventoryItem = prawns
+
+        // Chicken Lots
+        let chickenLot1 = InventoryLot(
+            lotNumber: "LOT-CK-001",
+            receivedDate: calendar.date(byAdding: .day, value: -4, to: today) ?? today,
+            expiryDate: calendar.date(byAdding: .day, value: 1, to: today),
+            initialQuantity: 4000.0,
+            remainingQuantity: 4000.0,
+            lotCostPrice: 0.11
+        )
+        chickenLot1.inventoryItem = chicken
+
+        let chickenLot2 = InventoryLot(
+            lotNumber: "LOT-CK-002",
+            receivedDate: today,
+            expiryDate: calendar.date(byAdding: .day, value: 5, to: today),
+            initialQuantity: 4000.0,
+            remainingQuantity: 4000.0,
+            lotCostPrice: 0.13
+        )
+        chickenLot2.inventoryItem = chicken
+
+        // Mango Lots
+        let mangoLot1 = InventoryLot(
+            lotNumber: "LOT-MG-001",
+            receivedDate: calendar.date(byAdding: .day, value: -2, to: today) ?? today,
+            expiryDate: calendar.date(byAdding: .day, value: 3, to: today),
+            initialQuantity: 75.0,
+            remainingQuantity: 75.0,
+            lotCostPrice: 14.0
+        )
+        mangoLot1.inventoryItem = mango
+
+        let mangoLot2 = InventoryLot(
+            lotNumber: "LOT-MG-002",
+            receivedDate: today,
+            expiryDate: nil,
+            initialQuantity: 75.0,
+            remainingQuantity: 75.0,
+            lotCostPrice: 16.0
+        )
+        mangoLot2.inventoryItem = mango
+
+        // Noodles Lot
+        let noodleLot = InventoryLot(
+            lotNumber: "LOT-ND-001",
+            receivedDate: today,
+            expiryDate: nil,
+            initialQuantity: 10000.0,
+            remainingQuantity: 10000.0,
+            lotCostPrice: 0.05
+        )
+        noodleLot.inventoryItem = noodles
+
+        modelContext.insert(prawnLot1)
+        modelContext.insert(prawnLot2)
+        modelContext.insert(chickenLot1)
+        modelContext.insert(chickenLot2)
+        modelContext.insert(mangoLot1)
+        modelContext.insert(mangoLot2)
+        modelContext.insert(noodleLot)
+
 
         // 3. Categories
         let mainsCat = Category(name: "Main Dishes")
@@ -1740,6 +2046,22 @@ final class SampleDataSeeder {
             modelContext.insert(txn)
             coconutItem.transactions.append(txn)
             coconutItem.currentQuantity -= 500.0
+        }
+    }
+
+}
+
+extension POSViewModel {
+    fileprivate func resolvedTier(for totalSpend: Double) -> String {
+        switch totalSpend {
+        case 15_000...:
+            return "platinum"
+        case 5_000..<15_000:
+            return "gold"
+        case 1_000..<5_000:
+            return "silver"
+        default:
+            return "standard"
         }
     }
 }

@@ -23,6 +23,37 @@ def sha256_hash(string):
         return ""
     return hashlib.sha256(string.encode('utf-8')).hexdigest()
 
+def verify_pin(pin, stored_hash):
+    """
+    Verifies a PIN against a stored hash using constant-time comparison.
+    Supports both legacy SHA-256 and stretched hash (iter:10000:salt:hash) formats.
+    """
+    if not stored_hash or not pin:
+        return False
+
+    # Support new key-stretching format: iter:<iterations>:<salt_b64>:<hash_hex>
+    if stored_hash.startswith("iter:"):
+        parts = stored_hash.split(":", 3)
+        if len(parts) != 4:
+            return False
+        try:
+            iterations = int(parts[1])
+        except ValueError:
+            return False
+        salt = parts[2]
+        expected_hash = parts[3]
+
+        # Recreate iterated SHA-256 hash
+        current_hash = salt + pin
+        for _ in range(iterations):
+            current_hash = hashlib.sha256(current_hash.encode('utf-8')).hexdigest()
+
+        return hmac.compare_digest(current_hash.encode('utf-8'), expected_hash.encode('utf-8'))
+
+    # Legacy SHA-256 format
+    input_hash = sha256_hash(pin)
+    return hmac.compare_digest(input_hash.encode('utf-8'), stored_hash.encode('utf-8'))
+
 # Load .env file if present
 load_dotenv()
 
@@ -130,15 +161,15 @@ def sync_menu_from_supabase(conn):
         req.add_header("Authorization", f"Bearer {SUPABASE_ANON_KEY}")
         req.add_header("Content-Type", "application/json")
         req.add_header("x-merchant-id", MERCHANT_ID)
-        
+
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
-        
+
         if not data:
             print("[Sync] ⚠️  Supabase menu_items is empty — retaining SQLite cache.")
             print("[Sync]     iPad must sync at least one menu item before web ordering works.")
             return
-        
+
         cursor = conn.cursor()
         # Replace seed/stale rows with canonical Supabase UUIDs
         cursor.execute("DELETE FROM menu_items")
@@ -166,7 +197,7 @@ def sync_menu_from_supabase(conn):
             )
         conn.commit()
         print(f"[Sync] ✅ Synced {len(data)} menu items from Supabase to SQLite.")
-    
+
     except Exception as e:
         print(f"[Sync] ⚠️  Supabase offline or error — using local SQLite cache. ({e})")
 
@@ -184,14 +215,14 @@ def sync_promotions_from_supabase(conn):
         req.add_header("Authorization", f"Bearer {SUPABASE_ANON_KEY}")
         req.add_header("Content-Type", "application/json")
         req.add_header("x-merchant-id", MERCHANT_ID)
-        
+
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
-        
+
         if not data:
             print("[Sync] Supabase returned 0 promotions — skipping SQLite update.")
             return
-        
+
         cursor = conn.cursor()
         for item in data:
             is_active = item.get("is_active", 1)
@@ -200,7 +231,7 @@ def sync_promotions_from_supabase(conn):
             is_deleted = item.get("is_deleted", 0)
             if isinstance(is_deleted, bool):
                 is_deleted = 1 if is_deleted else 0
-                
+
             cursor.execute(
                 "INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, media_type, is_active, is_deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -232,10 +263,10 @@ def fetch_promotions_from_supabase():
         req.add_header("Authorization", f"Bearer {SUPABASE_ANON_KEY}")
         req.add_header("Content-Type", "application/json")
         req.add_header("x-merchant-id", MERCHANT_ID)
-        
+
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
-        
+
         return data if data else []
     except Exception as e:
         print(f"[Sync] ⚠️  Failed to fetch promotions from Supabase: {str(e)}")
@@ -251,7 +282,7 @@ def supabase_request(method, endpoint, payload=None, query_params=None):
         url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
         if query_params:
             url += "?" + urllib.parse.urlencode(query_params)
-        
+
         data_bytes = json.dumps(payload).encode("utf-8") if payload else None
         req = urllib.request.Request(url, data=data_bytes, method=method)
         req.add_header("apikey", SUPABASE_ANON_KEY)
@@ -259,7 +290,7 @@ def supabase_request(method, endpoint, payload=None, query_params=None):
         req.add_header("Content-Type", "application/json")
         req.add_header("Prefer", "return=minimal")
         req.add_header("x-merchant-id", MERCHANT_ID)
-        
+
         with urllib.request.urlopen(req, timeout=5) as response:
             return True, response.read().decode()
     except Exception as e:
@@ -274,29 +305,29 @@ def sync_table_sessions_from_supabase(conn):
     """
     try:
         print("[Sync] Fetching table_sessions from Supabase...")
-        
+
         url = f"{SUPABASE_URL}/rest/v1/table_sessions?is_deleted=eq.false&limit=1000"
-        
+
         req = urllib.request.Request(url)
         req.add_header("apikey", SUPABASE_ANON_KEY)
         req.add_header("Authorization", f"Bearer {SUPABASE_ANON_KEY}")
         req.add_header("Content-Type", "application/json")
         req.add_header("x-merchant-id", MERCHANT_ID)
-        
+
         with urllib.request.urlopen(req, timeout=5) as response:
             sessions_data = json.loads(response.read().decode())
-        
+
         if not sessions_data:
             print("[Sync] No table_sessions returned from Supabase")
             return
-        
+
         cursor = conn.cursor()
-        
+
         cursor.execute("DELETE FROM table_sessions WHERE merchant_id = ?", (MERCHANT_ID,))
-        
+
         for session in sessions_data:
             cursor.execute('''
-                INSERT OR REPLACE INTO table_sessions 
+                INSERT OR REPLACE INTO table_sessions
                 (id, table_number, session_token, is_active, created_at, ended_at, guest_count, merchant_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
@@ -309,13 +340,13 @@ def sync_table_sessions_from_supabase(conn):
                 session.get("guest_count", 1),
                 session.get("merchant_id")
             ))
-        
+
         conn.commit()
         print(f"[Sync] ✅ Cached {len(sessions_data)} table sessions from Supabase")
-        
+
     except urllib.error.HTTPError as e:
         print(f"[Sync] ⚠️ HTTP {e.code}: {e.reason} - Supabase table_sessions offline")
-        
+
     except Exception as e:
         print(f"[Sync] ⚠️ Failed to sync table_sessions: {str(e)}")
 
@@ -425,7 +456,7 @@ def sync_modifiers_from_supabase(conn):
         req.add_header("x-merchant-id", MERCHANT_ID)
         with urllib.request.urlopen(req, timeout=5) as response:
             groups = json.loads(response.read().decode()) or []
-        
+
         # B. Fetch modifiers
         url = f"{SUPABASE_URL}/rest/v1/modifiers?select=*&is_deleted=eq.false"
         req = urllib.request.Request(url)
@@ -447,7 +478,7 @@ def sync_modifiers_from_supabase(conn):
             junctions = json.loads(response.read().decode()) or []
 
         cursor = conn.cursor()
-        
+
         # 1. Update modifier_groups
         cursor.execute("-- UPSERT used instead")
         for g in groups:
@@ -455,7 +486,7 @@ def sync_modifiers_from_supabase(conn):
                 "INSERT OR REPLACE INTO modifier_groups (id, name, min_selection, max_selection, merchant_id) VALUES (?, ?, ?, ?, ?)",
                 (g.get("id"), g.get("name", ""), g.get("min_selection", 0), g.get("max_selection", 1), g.get("merchant_id"))
             )
-            
+
         # 2. Update modifiers
         cursor.execute("-- UPSERT used instead")
         for m in mods:
@@ -463,7 +494,7 @@ def sync_modifiers_from_supabase(conn):
                 "INSERT OR REPLACE INTO modifiers (id, modifier_group_id, name, extra_price, is_available, merchant_id) VALUES (?, ?, ?, ?, ?, ?)",
                 (m.get("id"), m.get("modifier_group_id"), m.get("name", ""), float(m.get("extra_price", 0.0)), 1 if m.get("is_available", True) else 0, m.get("merchant_id"))
             )
-            
+
         # 3. Update menu_item_modifier_groups
         cursor.execute("-- UPSERT used instead")
         for j in junctions:
@@ -471,7 +502,7 @@ def sync_modifiers_from_supabase(conn):
                 "INSERT OR REPLACE INTO menu_item_modifier_groups (menu_item_id, modifier_group_id, merchant_id) VALUES (?, ?, ?)",
                 (j.get("menu_item_id"), j.get("modifier_group_id"), j.get("merchant_id"))
             )
-            
+
         conn.commit()
         print(f"[Sync] ✅ Synced modifiers: {len(groups)} groups, {len(mods)} modifiers, {len(junctions)} links.")
     except Exception as e:
@@ -585,7 +616,7 @@ def init_db():
 
 def _init_db_helper(conn):
     cursor = conn.cursor()
-    
+
     # 1. Orders table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS orders (
@@ -602,7 +633,7 @@ def _init_db_helper(conn):
             is_synced INTEGER DEFAULT 0
         )
     ''')
-    
+
     # 2. Order Items table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS order_items (
@@ -617,7 +648,7 @@ def _init_db_helper(conn):
             FOREIGN KEY (order_id) REFERENCES orders (id)
         )
     ''')
-    
+
     # 3. Menu Items table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS menu_items (
@@ -633,7 +664,7 @@ def _init_db_helper(conn):
             description_translations TEXT DEFAULT '{}'
         )
     ''')
-    
+
     # Ensure image_url, name_translations, and description_translations exist in menu_items
     cursor.execute("PRAGMA table_info(menu_items)")
     columns = [col[1] for col in cursor.fetchall()]
@@ -675,7 +706,7 @@ def _init_db_helper(conn):
             merchant_id TEXT
         )
     ''')
-    
+
     # 6. Employees table (sync with Supabase schema: pin_hash, not pin_code_hash)
     cursor.execute("PRAGMA table_info(employees)")
     employee_columns = {col[1] for col in cursor.fetchall()}
@@ -701,7 +732,7 @@ def _init_db_helper(conn):
             role TEXT NOT NULL
         )
     ''')
-    
+
     # 7. Timecards table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS timecards (
@@ -720,7 +751,7 @@ def _init_db_helper(conn):
             FOREIGN KEY (employee_id) REFERENCES employees (id)
         )
     ''')
-    
+
     # 8. Payments table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS payments (
@@ -734,7 +765,7 @@ def _init_db_helper(conn):
             FOREIGN KEY (order_id) REFERENCES orders (id)
         )
     ''')
-    
+
     # 9. Promotions table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promotions (
@@ -748,7 +779,7 @@ def _init_db_helper(conn):
             updated_at TEXT NOT NULL
         )
     ''')
-    
+
     # 10. Modifier groups table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS modifier_groups (
@@ -759,7 +790,7 @@ def _init_db_helper(conn):
             merchant_id TEXT
         )
     ''')
-    
+
     # 11. Modifiers table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS modifiers (
@@ -772,7 +803,7 @@ def _init_db_helper(conn):
             FOREIGN KEY (modifier_group_id) REFERENCES modifier_groups (id)
         )
     ''')
-    
+
     # 12. Menu item modifier groups junction
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS menu_item_modifier_groups (
@@ -784,7 +815,7 @@ def _init_db_helper(conn):
             FOREIGN KEY (modifier_group_id) REFERENCES modifier_groups (id)
         )
     ''')
-    
+
     # 13. Order item modifiers table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS order_item_modifiers (
@@ -797,7 +828,7 @@ def _init_db_helper(conn):
             FOREIGN KEY (modifier_id) REFERENCES modifiers (id)
         )
     ''')
-    
+
     # 14. Restaurant Tables table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS restaurant_tables (
@@ -867,7 +898,7 @@ def _init_db_helper(conn):
         cursor.executemany("INSERT INTO restaurant_tables VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", default_tables)
         conn.commit()
         print("Database initialized and restaurant_tables seeded successfully.")
-    
+
     # Migration: Add missing columns to existing tables (idempotent)
     for table, col, col_type in [
         ("orders", "merchant_id", "TEXT"),
@@ -920,7 +951,7 @@ def _init_db_helper(conn):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_timecards_employee ON timecards (employee_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_order ON payments (order_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_promotions_active ON promotions (is_active, is_deleted);")
-    
+
     # Missing foreign key and merchant indexes
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_modifiers_group ON modifiers (modifier_group_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_item_modifiers_item ON menu_item_modifier_groups (menu_item_id);")
@@ -931,7 +962,7 @@ def _init_db_helper(conn):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_table_sessions_merchant_active ON table_sessions (merchant_id, is_active);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_service_requests_merchant ON service_requests (merchant_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_event_logs_created ON event_logs (created_at);")
-    
+
     conn.commit()
 
     # Seed default employees if table is empty
@@ -951,7 +982,7 @@ def _init_db_helper(conn):
         cursor.execute("ALTER TABLE orders ADD COLUMN session_token TEXT")
     if 'guest_count' not in orders_columns:
         cursor.execute("ALTER TABLE orders ADD COLUMN guest_count INTEGER DEFAULT 2")
-    
+
     # Alter table if existing schema is missing columns status or item_id in order_items
     cursor.execute("PRAGMA table_info(order_items)")
     columns = [col[1] for col in cursor.fetchall()]
@@ -959,13 +990,13 @@ def _init_db_helper(conn):
         cursor.execute("ALTER TABLE order_items ADD COLUMN status TEXT DEFAULT 'cooking'")
     if 'item_id' not in columns:
         cursor.execute("ALTER TABLE order_items ADD COLUMN item_id TEXT")
-    
+
     # Alter table if existing schema is missing columns guest_count in table_sessions
     cursor.execute("PRAGMA table_info(table_sessions)")
     session_columns = [col[1] for col in cursor.fetchall()]
     if 'guest_count' not in session_columns:
         cursor.execute("ALTER TABLE table_sessions ADD COLUMN guest_count INTEGER DEFAULT 2")
-        
+
     conn.commit()
 
     # Seed default menu items if table is empty
@@ -982,7 +1013,7 @@ def _init_db_helper(conn):
         )
         conn.commit()
         print("Database initialized and Isan menu (50 items) seeded successfully.")
-    
+
     # Always sync latest menu from Supabase on startup (single source of truth)
     sync_menu_from_supabase(conn)
     sync_table_sessions_from_supabase(conn)
@@ -995,7 +1026,7 @@ def _init_db_helper(conn):
 # Custom HTTP Request Handler
 # ==========================================
 class UnifiedRequestHandler(BaseHTTPRequestHandler):
-    
+
     def handle(self):
         try:
             super().handle()
@@ -1007,7 +1038,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             super().handle_one_request()
         finally:
             close_thread_connections()
-    
+
     def _get_allowed_origin(self):
         origin = self.headers.get('Origin', '')
         if not origin:
@@ -1016,7 +1047,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             if origin.rstrip('/') == allowed.rstrip('/'):
                 return origin
         return ''
-    
+
     def _send_json_response(self, status_code, data):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
@@ -1024,10 +1055,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-    
+
     def _send_error_json(self, status_code, message):
         self._send_json_response(status_code, {"error": message})
-    
+
     def _require_auth(self):
         """Bearer token authentication for API endpoints. Required by default."""
         auth_header = self.headers.get('Authorization', '')
@@ -1043,7 +1074,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 
     def _is_public_customer_post(self, path):
         return path in {"/v1/sessions/open", "/v1/orders", "/v1/requests", "/v1/payments/intent"}
-    
+
     def end_headers(self):
         allowed = self._get_allowed_origin()
         supabase_connect_src = ""
@@ -1087,15 +1118,15 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
-        
+
         # GET endpoints are read-only / public data — no auth required.
         # Auth is enforced on POST (write) endpoints.
-        
+
         # 1. API Endpoint: GET /v1/menu
         if path == "/v1/menu":
             self.handle_get_menu()
             return
-            
+
         # 2. API Endpoint: GET /v1/orders (Returns list of orders for POS/KDS syncing)
         if path == "/v1/orders":
             self.handle_get_orders()
@@ -1144,7 +1175,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         if path == "/v1/promotions":
             self.handle_get_promotions()
             return
-            
+
         # 9.5. API Endpoint: GET /v1/modifiers-config
         if path == "/v1/modifiers-config":
             self.handle_get_modifiers_config()
@@ -1161,11 +1192,11 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
-        
+
         # Customer self-ordering writes are public by design; admin/POS writes still require auth.
         if not self._is_public_customer_post(path) and not self._require_auth():
             return
-        
+
         # 0. API Endpoint: POST /v1/employees/verify (Verifies employee PIN hash)
         if path == "/v1/employees/verify":
             self.handle_post_employee_verify()
@@ -1175,7 +1206,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         if path == "/v1/orders":
             self.handle_post_order()
             return
-            
+
         # 2. API Endpoint: POST /v1/payments (Simulates uploading POS payments)
         if path == "/v1/payments":
             self.handle_post_payment()
@@ -1210,7 +1241,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         if path == "/v1/requests/complete":
             self.handle_post_request_complete_payload()
             return
-            
+
         if path.startswith("/v1/requests/") and path.endswith("/complete"):
             parts = path.split("/")
             if len(parts) >= 5:
@@ -1281,7 +1312,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             self.handle_get_sync_status()
         except Exception as e:
             self._send_error_json(500, f"Sync retry error: {str(e)}")
-    
+
     def handle_get_menu(self):
         try:
             with closing(get_db_connection()) as conn:
@@ -1289,24 +1320,24 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 cursor = conn.cursor()
                 cursor.execute("SELECT * FROM menu_items")
                 rows = cursor.fetchall()
-                
+
                 menu = []
                 for row in rows:
                     row_keys = row.keys()
-                    
+
                     name_trans_raw = row["name_translations"] if "name_translations" in row_keys else "{}"
                     desc_trans_raw = row["description_translations"] if "description_translations" in row_keys else "{}"
-                    
+
                     try:
                         name_trans = json.loads(name_trans_raw) if name_trans_raw else {}
                     except Exception:
                         name_trans = {}
-                        
+
                     try:
                         desc_trans = json.loads(desc_trans_raw) if desc_trans_raw else {}
                     except Exception:
                         desc_trans = {}
-                        
+
                     menu.append({
                         "id": row["id"],
                         "name": row["name"],
@@ -1319,7 +1350,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "name_translations": name_trans,
                         "description_translations": desc_trans
                     })
-                
+
                 response_data = json.dumps(menu).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -1334,23 +1365,23 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             query_params = urllib.parse.parse_qs(parsed_path.query)
             table_number = query_params.get("table", [None])[0]
             token = query_params.get("token", [None])[0]
-            
+
             with closing(get_db_connection()) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                
+
                 if table_number and token:
                     # Find active session
                     cursor.execute("""
-                        SELECT created_at FROM table_sessions 
+                        SELECT created_at FROM table_sessions
                         WHERE table_number = ? AND session_token = ? AND is_active = 1
                     """, (table_number, token))
                     session_row = cursor.fetchone()
-                    
+
                     if session_row:
                         # Fetch orders for this table session using session_token directly
                         cursor.execute("""
-                            SELECT * FROM orders 
+                            SELECT * FROM orders
                             WHERE session_token = ?
                             ORDER BY created_at ASC
                         """, (token,))
@@ -1368,14 +1399,14 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     """)
                     order_rows = cursor.fetchall()
 
-                    
+
                 orders = []
                 for order_row in order_rows:
                     order_id = order_row["id"]
-                    
+
                     cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
                     item_rows = cursor.fetchall()
-                    
+
                     items = []
                     for item_row in item_rows:
                         db_item_id = item_row["id"]
@@ -1403,7 +1434,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             "notes": item_row["notes"] if "notes" in item_row.keys() else "",
                             "modifiers": item_mods
                         })
-                    
+
                     # Fetch payments for this order
                     cursor.execute("SELECT * FROM payments WHERE order_id = ?", (order_id,))
                     payment_rows = cursor.fetchall()
@@ -1416,7 +1447,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             "paymentMethod": p_row["payment_method"],
                             "createdAt": p_row["created_at"]
                         })
-                    
+
                     orders.append({
                         "id": order_row["id"],
                         "orderNumber": order_row["order_number"],
@@ -1427,7 +1458,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "items": items,
                         "payments": payments
                     })
-                    
+
                 response_data = json.dumps(orders).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -1439,13 +1470,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
     def handle_post_order(self):
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length)
-        
+
         try:
             order_data = json.loads(post_data.decode("utf-8"))
             if not web_ordering_enabled_for_payload(order_data):
                 self._send_error_json(403, "Web ordering is disabled for this store or branch.")
                 return
-            
+
             # Extract and sanitize fields
             table_number = clean_string(
                 order_data.get("tableNumber") or order_data.get("table_number") or "1",
@@ -1469,7 +1500,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             guest_count = max(1, min(guest_count, 100))
             if not isinstance(items, list) or not items:
                 raise ValueError("Order must contain at least one item.")
-            
+
             # Generate clean invoice number (e.g. ORD-6401)
             order_number = clean_string(
                 order_data.get("orderNumber") or order_data.get("order_number") or f"ORD-{str(uuid.uuid4().int)[:4]}",
@@ -1479,27 +1510,27 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 pattern=r"[A-Za-z0-9_-]+",
             )
             created_at_str = get_utc_now_iso()
-            
+
             with closing(get_db_connection()) as conn:
                 with conn:
                     cursor = conn.cursor()
-                    
+
                     # Recalculate and validate prices on the server side
                     computed_subtotal = 0.0
                     verified_items = []
-                    
+
                     for item in items:
                         if not isinstance(item, dict):
                             raise ValueError("Each order item must be an object.")
                         menu_item_id = item.get("item_id") or item.get("id")
                         menu_item_id = clean_string(menu_item_id, "item_id", 50, required=True, pattern=r"[A-Za-z0-9_-]+")
-                        
+
                         try:
                             qty = int(item.get("quantity") or item.get("qty", 1))
                         except (TypeError, ValueError):
                             raise ValueError("quantity must be an integer.")
                         qty = max(1, min(qty, 99))  # Clamp quantity
-                        
+
                         # Fetch menu data from local DB strictly
                         base_price = 0.0
                         menu_item_name = "Unknown Dish"
@@ -1510,20 +1541,20 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             base_price = float(row[1])
                         else:
                             raise ValueError(f"Menu item '{menu_item_id}' not found in database.")
-                        
+
                         # Fetch modifiers prices
                         item_modifiers = item.get("modifiers", [])
                         if not isinstance(item_modifiers, list) or len(item_modifiers) > 30:
                             raise ValueError("Invalid modifier list.")
                         verified_modifiers = []
                         modifier_price_sum = 0.0
-                        
+
                         for mod in item_modifiers:
                             if not isinstance(mod, dict):
                                 raise ValueError("Each modifier must be an object.")
                             mod_id = mod.get("modifier_id") or mod.get("id")
                             mod_id = clean_string(mod_id, "modifier_id", 50, required=True, pattern=r"[A-Za-z0-9_-]+")
-                            
+
                             mod_price = 0.0
                             cursor.execute("SELECT extra_price FROM modifiers WHERE id = ? AND is_available = 1", (mod_id,))
                             mod_row = cursor.fetchone()
@@ -1539,17 +1570,17 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                                     mod_price = float(mod_row2[0])
                                 else:
                                     raise ValueError(f"Modifier '{mod_id}' not found or unavailable in database.")
-                            
+
                             modifier_price_sum += mod_price
                             verified_modifiers.append({
                                 "id": clean_string(mod.get("id") or str(uuid.uuid4()), "modifier_row_id", 50, required=True, pattern=r"[A-Za-z0-9_-]+"),
                                 "modifier_id": mod_id,
                                 "price": mod_price
                             })
-                        
+
                         computed_item_price = base_price + modifier_price_sum
                         computed_subtotal += computed_item_price * qty
-                        
+
                         verified_items.append({
                             "id": clean_string(item.get("id") or str(uuid.uuid4()), "order_item_id", 50, required=True, pattern=r"[A-Za-z0-9_-]+"),
                             "item_id": menu_item_id,
@@ -1559,17 +1590,17 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             "status": clean_string(item.get("status") or "cooking", "item_status", 20, required=True),
                             "modifiers": verified_modifiers
                         })
-                    
+
                     # Recalculate totals
                     computed_total = calculate_order_total(computed_subtotal)
                     if abs(total_client - computed_total) > 0.05:
                         raise ValueError(
                             f"Order total mismatch. Client sent {total_client:.2f}, server calculated {computed_total:.2f}."
                         )
-                    
+
                     total = computed_total
                     items = verified_items
-                    
+
                     # Check if there is an active session for this table
                     cursor.execute("SELECT session_token FROM table_sessions WHERE table_number = ? AND is_active = 1", (table_number,))
                     session_row = cursor.fetchone()
@@ -1578,7 +1609,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         session_token = str(uuid.uuid4())
                         session_id = str(uuid.uuid4())
                         sess_created_at = (datetime.utcnow() - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
-                        
+
                         cursor.execute('''
                             INSERT INTO table_sessions (id, table_number, session_token, is_active, created_at, guest_count, merchant_id)
                             VALUES (?, ?, ?, 1, ?, ?, ?)
@@ -1587,20 +1618,20 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             UPDATE restaurant_tables SET status = 'occupied' WHERE table_number = ? AND merchant_id = ?
                         ''', (table_number, MERCHANT_ID))
                         print(f"Server API [Order Auto-Session]: Opened active session for Table {table_number} (Token: {session_token[:8]}...)")
-                    
+
                     # Check if order already exists
                     cursor.execute("SELECT id FROM orders WHERE id = ?", (order_id,))
                     exists = cursor.fetchone()
-                    
+
                     if exists:
                         # Update Order
                         updated_at_str = get_utc_now_iso()
                         cursor.execute('''
-                            UPDATE orders 
+                            UPDATE orders
                             SET status = ?, total = ?, updated_at = ?, session_token = COALESCE(?, session_token), guest_count = ?, is_synced = 0
                             WHERE id = ?
                         ''', (status, total, updated_at_str, session_token, guest_count, order_id))
-                        
+
                         # Upsert Order Items
                         for item in items:
                             client_id = item.get("id")
@@ -1610,20 +1641,20 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             price = item.get("price")
                             item_status = item.get("status")
                             notes = clean_string(item.get("notes") or "", "notes", 500)
-                            
+
                             # Look for existing item *only* within this specific order
                             item_exists = None
                             if client_id:
                                 cursor.execute("SELECT id FROM order_items WHERE (id = ? OR item_id = ?) AND order_id = ?", (client_id, client_id, order_id))
                                 item_exists = cursor.fetchone()
-                            
+
                             if not item_exists and menu_item_id:
                                 cursor.execute("SELECT id FROM order_items WHERE item_id = ? AND order_id = ?", (menu_item_id, order_id))
                                 item_exists = cursor.fetchone()
-                                
+
                             if item_exists:
                                 cursor.execute('''
-                                    UPDATE order_items 
+                                    UPDATE order_items
                                     SET quantity = ?, price = ?, status = ?, notes = ?
                                     WHERE id = ?
                                 ''', (qty, price, item_status, notes, item_exists[0]))
@@ -1635,7 +1666,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 ''', (new_item_id, order_id, name, qty, price, item_status, menu_item_id, MERCHANT_ID, notes))
                                 db_id = new_item_id
-                                
+
                             # Delete and recreate modifiers for this item
                             cursor.execute("DELETE FROM order_item_modifiers WHERE order_item_id = ?", (db_id,))
                             item_modifiers = item.get("modifiers", [])
@@ -1655,7 +1686,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             INSERT INTO orders (id, order_number, table_number, total, status, created_at, updated_at, session_token, guest_count, merchant_id, is_synced)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (order_id, order_number, table_number, total, status, created_at_str, updated_at_str, session_token, guest_count, MERCHANT_ID, 0))
-                        
+
                         # Insert Order Items
                         for item in items:
                             client_id = item.get("id")
@@ -1665,13 +1696,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             price = item.get("price")
                             item_status = item.get("status")
                             notes = item.get("notes")
-                            
+
                             db_id = client_id or str(uuid.uuid4())
                             cursor.execute('''
                                 INSERT INTO order_items (id, order_id, item_name, quantity, price, status, item_id, merchant_id, notes)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ''', (db_id, order_id, name, qty, price, item_status, menu_item_id, MERCHANT_ID, notes))
-                            
+
                             # Insert Order Item Modifiers
                             item_modifiers = item.get("modifiers", [])
                             for mod in item_modifiers:
@@ -1683,7 +1714,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                                         INSERT INTO order_item_modifiers (id, order_item_id, modifier_id, price, merchant_id)
                                         VALUES (?, ?, ?, ?, ?)
                                     ''', (mod_db_id, db_id, mod_id, mod_price, MERCHANT_ID))
-            
+
             # Best-effort dual-write to Supabase (so POS apps can see this order)
             supabase_order = {
                 "id": order_id,
@@ -1727,7 +1758,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             if items_synced:
                 for item in items:
                     item_id_db = item.get("id")
-                
+
                     # Dual-write modifiers to Supabase only after base items are visible.
                     item_modifiers = item.get("modifiers", [])
                     for mod in item_modifiers:
@@ -1742,7 +1773,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                                 "merchant_id": MERCHANT_ID
                             }
                             supabase_post("order_item_modifiers", supabase_mod)
-            
+
             # Response success
             response = {
                 "success": True,
@@ -1751,13 +1782,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 "total": round(total, 2),
                 "message": "Order successfully created/updated."
             }
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(response).encode("utf-8"))
             log_event("info", "order.saved", order_number=order_number, table_number=table_number, total=round(total, 2), status=status)
-            
+
         except Exception as e:
             log_event("warning", "order.rejected", str(e))
             self._send_error_json(400, f"Invalid order payload: {str(e)}")
@@ -1772,7 +1803,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             amount = parse_positive_float(pay_data.get("amount", 0.0), "amount", max_value=1_000_000.0)
             method = clean_string(pay_data.get("payment_method") or pay_data.get("method") or "Cash", "payment_method", 40, required=True)
             created_at = get_utc_now_iso()
-            
+
             # Normalise method to match iPad display strings
             if method.lower() == "cash":
                 method = "Cash"
@@ -1780,7 +1811,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 method = "QR PromptPay"
             elif method.lower() in ("card", "credit card", "credit_card"):
                 method = "Credit Card"
-                
+
             with closing(get_db_connection()) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT total FROM orders WHERE id = ?", (order_id,))
@@ -1796,7 +1827,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     VALUES (?, ?, ?, ?, ?, ?)
                 ''', (pay_id, order_id, amount, method, created_at, MERCHANT_ID))
                 conn.commit()
-            
+
             # Best-effort dual-write to Supabase
             supabase_post("payments", {
                 "id": pay_id,
@@ -1807,7 +1838,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 "status": "completed",
                 "merchant_id": MERCHANT_ID
             })
-            
+
             log_event("info", "payment.saved", order_id=order_id, amount=amount, method=method)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1881,7 +1912,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 else:
                     cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1")
                 rows = cursor.fetchall()
-                
+
                 sessions = []
                 for row in rows:
                     sessions.append({
@@ -1891,7 +1922,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "createdAt": row["created_at"],
                         "guestCount": row["guest_count"]
                     })
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -1912,10 +1943,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             if not table_number:
                 self.send_error(400, "table_number is required")
                 return
-            
+
             with closing(get_db_connection()) as conn:
                 cursor = conn.cursor()
-                
+
                 # Check if there is an active session
                 cursor.execute("SELECT session_token FROM table_sessions WHERE table_number = ? AND is_active = 1", (table_number,))
                 row = cursor.fetchone()
@@ -1933,7 +1964,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         UPDATE restaurant_tables SET status = 'occupied' WHERE table_number = ? AND merchant_id = ?
                     ''', (table_number, MERCHANT_ID))
                     conn.commit()
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -1955,13 +1986,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             if not table_number:
                 self.send_error(400, "table_number is required")
                 return
-            
+
             with closing(get_db_connection()) as conn:
                 cursor = conn.cursor()
-                
+
                 ended_at = get_utc_now_iso()
                 cursor.execute('''
-                    UPDATE table_sessions 
+                    UPDATE table_sessions
                     SET is_active = 0, ended_at = ?
                     WHERE table_number = ? AND is_active = 1
                 ''', (ended_at, table_number))
@@ -1969,7 +2000,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     UPDATE restaurant_tables SET status = 'vacant' WHERE table_number = ? AND merchant_id = ?
                 ''', (table_number, MERCHANT_ID))
                 conn.commit()
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -1991,10 +2022,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             if not table_number or not request_type:
                 self.send_error(400, "table_number and request_type are required")
                 return
-            
+
             req_id = str(uuid.uuid4())
             created_at = get_utc_now_iso()
-            
+
             with closing(get_db_connection()) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
@@ -2002,7 +2033,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     VALUES (?, ?, ?, 'pending', ?, ?)
                 ''', (req_id, table_number, request_type, created_at, MERCHANT_ID))
                 conn.commit()
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -2018,7 +2049,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 cursor = conn.cursor()
                 cursor.execute("SELECT * FROM service_requests WHERE status = 'pending' ORDER BY created_at ASC")
                 rows = cursor.fetchall()
-                
+
                 reqs = []
                 for row in rows:
                     reqs.append({
@@ -2028,7 +2059,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "status": row["status"],
                         "createdAt": row["created_at"]
                     })
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -2055,7 +2086,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 cursor = conn.cursor()
                 cursor.execute("UPDATE service_requests SET status = 'completed' WHERE id = ?", (req_id,))
                 conn.commit()
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -2073,27 +2104,27 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             if not order_item_id:
                 self.send_error(400, "order_item_id is required")
                 return
-            
+
             with closing(get_db_connection()) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                
+
                 # Find the item's order_id and pricing details to recalculate total
                 cursor.execute("SELECT order_id, price, quantity FROM order_items WHERE id = ?", (order_item_id,))
                 row = cursor.fetchone()
                 if not row:
                     self.send_error(404, "Order item not found")
                     return
-                
+
                 order_id = row["order_id"]
-                
+
                 # Delete order item
                 cursor.execute("DELETE FROM order_items WHERE id = ?", (order_item_id,))
-                
+
                 # Recalculate order total from remaining line subtotals.
                 cursor.execute("SELECT SUM(price * quantity) FROM order_items WHERE order_id = ?", (order_id,))
                 remaining_subtotal = cursor.fetchone()[0] or 0.0
-                
+
                 if remaining_subtotal == 0:
                     # No items left, delete the order entirely
                     cursor.execute("DELETE FROM orders WHERE id = ?", (order_id,))
@@ -2104,7 +2135,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     cursor.execute("UPDATE orders SET total = ? WHERE id = ?", (new_total, order_id))
                     conn.commit()
                     print(f"Server API [Order Item]: Deleted order item {order_item_id}. Updated Order {order_id} total to {new_total:.2f}")
-                
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -2126,7 +2157,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 {"tableNumber": "203", "capacity": 6, "floor": 2},
                 {"tableNumber": "301 (ROOF)", "capacity": 8, "floor": 3}
             ]
-            
+
             with closing(get_db_connection()) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
@@ -2135,13 +2166,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 else:
                     cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1")
                 active_sessions = {row["table_number"]: dict(row) for row in cursor.fetchall()}
-                
+
                 table_totals = {}
                 for table_num, sess in active_sessions.items():
                     cursor.execute("SELECT SUM(total) FROM orders WHERE table_number = ? AND created_at >= ?", (table_num, sess["created_at"]))
                     total = cursor.fetchone()[0] or 0.0
                     table_totals[table_num] = total
-            
+
             tables = []
             for t in static_tables:
                 num = t["tableNumber"]
@@ -2150,13 +2181,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 guest_count = 0
                 session_token = None
                 total = 0.0
-                
+
                 if session:
                     status = "occupied"
                     guest_count = session.get("guest_count", 2)
                     session_token = session["session_token"]
                     total = table_totals.get(num, 0.0)
-                
+
                 tables.append({
                     "tableNumber": num,
                     "capacity": t["capacity"],
@@ -2166,7 +2197,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     "sessionToken": session_token,
                     "currentTotal": total
                 })
-                
+
             response_data = json.dumps(tables).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2189,20 +2220,20 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 {"tableNumber": "203", "capacity": 6, "floor": 2},
                 {"tableNumber": "301 (ROOF)", "capacity": 8, "floor": 3}
             ]
-            
+
             with closing(get_db_connection()) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                
+
                 cursor.execute("SELECT * FROM table_sessions WHERE is_active = 1")
                 active_sessions = {row["table_number"]: dict(row) for row in cursor.fetchall()}
-                
+
                 table_totals = {}
                 for table_num, sess in active_sessions.items():
                     cursor.execute("SELECT SUM(total) FROM orders WHERE table_number = ? AND created_at >= ?", (table_num, sess["created_at"]))
                     total = cursor.fetchone()[0] or 0.0
                     table_totals[table_num] = total
-                
+
                 tables = []
                 for t in static_tables:
                     num = t["tableNumber"]
@@ -2211,13 +2242,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     guest_count = 0
                     session_token = None
                     total = 0.0
-                    
+
                     if session:
                         status = "occupied"
                         guest_count = session.get("guest_count", 2)
                         session_token = session["session_token"]
                         total = table_totals.get(num, 0.0)
-                    
+
                     tables.append({
                         "tableNumber": num,
                         "capacity": t["capacity"],
@@ -2227,10 +2258,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "sessionToken": session_token,
                         "currentTotal": total
                     })
-                    
+
                 cursor.execute("SELECT * FROM service_requests WHERE status = 'pending' ORDER BY created_at ASC")
                 req_rows = cursor.fetchall()
-                
+
                 requests = []
                 for row in req_rows:
                     requests.append({
@@ -2240,18 +2271,18 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "status": row["status"],
                         "createdAt": row["created_at"]
                     })
-                    
+
                 # Query active/preparing/ready orders
                 cursor.execute("SELECT * FROM orders WHERE status IN ('preparing', 'ready') ORDER BY created_at DESC")
                 order_rows = cursor.fetchall()
-                
+
                 orders = []
                 for order_row in order_rows:
                     order_id = order_row["id"]
-                    
+
                     cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
                     item_rows = cursor.fetchall()
-                    
+
                     items = []
                     for item_row in item_rows:
                         items.append({
@@ -2262,7 +2293,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             "status": item_row["status"],
                             "item_id": item_row["item_id"]
                         })
-                    
+
                     # Fetch payments for this order
                     cursor.execute("SELECT * FROM payments WHERE order_id = ?", (order_id,))
                     payment_rows = cursor.fetchall()
@@ -2275,7 +2306,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             "paymentMethod": p_row["payment_method"],
                             "createdAt": p_row["created_at"]
                         })
-                    
+
                     orders.append({
                         "id": order_row["id"],
                         "orderNumber": order_row["order_number"],
@@ -2286,13 +2317,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "items": items,
                         "payments": payments
                     })
-            
+
             sync_data = {
                 "tables": tables,
                 "requests": requests,
                 "orders": orders
             }
-            
+
             response_data = json.dumps(sync_data).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2308,7 +2339,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 cursor = conn.cursor()
                 cursor.execute("SELECT * FROM employees")
                 rows = cursor.fetchall()
-                
+
                 employees = []
                 for row in rows:
                     employees.append({
@@ -2322,7 +2353,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "username": row["username"],
                         "role": row["role"]
                     })
-            
+
             response_data = json.dumps(employees).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2338,7 +2369,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             data = json.loads(post_data.decode("utf-8"))
             employee_id = data.get("employee_id") or data.get("employeeId")
             pin_digits = data.get("pin_digits") or data.get("pinDigits")
-            
+
             if not employee_id or not pin_digits:
                 self.send_error(400, "Missing employee_id or pin_digits")
                 return
@@ -2361,13 +2392,8 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 
             # Always use constant-time comparison to prevent timing attacks
             if row:
-                stored_hash = (row[0] or "").encode("utf-8")
-                if len(pin_digits) == 4:
-                    input_hash = sha256_hash(pin_digits).encode("utf-8")
-                else:
-                    input_hash = pin_digits.encode("utf-8")
-                
-                if hmac.compare_digest(input_hash, stored_hash):
+                stored_hash = row[0] or ""
+                if verify_pin(pin_digits, stored_hash):
                     # Clear attempts on success
                     self._pin_attempts.pop(employee_id, None)
                     self._send_json_response(200, {"verified": True})
@@ -2425,7 +2451,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         return
             except Exception as local_ex:
                 print(f"Error querying local merchants: {local_ex}")
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -2445,17 +2471,17 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             parsed_path = urllib.parse.urlparse(self.path)
             query_params = urllib.parse.parse_qs(parsed_path.query)
             employee_id = query_params.get("employee_id", [None])[0]
-            
+
             with closing(get_db_connection()) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                
+
                 if employee_id:
                     cursor.execute("SELECT * FROM timecards WHERE employee_id = ? ORDER BY clock_in DESC", (employee_id,))
                 else:
                     cursor.execute("SELECT * FROM timecards ORDER BY clock_in DESC")
                 rows = cursor.fetchall()
-                
+
                 timecards = []
                 for row in rows:
                     timecards.append({
@@ -2471,7 +2497,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "clockInFaceConfidence": row["clock_in_confidence"],
                         "clockOutFaceConfidence": row["clock_out_confidence"]
                     })
-            
+
             response_data = json.dumps(timecards).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2490,7 +2516,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             employee_id = data.get("employee_id") or data.get("employeeId")
             clock_in = data.get("clock_in") or data.get("clockIn")
             clock_out = data.get("clock_out") or data.get("clockOut")
-            
+
             if isinstance(clock_in, str):
                 try:
                     clock_in = datetime.fromisoformat(clock_in.replace("Z", "+00:00")).timestamp()
@@ -2498,7 +2524,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     clock_in = datetime.now().timestamp()
             elif clock_in is None:
                 clock_in = datetime.now().timestamp()
-                
+
             if isinstance(clock_out, str):
                 try:
                     clock_out = datetime.fromisoformat(clock_out.replace("Z", "+00:00")).timestamp()
@@ -2539,7 +2565,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         INSERT INTO timecards (id, employee_id, employee_name, clock_in, clock_out, break_duration, overtime_minutes, status, notes, clock_in_confidence, clock_out_confidence)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (tc_id, employee_id, employee_name, clock_in, clock_out, break_duration, overtime_minutes, status, notes, clock_in_confidence, clock_out_confidence))
-                
+
                 conn.commit()
 
             self.send_response(200)
@@ -2559,14 +2585,14 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     sync_promotions_from_supabase(conn)
             except Exception as e:
                 print(f"Server API [Promotion]: Skipped sync during fetch: {str(e)}")
-            
+
             # Fetch active, non-deleted promotions from local SQLite
             with closing(get_db_connection()) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute("SELECT id, title, promo_description, image_data, media_type, is_active, is_deleted, updated_at FROM promotions WHERE is_active = 1 AND is_deleted = 0 ORDER BY updated_at DESC")
                 rows = cursor.fetchall()
-                
+
                 promotions = []
                 for row in rows:
                     promotions.append({
@@ -2579,7 +2605,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "isDeleted": bool(row["is_deleted"]),
                         "updatedAt": row["updated_at"]
                     })
-            
+
             response_data = json.dumps(promotions).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2601,11 +2627,11 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             is_active = promo_data.get("isActive") if promo_data.get("isActive") is not None else True
             is_deleted = promo_data.get("isDeleted") if promo_data.get("isDeleted") is not None else False
             updated_at = promo_data.get("updatedAt") or promo_data.get("updated_at") or get_utc_now_iso()
-            
+
             if not promo_id or not title:
                 self.send_error(400, "id and title are required")
                 return
-            
+
             payload = {
                 "id": promo_id,
                 "title": title,
@@ -2617,7 +2643,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 "updated_at": updated_at,
                 "merchant_id": MERCHANT_ID
             }
-            
+
             # Save to SQLite local DB cache first
             with closing(get_db_connection()) as conn:
                 cursor = conn.cursor()
@@ -2635,15 +2661,15 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
                 conn.commit()
-            
+
             success, _ = supabase_request("POST", "promotions", payload, {"on_conflict": "id"})
-            
+
             if not success:
                 # Try PATCH if upsert fails
                 success, _ = supabase_request("PATCH", "promotions", payload, {"id": f"eq.{promo_id}"})
-            
+
             print(f"Server API [Promotion]: Saved/Updated promotion: {title} (ID: {promo_id})")
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -2660,7 +2686,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             if not promo_id:
                 self.send_error(400, "id is required")
                 return
-            
+
             # Soft-delete on local SQLite database first
             with closing(get_db_connection()) as conn:
                 cursor = conn.cursor()
@@ -2669,16 +2695,16 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     (get_utc_now_iso(), promo_id)
                 )
                 conn.commit()
-            
+
             # Soft-delete on Supabase (matching Staff app behavior)
             payload = {
                 "is_deleted": 1,
                 "updated_at": get_utc_now_iso()
             }
             success, _ = supabase_request("PATCH", "promotions", payload, {"id": f"eq.{promo_id}"})
-            
+
             print(f"Server API [Promotion]: Soft-deleted promotion ID: {promo_id}")
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -2692,25 +2718,25 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             with closing(get_db_connection()) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                
+
                 # 1. Fetch groups
                 cursor.execute("SELECT id, name, min_selection, max_selection, merchant_id FROM modifier_groups")
                 groups = [dict(r) for r in cursor.fetchall()]
-                
+
                 # 2. Fetch modifiers
                 cursor.execute("SELECT id, modifier_group_id, name, extra_price, is_available, merchant_id FROM modifiers")
                 mods = [dict(r) for r in cursor.fetchall()]
-                
+
                 # 3. Fetch links
                 cursor.execute("SELECT menu_item_id, modifier_group_id, merchant_id FROM menu_item_modifier_groups")
                 links = [dict(r) for r in cursor.fetchall()]
-            
+
             response_data = json.dumps({
                 "groups": groups,
                 "modifiers": mods,
                 "links": links
             }).encode("utf-8")
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", self._get_allowed_origin())
@@ -2761,26 +2787,26 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
     def handle_static_files(self, path):
         if path == "/":
             path = "/index.html"
-            
+
         # Strip leading slash to get relative file path
         file_path = path.lstrip("/")
-        
+
         # Security: Prevent escaping web folder
         if ".." in file_path or file_path.startswith("/"):
             self.send_error(403, "Access Denied")
             return
-        
+
         # Security: Block sensitive files
         blocked_extensions = (".db", ".sqlite", ".sql", ".env", ".plist", ".json", ".yaml", ".yml")
         blocked_names = (".env", ".git", ".htaccess", ".gitignore", "config.json")
         if file_path.endswith(blocked_extensions) or file_path.startswith(".") or file_path in blocked_names:
             self.send_error(403, "Access Denied")
             return
-            
+
         if not os.path.exists(file_path):
             self.send_error(404, "File Not Found")
             return
-            
+
         # Determine mime type
         mime_type = "text/plain"
         if file_path.endswith(".html"): mime_type = "text/html"
@@ -2789,11 +2815,11 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         elif file_path.endswith(".png"): mime_type = "image/png"
         elif file_path.endswith(".jpg") or file_path.endswith(".jpeg"): mime_type = "image/jpeg"
         elif file_path.endswith(".ico"): mime_type = "image/x-icon"
-        
+
         try:
             with open(file_path, "rb") as f:
                 content = f.read()
-                
+
             self.send_response(200)
             self.send_header("Content-Type", mime_type)
             self.end_headers()

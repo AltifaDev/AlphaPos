@@ -24,6 +24,16 @@ extension SyncEngine {
             __desclocalCategories.fetchLimit = 500  // N3: prevent OOM
             let localCategories = (try? modelContext.fetch(__desclocalCategories)) ?? []
 
+            // Deduplicate: If any local menu item has the same name but a different ID, delete it.
+            for remote in remoteItems {
+                guard let idString = remote["id"] as? String,
+                      let name = remote["name"] as? String else { continue }
+                if let conflict = localItems.first(where: { $0.id.lowercased() != idString.lowercased() && $0.name.lowercased() == name.lowercased() }) {
+                    modelContext.delete(conflict)
+                }
+            }
+            try? modelContext.save()
+
             var localItemsById: [String: MenuItem] = [:]
             for item in localItems {
                 localItemsById[item.id.lowercased()] = item
@@ -51,15 +61,15 @@ extension SyncEngine {
                       let idString = remote["id"] as? String else { continue }
 
                 let desc = remote["description"] as? String ?? ""
-                let categorySlug = remote["category"] as? String ?? "mains"
+                let categorySlug = (remote["category"] as? String ?? "mains").lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
                 let imageUrl = remote["image_url"] as? String ?? ""
                 let imageUrl2 = remote["image_url_2"] as? String ?? ""
                 let imageUrl3 = remote["image_url_3"] as? String ?? ""
                 let videoUrl = remote["video_url"] as? String ?? ""
-                
+
                 let nameTrans = remote["name_translations"] as? [String: String] ?? [:]
                 let descTrans = remote["description_translations"] as? [String: String] ?? [:]
-                
+
                 let encoder = JSONEncoder()
                 let nameTransJson = (try? String(data: encoder.encode(nameTrans), encoding: .utf8)) ?? "{}"
                 let descTransJson = (try? String(data: encoder.encode(descTrans), encoding: .utf8)) ?? "{}"
@@ -74,7 +84,7 @@ extension SyncEngine {
                     switch categorySlug {
                     case "mains": catName = "Main Dishes"
                     case "appetizers": catName = "Appetizers"
-                    case "drinks": catName = "Beverages"
+                    case "drinks", "beverages": catName = "Beverages"
                     case "desserts": catName = "Desserts"
                     default: catName = categorySlug.capitalized
                     }

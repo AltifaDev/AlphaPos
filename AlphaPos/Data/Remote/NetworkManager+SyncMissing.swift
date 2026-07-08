@@ -40,7 +40,7 @@ extension NetworkManager {
             "vat_amount": expense.vatAmount,
             "payment_method": expense.paymentMethod,
             "status": expense.status,
-            "is_cap_ex": expense.isCapEx,
+            "is_capex": expense.isCapEx,
             "date": NetworkManager.iso8601.string(from: expense.date),
             "is_deleted": expense.isDeleted,
             "updated_at": NetworkManager.iso8601.string(from: expense.updatedAt)
@@ -264,14 +264,29 @@ extension NetworkManager {
         try await fetchMasterData(endpoint: "roles")
     }
 
+    func fetchRolePermissionsFromSupabase() async throws -> [[String: Any]] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let data = try await sendSupabaseRequest(
+            method: "GET",
+            endpoint: "role_permissions",
+            queryItems: [
+                URLQueryItem(name: "select", value: "*"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)")
+            ]
+        )
+        guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw NetworkError.invalidResponse
+        }
+        return jsonArray
+    }
+
     func uploadRole(_ role: Role) async throws -> Bool {
         let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
         let payload: [String: Any] = [
             "id": role.id.uuidString.lowercased(),
             "merchant_id": merchantId,
             "name": role.name,
-            "role_description": role.roleDescription ?? "",
-            "permission_keys": role.permissionKeys,
+            "description": role.roleDescription ?? "",
             "is_deleted": role.isDeleted,
             "updated_at": NetworkManager.iso8601.string(from: role.updatedAt)
         ]
@@ -301,7 +316,10 @@ extension NetworkManager {
         ]
         if let email = user.email { payload["email"] = email }
         if let pinHash = user.pinCodeHash { payload["pin_code_hash"] = pinHash }
-        if let roleId = user.role?.id { payload["role_id"] = roleId.uuidString.lowercased() }
+        if let role = user.role {
+            _ = try await uploadRole(role)
+            payload["role_id"] = role.id.uuidString.lowercased()
+        }
         return try await upsertMasterData(endpoint: "users", payload: payload)
     }
 

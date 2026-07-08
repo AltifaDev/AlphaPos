@@ -65,20 +65,17 @@ extension SyncEngine {
 
             // 1. Create a service request on the server to notify AlphaPos and AlphaPosStaff
             let alertType: String
-            let notificationBody: String
             if oldestDelayedOrder.status == "ready" {
                 alertType = "Delivery Alert: Table \(tableNum) (#\(orderNum)) has been ready but not delivered for over 10 minutes!"
-                notificationBody = "Table \(tableNum) (#\(orderNum)) has been ready but not delivered for over 10 minutes."
             } else {
                 alertType = "Cooking Alert: Table \(tableNum) (#\(orderNum)) has had items cooking for more than 10 minutes!"
-                notificationBody = "Table \(tableNum) (#\(orderNum)) has been cooking for over 10 minutes."
             }
 
             _ = try? await NetworkManager.shared.createServiceRequest(tableNumber: tableNum, type: alertType)
 
             // 2. แจ้งเตือนในแอป (แทนที่ UNUserNotificationCenter)
             let isReady = oldestDelayedOrder.status == "ready"
-            await InAppNotificationManager.shared.postCookingAlert(
+            InAppNotificationManager.shared.postCookingAlert(
                 tableNumber: tableNum,
                 orderNumber: orderNum,
                 isReady: isReady

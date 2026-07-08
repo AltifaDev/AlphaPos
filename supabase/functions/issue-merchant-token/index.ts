@@ -128,7 +128,14 @@ Deno.serve(async (req: Request) => {
       }
 
       const providedHash = await sha256Hex(device_secret);
-      if (providedHash !== merchant.device_secret_hash) {
+      const encoder = new TextEncoder();
+      const aBytes = encoder.encode(providedHash);
+      const bBytes = encoder.encode(merchant.device_secret_hash);
+
+      const isMatch = aBytes.byteLength === bBytes.byteLength &&
+                      crypto.subtle.timingSafeEqual(aBytes, bBytes);
+
+      if (!isMatch) {
         return new Response(
           JSON.stringify({ error: "Invalid device_secret" }),
           { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
@@ -156,6 +163,19 @@ Deno.serve(async (req: Request) => {
       },
       key,
     );
+
+    // ── Log login event into audit_logs (Login History) ───────────────
+    try {
+      const clientIp = req.headers.get("x-forwarded-for") || "unknown";
+      const userAgent = req.headers.get("user-agent") || "unknown";
+      await supabase.from("audit_logs").insert({
+        merchant_id: merchant_id,
+        action_type: "login_merchant",
+        details: `Merchant token issued. IP: ${clientIp}, Agent: ${userAgent}`,
+      });
+    } catch (logErr) {
+      console.error("Failed to write to audit_logs:", logErr);
+    }
 
     return new Response(
       JSON.stringify({

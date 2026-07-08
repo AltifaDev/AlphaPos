@@ -5,7 +5,7 @@ import SwiftData
 
 struct StoreManagementView: View {
     @Environment(\.modelContext) private var modelContext
-    
+
     // Store settings stored in UserDefaults
     @AppStorage("store_name") private var storeName = "AlphaPos Restaurant"
     @AppStorage("store_phone") private var storePhone = "02-123-4567"
@@ -22,29 +22,36 @@ struct StoreManagementView: View {
     @AppStorage("store_receipt_footer") private var storeReceiptFooter = "Thank you for dining with us!\nVAT Included."
     @AppStorage("store_logo_path") private var storeLogoPath = ""
     @AppStorage("promptpay_number") private var promptPayNumber = ""
-    
+    @AppStorage("allow_negative_stock") private var allowNegativeStock = false
+
     // QR Code Customizer settings
     @AppStorage("qr_custom_store_name") private var qrCustomStoreName = "AlphaPos Restaurant"
     @AppStorage("qr_custom_header") private var qrCustomHeader = "Scan to Order"
     @AppStorage("qr_custom_show_logo") private var qrCustomShowLogo = true
     @AppStorage("qr_custom_logo_preset") private var qrCustomLogoPreset = "bolt.fill"
     @AppStorage("qr_custom_color") private var qrCustomColor = "#111115"
-    
+
     @State private var logoItem: PhotosPickerItem? = nil
     @State private var logoImage: UIImage? = nil
-    
+
     @State private var activeTab: ConfigTab = .profile
     @EnvironmentObject private var lm: LocalizationManager
-    
+    // L-6: Multi-Branch
+    @Query(sort: \Branch.name) private var branches: [Branch]
+    @State private var showingAddBranch = false
+    @State private var branchToEdit: Branch? = nil
+
     enum ConfigTab: String, CaseIterable {
         case profile = "General Profile"
         case taxation = "Tax & Service Charge"
         case qrCustomizer = "QR Code Customizer"
+        case branches = "Branches"              // L-6
         var icon: String {
             switch self {
             case .profile: return "storefront.fill"
             case .taxation: return "percent"
             case .qrCustomizer: return "qrcode"
+            case .branches:     return "building.2.fill"
             }
         }
         var localizedName: String {
@@ -52,14 +59,15 @@ struct StoreManagementView: View {
             case .profile: return L.Store.tabProfile.t
             case .taxation: return L.Store.tabTax.t
             case .qrCustomizer: return L.Store.tabQR.t
+            case .branches:     return "store_branches_tab".t
             }
         }
     }
-    
+
     var body: some View {
         ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 HStack(spacing: 24) {
                     // LEFT COLUMN: Forms / Configuration
                     VStack(alignment: .leading, spacing: 20) {
@@ -90,7 +98,7 @@ struct StoreManagementView: View {
                             }
                         }
                         .padding(.horizontal)
-                        
+
                         ScrollView {
                             VStack(alignment: .leading, spacing: 24) {
                                 if activeTab == .profile {
@@ -98,17 +106,24 @@ struct StoreManagementView: View {
                                 } else if activeTab == .taxation {
                                     taxationForm
                                 } else {
-                                    qrCustomizerForm
+                                    if activeTab == .qrCustomizer {
+                                        qrCustomizerForm
+                                    } else {
+                                        // L-6: Branches tab
+                                        branchesTab
+                                    }
                                 }
                             }
                             .padding()
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    
+
                     // RIGHT COLUMN: Live Preview Panel (Receipt or QR Card)
                     if activeTab == .qrCustomizer {
                         qrCardPreviewPanel
+                    } else if activeTab == .branches {
+                        branchSummaryPanel
                     } else {
                         receiptPreviewPanel
                     }
@@ -120,8 +135,27 @@ struct StoreManagementView: View {
             .onAppear {
                 loadSavedLogo()
             }
+        // L-6: Branch sheets
+        .sheet(isPresented: $showingAddBranch) {
+            BranchEditSheet(branch: nil) { name, loc, phone in
+                let b = Branch(name: name, location: loc.isEmpty ? nil : loc, phone: phone.isEmpty ? nil : phone)
+                modelContext.insert(b)
+                modelContext.saveWithLogging(label: "StoreManagementView.addBranch")
+                Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+            }
+        }
+        .sheet(item: $branchToEdit) { branch in
+            BranchEditSheet(branch: branch) { name, loc, phone in
+                branch.name = name
+                branch.location = loc.isEmpty ? nil : loc
+                branch.phone = phone.isEmpty ? nil : phone
+                branch.isSynced = false; branch.updatedAt = Date()
+                modelContext.saveWithLogging(label: "StoreManagementView.editBranch")
+                Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+            }
+        }
     }
-    
+
     // MARK: - General Profile Form
     private var generalProfileForm: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -130,7 +164,7 @@ struct StoreManagementView: View {
                 .fontWeight(.bold)
                 .foregroundColor(.appAccent)
                 .tracking(1.0)
-            
+
             VStack(spacing: 16) {
                 // Logo Upload circle and buttons
                 HStack(spacing: 20) {
@@ -152,7 +186,7 @@ struct StoreManagementView: View {
                                 .foregroundColor(.textSecondary)
                         }
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 8) {
                         PhotosPicker(selection: $logoItem, matching: .images, photoLibrary: .shared()) {
                             Label(L.Store.selectLogo.t, systemImage: "photo.badge.plus")
@@ -169,7 +203,7 @@ struct StoreManagementView: View {
                                 loadSelectedLogo(from: newItem)
                             }
                         }
-                        
+
                         if logoImage != nil {
                             Button(action: {
                                 logoImage = nil
@@ -186,10 +220,10 @@ struct StoreManagementView: View {
                     Spacer()
                 }
                 .padding(.vertical, 4)
-                
+
                 Divider()
                     .background(Color.appDivider)
-                
+
                 // Fields
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Store.nameLabel.t)
@@ -204,7 +238,7 @@ struct StoreManagementView: View {
                         .cornerRadius(APRadius.md)
                         .onChange(of: storeName) { triggerSync() }
                 }
-                
+
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("store_phone".t)
@@ -219,7 +253,7 @@ struct StoreManagementView: View {
                             .cornerRadius(APRadius.md)
                             .onChange(of: storePhone) { triggerSync() }
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 6) {
                         Text(L.Store.websiteLabel.t)
                             .font(.caption)
@@ -234,7 +268,7 @@ struct StoreManagementView: View {
                             .onChange(of: storeWebsite) { triggerSync() }
                     }
                 }
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text("store_address".t)
                         .font(.caption)
@@ -248,7 +282,7 @@ struct StoreManagementView: View {
                         .cornerRadius(APRadius.md)
                         .onChange(of: storeAddress) { triggerSync() }
                 }
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text("promptpay_number_label".t)
                         .font(.caption)
@@ -264,9 +298,30 @@ struct StoreManagementView: View {
                 }
             }
             .apCard()
+
+            Text(lm.languageCode == "th" ? "การตั้งค่าระบบการขาย" : "Sales System Preferences")
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.appAccent)
+                .tracking(1.0)
+
+            VStack(spacing: 16) {
+                Toggle(isOn: $allowNegativeStock) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(lm.languageCode == "th" ? "อนุญาตให้ขายสินค้าติดลบ" : "Allow Negative Stock")
+                            .font(.body)
+                            .foregroundColor(.textPrimary)
+                        Text(lm.languageCode == "th" ? "อนุญาตให้ขายสินค้าและตัดสต็อกวัตถุดิบได้แม้จำนวนคงเหลือจะเป็น 0" : "Allows orders to proceed and inventory counts to drop below zero.")
+                            .font(.caption2)
+                            .foregroundColor(.textSecondary)
+                    }
+                }
+                .tint(.appAccent)
+            }
+            .apCard()
         }
     }
-    
+
     // MARK: - Taxation Form
     private var taxationForm: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -322,7 +377,7 @@ struct StoreManagementView: View {
                 RoundedRectangle(cornerRadius: 12)
                     .stroke(Color(hex: "6366F1").opacity(0.2), lineWidth: 1)
             )
-            
+
             VStack(spacing: 16) {
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
@@ -339,7 +394,7 @@ struct StoreManagementView: View {
                             .keyboardType(.numberPad)
                             .onChange(of: storeTaxId) { triggerSync() }
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 6) {
                         Text(L.Store.branchLabel.t)
                             .font(.caption)
@@ -354,15 +409,15 @@ struct StoreManagementView: View {
                             .onChange(of: storeBranchCode) { triggerSync() }
                     }
                 }
-                
+
                 Toggle("เปิดใช้งานภาษีมูลค่าเพิ่ม (VAT)", isOn: $enableTax)
                     .tint(.appAccent)
                     .onChange(of: enableTax) { triggerSync() }
-                
+
                 Toggle("เปิดใช้งานเซอร์วิสชาร์จ (Service Charge)", isOn: $enableServiceCharge)
                     .tint(.appAccent)
                     .onChange(of: enableServiceCharge) { triggerSync() }
-                
+
                 Divider()
                     .background(Color.appDivider)
 
@@ -380,7 +435,7 @@ struct StoreManagementView: View {
                         .onChange(of: storeTaxType) { triggerSync() }
                     }
                 }
-                
+
                 if enableTax || enableServiceCharge {
                     HStack(spacing: 16) {
                         if enableTax {
@@ -402,7 +457,7 @@ struct StoreManagementView: View {
                                 .onChange(of: storeTaxRate) { triggerSync() }
                             }
                         }
-                        
+
                         if enableServiceCharge {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("service_charge_percent".t)
@@ -424,10 +479,10 @@ struct StoreManagementView: View {
                         }
                     }
                 }
-                
+
                 Divider()
                     .background(Color.appDivider)
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text("receipt_header_message".t)
                         .font(.caption)
@@ -441,7 +496,7 @@ struct StoreManagementView: View {
                         .cornerRadius(APRadius.md)
                         .onChange(of: storeReceiptHeader) { triggerSync() }
                 }
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text("receipt_footer_message".t)
                         .font(.caption)
@@ -471,7 +526,7 @@ struct StoreManagementView: View {
             .apCard()
         }
     }
-    
+
     // MARK: - Receipt Preview Panel
     private var receiptPreviewPanel: some View {
         // ใช้ ReceiptLivePreview component เดียวกันกับ Receipt Templates
@@ -497,14 +552,14 @@ struct StoreManagementView: View {
             showOrderType:     true
         )
     }
-    
+
     // MARK: - Actions & Helpers
     private func triggerSync() {
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
     }
-    
+
     private func loadSelectedLogo(from item: PhotosPickerItem) {
         Task {
             if let data = try? await item.loadTransferable(type: Data.self),
@@ -520,7 +575,7 @@ struct StoreManagementView: View {
             }
         }
     }
-    
+
     private func resizeImage(_ image: UIImage, targetSize: CGSize) -> UIImage {
         let size = image.size
         let widthRatio  = targetSize.width  / size.width
@@ -533,7 +588,7 @@ struct StoreManagementView: View {
         UIGraphicsEndImageContext()
         return newImage ?? image
     }
-    
+
     private func saveImageToDocuments(_ image: UIImage) -> String? {
         guard let data = image.pngData() else { return nil }
         let fm = FileManager.default
@@ -547,7 +602,107 @@ struct StoreManagementView: View {
             return nil
         }
     }
-    
+
+    // MARK: - L-6: Branches Tab
+
+    @AppStorage("active_branch_id") private var activeBranchId = ""
+
+    private var branchesTab: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("store_branches_tab".t)
+                    .font(.caption.bold()).foregroundColor(.appAccent).tracking(0.8)
+                Spacer()
+                Button(action: { showingAddBranch = true }) {
+                    Label("add_branch_btn".t, systemImage: "plus.circle.fill")
+                        .font(.caption.bold()).foregroundColor(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(APGradient.accent).cornerRadius(10)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if branches.filter({ !$0.isDeleted }).isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "building.2").font(.system(size: 40)).foregroundColor(.textTertiary)
+                    Text("store_no_branches_hint".t).font(.subheadline).foregroundColor(.textSecondary)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 24)
+            } else {
+                ForEach(branches.filter { !$0.isDeleted }) { branch in
+                    branchRow(branch)
+                }
+            }
+        }
+    }
+
+    private func branchRow(_ branch: Branch) -> some View {
+        let isActive = activeBranchId == branch.id.uuidString
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(branch.name).font(.headline).foregroundColor(.textPrimary)
+                    if isActive {
+                        Text("store_active_badge".t)
+                            .font(.caption2.bold()).foregroundColor(.white)
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .background(Color.appTeal).cornerRadius(6)
+                    }
+                }
+                if let loc = branch.location, !loc.isEmpty {
+                    Text(loc).font(.caption).foregroundColor(.textSecondary)
+                }
+                if let phone = branch.phone, !phone.isEmpty {
+                    Text(phone).font(.caption2).foregroundColor(.textTertiary)
+                }
+            }
+            Spacer()
+            // Set active
+            if !isActive {
+                Button(action: { activeBranchId = branch.id.uuidString; APHaptic.trigger() }) {
+                    Text("branch_select_store_btn".t)
+                        .font(.caption.bold()).foregroundColor(.white)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Color.appTeal).cornerRadius(8)
+                }
+                .buttonStyle(.plain)
+            }
+            // Edit
+            Button(action: { branchToEdit = branch }) {
+                Image(systemName: "pencil.circle").font(.system(size: 18)).foregroundColor(.appAccent)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+        .background(isActive ? Color.appTeal.opacity(0.06) : Color.appSurface)
+        .cornerRadius(10)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(
+            isActive ? Color.appTeal.opacity(0.4) : Color.appBorderSubtle, lineWidth: 1))
+    }
+
+    private var branchSummaryPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("store_branch_summary_title".t)
+                .font(.caption.bold()).foregroundColor(.appAccent).tracking(0.8)
+            let activeBranches = branches.filter { !$0.isDeleted }
+            Text("\(activeBranches.count) " + "store_branch_count_unit".t)
+                .font(.title2.bold()).foregroundColor(.textPrimary)
+            if let active = activeBranches.first(where: { $0.id.uuidString == activeBranchId }) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("store_active_badge".t + ": " + active.name,
+                          systemImage: "checkmark.circle.fill")
+                        .font(.subheadline.bold()).foregroundColor(.appTeal)
+                    if let loc = active.location { Text(loc).font(.caption).foregroundColor(.textSecondary) }
+                    if let ph = active.phone  { Text(ph).font(.caption).foregroundColor(.textTertiary) }
+                }
+                .padding(12).background(Color.appTeal.opacity(0.06)).cornerRadius(10)
+            }
+            Spacer()
+        }
+        .padding(14).background(Color.appSurface).cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.appBorderSubtle, lineWidth: 1))
+    }
+
     private func loadSavedLogo() {
         if !storeLogoPath.isEmpty {
             let fm = FileManager.default
@@ -559,7 +714,7 @@ struct StoreManagementView: View {
             }
         }
     }
-    
+
     // MARK: - QR Code Customizer Form
     private var qrCustomizerForm: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -568,7 +723,7 @@ struct StoreManagementView: View {
                 .fontWeight(.bold)
                 .foregroundColor(.appAccent)
                 .tracking(1.0)
-            
+
             VStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Store.qrStoreNameLbl.t)
@@ -582,7 +737,7 @@ struct StoreManagementView: View {
                         .foregroundColor(.textPrimary)
                         .cornerRadius(APRadius.md)
                 }
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Store.qrHeaderLbl.t)
                         .font(.caption)
@@ -595,12 +750,12 @@ struct StoreManagementView: View {
                         .foregroundColor(.textPrimary)
                         .cornerRadius(APRadius.md)
                 }
-                
+
                 Toggle(L.Store.qrShowLogoToggle.t, isOn: $qrCustomShowLogo)
                     .tint(.appAccent)
                     .font(.subheadline)
                     .fontWeight(.medium)
-                
+
                 if qrCustomShowLogo {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(L.Store.qrLogoPresetLbl.t)
@@ -621,13 +776,13 @@ struct StoreManagementView: View {
                         .cornerRadius(APRadius.md)
                     }
                 }
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L.Store.qrThemeColorLbl.t)
                         .font(.caption)
                         .fontWeight(.bold)
                         .foregroundColor(.textSecondary)
-                    
+
                     HStack(spacing: 12) {
                         ForEach([
                             ("#111115", "Space"),
@@ -657,7 +812,7 @@ struct StoreManagementView: View {
             .apCard()
         }
     }
-    
+
     // MARK: - QR Preview Panel
     private var qrCardPreviewPanel: some View {
         VStack(spacing: 12) {
@@ -666,7 +821,7 @@ struct StoreManagementView: View {
                 .fontWeight(.bold)
                 .foregroundColor(.textSecondary)
                 .tracking(1.0)
-            
+
             VStack(spacing: 12) {
                 Text(qrCustomStoreName)
                     .font(.subheadline)
@@ -674,12 +829,12 @@ struct StoreManagementView: View {
                     .foregroundColor(.black)
                     .lineLimit(1)
                     .padding(.top, 4)
-                
+
                 Text(LocalizationManager.shared.t("pos_table_number") + " 15")
                     .font(.title2)
                     .fontWeight(.black)
                     .foregroundColor(Color(hex: qrCustomColor))
-                
+
                 if let qrImg = qrPreviewImage {
                     Image(uiImage: qrImg)
                         .resizable()
@@ -693,7 +848,7 @@ struct StoreManagementView: View {
                     ProgressView()
                         .frame(width: 176, height: 176)
                 }
-                
+
                 Text(qrCustomHeader)
                     .font(.caption)
                     .fontWeight(.semibold)
@@ -714,36 +869,94 @@ struct StoreManagementView: View {
                 .stroke(Color.appBorderSubtle, lineWidth: 1)
         )
     }
-    
+
     private var qrPreviewImage: UIImage? {
         let string = "https://alphapos.altifadev.workers.dev/?table=15&merchant=Preview"
         guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
         filter.setValue(string.data(using: .utf8), forKey: "inputMessage")
         filter.setValue("H", forKey: "inputCorrectionLevel")
-        
+
         guard let ciImage = filter.outputImage else { return nil }
-        
+
         let tintColor = UIColor(hex: qrCustomColor)
-        
+
         guard let colorFilter = CIFilter(name: "CIFalseColor") else { return nil }
         colorFilter.setValue(ciImage, forKey: kCIInputImageKey)
         colorFilter.setValue(CIColor(color: tintColor), forKey: "inputColor0")
         colorFilter.setValue(CIColor(red: 1, green: 1, blue: 1), forKey: "inputColor1")
-        
+
         guard let output = colorFilter.outputImage else { return nil }
-        
+
         let transform = CGAffineTransform(scaleX: 10, y: 10)
         let scaledOutput = output.transformed(by: transform)
-        
+
         let context = CIContext()
         guard let cgImage = context.createCGImage(scaledOutput, from: scaledOutput.extent) else { return nil }
-        
+
         let tintedImage = UIImage(cgImage: cgImage)
-        
+
         // Logo
         if qrCustomShowLogo {
             return tintedImage.overlayLogo(systemIconName: qrCustomLogoPreset, tintColor: tintColor)
         }
         return tintedImage
+    }
+}
+
+// MARK: - L-6: Branch Edit Sheet
+
+struct BranchEditSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var lm: LocalizationManager
+
+    let branch: Branch?          // nil = create new
+    let onSave: (String, String, String) -> Void
+
+    @State private var name: String
+    @State private var location: String
+    @State private var phone: String
+
+    init(branch: Branch?, onSave: @escaping (String, String, String) -> Void) {
+        self.branch = branch
+        self.onSave = onSave
+        _name     = State(initialValue: branch?.name ?? "")
+        _location = State(initialValue: branch?.location ?? "")
+        _phone    = State(initialValue: branch?.phone ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("branch_name_label".t) {
+                    TextField("branch_name_placeholder".t, text: $name)
+                }
+                Section("branch_address_label".t) {
+                    TextField("branch_address_placeholder".t, text: $location)
+                }
+                Section("branch_phone_label".t) {
+                    TextField("branch_phone_placeholder".t, text: $phone)
+                        .keyboardType(.phonePad)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Color.appBackground)
+            .navigationTitle(branch == nil ? "add_branch_btn".t : "store_edit_branch_title".t)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("cancel_btn".t) { dismiss() }.foregroundColor(.textSecondary)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("save_btn_label".t) {
+                        onSave(name, location, phone)
+                        dismiss()
+                    }
+                    .fontWeight(.bold)
+                    .foregroundColor(name.isEmpty ? .textTertiary : .appAccent)
+                    .disabled(name.isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }

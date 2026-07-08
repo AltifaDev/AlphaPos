@@ -21,7 +21,7 @@ struct EmployeeTimecardView: View {
                     return false
                 }
             }
-            
+
             let isActive = recentTimecards.contains { $0.employee?.id == employee.id && $0.clockOut == nil }
             if viewModel.employeeFilterStatus == 1 && !isActive {
                 return false
@@ -29,7 +29,7 @@ struct EmployeeTimecardView: View {
             if viewModel.employeeFilterStatus == 2 && isActive {
                 return false
             }
-            
+
             return true
         }
     }
@@ -43,18 +43,18 @@ struct EmployeeTimecardView: View {
                     return false
                 }
             }
-            
+
             if viewModel.timecardFilterStatus == 1 && card.status != "approved" {
                 return false
             }
             if viewModel.timecardFilterStatus == 2 && card.status == "approved" {
                 return false
             }
-            
+
             if let filterDate = viewModel.timecardFilterDate {
                 return Calendar.current.isDate(card.clockIn, inSameDayAs: filterDate)
             }
-            
+
             return true
         }
     }
@@ -73,7 +73,7 @@ struct EmployeeTimecardView: View {
                     timecardLogPanel
                 }
             }
-            
+
             if viewModel.showingScanner, let emp = viewModel.selectedEmployee {
                 Color.black.opacity(0.45)
                     .ignoresSafeArea()
@@ -83,8 +83,8 @@ struct EmployeeTimecardView: View {
                         }
                     }
                     .transition(.opacity)
-                
-                BiometricFaceScannerSimulator(
+
+                AttendanceCameraReviewView(
                     employee: emp,
                     mode: viewModel.scannerMode,
                     onCancel: {
@@ -111,6 +111,21 @@ struct EmployeeTimecardView: View {
         .navigationTitle(L.Timecard.title.t)
         .apNavBar(background: Color.appBackground)
         .onAppear { viewModel.modelContext = modelContext }
+        .alert("คำเตือน: ยังไม่ปิดกะเงินสด", isPresented: Binding(
+            get: { viewModel.showRegisterSessionWarning },
+            set: { viewModel.showRegisterSessionWarning = $0 }
+        )) {
+            Button("ลงเวลาออกงานต่อไป (Force)", role: .destructive) {
+                if let emp = viewModel.selectedEmployee {
+                    viewModel.forceClockOut(employee: emp, confidence: 1.0)
+                }
+            }
+            Button("ยกเลิก (Cancel)", role: .cancel) {
+                viewModel.activeRegisterSessionForWarning = nil
+            }
+        } message: {
+            Text("คุณยังมีกะเงินสดที่เปิดใช้งานอยู่ กรุณาปิดกะเงินสดในหน้าจัดการเงินสดก่อนลงเวลาออกงานเพื่อความถูกต้องของยอดเงิน")
+        }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 NavigationLink(destination: TimecardChartsView()) {
@@ -119,7 +134,7 @@ struct EmployeeTimecardView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundColor(.appAccent)
-                
+
                 NavigationLink(destination: PayrollMonthlyReportView()) {
                     Label("ค่าแรง", systemImage: "banknote")
                         .labelStyle(.iconOnly)
@@ -181,7 +196,7 @@ struct EmployeeTimecardView: View {
                         }
                     ))
                     .textFieldStyle(.plain)
-                    
+
                     if !viewModel.employeeSearchQuery.isEmpty {
                         Button(action: {
                             withAnimation { viewModel.employeeSearchQuery = "" }
@@ -195,7 +210,7 @@ struct EmployeeTimecardView: View {
                 .padding(10)
                 .background(Color.appSurfaceHigh)
                 .cornerRadius(10)
-                
+
                 Picker("", selection: Binding(
                     get: { viewModel.employeeFilterStatus },
                     set: { val in
@@ -292,7 +307,7 @@ struct EmployeeTimecardView: View {
                         }
                     ))
                     .textFieldStyle(.plain)
-                    
+
                     if !viewModel.timecardSearchQuery.isEmpty {
                         Button(action: {
                             withAnimation { viewModel.timecardSearchQuery = "" }
@@ -306,7 +321,7 @@ struct EmployeeTimecardView: View {
                 .padding(8)
                 .background(Color.appSurfaceHigh)
                 .cornerRadius(8)
-                
+
                 HStack(spacing: 8) {
                     // Status Picker
                     Picker("", selection: Binding(
@@ -322,7 +337,7 @@ struct EmployeeTimecardView: View {
                         Text("รอนุมัติ").tag(2)
                     }
                     .pickerStyle(.segmented)
-                    
+
                     // Date Picker
                     DatePicker("", selection: Binding(
                         get: { viewModel.timecardFilterDate ?? Date() },
@@ -336,7 +351,7 @@ struct EmployeeTimecardView: View {
                     .accentColor(.appAccent)
                     .background(Color.appSurfaceHigh)
                     .cornerRadius(8)
-                    
+
                     if viewModel.timecardFilterDate != nil {
                         Button(action: {
                             withAnimation { viewModel.timecardFilterDate = nil }
@@ -541,16 +556,15 @@ private struct TimecardLogRow: View {
     }
 }
 
-// MARK: - Biometric Face Scanner Simulator
+// MARK: - Camera-Assisted Attendance Review
 
-struct BiometricFaceScannerSimulator: View {
+struct AttendanceCameraReviewView: View {
     let employee:     Employee
     let mode:         EmployeeTimecardView.ScannerMode
     var onCancel:     () -> Void = {}
     let onCompletion: (Bool, Double) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var simulatedScore: Double = 98.4
     @State private var isScanning     = false
     @State private var scanPhase      = 0
     @State private var pulseScale:    CGFloat = 1.0
@@ -657,20 +671,10 @@ struct BiometricFaceScannerSimulator: View {
                                          : .textSecondary)
                         .animation(.easeInOut(duration: 0.3), value: scanPhase)
 
-                    // Confidence slider
-                    VStack(spacing: APSpacing.sm) {
-                        HStack {
-                            Label(L.Timecard.faceIdSliderLbl.t, systemImage: "waveform.path.ecg")
-                                .font(.caption)
-                                .foregroundColor(.textSecondary)
-                            Spacer()
-                            Text(String(format: "%.1f%%", simulatedScore))
-                                .font(.caption).fontWeight(.bold)
-                                .foregroundColor(simulatedScore >= 95 ? .appTeal : .appRose)
-                        }
-                        Slider(value: $simulatedScore, in: 80...100, step: 0.1)
-                            .tint(simulatedScore >= 95 ? .appTeal : .appRose)
-                    }
+                    Text("Camera preview only — this attendance entry will require manager review because face matching and liveness detection are not configured.")
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                        .multilineTextAlignment(.center)
                     .padding(APSpacing.md)
                     .background(Color.appSurface)
                     .clipShape(RoundedRectangle(cornerRadius: APRadius.md, style: .continuous))
@@ -731,8 +735,7 @@ struct BiometricFaceScannerSimulator: View {
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-            let success = simulatedScore >= 95.0
-            onCompletion(success, simulatedScore)
+            onCompletion(false, 0)
         }
     }
 }
@@ -752,31 +755,31 @@ struct FrontCameraPreview: UIViewRepresentable {
         func setupCamera() {
             let session = AVCaptureSession()
             session.sessionPreset = .high
-            
+
             // Find front camera
             let discoverySession = AVCaptureDevice.DiscoverySession(
                 deviceTypes: [.builtInWideAngleCamera],
                 mediaType: .video,
                 position: .front
             )
-            
+
             guard let frontCamera = discoverySession.devices.first else {
                 return
             }
-            
+
             do {
                 let input = try AVCaptureDeviceInput(device: frontCamera)
                 if session.canAddInput(input) {
                     session.addInput(input)
                 }
-                
+
                 let preview = AVCaptureVideoPreviewLayer(session: session)
                 preview.videoGravity = .resizeAspectFill
                 preview.frame = bounds
                 layer.addSublayer(preview)
                 self.previewLayer = preview
                 self.captureSession = session
-                
+
                 DispatchQueue.global(qos: .userInitiated).async {
                     session.startRunning()
                 }
@@ -784,7 +787,7 @@ struct FrontCameraPreview: UIViewRepresentable {
                 print("Front camera setup failed: \(error)")
             }
         }
-        
+
         func stopCamera() {
             captureSession?.stopRunning()
         }
@@ -798,7 +801,7 @@ struct FrontCameraPreview: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: CameraView, context: Context) {}
-    
+
     static func dismantleUIView(_ uiView: CameraView, coordinator: ()) {
         uiView.stopCamera()
     }

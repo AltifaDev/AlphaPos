@@ -10,12 +10,16 @@ final class LoyaltyTransaction {
     var points: Int
     var pointsBalanceAfter: Int
     var transactionDescription: String?
-    
+
     var isSynced: Bool
     var isDeleted: Bool
     var updatedAt: Date
-    
-    init(id: UUID = UUID(), customer: Customer? = nil, order: Order? = nil, transactionType: String = "earn", points: Int = 0, pointsBalanceAfter: Int = 0, transactionDescription: String? = nil, isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
+
+    // M-4: Loyalty Point Expiry
+    var expiresAt: Date?          // nil = never expires; set = points expire on this date
+    var earnedAt: Date            // วันที่ได้รับ points (used by expiry scheduler)
+
+    init(id: UUID = UUID(), customer: Customer? = nil, order: Order? = nil, transactionType: String = "earn", points: Int = 0, pointsBalanceAfter: Int = 0, transactionDescription: String? = nil, expiresAt: Date? = nil, earnedAt: Date = Date(), isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
         self.id = id
         self.customer = customer
         self.order = order
@@ -26,6 +30,8 @@ final class LoyaltyTransaction {
         self.isSynced = isSynced
         self.isDeleted = isDeleted
         self.updatedAt = updatedAt
+        self.expiresAt = expiresAt
+        self.earnedAt = earnedAt
     }
 }
 

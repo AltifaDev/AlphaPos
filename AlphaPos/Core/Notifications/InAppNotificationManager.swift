@@ -14,6 +14,7 @@ enum InAppNotificationType {
     case cookingAlert       // รายการอาหารค้างคิวนานเกิน
     case deliveryAlert      // อาหารพร้อมแต่ยังไม่เสิร์ฟ
     case staleShift         // กะงานค้างเปิดนานเกินไป
+    case printerAlert       // ข้อผิดพลาดจากเครื่องพิมพ์
 
     var icon: String {
         switch self {
@@ -22,6 +23,7 @@ enum InAppNotificationType {
         case .cookingAlert:   return "flame.fill"
         case .deliveryAlert:  return "tray.full.fill"
         case .staleShift:     return "clock.badge.exclamationmark.fill"
+        case .printerAlert:   return "exclamationmark.triangle.fill"
         }
     }
 
@@ -32,6 +34,7 @@ enum InAppNotificationType {
         case .cookingAlert:   return .orange
         case .deliveryAlert:  return .red
         case .staleShift:     return .yellow
+        case .printerAlert:   return .red
         }
     }
 
@@ -43,6 +46,7 @@ enum InAppNotificationType {
         case .cookingAlert:   return 1016  // เสียงเตือน
         case .deliveryAlert:  return 1016
         case .staleShift:     return nil   // ไม่มีเสียง
+        case .printerAlert:   return 1008  // เสียงเตือนข้อผิดพลาด
         }
     }
 }
@@ -61,6 +65,7 @@ struct InAppNotification: Identifiable {
     var displayDuration: TimeInterval {
         switch type {
         case .staleShift:     return 8
+        case .printerAlert:   return 7
         case .cookingAlert,
              .deliveryAlert:  return 6
         default:              return 4

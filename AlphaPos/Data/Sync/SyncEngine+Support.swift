@@ -344,8 +344,11 @@ extension SyncEngine {
                         modelContext.delete(role)
                     }
                 } else if try await NetworkManager.shared.uploadRole(role) {
-                    role.isSynced = true
-                    role.updatedAt = Date()
+                    let permSuccess = (try? await NetworkManager.shared.replaceRolePermissions(role: role)) ?? false
+                    if permSuccess {
+                        role.isSynced = true
+                        role.updatedAt = Date()
+                    }
                 }
             } catch {
                 encounteredSyncError = true
@@ -358,33 +361,63 @@ extension SyncEngine {
     func pullRolesFromSupabase(_ modelContext: ModelContext) async {
         do {
             let remoteRoles = try await NetworkManager.shared.fetchRolesFromSupabase()
-            guard !remoteRoles.isEmpty else { return }
+
+            // Self-heal: If any local role is marked isSynced = true, but does not exist in the remote list,
+            // it means the server doesn't have it (e.g. from an incomplete previous sync).
+            // We reset isSynced to false so it will get pushed in the next sync loop.
+            let remoteIds = Set(remoteRoles.compactMap { ($0["id"] as? String)?.lowercased() })
 
             var __desclocals = FetchDescriptor<Role>()
             __desclocals.fetchLimit = 500
             let locals = (try? modelContext.fetch(__desclocals)) ?? []
             var localById = Dictionary(uniqueKeysWithValues: locals.map { ($0.id.uuidString.lowercased(), $0) })
 
+            var selfHealChanged = false
+            for local in locals {
+                let localIdStr = local.id.uuidString.lowercased()
+                if local.isSynced && !remoteIds.contains(localIdStr) {
+                    local.isSynced = false
+                    selfHealChanged = true
+                    print("SyncEngine [Role Self-Heal]: Marked role \(local.name) (\(localIdStr)) as unsynced because it was not found on the server.")
+                }
+            }
+            if selfHealChanged {
+                modelContext.saveWithLogging(label: #function)
+            }
+
+            guard !remoteRoles.isEmpty else { return }
+
+            // Fetch remote role permissions to align permissionKeys local cache
+            let remotePermissions = (try? await NetworkManager.shared.fetchRolePermissionsFromSupabase()) ?? []
+            var permissionsByRole: [String: [String]] = [:]
+            for perm in remotePermissions {
+                if let roleName = perm["role"] as? String,
+                   let key = perm["permission_key"] as? String {
+                    permissionsByRole[roleName, default: []].append(key)
+                }
+            }
+
             for remote in remoteRoles {
                 guard let idStr = remote["id"] as? String,
                       let id = UUID(uuidString: idStr),
                       let name = remote["name"] as? String else { continue }
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
+                let permissionKeysStr = permissionsByRole[name]?.sorted().joined(separator: ",") ?? ""
 
                 if let local = localById[idStr.lowercased()] {
                     guard local.isSynced, updatedAt > local.updatedAt else { continue }
                     if local.isDeleted { continue }
                     local.name = name
-                    local.roleDescription = remote["role_description"] as? String
-                    local.permissionKeys = remote["permission_keys"] as? String ?? ""
+                    local.roleDescription = remote["description"] as? String
+                    local.permissionKeys = permissionKeysStr
                     local.updatedAt = updatedAt
                     local.isSynced = true
                 } else {
                     let role = Role(
                         id: id,
                         name: name,
-                        roleDescription: remote["role_description"] as? String,
-                        permissionKeys: remote["permission_keys"] as? String ?? "",
+                        roleDescription: remote["description"] as? String,
+                        permissionKeys: permissionKeysStr,
                         isSynced: true,
                         isDeleted: false,
                         updatedAt: updatedAt == .distantPast ? Date() : updatedAt
@@ -412,6 +445,10 @@ extension SyncEngine {
 
         for user in users {
             do {
+                if let role = user.role, !role.isSynced {
+                    continue // Defer user sync until role is synced to server
+                }
+
                 if user.isDeleted {
                     if try await NetworkManager.shared.deleteUserOnServer(id: user.id) {
                         modelContext.delete(user)
@@ -436,6 +473,17 @@ extension SyncEngine {
             var __desclocals = FetchDescriptor<User>()
             __desclocals.fetchLimit = 500
             let locals = (try? modelContext.fetch(__desclocals)) ?? []
+
+            // Deduplicate: If any local user has the same username but a different ID, delete it.
+            for remote in remoteUsers {
+                guard let idStr = remote["id"] as? String,
+                      let id = UUID(uuidString: idStr),
+                      let username = remote["username"] as? String else { continue }
+                if let conflict = locals.first(where: { $0.id != id && $0.username.lowercased() == username.lowercased() }) {
+                    modelContext.delete(conflict)
+                }
+            }
+            try? modelContext.save()
             var localById = Dictionary(uniqueKeysWithValues: locals.map { ($0.id.uuidString.lowercased(), $0) })
 
             // Pre-fetch roles

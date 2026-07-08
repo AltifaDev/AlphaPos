@@ -121,6 +121,21 @@ final class SafetyStockManager {
 
     // Cache — rebuilt on each call to `computeMetrics` or `generateSuggestions`
     private var metricsCache: [UUID: StockMetrics] = [:]
+    private var cachedTransactions: [InventoryTransaction]? = nil
+
+    func preloadTransactions() {
+        guard let modelContext else { return }
+        let descriptor = FetchDescriptor<InventoryTransaction>(
+            predicate: #Predicate<InventoryTransaction> { txn in
+                txn.isDeleted == false
+            }
+        )
+        cachedTransactions = try? modelContext.fetch(descriptor)
+    }
+
+    func clearTransactionCache() {
+        cachedTransactions = nil
+    }
 
     init(modelContext: ModelContext? = nil) {
         self.modelContext = modelContext
@@ -176,12 +191,17 @@ final class SafetyStockManager {
 
         let cutoff = Calendar.current.date(byAdding: .day, value: -lookbackDays, to: Date()) ?? Date()
 
-        let descriptor = FetchDescriptor<InventoryTransaction>(
-            predicate: #Predicate<InventoryTransaction> { txn in
-                txn.isDeleted == false
-            }
-        )
-        guard let allTxns = try? modelContext.fetch(descriptor) else { return (0, 0, 0) }
+        let allTxns: [InventoryTransaction]
+        if let cached = cachedTransactions {
+            allTxns = cached
+        } else {
+            let descriptor = FetchDescriptor<InventoryTransaction>(
+                predicate: #Predicate<InventoryTransaction> { txn in
+                    txn.isDeleted == false
+                }
+            )
+            allTxns = (try? modelContext.fetch(descriptor)) ?? []
+        }
 
         // Filter: this item, sell/waste types, within lookback window
         let usageTxns = allTxns.filter { txn in
@@ -260,6 +280,9 @@ final class SafetyStockManager {
         includeOverstock: Bool = false
     ) -> [ReorderSuggestion] {
         guard let modelContext else { return [] }
+
+        preloadTransactions()
+        defer { clearTransactionCache() }
 
         let descriptor = FetchDescriptor<InventoryItem>(
             predicate: #Predicate<InventoryItem> { item in

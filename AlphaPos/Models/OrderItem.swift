@@ -13,16 +13,19 @@ final class OrderItem {
     var notes: String?
     var status: String // "cooking", "served", "cancelled" -> starts as cooking for kitchen
     var servedBy: String? // who served this item (e.g. staff member name)
-    
+    var kitchenPrintedAt: Date?
+    var barPrintedAt: Date?
+    var labelPrintedAt: Date?
+
     @Relationship(deleteRule: .cascade, inverse: \OrderItemModifier.orderItem)
     var modifiers: [OrderItemModifier] = []
-    
+
     // Offline-First Sync Metadata
     var isSynced: Bool
     var isDeleted: Bool
     var updatedAt: Date
-    
-    init(id: UUID = UUID(), order: Order? = nil, menuItem: MenuItem? = nil, itemName: String = "", quantity: Int = 1, unitPrice: Double = 0.0, notes: String? = nil, status: String = "cooking", servedBy: String? = nil, isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
+
+    init(id: UUID = UUID(), order: Order? = nil, menuItem: MenuItem? = nil, itemName: String = "", quantity: Int = 1, unitPrice: Double = 0.0, notes: String? = nil, status: String = "cooking", servedBy: String? = nil, kitchenPrintedAt: Date? = nil, barPrintedAt: Date? = nil, labelPrintedAt: Date? = nil, isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
         self.id = id
         self.order = order
         self.menuItem = menuItem
@@ -33,6 +36,9 @@ final class OrderItem {
         self.notes = notes
         self.status = status
         self.servedBy = servedBy
+        self.kitchenPrintedAt = kitchenPrintedAt
+        self.barPrintedAt = barPrintedAt
+        self.labelPrintedAt = labelPrintedAt
         self.isSynced = isSynced
         self.isDeleted = isDeleted
         self.updatedAt = updatedAt

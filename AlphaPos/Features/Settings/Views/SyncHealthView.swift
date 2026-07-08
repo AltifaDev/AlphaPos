@@ -34,6 +34,10 @@ struct SyncHealthView: View {
     @State private var connectionText = "connection_status_unchecked".t
     @State private var isSyncingNow = false
 
+    @State private var isOptimizing = false
+    @State private var showingOptimizeAlert = false
+    @State private var optimizeAlertMessage = ""
+
     private struct QueueGroup: Identifiable {
         let id = UUID()
         let name: String
@@ -68,6 +72,7 @@ struct SyncHealthView: View {
                     summaryRow
                     queueGrid
                     conflictResolutionLink
+                    cacheOptimizationCard
                     auditSection
                 }
                 .padding(APSpacing.lg)
@@ -87,6 +92,11 @@ struct SyncHealthView: View {
         }
         .task {
             await checkConnection()
+        }
+        .alert("ผลการปรับปรุงฐานข้อมูล", isPresented: $showingOptimizeAlert) {
+            Button("ตกลง", role: .cancel) {}
+        } message: {
+            Text(optimizeAlertMessage)
         }
     }
 
@@ -158,7 +168,7 @@ struct SyncHealthView: View {
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(Color(hex: "F59E0B"))
                 }
-                
+
                 VStack(alignment: .leading, spacing: 2) {
                     Text("conflict_nav_title".t)
                         .font(.system(size: 14, weight: .semibold))
@@ -167,9 +177,9 @@ struct SyncHealthView: View {
                         .font(.system(size: 11))
                         .foregroundColor(.textTertiary)
                 }
-                
+
                 Spacer()
-                
+
                 Image(systemName: "chevron.right")
                     .font(.system(size: 12))
                     .foregroundColor(.textTertiary)
@@ -290,5 +300,50 @@ struct SyncHealthView: View {
         values.filter { value in
             (Mirror(reflecting: value).children.first { $0.label == "isDeleted" }?.value as? Bool) == true
         }.count
+    }
+
+    private var cacheOptimizationCard: some View {
+        VStack(alignment: .leading, spacing: APSpacing.md) {
+            HStack(spacing: 8) {
+                Image(systemName: "bolt.fill")
+                    .foregroundColor(.appAccent)
+                Text("การเพิ่มประสิทธิภาพแคชและฐานข้อมูล (Cache & Database Optimization)")
+                    .font(.headline)
+                    .foregroundColor(.textPrimary)
+            }
+
+            Text("ลบประวัติคำสั่งซื้อและประวัติการซิงก์ที่สำเร็จแล้วอายุเกิน 30 วัน รวมถึงบีบอัดฐานข้อมูล SQLite เพื่อเพิ่มพื้นที่และปรับปรุงความเร็ว")
+                .font(.caption)
+                .foregroundColor(.textSecondary)
+
+            Button {
+                isOptimizing = true
+                Task {
+                    let (_, msg) = await syncEngine.optimizeDatabase(modelContext: modelContext)
+                    optimizeAlertMessage = msg
+                    isOptimizing = false
+                    showingOptimizeAlert = true
+                }
+            } label: {
+                HStack {
+                    if isOptimizing {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(.trailing, 4)
+                    }
+                    Text("เริ่มการบีบอัดและล้างข้อมูล (Optimize Database)")
+                        .fontWeight(.bold)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(Color.appAccent)
+                .foregroundColor(.white)
+                .cornerRadius(10)
+            }
+            .disabled(isOptimizing)
+        }
+        .padding()
+        .background(Color.appSurfaceHigh)
+        .cornerRadius(APRadius.md)
     }
 }

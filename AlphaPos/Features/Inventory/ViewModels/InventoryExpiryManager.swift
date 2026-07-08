@@ -53,7 +53,7 @@ struct ExpiryAlertThreshold {
     /// Days before expiry to show a "Critical" badge (default 3).
     var criticalDays: Int
 
-    static let `default` = ExpiryAlertThreshold(warningDays: 7, criticalDays: 3)
+    nonisolated static let `default` = ExpiryAlertThreshold(warningDays: 7, criticalDays: 3)
 }
 
 // MARK: - InventoryLot (SwiftData Model)
@@ -188,6 +188,21 @@ struct ExpiryAlert: Identifiable {
 final class InventoryExpiryManager {
 
     var modelContext: ModelContext?
+    private var cachedLots: [InventoryLot]? = nil
+
+    func preloadLots() {
+        guard let modelContext else { return }
+        let descriptor = FetchDescriptor<InventoryLot>(
+            predicate: #Predicate<InventoryLot> { lot in
+                lot.isDeleted == false
+            }
+        )
+        cachedLots = try? modelContext.fetch(descriptor)
+    }
+
+    func clearLotsCache() {
+        cachedLots = nil
+    }
 
     init(modelContext: ModelContext? = nil) {
         self.modelContext = modelContext
@@ -296,6 +311,56 @@ final class InventoryExpiryManager {
         return FEFOConsumptionResult(consumed: consumed, unfulfilled: max(remaining, 0))
     }
 
+    /// Restores a given quantity back to the inventory lots of an item (used for order voids).
+    /// Restores starting from the latest expiry / received date lots (reverse FEFO).
+    func restoreFEFO(item: InventoryItem, quantity: Double) {
+        guard let modelContext else { return }
+
+        let descriptor = FetchDescriptor<InventoryLot>(
+            predicate: #Predicate<InventoryLot> { lot in
+                lot.isDeleted == false
+            }
+        )
+        guard let allLots = try? modelContext.fetch(descriptor) else { return }
+
+        let itemLots = allLots.filter {
+            $0.inventoryItem?.id == item.id &&
+            $0.branch?.id == item.branch?.id &&
+            $0.remainingQuantity < $0.initialQuantity
+        }
+
+        let sorted = itemLots.sorted { a, b in
+            switch (a.expiryDate, b.expiryDate) {
+            case let (.some(da), .some(db)):
+                return da > db // latest expiry first
+            case (.some, .none):
+                return false
+            case (.none, .some):
+                return true
+            case (.none, .none):
+                return a.receivedDate > b.receivedDate
+            }
+        }
+
+        var remainingToRestore = quantity
+        for lot in sorted {
+            guard remainingToRestore > 0 else { break }
+            let room = lot.initialQuantity - lot.remainingQuantity
+            let restoreAmount = min(room, remainingToRestore)
+            lot.remainingQuantity += restoreAmount
+            lot.isSynced = false
+            lot.updatedAt = Date()
+            remainingToRestore -= restoreAmount
+        }
+
+        // Fallback: if all lots are full, add remainder to the most recent lot
+        if remainingToRestore > 0, let lastLot = sorted.first {
+            lastLot.remainingQuantity += remainingToRestore
+            lastLot.isSynced = false
+            lastLot.updatedAt = Date()
+        }
+    }
+
     // MARK: - Expiry Dashboard Queries
 
     /// Returns all active lots with expiry status != .ok, sorted by urgency.
@@ -366,12 +431,17 @@ final class InventoryExpiryManager {
     func lots(for item: InventoryItem, includeEmpty: Bool = false) -> [InventoryLot] {
         guard let modelContext else { return [] }
 
-        let descriptor = FetchDescriptor<InventoryLot>(
-            predicate: #Predicate<InventoryLot> { lot in
-                lot.isDeleted == false
-            }
-        )
-        guard let all = try? modelContext.fetch(descriptor) else { return [] }
+        let all: [InventoryLot]
+        if let cached = cachedLots {
+            all = cached
+        } else {
+            let descriptor = FetchDescriptor<InventoryLot>(
+                predicate: #Predicate<InventoryLot> { lot in
+                    lot.isDeleted == false
+                }
+            )
+            all = (try? modelContext.fetch(descriptor)) ?? []
+        }
 
         return all
             .filter { lot in

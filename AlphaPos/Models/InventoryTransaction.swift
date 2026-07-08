@@ -11,12 +11,12 @@ final class InventoryTransaction {
     var referenceId: UUID? // Maps to OrderItem ID or Supplier invoice
     var notes: String?
     var branch: Branch?
-    
+
     // Offline-First Sync Metadata
     var isSynced: Bool
     var isDeleted: Bool
     var updatedAt: Date
-    
+
     init(id: UUID = UUID(), item: InventoryItem? = nil, transactionType: String, quantity: Double, costPrice: Double? = nil, referenceId: UUID? = nil, notes: String? = nil, branch: Branch? = nil, isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
         self.id = id
         self.item = item
@@ -24,11 +24,21 @@ final class InventoryTransaction {
         self.quantity = quantity
         self.costPrice = costPrice
         self.referenceId = referenceId
-        self.notes = notes
         self.branch = branch
         self.isSynced = isSynced
         self.isDeleted = isDeleted
         self.updatedAt = updatedAt
+
+        let signature = InventoryAuditSigner.generateSignature(
+            id: id,
+            type: transactionType,
+            quantity: quantity,
+            costPrice: costPrice,
+            referenceId: referenceId,
+            notes: notes,
+            branchId: branch?.id
+        )
+        self.notes = InventoryAuditSigner.appendSignatureToNotes(notes: notes, signature: signature)
     }
 }
 

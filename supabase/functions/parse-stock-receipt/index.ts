@@ -52,9 +52,9 @@ Deno.serve(async (req: Request) => {
     const geminiApiKey = Deno.env.get("GEMINI_API_KEY") || req.headers.get("x-gemini-api-key") || req.headers.get("X-Gemini-API-Key");
     if (!geminiApiKey) {
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           error: "GEMINI_API_KEY_MISSING",
-          message: "Please configure GEMINI_API_KEY in Supabase secrets or provide it in the X-Gemini-API-Key header." 
+          message: "Please configure GEMINI_API_KEY in Supabase secrets or provide it in the X-Gemini-API-Key header."
         }),
         {
           status: 400,
@@ -118,26 +118,37 @@ Deno.serve(async (req: Request) => {
 
 function buildReceiptExtractionPrompt(): string {
   return `You are an expert purchase receipt and delivery note analyzer for a restaurant inventory system.
-Analyze the provided receipt/invoice/delivery note image(s) and extract the itemized products received.
+Analyze the provided receipt/invoice/delivery note image(s) and extract the invoice metadata and the itemized products received.
 
 RULES:
-1. Identify all inventory/raw material items received.
-2. For each item, extract:
+1. Identify overall invoice metadata:
+   - po_number: The receipt, bill, or invoice identifier (e.g. "INV-109283" or "TAX-889"). If not found, use null.
+   - supplier_name: The vendor or store name (e.g. "Makro", "Lotus's", "Fresh Market"). If not found, use null.
+   - invoice_date: The date printed on the receipt/bill in YYYY-MM-DD format. If not found, use null.
+2. Identify all inventory/raw material items received.
+3. For each item, extract:
    - name: The item name in its original language (e.g., "นมสด Meiji", "ถุงหิ้วกาแฟ", "Chair").
    - quantity: The numerical quantity received. Ensure it is parsed as a number (e.g. 5.0).
    - unit: The unit of measurement (e.g. "kg", "pcs", "bags", "packs", "bottles", "box") or null if not specified.
    - unit_cost: The cost price per single unit of the item. If not directly specified, calculate it by dividing the total item cost by its quantity.
-3. Skip VAT lines, grand total lines, and vendor/customer addresses.
-4. If the receipt has handwriting indicating quantities or unit costs, prioritize those additions.
+   - expiry_date: The expiry or best-before date for this item batch in YYYY-MM-DD format, if printed on the invoice/receipt or item line. If not found, use null.
+   - lot_number: Any batch or lot identifier associated with this item line (e.g., "B-129" or similar). If not found, use null.
+4. Skip VAT lines, grand total lines, and vendor/customer addresses.
+5. If the receipt has handwriting indicating quantities or unit costs, prioritize those additions.
 
 OUTPUT FORMAT (strict JSON, no markdown):
 {
+  "po_number": "INV-12345",
+  "supplier_name": "Makro",
+  "invoice_date": "2026-07-03",
   "items": [
     {
       "name": "Original Name",
       "quantity": 10.0,
       "unit": "kg",
-      "unit_cost": 150.0
+      "unit_cost": 150.0,
+      "expiry_date": "2027-01-01",
+      "lot_number": "L-XYZ-789"
     }
   ],
   "total_items_found": 1,

@@ -19,6 +19,8 @@ enum ReportType: String, CaseIterable, Identifiable {
     case menuProfitability = "menu_profitability"
     case inventoryStock   = "inventory_stock"
     case employeeHours    = "employee_hours"
+    case monthlyComparison = "monthly_comparison"  // L-2
+    case promotionPerformance = "promotion_performance"
 
     var id: String { rawValue }
 
@@ -30,6 +32,8 @@ enum ReportType: String, CaseIterable, Identifiable {
         case .menuProfitability: return "fork.knife"
         case .inventoryStock:   return "archivebox.fill"
         case .employeeHours:    return "clock.fill"
+        case .monthlyComparison: return "chart.bar.xaxis.ascending"
+        case .promotionPerformance: return "tag.fill"
         }
     }
 }
@@ -123,6 +127,7 @@ struct DailyTaxEntry: Identifiable {
 
 @Observable
 final class ReportsViewModel {
+    var modelContext: ModelContext?
 
     // ── Selection State ──────────────────────────────────────────────────────
     var selectedReport: ReportType = .dailySales
@@ -159,6 +164,10 @@ final class ReportsViewModel {
     var totalSalesExcVAT: Double = 0
     var dailyTaxEntries: [DailyTaxEntry] = []
 
+    var vatSalesAmount: Double = 0
+    var vatTaxAmount: Double = 0
+    var nonVatSalesAmount: Double = 0
+
     // ── Menu Profitability ──────────────────────────────────────────────────
     var menuProfitItems: [MenuProfitPoint] = []
     var sortByColumn: String = "revenue"
@@ -179,6 +188,18 @@ final class ReportsViewModel {
     var totalLaborHours: Double = 0
     var totalLaborCost: Double = 0
     var totalOvertimeHours: Double = 0
+
+    // ── Promotion Performance ────────────────────────────────────────────────
+    struct PromotionPerformancePoint: Identifiable {
+        let id = UUID()
+        let promoId: UUID
+        let title: String
+        let discountType: String
+        let redemptionCount: Int
+        let totalDiscountGiven: Double
+        let triggeredRevenue: Double
+    }
+    var promotionPerformanceItems: [PromotionPerformancePoint] = []
 
     // ── PDF State ───────────────────────────────────────────────────────────
     var generatedPDFURL: URL? = nil
@@ -337,6 +358,34 @@ final class ReportsViewModel {
         totalVATAmount = filteredOrders.reduce(0.0) { $0 + $1.tax }
         totalSalesExcVAT = totalSalesIncVAT - totalVATAmount
 
+        // Split Tax Calculation
+        vatSalesAmount = 0.0
+        vatTaxAmount = 0.0
+        nonVatSalesAmount = 0.0
+
+        for order in filteredOrders {
+            let orderTaxLines = order.taxLines.filter { !$0.isDeleted }
+            if orderTaxLines.isEmpty {
+                nonVatSalesAmount += order.total
+            } else {
+                for taxLine in orderTaxLines {
+                    if taxLine.taxRate > 0 {
+                        vatTaxAmount += taxLine.taxAmount
+                        vatSalesAmount += taxLine.taxableAmount
+                    } else {
+                        nonVatSalesAmount += taxLine.taxableAmount
+                    }
+                }
+
+                // Add subtotal of items that are 0% or tax exempt
+                for item in order.items where !item.isDeleted && item.status != "cancelled" {
+                    if let menuItem = item.menuItem, menuItem.taxRate == 0 {
+                        nonVatSalesAmount += item.subtotal
+                    }
+                }
+            }
+        }
+
         // Daily breakdown
         let cal = Calendar.current
         var dailyMap: [Date: (incVAT: Double, vat: Double, excVAT: Double, count: Int)] = [:]
@@ -368,24 +417,57 @@ final class ReportsViewModel {
             $0.createdAt >= start && $0.createdAt < end
         }
 
-        // Aggregate sales per menu item
-        var itemStats: [String: (qty: Int, revenue: Double)] = [:]
+        // Aggregate sales per menu item and compute COGS dynamically using the order's branch inventory cost!
+        var itemStats: [String: (qty: Int, revenue: Double, cogs: Double)] = [:]
+
+        // Let's pre-cache all inventory items by SKU/Name per Branch to do fast lookup
+        var inventoryCache: [UUID: [String: InventoryItem]] = [:] // BranchID -> [SKU/Name -> InventoryItem]
+        let allInventoryItems = (try? modelContext?.fetch(FetchDescriptor<InventoryItem>())) ?? []
+        for item in allInventoryItems {
+            guard let branch = item.branch else { continue }
+            var branchCache = inventoryCache[branch.id] ?? [:]
+            if let sku = item.sku {
+                branchCache[sku] = item
+            }
+            branchCache[item.name] = item
+            inventoryCache[branch.id] = branchCache
+        }
+
         for order in filteredOrders {
+            let branchId = order.branch?.id
+            let orderSubtotal = order.subtotal > 0 ? order.subtotal : 1.0
+
             for item in order.items where !item.isDeleted && item.status != "cancelled" {
                 guard let menuItem = item.menuItem else { continue }
-                let existing = itemStats[menuItem.id] ?? (0, 0)
-                itemStats[menuItem.id] = (existing.qty + item.quantity, existing.revenue + item.subtotal)
+
+                // Calculate COGS for this specific order item based on the order's branch inventory cost
+                let itemCogs = menuItem.recipes.reduce(0.0) { acc, recipe in
+                    var cost = recipe.inventoryItem?.costPrice ?? 0.0
+                    // If we have a branch-specific inventory item, use its cost!
+                    if let branchId, let ingredient = recipe.inventoryItem {
+                        let lookupKey = ingredient.sku ?? ingredient.name
+                        if let branchItem = inventoryCache[branchId]?[lookupKey] {
+                            cost = branchItem.costPrice
+                        }
+                    }
+                    return acc + (recipe.quantityRequired * cost * Double(item.quantity))
+                }
+
+                let proportionalDiscount = (item.subtotal / orderSubtotal) * order.discount
+                let netRevenue = max(0.0, item.subtotal - proportionalDiscount)
+
+                let existing = itemStats[menuItem.id] ?? (0, 0, 0)
+                itemStats[menuItem.id] = (
+                    existing.qty + item.quantity,
+                    existing.revenue + netRevenue,
+                    existing.cogs + itemCogs
+                )
             }
         }
 
-        // Calculate COGS from recipes
         menuProfitItems = menuItems.compactMap { menuItem in
             guard let stats = itemStats[menuItem.id] else { return nil }
-            let cogs = menuItem.recipes.reduce(0.0) { acc, recipe in
-                let ingredientCost = recipe.inventoryItem?.costPrice ?? 0
-                return acc + (recipe.quantityRequired * ingredientCost * Double(stats.qty))
-            }
-            let grossProfit = stats.revenue - cogs
+            let grossProfit = stats.revenue - stats.cogs
             let marginPct = stats.revenue > 0 ? (grossProfit / stats.revenue) * 100 : 0
 
             return MenuProfitPoint(
@@ -393,13 +475,54 @@ final class ReportsViewModel {
                 name: menuItem.name,
                 quantitySold: stats.qty,
                 revenue: stats.revenue,
-                cogs: cogs,
+                cogs: stats.cogs,
                 grossProfit: grossProfit,
                 marginPct: marginPct
             )
         }
 
         applySorting()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Compute Promotion Performance
+    // ─────────────────────────────────────────────────────────────────────────
+
+    func computePromotionPerformance(orders: [Order], promotions: [Promotion], discounts: [OrderDiscount]) {
+        let start = effectiveStartDate
+        let end = effectiveEndDate
+
+        let filteredOrders = orders.filter {
+            !$0.isDeleted && $0.status == "completed" &&
+            $0.createdAt >= start && $0.createdAt < end
+        }
+
+        let filteredOrderIds = Set(filteredOrders.map { $0.id })
+
+        // Group discounts by promotion ID
+        var promoStats: [UUID: (count: Int, discount: Double, revenue: Double)] = [:]
+        for od in discounts where !od.isDeleted {
+            guard let order = od.order, filteredOrderIds.contains(order.id), let promo = od.promotion else { continue }
+            let existing = promoStats[promo.id] ?? (0, 0.0, 0.0)
+            promoStats[promo.id] = (
+                existing.count + 1,
+                existing.discount + od.discountAmount,
+                existing.revenue + order.total
+            )
+        }
+
+        self.promotionPerformanceItems = promotions.compactMap { promo in
+            let stats = promoStats[promo.id] ?? (0, 0.0, 0.0)
+            guard stats.count > 0 || promo.isActive else { return nil }
+            return PromotionPerformancePoint(
+                promoId: promo.id,
+                title: promo.title,
+                discountType: promo.discountType,
+                redemptionCount: stats.count,
+                totalDiscountGiven: stats.discount,
+                triggeredRevenue: stats.revenue
+            )
+        }.sorted { $0.totalDiscountGiven > $1.totalDiscountGiven }
     }
 
     func applySorting() {
@@ -522,6 +645,81 @@ final class ReportsViewModel {
         totalLaborHours = employeeHoursEntries.reduce(0.0) { $0 + $1.totalHours }
         totalLaborCost = employeeHoursEntries.reduce(0.0) { $0 + $1.estimatedCost }
         totalOvertimeHours = employeeHoursEntries.reduce(0.0) { $0 + $1.overtimeHours }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - L-2: Monthly Comparison Report
+    // ─────────────────────────────────────────────────────────────────────────
+
+    struct MonthPoint: Identifiable {
+        let id = UUID()
+        let label: String
+        let month: Int
+        let year: Int
+        let revenue: Double
+        let orderCount: Int
+        let avgOrderValue: Double
+        let topItem: String
+        let taxCollected: Double
+        let refundAmount: Double
+    }
+
+    var monthlyPoints: [MonthPoint] = []
+    var comparisonMonths: Int = 6
+
+
+    func computeMonthlyComparison(orders: [Order], payments: [Payment], taxLines: [OrderTaxLine]) {
+        let cal = Calendar.current
+        let now = Date()
+        var points: [MonthPoint] = []
+
+        for offset in stride(from: -(comparisonMonths - 1), through: 0, by: 1) {
+            guard let targetDate = cal.date(byAdding: .month, value: offset, to: now) else { continue }
+            let targetMonth = cal.component(.month, from: targetDate)
+            let targetYear  = cal.component(.year,  from: targetDate)
+
+            let monthOrders = orders.filter { order in
+                guard !order.isDeleted, order.status != "cancelled", !order.payments.isEmpty else { return false }
+                return cal.component(.month, from: order.createdAt) == targetMonth
+                    && cal.component(.year,  from: order.createdAt) == targetYear
+            }
+            let revenue    = monthOrders.reduce(0.0) { $0 + $1.total }
+            let orderCount = monthOrders.count
+            let avgOV      = orderCount > 0 ? revenue / Double(orderCount) : 0.0
+
+            let monthTax = taxLines.filter { tl in
+                guard !tl.isDeleted, let order = tl.order else { return false }
+                return cal.component(.month, from: order.createdAt) == targetMonth
+                    && cal.component(.year,  from: order.createdAt) == targetYear
+            }.reduce(0.0) { $0 + $1.taxAmount }
+
+            let monthRefunds = payments.filter { p in
+                guard !p.isDeleted, p.status == "refunded" else { return false }
+                return cal.component(.month, from: p.paidAt) == targetMonth
+                    && cal.component(.year,  from: p.paidAt) == targetYear
+            }.reduce(0.0) { $0 + $1.amount }
+
+            var itemCounts: [String: Int] = [:]
+            for order in monthOrders {
+                for item in order.items where !item.isDeleted && item.status != "cancelled" {
+                    let name = item.menuItem?.name ?? item.itemName
+                    itemCounts[name, default: 0] += item.quantity
+                }
+            }
+            let topItem = itemCounts.max(by: { $0.value < $1.value })?.key ?? "—"
+
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "th_TH")
+            df.dateFormat = "MMM yy"
+            let label = df.string(from: targetDate)
+
+            points.append(MonthPoint(
+                label: label, month: targetMonth, year: targetYear,
+                revenue: revenue, orderCount: orderCount, avgOrderValue: avgOV,
+                topItem: topItem, taxCollected: monthTax, refundAmount: monthRefunds
+            ))
+        }
+        self.monthlyPoints = points
     }
 
     // ─────────────────────────────────────────────────────────────────────────

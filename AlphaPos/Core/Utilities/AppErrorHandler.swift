@@ -43,21 +43,21 @@ struct SyncRetryPolicy {
     /// Jitter fraction (0–1) added to avoid thundering-herd.
     var jitterFraction: Double
 
-    static let `default` = SyncRetryPolicy(
+    nonisolated static let `default` = SyncRetryPolicy(
         maxAttempts:      3,
         baseDelaySeconds: 1.0,
         maxDelaySeconds:  30.0,
         jitterFraction:   0.2
     )
 
-    static let aggressive = SyncRetryPolicy(
+    nonisolated static let aggressive = SyncRetryPolicy(
         maxAttempts:      5,
         baseDelaySeconds: 0.5,
         maxDelaySeconds:  60.0,
         jitterFraction:   0.3
     )
 
-    static let conservative = SyncRetryPolicy(
+    nonisolated static let conservative = SyncRetryPolicy(
         maxAttempts:      2,
         baseDelaySeconds: 2.0,
         maxDelaySeconds:  20.0,

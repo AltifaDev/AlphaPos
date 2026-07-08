@@ -43,6 +43,10 @@ extension SyncEngine {
 
         for employee in employees {
             do {
+                if let user = employee.user, !user.isSynced {
+                    continue // Defer employee sync until user is synced to server
+                }
+
                 let success = try await NetworkManager.shared.uploadEmployee(employee: employee)
                 if success {
                     if employee.isDeleted {
@@ -169,7 +173,7 @@ extension SyncEngine {
 
         do {
             let remoteTables = try await NetworkManager.shared.fetchRestaurantTables()
-            
+
             var remoteIds = Set<UUID>()
 
             if remoteTables.isEmpty {
@@ -195,7 +199,7 @@ extension SyncEngine {
             for remoteTable in remoteTables {
                 guard let idStr = remoteTable["id"] as? String,
                       let id = UUID(uuidString: idStr) else { continue }
-                
+
                 remoteIds.insert(id)
 
                 let tableNumber = remoteTable["table_number"] as? String ?? ""
@@ -258,7 +262,7 @@ extension SyncEngine {
                             if table.floor != floor { table.floor = floor }
                             if table.zone != zone { table.zone = zone }
                             if table.updatedAt != updatedAt { table.updatedAt = updatedAt }
-                            
+
                             // Sync cleaning and reserved statuses from the server.
                             // vacant/occupied/reserved are handled by pullActiveSessions,
                             // but cleaning and reserved (when no session is active) are owned by the table record.
@@ -295,7 +299,7 @@ extension SyncEngine {
                     modelContext.insert(newTable)
                 }
             }
-            
+
             // Prune synced local tables that are no longer on the server
             let localTablesDescriptor = FetchDescriptor<RestaurantTable>()
             if let localTables = try? modelContext.fetch(localTablesDescriptor) {
@@ -305,7 +309,7 @@ extension SyncEngine {
                     }
                 }
             }
-            
+
             modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
@@ -395,6 +399,14 @@ extension SyncEngine {
                     }
                 }
 
+                if let targetSession = targetTableSession, let table = targetSession.table {
+                    if table.status != "occupied" {
+                        table.status = "occupied"
+                        table.isSynced = false
+                        table.updatedAt = Date()
+                    }
+                }
+
                 if let existingOrders = try? modelContext.fetch(descriptor), let existingOrder = existingOrders.first {
                     // Order already exists. Update its status, total, and ensure it links to the active session.
                     existingOrder.status = status
@@ -470,7 +482,7 @@ extension SyncEngine {
                                         let nameDescriptor = FetchDescriptor<MenuItem>(predicate: #Predicate<MenuItem> { $0.name == name })
                                         menuItem = (try? modelContext.fetch(nameDescriptor))?.first
                                     }
-                                    
+
                                     let servedBy = remoteItem["served_by"] as? String
                                     let orderItem = OrderItem(
                                         id: itemId,
@@ -646,12 +658,12 @@ extension SyncEngine {
                 }
 
                 try modelContext.save()
-                
+
                 let age = Date().timeIntervalSince(createdAt)
                 if !self.isFirstSync && age < 300 {
                     self.triggerLocalNotification(orderNumber: orderNumber, tableNumber: tableNumber)
                 }
-                
+
                 #if DEBUG
                 print("SyncEngine [Pull]: Inserted customer order \(orderNumber) for Table \(tableNumber) successfully.")
                 #endif
@@ -683,7 +695,6 @@ extension SyncEngine {
         guard await NetworkManager.shared.isConnected() else { return }
         do {
             let remoteSessions = try await NetworkManager.shared.fetchActiveSessions()
-            let remoteActiveTables = Set(remoteSessions.compactMap { $0["tableNumber"] as? String })
 
             // ─────────────────────────────────────────────────────────────────
             // FIX: Merge deactivate + activate into a single pass per table.
@@ -841,7 +852,7 @@ extension SyncEngine {
 
         do {
             let remoteEmployees = try await NetworkManager.shared.fetchEmployees()
-            
+
             for remoteEmp in remoteEmployees {
                 guard let idStr = remoteEmp["id"] as? String,
                       let id = UUID(uuidString: idStr) else { continue }
@@ -859,10 +870,10 @@ extension SyncEngine {
                 let emergencyContactName = remoteEmp["emergency_contact_name"] as? String
                 let emergencyContactPhone = remoteEmp["emergency_contact_phone"] as? String
                 let isDeleted = remoteBool(remoteEmp["is_deleted"], fallback: false)
-                
+
                 let joinedAtStr = remoteEmp["joined_at"] as? String ?? ""
                 let joinedAt = parseISO8601Date(joinedAtStr)
-                
+
                 let updatedAtStr = remoteEmp["updated_at"] as? String ?? ""
                 let updatedAt = parseISO8601Date(updatedAtStr)
 
@@ -882,11 +893,31 @@ extension SyncEngine {
                     return newRole
                 }()
 
-                // Try to find existing employee
+                // Try to find existing employee by exact ID
                 let idDescriptor = FetchDescriptor<Employee>(
                     predicate: #Predicate<Employee> { $0.id == id }
                 )
-                
+
+                // --- Conflict Resolution (Root Cause Fix) ---
+                // If a local employee exists with the same name or username but a DIFFERENT ID,
+                // we must delete the local duplicate to enforce the server as the single source of truth.
+                if let allLocalEmps = try? modelContext.fetch(FetchDescriptor<Employee>()) {
+                    for localEmp in allLocalEmps {
+                        if localEmp.id != id {
+                            let isNameMatch = (localEmp.firstName == firstName && localEmp.lastName == lastName)
+                            let isUsernameMatch = (!username.isEmpty && localEmp.user?.username == username)
+
+                            if isNameMatch || isUsernameMatch {
+                                if let relatedUser = localEmp.user {
+                                    modelContext.delete(relatedUser)
+                                }
+                                modelContext.delete(localEmp)
+                            }
+                        }
+                    }
+                }
+                // ---------------------------------------------
+
                 if let matches = try? modelContext.fetch(idDescriptor), let existing = matches.first {
                     // Update if remote is newer
                     if updatedAt > existing.updatedAt || !existing.isSynced {
@@ -980,7 +1011,7 @@ extension SyncEngine {
 
         do {
             let remoteShifts = try await NetworkManager.shared.fetchEmployeeShifts()
-            
+
             for remoteShift in remoteShifts {
                 guard let idStr = remoteShift["id"] as? String,
                       let id = UUID(uuidString: idStr),
@@ -991,11 +1022,11 @@ extension SyncEngine {
                 let scheduledEndStr = remoteShift["scheduled_end"] as? String ?? ""
                 let scheduledStart = parseISO8601Date(scheduledStartStr)
                 let scheduledEnd = parseISO8601Date(scheduledEndStr)
-                
+
                 let role = remoteShift["role"] as? String
                 let notes = remoteShift["notes"] as? String
                 let isDeleted = remoteBool(remoteShift["is_deleted"], fallback: false)
-                
+
                 let updatedAtStr = remoteShift["updated_at"] as? String ?? ""
                 let updatedAt = parseISO8601Date(updatedAtStr)
 
@@ -1012,7 +1043,7 @@ extension SyncEngine {
                 let idDescriptor = FetchDescriptor<EmployeeShift>(
                     predicate: #Predicate<EmployeeShift> { $0.id == id }
                 )
-                
+
                 if let matches = try? modelContext.fetch(idDescriptor), let existing = matches.first {
                     if updatedAt > existing.updatedAt || !existing.isSynced {
                         existing.employee = employee
@@ -1023,7 +1054,7 @@ extension SyncEngine {
                         existing.isDeleted = isDeleted
                         existing.isSynced = true
                         existing.updatedAt = updatedAt
-                        
+
                         if isDeleted {
                             modelContext.delete(existing)
                         }

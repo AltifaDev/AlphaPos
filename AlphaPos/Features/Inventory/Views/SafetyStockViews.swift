@@ -266,6 +266,7 @@ struct ReorderSuggestionDashboard: View {
             .padding(.horizontal, 14)
             .padding(.bottom, 6)
             .onAppear { loadSuggestions() }
+            .onChange(of: activeBranch) { _, _ in loadSuggestions() }
             .sheet(isPresented: $showingFullList) {
                 ReorderSuggestionListSheet(
                     suggestions: suggestions,

@@ -6,14 +6,33 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var sessionManager: AppSessionManager
-    
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var selectedTopic: SettingTopic? = .appearance
+    @State private var isAnimated = false
+
+    enum SettingTopic: Hashable, Identifiable {
+        case appearance
+        case tableSystem
+        case kds
+        case printer
+        case security
+        case staffDevices
+        case tax
+        case receiptTemplate
+        case currency
+        case systemOps
+
+        var id: Self { self }
+    }
+
     // Theme selection setting (needed for preview/theme operations if any, but main theme config is in subview)
     @AppStorage("app_theme") private var appTheme = AppTheme.dark.rawValue
-    
+
     // Localization
     @AppStorage("app_language") private var appLanguageCode = "en"
     @EnvironmentObject private var lm: LocalizationManager
-    
+
     // Account details
     // N4: is_logged_in is no longer used as an auth gate (AppSessionManager uses Keychain JWT)
     // kept as @AppStorage for backward-compat UI, but write-side must call signOutMerchant()
@@ -23,18 +42,18 @@ struct SettingsView: View {
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @State private var connectionText = "Checking..."
     @State private var isCheckingConnection = false
-    
+
     // Change password state
     @State private var showingChangePasswordSheet = false
     @State private var showingChangeOwnerPinSheet = false
     @State private var newOwnerPin = ""
-    
+
     // Delete account state
     @State private var showingDeleteConfirmAlert = false
     @State private var isDeletingAccount = false
     @State private var showingStatusAlert = false
     @State private var statusMessage = ""
-    
+
     // Language Picker Sheet state
     @State private var showingLanguageSheet = false
 
@@ -50,284 +69,99 @@ struct SettingsView: View {
     @State private var showingCurrencySheet = false
     @State private var showingSystemOpsSheet = false
     @State private var showingSubscriptionSheet = false
-    
+    @State private var showingFeatureConfigSheet = false
+
     var body: some View {
+        Group {
+            if horizontalSizeClass == .regular {
+                HStack(spacing: 0) {
+                    // Inner Settings Sidebar
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(L.Nav.tabSettings.t)
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .foregroundColor(.textPrimary)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 20)
+                            .offset(y: isAnimated ? 0 : -10)
+                            .opacity(isAnimated ? 1 : 0)
+
+                        sidebarView
+                    }
+                    .frame(width: 280)
+                    .background(Color.appSurface)
+
+                    Divider().background(Color.appDivider)
+
+                    // Detail Area
+                    NavigationStack {
+                        detailView(for: selectedTopic)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .background(Color.appBackground)
+            } else {
+                compactSettingsView
+            }
+        }
+        .alert("Database Operation", isPresented: $showingStatusAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(statusMessage)
+        }
+        .alert("Delete Store & Account?", isPresented: $showingDeleteConfirmAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Yes, WIPE Everything", role: .destructive) {
+                performAccountDeletion()
+            }
+        } message: {
+            Text("WARNING: This action is irreversible. All table layouts, session logs, order records, and configurations will be permanently purged from this device and from Supabase cloud servers (GDPR compliant).")
+        }
+        .sheet(isPresented: $showingChangePasswordSheet) {
+            ChangePasswordSheet(isPresented: $showingChangePasswordSheet)
+        }
+        .alert(lm.languageCode == "th" ? "เปลี่ยน PIN บัญชีร้านค้า" : "Change Store Owner PIN", isPresented: $showingChangeOwnerPinSheet) {
+            SecureField(lm.languageCode == "th" ? "ป้อน PIN ใหม่ (ตัวเลข 4 หลัก)" : "Enter new 4-digit PIN", text: $newOwnerPin)
+            Button(lm.languageCode == "th" ? "บันทึก" : "Save", action: saveNewOwnerPin)
+            Button(lm.languageCode == "th" ? "ยกเลิก" : "Cancel", role: .cancel) { newOwnerPin = "" }
+        } message: {
+            Text(lm.languageCode == "th" ? "กรุณาระบุรหัส PIN 4 หลักเพื่อความปลอดภัยในการเข้าสู่ระบบโหมดเจ้าของร้าน" : "Please enter a 4-digit security PIN for accessing owner mode.")
+        }
+        .fullScreenCover(isPresented: $showingSubscriptionSheet) {
+            NavigationStack {
+                SubscriptionSettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button { showingSubscriptionSheet = false } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(Color.textSecondary)
+                            }
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: $showingLanguageSheet) {
+            LanguagePickerSheet(lm: lm)
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.85, blendDuration: 0)) {
+                isAnimated = true
+            }
+        }
+        .onDisappear {
+            isAnimated = false
+        }
+    }
+
+    private var compactSettingsView: some View {
         ZStack {
             Color.appBackground.ignoresSafeArea()
-            
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    
-                    // ── SECTION: ACCOUNT PROFILE & LANGUAGE ─────────────
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(L.Sections.account.t)
-                            .font(.caption)
-                            .fontWeight(.bold)
-                            .foregroundColor(.appAccent)
-                            .tracking(1.0)
-                        
-                        VStack(spacing: 16) {
-                            // User Info row
-                            HStack(spacing: 16) {
-                                // Avatar circle with initials
-                                let initials = getInitials(from: loggedInName)
-                                ZStack {
-                                    Circle()
-                                        .fill(APGradient.accent)
-                                        .frame(width: 54, height: 54)
-                                        .shadow(color: Color.appAccent.opacity(0.3), radius: 6)
-                                    Text(initials)
-                                        .font(.title3)
-                                        .fontWeight(.black)
-                                        .foregroundColor(.white)
-                                }
-                                
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(sessionManager.currentStaffSession?.displayName ?? loggedInName)
-                                        .font(.headline)
-                                        .foregroundColor(.textPrimary)
-                                    Text(loggedInEmail)
-                                        .font(.subheadline)
-                                        .foregroundColor(.textSecondary)
-                                }
-                                
-                                Spacer()
-                                
-                                // Role badge
-                                Text(sessionManager.currentStaffSession?.roleName ?? L.Account.storeOwner.t)
-                                    .font(.caption2)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.appAccent)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.appAccent.opacity(0.12))
-                                    .cornerRadius(APRadius.pill)
-                            }
-                            .padding(.vertical, 4)
-                            
-                            Divider()
-                                .background(Color.appDivider)
-                            
-                            // Relocated Language Switcher directly below profile details
-                            Button {
-                                APHaptic.trigger()
-                                showingLanguageSheet = true
-                            } label: {
-                                HStack(spacing: 14) {
-                                    Image(systemName: "globe")
-                                        .font(.system(size: 16, weight: .semibold))
-                                        .foregroundColor(.appAccent)
-                                        .frame(width: 32, height: 32)
-                                        .background(Color.appAccent.opacity(0.10))
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    profileAndGeneralSections
 
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(L.Language.selectLanguage.t)
-                                            .font(.body)
-                                            .foregroundColor(.textPrimary)
-                                        let currentLang = AppLanguage(rawValue: lm.languageCode) ?? .english
-                                        Text("\(currentLang.flag)  \(currentLang.displayName)")
-                                            .font(.caption)
-                                            .foregroundColor(.textSecondary)
-                                    }
-
-                                    Spacer()
-
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundColor(.textTertiary)
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .sheet(isPresented: $showingLanguageSheet) {
-                                LanguagePickerSheet(lm: lm)
-                            }
-                            
-                            Divider()
-                                .background(Color.appDivider)
-                            
-                            // Account actions
-                            VStack(spacing: 12) {
-                                // Change Password
-                                Button(action: { showingChangePasswordSheet = true }) {
-                                    HStack {
-                                        Label(L.Account.changePassword.t, systemImage: "key.fill")
-                                            .foregroundColor(.textPrimary)
-                                        Spacer()
-                                        Image(systemName: "chevron.right")
-                                            .font(.footnote)
-                                            .foregroundColor(.textSecondary)
-                                    }
-                                }
-                                
-                                Divider()
-                                    .background(Color.appDivider)
-                                
-                                // Change Owner PIN
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Button(action: { showingChangeOwnerPinSheet = true }) {
-                                        HStack {
-                                            Label(lm.languageCode == "th" ? "เปลี่ยน PIN บัญชีร้านค้า" : "Change Store Owner PIN", systemImage: "lock.ipad")
-                                                .foregroundColor(.textPrimary)
-                                            Spacer()
-                                            Image(systemName: "chevron.right")
-                                                .font(.footnote)
-                                                .foregroundColor(.textSecondary)
-                                        }
-                                    }
-                                    
-                                    if KeychainManager.shared.isDefaultPinActive() {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "exclamationmark.shield.fill")
-                                                .foregroundColor(.appRose)
-                                            Text(lm.languageCode == "th" ? "คำเตือน: รหัส PIN เริ่มต้น '8888' ไม่ปลอดภัย โปรดเปลี่ยนใหม่ทันที" : "Warning: Default PIN '8888' is insecure. Change it immediately.")
-                                                .font(.caption2)
-                                                .foregroundColor(.appRose)
-                                        }
-                                        .padding(.leading, 8)
-                                    }
-                                }
-                                
-                                Divider()
-                                    .background(Color.appDivider)
-                                
-                                // Subscription & Billing
-                                Button(action: { showingSubscriptionSheet = true }) {
-                                    HStack {
-                                        Label(lm.languageCode == "th" ? "แผนสมาชิกและการเรียกเก็บเงิน" : "Subscription & Billing", systemImage: "creditcard.fill")
-                                            .foregroundColor(.textPrimary)
-                                        Spacer()
-                                        if let tier = MerchantAuthManager.shared.subscriptionTier {
-                                            Text(tier == "offline_perpetual" ? (lm.languageCode == "th" ? "ออฟไลน์ ซื้อขาด" : "Offline Perpetual") : (tier == "offline_subscription" ? (lm.languageCode == "th" ? "ออฟไลน์ รายเดือน/ปี" : "Offline Sub") : (lm.languageCode == "th" ? "ออนไลน์ คลาวด์" : "Online Cloud")))
-                                                .font(.system(size: 10, weight: .bold))
-                                                .foregroundColor(.appAccent)
-                                                .padding(.horizontal, 8)
-                                                .padding(.vertical, 4)
-                                                .background(Color.appAccent.opacity(0.12))
-                                                .cornerRadius(6)
-                                        }
-                                        Image(systemName: "chevron.right")
-                                            .font(.footnote)
-                                            .foregroundColor(.textSecondary)
-                                    }
-                                }
-                                
-                                Divider()
-                                    .background(Color.appDivider)
-                                
-                                // Sign Out
-                                Button(action: handleLogout) {
-                                    HStack {
-                                        Label(L.Account.signOut.t, systemImage: "arrow.right.square.fill")
-                                            .foregroundColor(.textPrimary)
-                                        Spacer()
-                                    }
-                                }
-                                
-                                Divider()
-                                    .background(Color.appDivider)
-                                
-                                // Delete Account
-                                Button(action: { showingDeleteConfirmAlert = true }) {
-                                    HStack {
-                                        Label(L.Account.deleteAccount.t, systemImage: "exclamationmark.shield.fill")
-                                            .foregroundColor(.appRose)
-                                        Spacer()
-                                    }
-                                }
-                            }
-                        }
-                        .apCard()
-                    }
-                    .padding(.horizontal)
-                    
-                    // ── SECTION: CONNECTION & SYNC ───────────────────────
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(lm.languageCode == "th" ? "การเชื่อมต่อและซิงค์" : "Connectivity & Sync")
-                            .font(.caption)
-                            .fontWeight(.bold)
-                            .foregroundColor(.appAccent)
-                            .tracking(1.0)
-                        
-                        VStack(spacing: 14) {
-                            Toggle(isOn: $offlineSyncMode) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    HStack(spacing: 6) {
-                                        Circle()
-                                            .fill(offlineSyncMode ? Color.orange : Color.appTeal)
-                                            .frame(width: 8, height: 8)
-                                        Text(offlineSyncMode 
-                                             ? (lm.languageCode == "th" ? "โหมดออฟไลน์ (ไม่ซิงค์กับคลาวด์)" : "Offline Mode (Local Only)")
-                                             : (lm.languageCode == "th" ? "โหมดออนไลน์ (ซิงค์อัตโนมัติ)" : "Online Mode (Auto-Sync)"))
-                                            .font(.body)
-                                            .foregroundColor(.textPrimary)
-                                    }
-                                    Text(offlineSyncMode 
-                                         ? (lm.languageCode == "th" ? "ข้อมูลเก็บในเครื่องเท่านั้น ไม่ซิงค์กับคลาวด์ เหมาะสำหรับช่วงอินเทอร์เน็ตมีปัญหา" : "Data saved locally. Cloud sync is disabled. Best for unstable internet.")
-                                         : (lm.languageCode == "th" ? "ข้อมูลจะซิงค์ขึ้น Supabase อัตโนมัติทุก 5 วินาที" : "Data synchronizes with Supabase automatically every 5 seconds."))
-                                        .font(.caption2)
-                                        .foregroundColor(offlineSyncMode ? .orange : .textSecondary)
-                                }
-                            }
-                            .tint(.appAccent)
-                            .onChange(of: offlineSyncMode) { _, newValue in
-                                APHaptic.trigger()
-                                UserDefaults.standard.set(true, forKey: "offline_mode_user_set")
-                                NetworkManager.shared.simulateOffline = newValue
-                                NetworkManager.shared.invalidateConnectivityCache()
-                                if newValue {
-                                    SyncEngine.shared.cancelPendingSync()
-                                } else {
-                                    NetworkManager.shared.simulateOffline = false
-                                    SyncEngine.shared.startRealtimeSync(modelContext: modelContext)
-                                    Task {
-                                        await SyncEngine.shared.syncAll(modelContext: modelContext)
-                                    }
-                                }
-                            }
-                            
-                            if !offlineSyncMode {
-                                Divider().background(Color.appDivider)
-                                
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(lm.languageCode == "th" ? "สถานะการเชื่อมต่อปัจจุบัน" : "Current Connection Status")
-                                            .font(.body)
-                                            .foregroundColor(.textPrimary)
-                                        Text(connectionText)
-                                            .font(.caption)
-                                            .foregroundColor(connectionText == "Online" || connectionText == "ออนไลน์" ? .appTeal : .appRose)
-                                    }
-                                    Spacer()
-                                    Button {
-                                        Task {
-                                            isCheckingConnection = true
-                                            NetworkManager.shared.invalidateConnectivityCache()
-                                            let connected = await NetworkManager.shared.isConnected()
-                                            connectionText = connected 
-                                                ? (lm.languageCode == "th" ? "ออนไลน์" : "Online")
-                                                : (lm.languageCode == "th" ? "ออฟไลน์" : "Offline")
-                                            isCheckingConnection = false
-                                        }
-                                    } label: {
-                                        if isCheckingConnection {
-                                            ProgressView()
-                                                .tint(.appAccent)
-                                        } else {
-                                            Image(systemName: "arrow.clockwise")
-                                                .font(.caption)
-                                                .foregroundColor(.appAccent)
-                                        }
-                                    }
-                                    .disabled(isCheckingConnection)
-                                }
-                            }
-                        }
-                        .apCard()
-                    }
-                    .padding(.horizontal)
-                    
                     // ── SECTION: SETTINGS DIRECTORY (TOPICS) ─────────────
                     VStack(alignment: .leading, spacing: 12) {
                         Text(L.Sections.general.t)
@@ -335,7 +169,7 @@ struct SettingsView: View {
                             .fontWeight(.bold)
                             .foregroundColor(.appAccent)
                             .tracking(1.0)
-                        
+
                         settingsDirectoryList
                     }
                     .padding(.horizontal)
@@ -385,12 +219,472 @@ struct SettingsView: View {
         }
         .task {
             let connected = await NetworkManager.shared.isConnected()
-            connectionText = connected 
+            connectionText = connected
                 ? (lm.languageCode == "th" ? "ออนไลน์" : "Online")
                 : (lm.languageCode == "th" ? "ออฟไลน์" : "Offline")
         }
     }
-    
+
+    @ViewBuilder
+    private var sidebarView: some View {
+        VStack(spacing: 0) {
+            // Profile Card (Glassmorphic Card)
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    let initials = getInitials(from: loggedInName)
+                    ZStack {
+                        Circle()
+                            .fill(LinearGradient(colors: [Color(hex: "4F46E5"), Color(hex: "06B6D4")], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(width: 44, height: 44)
+                            .shadow(color: Color(hex: "4F46E5").opacity(0.3), radius: 6)
+                        Text(initials)
+                            .font(.system(size: 15, weight: .black))
+                            .foregroundColor(.white)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(sessionManager.currentStaffSession?.displayName ?? loggedInName)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.textPrimary)
+                        Text(loggedInEmail)
+                            .font(.system(size: 10))
+                            .foregroundColor(.textSecondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+                }
+
+                HStack(spacing: 8) {
+                    // Role Badge
+                    Text(sessionManager.currentStaffSession?.roleName ?? L.Account.storeOwner.t)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(Color(hex: "4F46E5"))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color(hex: "4F46E5").opacity(0.1))
+                        .cornerRadius(6)
+
+                    Spacer()
+
+                    // Language Switcher Button
+                    Button {
+                        showingLanguageSheet = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "globe")
+                                .font(.system(size: 9))
+                            Text(appLanguageCode.uppercased())
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .foregroundColor(.textPrimary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.appSurface)
+                        .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.appDivider, lineWidth: 1)
+                        )
+                    }
+                }
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.appSurface.opacity(0.4))
+                    .shadow(color: Color.black.opacity(0.03), radius: 4, y: 2)
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 16)
+            .offset(y: isAnimated ? 0 : -20)
+            .opacity(isAnimated ? 1 : 0)
+
+            // Scrollable Menu Rows
+            ScrollView {
+                VStack(spacing: 6) {
+                    sidebarRow(topic: .appearance, title: L.Sections.appearance.t, icon: "paintbrush.fill", index: 0)
+                    sidebarRow(topic: .tableSystem, title: L.Sections.tableSystem.t, icon: "tablecells.fill", index: 1)
+                    sidebarRow(topic: .kds, title: L.Sections.kds.t, icon: "flame.fill", index: 2)
+                    sidebarRow(topic: .printer, title: L.Sections.printer.t, icon: "printer.fill", index: 3)
+                    sidebarRow(topic: .security, title: L.Sections.security.t, icon: "lock.shield.fill", index: 4)
+                    sidebarRow(topic: .staffDevices, title: L.Sections.linkStaff.t, icon: "qrcode", index: 5)
+                    sidebarRow(topic: .tax, title: L.Sections.taxRates.t, icon: "percent", index: 6)
+                    sidebarRow(topic: .receiptTemplate, title: L.Sections.receiptTemplates.t, icon: "doc.text.fill", index: 7)
+                    sidebarRow(topic: .currency, title: L.Sections.currencyExchange.t, icon: "dollarsign.circle.fill", index: 8)
+                    sidebarRow(topic: .systemOps, title: "การควบคุมระบบ (System Control)", icon: "slider.horizontal.3", index: 9)
+                }
+                .padding(.horizontal, 12)
+            }
+
+            Divider()
+                .background(Color.appDivider)
+
+            // Footer Action Rows (Logout / Delete Account)
+            VStack(spacing: 8) {
+                Button(action: handleLogout) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "arrow.right.square.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.appRose)
+                        Text(L.Account.signOut.t)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.appRose)
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .background(Color.appRose.opacity(0.08))
+                    .cornerRadius(8)
+                }
+
+                Button(action: { showingDeleteConfirmAlert = true }) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.shield.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.textSecondary)
+                        Text(L.Account.deleteAccount.t)
+                            .font(.system(size: 11))
+                            .foregroundColor(.textSecondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                }
+            }
+            .padding(16)
+            .offset(y: isAnimated ? 0 : 20)
+            .opacity(isAnimated ? 1 : 0)
+        }
+    }
+
+    private func sidebarRow(topic: SettingTopic, title: String, icon: String, index: Int) -> some View {
+        let isSelected = selectedTopic == topic
+        return Button {
+            withAnimation(.easeInOut(duration: 0.12)) {
+                selectedTopic = topic
+            }
+            APHaptic.trigger()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 13))
+                    .foregroundColor(isSelected ? .white : .textSecondary)
+                    .frame(width: 24)
+
+                Text(title)
+                    .font(.system(size: 12.5, weight: isSelected ? .bold : .medium))
+                    .foregroundColor(isSelected ? .white : .textPrimary)
+
+                Spacer()
+
+                if isSelected {
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isSelected ? APGradient.accent : LinearGradient(colors: [.clear], startPoint: .top, endPoint: .bottom))
+            )
+            .shadow(color: isSelected ? Color.appAccent.opacity(0.35) : .clear, radius: 4, y: 2)
+        }
+        .scaleEffect(isSelected ? 1.015 : 1.0)
+        .animation(.spring(response: 0.25, dampingFraction: 0.6, blendDuration: 0), value: isSelected)
+        .offset(y: isAnimated ? 0 : 15)
+        .opacity(isAnimated ? 1 : 0)
+        .animation(.easeOut(duration: 0.3).delay(Double(index) * 0.025), value: isAnimated)
+    }
+
+    @ViewBuilder
+    private func detailView(for topic: SettingTopic?) -> some View {
+        if let topic = topic {
+            switch topic {
+            case .appearance: AppearanceSettingsView()
+            case .tableSystem: TableSystemSettingsView()
+            case .kds: KDSSettingsView()
+            case .printer: PrinterSettingsView()
+            case .security: SecuritySettingsView()
+            case .staffDevices: StaffDevicesSettingsView()
+            case .tax: TaxSettingsView()
+            case .receiptTemplate: ReceiptTemplateSettingsView()
+            case .currency: CurrencySettingsView()
+            case .systemOps: SystemFeatureConfigView()
+            }
+        } else {
+            ContentUnavailableView("Select a setting", systemImage: "gear", description: Text("Choose a configuration from the sidebar."))
+        }
+    }
+
+    @ViewBuilder
+    private var profileAndGeneralSections: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L.Sections.account.t)
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.appAccent)
+                .tracking(1.0)
+
+            VStack(spacing: 16) {
+                // User Info row
+                HStack(spacing: 16) {
+                    let initials = getInitials(from: loggedInName)
+                    ZStack {
+                        Circle()
+                            .fill(APGradient.accent)
+                            .frame(width: 54, height: 54)
+                            .shadow(color: Color.appAccent.opacity(0.3), radius: 6)
+                        Text(initials)
+                            .font(.title3)
+                            .fontWeight(.black)
+                            .foregroundColor(.white)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(sessionManager.currentStaffSession?.displayName ?? loggedInName)
+                            .font(.headline)
+                            .foregroundColor(.textPrimary)
+                        Text(loggedInEmail)
+                            .font(.subheadline)
+                            .foregroundColor(.textSecondary)
+                    }
+
+                    Spacer()
+
+                    Text(sessionManager.currentStaffSession?.roleName ?? L.Account.storeOwner.t)
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.appAccent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.appAccent.opacity(0.12))
+                        .cornerRadius(APRadius.pill)
+                }
+                .padding(.vertical, 4)
+
+                Divider()
+                    .background(Color.appDivider)
+
+                // Relocated Language Switcher directly below profile details
+                Button {
+                    APHaptic.trigger()
+                    showingLanguageSheet = true
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "globe")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.appAccent)
+                            .frame(width: 32, height: 32)
+                            .background(Color.appAccent.opacity(0.10))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L.Language.selectLanguage.t)
+                                .font(.body)
+                                .foregroundColor(.textPrimary)
+                            let currentLang = AppLanguage(rawValue: lm.languageCode) ?? .english
+                            Text("\(currentLang.flag)  \(currentLang.displayName)")
+                                .font(.caption)
+                                .foregroundColor(.textSecondary)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.textTertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $showingLanguageSheet) {
+                    LanguagePickerSheet(lm: lm)
+                }
+
+                Divider()
+                    .background(Color.appDivider)
+
+                // Account actions
+                VStack(spacing: 12) {
+                    Button(action: { showingChangePasswordSheet = true }) {
+                        HStack {
+                            Label(L.Account.changePassword.t, systemImage: "key.fill")
+                                .foregroundColor(.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.footnote)
+                                .foregroundColor(.textSecondary)
+                        }
+                    }
+
+                    Divider()
+                        .background(Color.appDivider)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button(action: { showingChangeOwnerPinSheet = true }) {
+                            HStack {
+                                Label(lm.languageCode == "th" ? "เปลี่ยน PIN บัญชีร้านค้า" : "Change Store Owner PIN", systemImage: "lock.ipad")
+                                    .foregroundColor(.textPrimary)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.footnote)
+                                    .foregroundColor(.textSecondary)
+                            }
+                        }
+
+                        if KeychainManager.shared.isDefaultPinActive() {
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.shield.fill")
+                                    .foregroundColor(.appRose)
+                                Text(lm.languageCode == "th" ? "คำเตือน: รหัส PIN เริ่มต้น '8888' ไม่ปลอดภัย โปรดเปลี่ยนใหม่ทันที" : "Warning: Default PIN '8888' is insecure. Change it immediately.")
+                                    .font(.caption2)
+                                    .foregroundColor(.appRose)
+                            }
+                            .padding(.leading, 8)
+                        }
+                    }
+
+                    Divider()
+                        .background(Color.appDivider)
+
+                    Button(action: { showingSubscriptionSheet = true }) {
+                        HStack {
+                            Label(lm.languageCode == "th" ? "แผนสมาชิกและการเรียกเก็บเงิน" : "Subscription & Billing", systemImage: "creditcard.fill")
+                                .foregroundColor(.textPrimary)
+                            Spacer()
+                            if let tier = MerchantAuthManager.shared.subscriptionTier {
+                                Text(tier == "offline_perpetual" ? (lm.languageCode == "th" ? "ออฟไลน์ ซื้อขาด" : "Offline Perpetual") : (tier == "offline_subscription" ? (lm.languageCode == "th" ? "ออฟไลน์ รายเดือน/ปี" : "Offline Sub") : (lm.languageCode == "th" ? "ออนไลน์ คลาวด์" : "Online Cloud")))
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.appAccent)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.appAccent.opacity(0.12))
+                                    .cornerRadius(6)
+                            }
+                            Image(systemName: "chevron.right")
+                                .font(.footnote)
+                                .foregroundColor(.textSecondary)
+                        }
+                    }
+
+                    Divider()
+                        .background(Color.appDivider)
+
+                    Button(action: handleLogout) {
+                        HStack {
+                            Label(L.Account.signOut.t, systemImage: "arrow.right.square.fill")
+                                .foregroundColor(.textPrimary)
+                            Spacer()
+                        }
+                    }
+
+                    Divider()
+                        .background(Color.appDivider)
+
+                    Button(action: { showingDeleteConfirmAlert = true }) {
+                        HStack {
+                            Label(L.Account.deleteAccount.t, systemImage: "exclamationmark.shield.fill")
+                                .foregroundColor(.appRose)
+                            Spacer()
+                        }
+                    }
+                }
+            }
+            .apCard()
+        }
+        .padding(.horizontal)
+
+        // ── SECTION: CONNECTION & SYNC ───────────────────────
+        VStack(alignment: .leading, spacing: 12) {
+            Text(lm.languageCode == "th" ? "การเชื่อมต่อและซิงค์" : "Connectivity & Sync")
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.appAccent)
+                .tracking(1.0)
+
+            VStack(spacing: 14) {
+                Toggle(isOn: $offlineSyncMode) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(offlineSyncMode ? Color.orange : Color.appTeal)
+                                .frame(width: 8, height: 8)
+                            Text(offlineSyncMode
+                                 ? (lm.languageCode == "th" ? "โหมดออฟไลน์ (ไม่ซิงค์กับคลาวด์)" : "Offline Mode (Local Only)")
+                                 : (lm.languageCode == "th" ? "โหมดออนไลน์ (ซิงค์อัตโนมัติ)" : "Online Mode (Auto-Sync)"))
+                                .font(.body)
+                                .foregroundColor(.textPrimary)
+                        }
+                        Text(offlineSyncMode
+                             ? (lm.languageCode == "th" ? "ข้อมูลเก็บในเครื่องเท่านั้น ไม่ซิงค์กับคลาวด์ เหมาะสำหรับช่วงอินเทอร์เน็ตมีปัญหา" : "Data saved locally. Cloud sync is disabled. Best for unstable internet.")
+                             : (lm.languageCode == "th" ? "ข้อมูลจะซิงค์ขึ้น Supabase อัตโนมัติทุก 5 วินาที" : "Data synchronizes with Supabase automatically every 5 seconds."))
+                            .font(.caption2)
+                            .foregroundColor(offlineSyncMode ? .orange : .textSecondary)
+                    }
+                }
+                .tint(.appAccent)
+                .onChange(of: offlineSyncMode) { _, newValue in
+                    APHaptic.trigger()
+                    UserDefaults.standard.set(true, forKey: "offline_mode_user_set")
+                    NetworkManager.shared.simulateOffline = newValue
+                    NetworkManager.shared.invalidateConnectivityCache()
+                    if newValue {
+                        SyncEngine.shared.cancelPendingSync()
+                    } else {
+                        NetworkManager.shared.simulateOffline = false
+                        SyncEngine.shared.startRealtimeSync(modelContext: modelContext)
+                        Task {
+                            await SyncEngine.shared.syncAll(modelContext: modelContext)
+                        }
+                    }
+                }
+
+                if !offlineSyncMode {
+                    Divider().background(Color.appDivider)
+
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(lm.languageCode == "th" ? "สถานะการเชื่อมต่อปัจจุบัน" : "Current Connection Status")
+                                .font(.body)
+                                .foregroundColor(.textPrimary)
+                            Text(connectionText)
+                                .font(.caption)
+                                .foregroundColor(connectionText == "Online" || connectionText == "ออนไลน์" ? .appTeal : .appRose)
+                        }
+                        Spacer()
+                        Button {
+                            Task {
+                                isCheckingConnection = true
+                                NetworkManager.shared.invalidateConnectivityCache()
+                                let connected = await NetworkManager.shared.isConnected()
+                                connectionText = connected
+                                    ? (lm.languageCode == "th" ? "ออนไลน์" : "ออนไลน์")
+                                    : (lm.languageCode == "th" ? "ออฟไลน์" : "Offline")
+                                isCheckingConnection = false
+                            }
+                        } label: {
+                            if isCheckingConnection {
+                                ProgressView()
+                                    .tint(.appAccent)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.caption)
+                                    .foregroundColor(.appAccent)
+                            }
+                        }
+                        .disabled(isCheckingConnection)
+                    }
+                }
+            }
+            .apCard()
+        }
+        .padding(.horizontal)
+    }
+
     @ViewBuilder
     private var settingsDirectoryList: some View {
         VStack(spacing: 0) {
@@ -413,9 +707,9 @@ struct SettingsView: View {
                         }
                 }
             }
-            
+
             Divider().background(Color.appDivider).padding(.leading, 56)
-            
+
             // 2. Table System & Web Ordering
             Button { showingTableSystemSheet = true } label: {
                 SettingsRowView(title: L.Sections.tableSystem.t, icon: "tablecells.fill", color: .appTeal)
@@ -435,9 +729,9 @@ struct SettingsView: View {
                         }
                 }
             }
-            
+
             Divider().background(Color.appDivider).padding(.leading, 56)
-            
+
             // 3. KDS Station Configuration
             Button { showingKDSSheet = true } label: {
                 SettingsRowView(title: L.Sections.kds.t, icon: "flame.fill", color: .appAmber)
@@ -457,9 +751,9 @@ struct SettingsView: View {
                         }
                 }
             }
-            
+
             Divider().background(Color.appDivider).padding(.leading, 56)
-            
+
             // 4. Printer Setup & Routing
             Button { showingPrinterSheet = true } label: {
                 SettingsRowView(title: L.Sections.printer.t, icon: "printer.fill", color: .indigo)
@@ -479,9 +773,9 @@ struct SettingsView: View {
                         }
                 }
             }
-            
+
             Divider().background(Color.appDivider).padding(.leading, 56)
-            
+
             // 5. Security & Replication
             Button { showingSecuritySheet = true } label: {
                 SettingsRowView(title: L.Sections.security.t, icon: "lock.shield.fill", color: .purple)
@@ -501,9 +795,9 @@ struct SettingsView: View {
                         }
                 }
             }
-            
+
             Divider().background(Color.appDivider).padding(.leading, 56)
-            
+
             // 6. Link Staff Devices
             Button { showingStaffDevicesSheet = true } label: {
                 SettingsRowView(title: L.Sections.linkStaff.t, icon: "qrcode", color: .appAccent)
@@ -523,9 +817,9 @@ struct SettingsView: View {
                         }
                 }
             }
-            
+
             Divider().background(Color.appDivider).padding(.leading, 56)
-            
+
             // 7. Taxes & Fees
             Button { showingTaxSheet = true } label: {
                 SettingsRowView(title: L.Sections.taxRates.t, icon: "percent", color: .appAmber)
@@ -545,9 +839,9 @@ struct SettingsView: View {
                         }
                 }
             }
-            
+
             Divider().background(Color.appDivider).padding(.leading, 56)
-            
+
             // 8. Receipt Templates
             Button { showingReceiptTemplateSheet = true } label: {
                 SettingsRowView(title: L.Sections.receiptTemplates.t, icon: "doc.text.fill", color: .blue)
@@ -567,9 +861,9 @@ struct SettingsView: View {
                         }
                 }
             }
-            
+
             Divider().background(Color.appDivider).padding(.leading, 56)
-            
+
             // 9. Currencies & Exchange
             Button { showingCurrencySheet = true } label: {
                 SettingsRowView(title: L.Sections.currencyExchange.t, icon: "dollarsign.circle.fill", color: .appTeal)
@@ -589,9 +883,31 @@ struct SettingsView: View {
                         }
                 }
             }
-            
+
             Divider().background(Color.appDivider).padding(.leading, 56)
-            
+
+            // 9.5 System Feature Control
+            Button { showingFeatureConfigSheet = true } label: {
+                SettingsRowView(title: "การควบคุมระบบ (System Control)", icon: "slider.horizontal.3", color: .appAccent)
+            }
+            .buttonStyle(.plain)
+            .fullScreenCover(isPresented: $showingFeatureConfigSheet) {
+                NavigationStack {
+                    SystemFeatureConfigView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { showingFeatureConfigSheet = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(Color.textSecondary)
+                                }
+                            }
+                        }
+                }
+            }
+
+            Divider().background(Color.appDivider).padding(.leading, 56)
+
             // 10. System Operations & Data Seeding
             Button { showingSystemOpsSheet = true } label: {
                 SettingsRowView(title: L.Sections.systemOps.t, icon: "arrow.triangle.2.circlepath.circle.fill", color: .appRose)
@@ -614,9 +930,9 @@ struct SettingsView: View {
         }
         .apCard()
     }
-    
+
     // MARK: - Actions
-    
+
     private func getInitials(from name: String) -> String {
         let parts = name.split(separator: " ")
         if parts.isEmpty { return "O" }
@@ -625,7 +941,7 @@ struct SettingsView: View {
         let last = String(parts[parts.count - 1].prefix(1))
         return (first + last).uppercased()
     }
-    
+
     private func saveNewOwnerPin() {
         let cleanPin = newOwnerPin.trimmingCharacters(in: .decimalDigits.inverted)
         if cleanPin.count == 4 {
@@ -643,22 +959,22 @@ struct SettingsView: View {
         }
         newOwnerPin = ""
     }
-    
+
     private func handleLogout() {
         APHaptic.trigger()
         withAnimation(.easeInOut(duration: 0.25)) {
             sessionManager.signOutMerchant(modelContext: modelContext)
         }
     }
-    
+
     private func performAccountDeletion() {
         APHaptic.trigger()
         isDeletingAccount = true
-        
+
         Task {
             do {
                 _ = try await NetworkManager.shared.deleteMerchantOnServer()
-                
+
                 await MainActor.run {
                     clearLocalCacheSilently()
                     isDeletingAccount = false
@@ -673,7 +989,7 @@ struct SettingsView: View {
             }
         }
     }
-    
+
     private func clearLocalCacheSilently() {
         if let tables = try? modelContext.fetch(FetchDescriptor<RestaurantTable>()) {
             for table in tables { modelContext.delete(table) }
@@ -698,7 +1014,7 @@ struct SettingsRowView: View {
     let title: String
     let icon: String
     let color: Color
-    
+
     var body: some View {
         HStack(spacing: 14) {
             Image(systemName: icon)
@@ -707,13 +1023,13 @@ struct SettingsRowView: View {
                 .frame(width: 32, height: 32)
                 .background(color)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-            
+
             Text(title)
                 .font(.body)
                 .foregroundColor(.textPrimary)
-            
+
             Spacer()
-            
+
             Image(systemName: "chevron.right")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.textTertiary)
@@ -819,12 +1135,12 @@ struct ChangePasswordSheet: View {
     @State private var errorMessage = ""
     @State private var isSaving = false
     @State private var successMessage = ""
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 VStack(spacing: 20) {
                     if !errorMessage.isEmpty {
                         HStack {
@@ -839,7 +1155,7 @@ struct ChangePasswordSheet: View {
                         .background(Color.red.opacity(0.1))
                         .cornerRadius(8)
                     }
-                    
+
                     if !successMessage.isEmpty {
                         HStack {
                             Image(systemName: "checkmark.circle.fill")
@@ -853,7 +1169,7 @@ struct ChangePasswordSheet: View {
                         .background(Color.appTeal.opacity(0.1))
                         .cornerRadius(8)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Current Password")
                             .font(.caption)
@@ -866,7 +1182,7 @@ struct ChangePasswordSheet: View {
                             .foregroundColor(.textPrimary)
                             .cornerRadius(8)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 6) {
                         Text("New Password")
                             .font(.caption)
@@ -879,7 +1195,7 @@ struct ChangePasswordSheet: View {
                             .foregroundColor(.textPrimary)
                             .cornerRadius(8)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Confirm New Password")
                             .font(.caption)
@@ -892,9 +1208,9 @@ struct ChangePasswordSheet: View {
                             .foregroundColor(.textPrimary)
                             .cornerRadius(8)
                     }
-                    
+
                     Spacer()
-                    
+
                     Button(action: savePassword) {
                         if isSaving {
                             ProgressView()
@@ -918,11 +1234,11 @@ struct ChangePasswordSheet: View {
             }
         }
     }
-    
+
     private func savePassword() {
         errorMessage = ""
         successMessage = ""
-        
+
         if newPassword.count < 8 {
             errorMessage = "New password must be at least 8 characters long."
             return
@@ -931,16 +1247,21 @@ struct ChangePasswordSheet: View {
             errorMessage = "New passwords do not match."
             return
         }
-        
+
         isSaving = true
         Task {
             do {
-                try await NetworkManager.shared.changeMerchantPassword(newPassword: newPassword)
+                let email = UserDefaults.standard.string(forKey: "logged_in_email") ?? ""
+                try await AuthService.shared.changePassword(
+                    email: email,
+                    currentPassword: oldPassword,
+                    newPassword: newPassword
+                )
                 await MainActor.run {
                     isSaving = false
                     successMessage = "Your password has been changed successfully in Supabase."
                     APHaptic.trigger()
-                    
+
                     // Dismiss after brief delay
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                         isPresented = false

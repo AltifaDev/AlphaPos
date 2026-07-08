@@ -15,6 +15,7 @@ struct LoyaltyManagementView: View {
     @State private var showingAdjustSheet = false
     @State private var pointsPerBahtText = UserDefaults.standard.string(forKey: "loyalty_points_per_baht") ?? "0.05"
     @State private var redeemValueText = UserDefaults.standard.string(forKey: "loyalty_redeem_value_per_point") ?? "0.25"
+    @State private var expiryDaysText = UserDefaults.standard.string(forKey: "loyalty_points_expiry_days") ?? "365"
 
     private var activeCustomers: [Customer] {
         customers.filter { !$0.isDeleted }
@@ -51,6 +52,10 @@ struct LoyaltyManagementView: View {
         }
         .navigationTitle(embedded ? "customer_value_title".t : "tab_loyalty".t)
         .apNavBar(background: Color.appBackground)
+        // M-4: Run expiry scheduler when view appears (throttled to once/day)
+        .onAppear {
+            LoyaltyExpiryScheduler.shared.runIfNeeded(modelContext: modelContext)
+        }
         .sheet(isPresented: $showingAdjustSheet) {
             if let selectedCustomer {
                 LoyaltyAdjustmentSheet(customer: selectedCustomer) { type, points, note in
@@ -61,41 +66,63 @@ struct LoyaltyManagementView: View {
     }
 
     private var header: some View {
-        HStack(spacing: APSpacing.md) {
-            metricCard(title: "loyalty_members".t, value: "\(activeCustomers.count)", icon: "person.2.fill", color: .appAccent)
-            metricCard(title: "loyalty_open_points".t, value: "\(totalPoints)", icon: "star.fill", color: Color(hex: "F59E0B"))
-            metricCard(title: "loyalty_transactions".t, value: "\(transactions.filter { !$0.isDeleted }.count)", icon: "list.bullet.rectangle", color: .appTeal)
+        VStack(spacing: APSpacing.sm) {
+            HStack(spacing: APSpacing.md) {
+                metricCard(title: "loyalty_members".t, value: "\(activeCustomers.count)", icon: "person.2.fill", color: .appAccent)
+                metricCard(title: "loyalty_open_points".t, value: "\(totalPoints)", icon: "star.fill", color: Color(hex: "F59E0B"))
+                metricCard(title: "loyalty_transactions".t, value: "\(transactions.filter { !$0.isDeleted }.count)", icon: "list.bullet.rectangle", color: .appTeal)
 
-            Spacer()
+                Spacer()
 
-            VStack(alignment: .trailing, spacing: 6) {
-                HStack {
-                    Text("loyalty_earn_rate".t)
-                        .font(.caption)
-                        .foregroundColor(.textSecondary)
-                    TextField("0.05", text: $pointsPerBahtText)
-                        .frame(width: 64)
-                        .textFieldStyle(.roundedBorder)
-                        .keyboardType(.decimalPad)
-                    Text("pt/฿")
-                        .font(.caption)
-                        .foregroundColor(.textSecondary)
+                VStack(alignment: .trailing, spacing: 6) {
+                    HStack {
+                        Text("loyalty_earn_rate".t)
+                            .font(.caption)
+                            .foregroundColor(.textSecondary)
+                        TextField("0.05", text: $pointsPerBahtText)
+                            .frame(width: 64)
+                            .textFieldStyle(.roundedBorder)
+                            .keyboardType(.decimalPad)
+                        Text("pt/฿")
+                            .font(.caption)
+                            .foregroundColor(.textSecondary)
+                    }
+                    HStack {
+                        Text("loyalty_redeem_rate".t)
+                            .font(.caption)
+                            .foregroundColor(.textSecondary)
+                        TextField("0.25", text: $redeemValueText)
+                            .frame(width: 64)
+                            .textFieldStyle(.roundedBorder)
+                            .keyboardType(.decimalPad)
+                        Text("฿/pt")
+                            .font(.caption)
+                            .foregroundColor(.textSecondary)
+                    }
                 }
+                .onChange(of: pointsPerBahtText) { UserDefaults.standard.set(pointsPerBahtText, forKey: "loyalty_points_per_baht") }
+                .onChange(of: redeemValueText) { UserDefaults.standard.set(redeemValueText, forKey: "loyalty_redeem_value_per_point") }
+            }
+
+            // M-4: Expiry setting row
+            HStack {
+                Spacer()
                 HStack {
-                    Text("loyalty_redeem_rate".t)
+                    Text("loyalty_expiry_days_lbl".t)
                         .font(.caption)
                         .foregroundColor(.textSecondary)
-                    TextField("0.25", text: $redeemValueText)
+                    TextField("365", text: $expiryDaysText)
                         .frame(width: 64)
                         .textFieldStyle(.roundedBorder)
-                        .keyboardType(.decimalPad)
-                    Text("฿/pt")
+                        .keyboardType(.numberPad)
+                    Text("loyalty_expiry_days_unit".t)
                         .font(.caption)
                         .foregroundColor(.textSecondary)
                 }
             }
-            .onChange(of: pointsPerBahtText) { UserDefaults.standard.set(pointsPerBahtText, forKey: "loyalty_points_per_baht") }
-            .onChange(of: redeemValueText) { UserDefaults.standard.set(redeemValueText, forKey: "loyalty_redeem_value_per_point") }
+            .onChange(of: expiryDaysText) {
+                UserDefaults.standard.set(Int(expiryDaysText) ?? 365, forKey: "loyalty_points_expiry_days")
+            }
         }
         .padding(APSpacing.md)
         .background(Color.appSurface)
@@ -213,6 +240,47 @@ struct LoyaltyManagementView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.appAccent)
                 }
+
+                // M-3: Loyalty Tier Badge + Progress to next tier
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        ZStack {
+                            Circle().fill(tierColor(customer.membershipTier).opacity(0.18))
+                            Image(systemName: tierIcon(for: customer.membershipTier))
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(tierColor(customer.membershipTier))
+                        }
+                        .frame(width: 42, height: 42)
+                        Text("loyalty_tier_\(customer.membershipTier.lowercased())".t)
+                            .font(.title3.weight(.bold))
+                            .foregroundColor(tierColor(customer.membershipTier))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(tierColor(customer.membershipTier).opacity(0.12))
+                            .clipShape(Capsule())
+                        Spacer()
+                    }
+
+                    if let nextTier = nextTier(for: customer.membershipTier) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack {
+                                Text("loyalty_tier_progress_label".t)
+                                    .font(.caption)
+                                    .foregroundColor(.textSecondary)
+                                Spacer()
+                                Text(LocalizationManager.shared.t("loyalty_next_tier_label", "loyalty_tier_\(nextTier)".t))
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(.textSecondary)
+                            }
+                            ProgressView(value: tierProgress(for: customer.totalSpend))
+                                .tint(tierColor(customer.membershipTier))
+                        }
+                    }
+                }
+                .padding(APSpacing.md)
+                .background(Color.appSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.appBorderSubtle, lineWidth: 1))
 
                 HStack(spacing: APSpacing.md) {
                     metricCard(title: "loyalty_points".t, value: "\(customer.loyaltyPoints)", icon: "star.fill", color: Color(hex: "F59E0B"))
@@ -412,6 +480,47 @@ struct LoyaltyManagementView: View {
         case "silver": return Color(hex: "9CA3AF")
         default: return .appAccent
         }
+    }
+
+    // MARK: - M-3: Tier display helpers
+
+    /// SF Symbol icon representing each membership tier.
+    private func tierIcon(for tier: String) -> String {
+        switch tier.lowercased() {
+        case "platinum": return "diamond.fill"
+        case "gold": return "crown.fill"
+        case "silver": return "star.fill"
+        default: return "person.fill"
+        }
+    }
+
+    /// Returns the next tier key above the given tier, or nil if already at the top.
+    private func nextTier(for tier: String) -> String? {
+        switch tier.lowercased() {
+        case "standard": return "silver"
+        case "silver": return "gold"
+        case "gold": return "platinum"
+        default: return nil
+        }
+    }
+
+    /// Progress (0.0–1.0) toward the next tier based on accumulated spend.
+    /// Thresholds mirror POSViewModel.resolvedTier: silver 1,000 / gold 5,000 / platinum 15,000 THB.
+    private func tierProgress(for totalSpend: Double) -> Double {
+        let lower: Double
+        let upper: Double
+        switch totalSpend {
+        case ..<1_000:
+            lower = 0; upper = 1_000
+        case 1_000..<5_000:
+            lower = 1_000; upper = 5_000
+        case 5_000..<15_000:
+            lower = 5_000; upper = 15_000
+        default:
+            return 1.0
+        }
+        let progress = (totalSpend - lower) / (upper - lower)
+        return min(max(progress, 0.0), 1.0)
     }
 
     private func icon(for type: String) -> String {

@@ -149,7 +149,7 @@ class LocalizationManager: ObservableObject {
 
     private static func safeCVarArg(for arg: CVarArg, specifier: String?) -> CVarArg {
         let spec = specifier?.lowercased() ?? "%@"
-        
+
         if spec.hasSuffix("@") {
             if let string = arg as? String {
                 return string as NSString
@@ -169,7 +169,7 @@ class LocalizationManager: ObservableObject {
                 return String(describing: arg) as NSString
             }
         }
-        
+
         if spec.hasSuffix("d") || spec.hasSuffix("i") || spec.hasSuffix("u") || spec.hasSuffix("x") || spec.hasSuffix("o") {
             if let int = arg as? Int {
                 return int
@@ -187,7 +187,7 @@ class LocalizationManager: ObservableObject {
                 return 0
             }
         }
-        
+
         if spec.hasSuffix("f") || spec.hasSuffix("e") || spec.hasSuffix("g") || spec.hasSuffix("a") {
             if let double = arg as? Double {
                 return double
@@ -203,7 +203,7 @@ class LocalizationManager: ObservableObject {
                 return 0.0
             }
         }
-        
+
         if let string = arg as? String {
             return string as NSString
         } else if let nsObject = arg as? NSObject {
@@ -216,9 +216,9 @@ class LocalizationManager: ObservableObject {
     func t(_ key: String, _ args: CVarArg...) -> String {
         let format = translate(key)
         guard !args.isEmpty else { return format }
-        
+
         let specifiers = Self.extractFormatSpecifiers(from: format)
-        
+
         var safeArgs: [CVarArg] = []
         for idx in 0..<max(args.count, specifiers.count) {
             let specifier = idx < specifiers.count ? specifiers[idx] : nil
@@ -238,7 +238,7 @@ class LocalizationManager: ObservableObject {
                 }
             }
         }
-        
+
         return String(format: format, arguments: safeArgs)
     }
 }
@@ -1651,6 +1651,13 @@ enum AppLocalization {
         "loyalty_transaction_type": ["en": "Transaction Type", "th": "ประเภทรายการ", "zh": "交易类型", "ja": "取引種類", "ko": "거래 유형", "id": "Jenis Transaksi", "ms": "Jenis Transaksi"],
         "loyalty_transactions": ["en": "Transactions", "th": "รายการ", "zh": "交易记录", "ja": "取引履歴", "ko": "거래 내역", "id": "Transaksi", "ms": "Transaksi"],
         "loyalty_visits_spend_template": ["en": "%@ visits · ฿%@ spent", "th": "%@ ครั้ง · ฿%@ ใช้จ่าย", "zh": "%@ 次访问 · ฿%@ 消费", "ja": "%@ 回来店 · ฿%@ 利用", "ko": "%@ 방문 · ฿%@ 사용", "id": "%@ kunjungan · ฿%@ belanja", "ms": "%@ lawatan · ฿%@ belanja"],
+        // MARK: - M-3: Loyalty Tiers
+        "loyalty_tier_standard": ["en": "Standard", "th": "ทั่วไป", "zh": "标准会员", "ja": "スタンダード", "ko": "스탠다드", "id": "Standar", "ms": "Standard"],
+        "loyalty_tier_silver": ["en": "Silver", "th": "ซิลเวอร์", "zh": "银卡会员", "ja": "シルバー", "ko": "실버", "id": "Silver", "ms": "Silver"],
+        "loyalty_tier_gold": ["en": "Gold", "th": "โกลด์", "zh": "金卡会员", "ja": "ゴールド", "ko": "골드", "id": "Emas", "ms": "Emas"],
+        "loyalty_tier_platinum": ["en": "Platinum", "th": "แพลทินัม", "zh": "白金会员", "ja": "プラチナ", "ko": "플래티넘", "id": "Platinum", "ms": "Platinum"],
+        "loyalty_tier_progress_label": ["en": "Progress to next tier", "th": "ความคืบหน้าสู่ระดับถัดไป", "zh": "距下一等级进度", "ja": "次のティアまでの進捗", "ko": "다음 등급까지 진행률", "id": "Kemajuan ke tingkat berikutnya", "ms": "Kemajuan ke peringkat seterusnya"],
+        "loyalty_next_tier_label": ["en": "Next: %@", "th": "ถัดไป: %@", "zh": "下一级：%@", "ja": "次: %@", "ko": "다음: %@", "id": "Berikutnya: %@", "ms": "Seterusnya: %@"],
         // MARK: - Purchase Orders
         "po_choose_ingredient_placeholder": ["en": "Choose ingredient", "th": "เลือกวัตถุดิบ", "zh": "选择原料", "ja": "材料を選択", "ko": "재료 선택", "id": "Pilih bahan", "ms": "Pilih bahan"],
         "po_delivery_verification_desc": ["en": "Verify delivered items against order", "th": "ตรวจสอบสินค้าที่ส่งกับออเดอร์", "zh": "核对已交付商品与订单", "ja": "配達品を注文と照合", "ko": "배달 품목을 주문과 대조 확인", "id": "Verifikasi item terkirim dengan pesanan", "ms": "Sahkan item dihantar dengan pesanan"],
@@ -1846,6 +1853,9 @@ enum AppLocalization {
         "payroll_engine_title": ["en": "Payroll Engine", "th": "ระบบเงินเดือน", "zh": "薪资引擎", "ja": "給与計算", "ko": "급여 엔진", "id": "Mesin Penggajian", "ms": "Enjin Gaji"],
         "payroll_period_header": ["en": "Pay Period", "th": "งวดเงินเดือน", "zh": "薪资周期", "ja": "給与期間", "ko": "급여 기간", "id": "Periode Gaji", "ms": "Tempoh Gaji"],
         "payroll_report_title": ["en": "Payroll Report", "th": "รายงานเงินเดือน", "zh": "薪资报告", "ja": "給与レポート", "ko": "급여 보고서", "id": "Laporan Penggajian", "ms": "Laporan Gaji"],
+        "payroll_export_pdf_btn": ["en": "Export PDF", "th": "ส่งออก PDF", "zh": "导出 PDF", "ja": "PDFをエクスポート", "ko": "PDF 내보내기", "id": "Ekspor PDF", "ms": "Eksport PDF"],
+        "payroll_export_generating": ["en": "Generating PDF...", "th": "กำลังสร้าง PDF...", "zh": "正在生成 PDF...", "ja": "PDFを生成中...", "ko": "PDF 생성 중...", "id": "Membuat PDF...", "ms": "Menjana PDF..."],
+        "payroll_export_failed": ["en": "Failed to generate PDF", "th": "สร้าง PDF ไม่สำเร็จ", "zh": "生成 PDF 失败", "ja": "PDFの生成に失敗しました", "ko": "PDF 생성 실패", "id": "Gagal membuat PDF", "ms": "Gagal menjana PDF"],
         "payroll_shifts_title": ["en": "Payroll Shifts", "th": "กะเงินเดือน", "zh": "薪资班次", "ja": "給与シフト", "ko": "급여 교대", "id": "Shift Penggajian", "ms": "Syif Gaji"],
         "schedule_shift": ["en": "Schedule Shift", "th": "กำหนดกะ", "zh": "排班", "ja": "シフト予約", "ko": "교대 일정", "id": "Jadwalkan Shift", "ms": "Jadualkan Syif"],
         "shift_closed": ["en": "Shift Closed", "th": "ปิดกะแล้ว", "zh": "班次已关闭", "ja": "シフト終了", "ko": "교대 종료", "id": "Shift Ditutup", "ms": "Syif Ditutup"],
@@ -2372,6 +2382,10 @@ enum AppLocalization {
         "role_field_placeholder": ["en": "Select role", "th": "เลือกตำแหน่ง", "zh": "选择角色", "ja": "役割を選択", "ko": "역할 선택", "id": "Pilih peran", "ms": "Pilih peranan"],
         "role_notes_header": ["en": "Role Notes", "th": "หมายเหตุตำแหน่ง", "zh": "角色备注", "ja": "役割メモ", "ko": "역할 메모", "id": "Catatan Peran", "ms": "Nota Peranan"],
         "run_calculations_btn": ["en": "Run Calculations", "th": "คำนวณ", "zh": "运行计算", "ja": "計算実行", "ko": "계산 실행", "id": "Jalankan Perhitungan", "ms": "Jalankan Pengiraan"],
+        "payroll_ot_settings_btn": ["en": "OT Settings", "th": "ตั้งค่า OT", "zh": "加班设置", "ja": "残業設定", "ko": "초과근무 설정", "id": "Pengaturan Lembur", "ms": "Tetapan OT"],
+        "payroll_ot_multiplier_lbl": ["en": "OT Multiplier", "th": "ตัวคูณ OT", "zh": "加班倍率", "ja": "残業倍率", "ko": "초과근무 배율", "id": "Pengali Lembur", "ms": "Pengganda OT"],
+        "payroll_ot_threshold_lbl": ["en": "OT Threshold (hrs/day)", "th": "เกณฑ์ OT (ชม./วัน)", "zh": "加班门槛（小时/天）", "ja": "残業しきい値（時間/日）", "ko": "초과근무 기준(시간/일)", "id": "Ambang Lembur (jam/hari)", "ms": "Ambang OT (jam/hari)"],
+        "payroll_ot_multiplier_hint": ["en": "Applied to overtime hours beyond the daily threshold.", "th": "ใช้กับชั่วโมงล่วงเวลาที่เกินเกณฑ์ต่อวัน", "zh": "适用于超过每日门槛的加班时数。", "ja": "1日のしきい値を超えた残業時間に適用されます。", "ko": "일일 기준을 초과한 초과근무 시간에 적용됩니다.", "id": "Diterapkan pada jam lembur di atas ambang harian.", "ms": "Digunakan untuk jam lebih masa melebihi ambang harian."],
         "sales_revenue_trend": ["en": "Sales Revenue Trend", "th": "แนวโน้มรายได้ขาย", "zh": "销售收入趋势", "ja": "売上推移", "ko": "매출 트렌드", "id": "Tren Pendapatan Penjualan", "ms": "Trend Hasil Jualan"],
         "save_btn_label": ["en": "Save", "th": "บันทึก", "zh": "保存", "ja": "保存", "ko": "저장", "id": "Simpan", "ms": "Simpan"],
         "save_draft_btn": ["en": "Save Draft", "th": "บันทึกร่าง", "zh": "保存草稿", "ja": "下書き保存", "ko": "초안 저장", "id": "Simpan Draft", "ms": "Simpan Draf"],
@@ -2494,5 +2508,243 @@ enum AppLocalization {
         "stock_scan_imported_count": ["en": "Successfully updated %d stock items", "th": "อัปเดตสต็อกสินค้าสำเร็จ %d รายการ"],
         "stock_scan_success_title": ["en": "Stock Received!", "th": "รับสินค้าเข้าสต็อกสำเร็จ!"],
         "stock_scan_no_match": ["en": "No Matched Item", "th": "ไม่พบข้อมูลที่ตรงกัน"]
+        ,
+        // C-1: Gift Card POS UI keys
+        "pos_gift_card": ["en": "Gift Card", "th": "บัตรของขวัญ", "zh": "礼品卡", "ja": "ギフトカード", "ko": "기프트카드", "id": "Kartu Hadiah", "ms": "Kad Hadiah"],
+        "pos_gift_card_redeem_amount": ["en": "Amount to Redeem", "th": "จำนวนเงินที่ต้องการใช้", "zh": "兑换金额", "ja": "利用金額", "ko": "사용 금액", "id": "Jumlah Ditukar", "ms": "Jumlah Ditebus"],
+        "pos_gift_card_confirm": ["en": "Confirm Gift Card", "th": "ยืนยันใช้บัตรของขวัญ", "zh": "确认礼品卡", "ja": "ギフトカード確認", "ko": "기프트카드 확인", "id": "Konfirmasi Kartu Hadiah", "ms": "Sahkan Kad Hadiah"],
+        "pos_gift_card_exceed_warning": ["en": "Amount exceeds card balance", "th": "จำนวนเกินยอดคงเหลือในบัตร", "zh": "超过余额", "ja": "残高を超えています", "ko": "잔액 초과", "id": "Melebihi saldo kartu", "ms": "Melebihi baki kad"],
+        "max_btn": ["en": "Max", "th": "สูงสุด", "zh": "最大", "ja": "最大", "ko": "최대", "id": "Maks", "ms": "Maks"]
+        ,
+        // H-1: No-Sale keys
+        "no_sale_btn":            ["en": "No Sale", "th": "ไม่มีการขาย", "zh": "无销售", "ja": "金庫開け", "ko": "거스름돈 인출", "id": "Tanpa Penjualan", "ms": "Tiada Jualan"],
+        "no_sale_confirm_title":  ["en": "Open Cash Drawer?", "th": "เปิดลิ้นชักเงินสด?", "zh": "打开收银机?", "ja": "ドロワーを開きますか?", "ko": "서랍 열기?", "id": "Buka Laci Kasir?", "ms": "Buka Laci Wang?"],
+        "no_sale_confirm_msg":    ["en": "This will open the cash drawer and record a No-Sale event in the audit log.", "th": "การดำเนินการนี้จะเปิดลิ้นชักเงินสดและบันทึกเป็น No-Sale ใน Audit Log", "zh": "将打开收银机并记录无销售事件", "ja": "金庫を開けてNO-SALEをログに記録します", "ko": "서랍을 열고 감사 로그에 기록합니다", "id": "Ini akan membuka laci kasir dan mencatat No-Sale", "ms": "Ini akan membuka laci wang dan merekod No-Sale"],
+        "no_sale_confirm_action": ["en": "Open Drawer", "th": "เปิดลิ้นชัก", "zh": "开抽屉", "ja": "開ける", "ko": "열기", "id": "Buka Laci", "ms": "Buka Laci"],
+        "no_sale_reason":         ["en": "No-Sale (Drawer Open)", "th": "ไม่มีการขาย (เปิดลิ้นชัก)", "zh": "无销售（开抽屉）", "ja": "NO-SALE（金庫開け）", "ko": "거스름돈 인출 (서랍 열기)", "id": "Tanpa Penjualan (Buka Laci)", "ms": "Tiada Jualan (Buka Laci)"]
+        ,
+        // H-2: Table Transfer keys
+        "table_transfer_btn":            ["en": "Transfer Table", "th": "ย้ายโต๊ะ", "zh": "转移桌台", "ja": "テーブル移動", "ko": "테이블 이동", "id": "Pindah Meja", "ms": "Pindah Meja"],
+        "table_transfer_from":           ["en": "From", "th": "จากโต๊ะ", "zh": "从", "ja": "から", "ko": "에서", "id": "Dari", "ms": "Dari"],
+        "table_transfer_orders_count":   ["en": "orders in session", "th": "ออเดอร์ในรอบนี้", "zh": "个订单", "ja": "注文", "ko": "주문", "id": "pesanan", "ms": "pesanan"],
+        "table_transfer_no_vacant":      ["en": "No vacant tables available on this floor", "th": "ไม่มีโต๊ะว่างบนชั้นนี้", "zh": "本楼层没有空台", "ja": "この階に空きテーブルがありません", "ko": "이 층에 빈 테이블이 없습니다", "id": "Tidak ada meja kosong di lantai ini", "ms": "Tiada meja kosong di tingkat ini"],
+        "table_transfer_confirm_title":  ["en": "Transfer Table?", "th": "ยืนยันการย้ายโต๊ะ?", "zh": "确认转台?", "ja": "テーブルを移動しますか?", "ko": "테이블을 이동하시겠습니까?", "id": "Pindahkan Meja?", "ms": "Pindah Meja?"],
+        "table_transfer_confirm_msg":    ["en": "Move all orders to table", "th": "ย้ายออเดอร์ทั้งหมดไปยัง", "zh": "将所有订单移至", "ja": "すべての注文を移動", "ko": "모든 주문 이동", "id": "Pindahkan semua pesanan ke meja", "ms": "Pindah semua pesanan ke meja"],
+        "table_transfer_confirm_action": ["en": "Transfer", "th": "ย้ายโต๊ะ", "zh": "转移", "ja": "移動", "ko": "이동", "id": "Pindahkan", "ms": "Pindahkan"]
+        ,
+        // H-3: Item Void PIN Guard
+        "void_pin_required_hint": ["en": "Manager PIN required to void items already sent to kitchen", "th": "ต้องใช้ PIN ผู้จัดการเพื่อยกเลิกรายการที่ส่งครัวแล้ว", "zh": "取消已发厨房的菜品需要经理PIN", "ja": "送信済み品目のキャンセルにはマネージャーPINが必要", "ko": "주방에 전달된 항목 취소는 매니저 PIN 필요", "id": "PIN Manajer diperlukan untuk void item yang sudah dikirim", "ms": "PIN Pengurus diperlukan untuk batal item yang dihantar"]
+        ,
+        // H-5/H-6: Device Management
+        "device_paired_success_title":  ["en": "Device Paired!", "th": "จับคู่อุปกรณ์สำเร็จ!", "zh": "设备配对成功！", "ja": "デバイスのペアリング完了！", "ko": "기기 페어링 완료!", "id": "Perangkat Terpasang!", "ms": "Peranti Dipasangkan!"],
+        "device_paired_success_desc":   ["en": "The device is now registered and ready to use.", "th": "อุปกรณ์ลงทะเบียนสำเร็จและพร้อมใช้งาน", "zh": "设备已注册并可使用", "ja": "デバイスが登録され使用可能です", "ko": "기기가 등록되어 사용 준비 완료", "id": "Perangkat terdaftar dan siap digunakan", "ms": "Peranti telah didaftar dan sedia digunakan"],
+        "done_btn":                     ["en": "Done", "th": "เสร็จสิ้น", "zh": "完成", "ja": "完了", "ko": "완료", "id": "Selesai", "ms": "Selesai"],
+        "device_remote_actions_title":  ["en": "REMOTE ACTIONS", "th": "การดำเนินการระยะไกล", "zh": "远程操作", "ja": "リモート操作", "ko": "원격 작업", "id": "Tindakan Jarak Jauh", "ms": "Tindakan Jauh"],
+        "device_force_sync_btn":        ["en": "Force Sync", "th": "บังคับซิงค์", "zh": "强制同步", "ja": "強制同期", "ko": "강제 동기화", "id": "Paksa Sinkronisasi", "ms": "Paksa Segerakkan"],
+        "device_revoke_trust_btn":      ["en": "Revoke Trust", "th": "ยกเลิกความน่าเชื่อถือ", "zh": "撤销信任", "ja": "信頼を取り消す", "ko": "신뢰 취소", "id": "Cabut Kepercayaan", "ms": "Tarik Kepercayaan"],
+        "device_grant_trust_btn":       ["en": "Grant Trust", "th": "อนุมัติความน่าเชื่อถือ", "zh": "授予信任", "ja": "信頼を付与する", "ko": "신뢰 부여", "id": "Berikan Kepercayaan", "ms": "Beri Kepercayaan"],
+        "device_remove_btn":            ["en": "Remove Device", "th": "ลบอุปกรณ์", "zh": "移除设备", "ja": "デバイスを削除", "ko": "기기 삭제", "id": "Hapus Perangkat", "ms": "Buang Peranti"]
+        ,
+        // M-2: Coupon Code keys
+        "coupon_codes_btn":      ["en": "Coupon Codes", "th": "โค้ดคูปอง", "zh": "优惠码", "ja": "クーポンコード", "ko": "쿠폰 코드", "id": "Kode Kupon", "ms": "Kod Kupon"],
+        "coupon_new_btn":        ["en": "New Coupon", "th": "สร้างคูปองใหม่", "zh": "新建优惠码", "ja": "新規クーポン", "ko": "새 쿠폰", "id": "Kupon Baru", "ms": "Kupon Baharu"],
+        "coupon_code_lbl":       ["en": "Coupon Code", "th": "รหัสคูปอง", "zh": "优惠码", "ja": "クーポンコード", "ko": "쿠폰 코드", "id": "Kode Kupon", "ms": "Kod Kupon"],
+        "coupon_generate_btn":   ["en": "Generate", "th": "สร้างรหัส", "zh": "生成", "ja": "生成", "ko": "생성", "id": "Buat", "ms": "Jana"],
+        "coupon_promo_link_lbl": ["en": "Link to Promotion", "th": "เชื่อมกับโปรโมชั่น", "zh": "关联促销", "ja": "プロモーションに紐付け", "ko": "프로모션 연결", "id": "Hubungkan ke Promosi", "ms": "Kaitkan dengan Promosi"],
+        "coupon_no_promo":       ["en": "— No linked promotion —", "th": "— ไม่เชื่อมกับโปรโมชั่น —", "zh": "— 不关联促销 —", "ja": "— 関連なし —", "ko": "— 연결 없음 —", "id": "— Tanpa promosi —", "ms": "— Tanpa promosi —"],
+        "coupon_max_use_lbl":    ["en": "Max Redemptions", "th": "จำนวนการใช้สูงสุด", "zh": "最大兑换次数", "ja": "最大利用回数", "ko": "최대 사용 횟수", "id": "Maks Penukaran", "ms": "Maks Penebusan"],
+        "coupon_has_expiry_lbl": ["en": "Has Expiry Date", "th": "มีวันหมดอายุ", "zh": "有效期限", "ja": "有効期限あり", "ko": "만료일 있음", "id": "Ada tanggal kedaluwarsa", "ms": "Ada tarikh luput"],
+        "coupon_expires_lbl":    ["en": "Expires", "th": "หมดอายุ", "zh": "到期", "ja": "有効期限", "ko": "만료", "id": "Kedaluwarsa", "ms": "Luput"],
+        "coupon_save_btn":       ["en": "Save Coupon", "th": "บันทึกคูปอง", "zh": "保存优惠码", "ja": "クーポン保存", "ko": "쿠폰 저장", "id": "Simpan Kupon", "ms": "Simpan Kupon"],
+        "coupon_uses_lbl":       ["en": "uses", "th": "ครั้ง", "zh": "次使用", "ja": "回使用", "ko": "사용", "id": "penggunaan", "ms": "penggunaan"],
+        "coupon_copied_msg":     ["en": "Copied!", "th": "คัดลอกแล้ว!", "zh": "已复制！", "ja": "コピー済！", "ko": "복사됨！", "id": "Tersalin！", "ms": "Disalin！"]
+        ,
+        // M-4: Loyalty Point Expiry
+        "loyalty_expiry_days_lbl":  ["en": "Points expire after", "th": "แต้มหมดอายุหลัง", "zh": "积分有效期", "ja": "ポイント有効期限", "ko": "포인트 유효기간", "id": "Poin kadaluarsa setelah", "ms": "Mata ganjaran luput selepas"],
+        "loyalty_expiry_days_unit": ["en": "days", "th": "วัน", "zh": "天", "ja": "日", "ko": "일", "id": "hari", "ms": "hari"],
+        "loyalty_expiry_ran_msg":   ["en": "Expired points removed", "th": "แต้มหมดอายุถูกหักออกแล้ว", "zh": "已过期积分已扣除", "ja": "期限切れポイントを差し引きました", "ko": "만료된 포인트가 차감되었습니다", "id": "Poin kadaluarsa telah dikurangi", "ms": "Mata luput telah ditolak"]
+        ,
+        // M-5: Leave Management
+        "leave_management_tab":         ["en": "Leave", "th": "การลา", "zh": "请假", "ja": "休暇", "ko": "휴가", "id": "Cuti", "ms": "Cuti"],
+        "leave_request_btn":            ["en": "Request Leave", "th": "ขอลา", "zh": "申请请假", "ja": "休暇申請", "ko": "휴가 신청", "id": "Ajukan Cuti", "ms": "Mohon Cuti"],
+        "leave_stat_pending":           ["en": "Pending", "th": "รออนุมัติ", "zh": "待审批", "ja": "承認待ち", "ko": "승인 대기", "id": "Menunggu", "ms": "Menunggu"],
+        "leave_stat_approved_month":    ["en": "Approved (this month)", "th": "อนุมัติแล้ว (เดือนนี้)", "zh": "已批准(本月)", "ja": "承認済(今月)", "ko": "승인됨(이번달)", "id": "Disetujui (bulan ini)", "ms": "Diluluskan (bulan ini)"],
+        "leave_stat_days_month":        ["en": "Days off (this month)", "th": "วันลา (เดือนนี้)", "zh": "请假天数(本月)", "ja": "休暇日数(今月)", "ko": "휴가일수(이번달)", "id": "Hari cuti (bulan ini)", "ms": "Hari cuti (bulan ini)"],
+        "leave_filter_all":             ["en": "All", "th": "ทั้งหมด", "zh": "全部", "ja": "全て", "ko": "전체", "id": "Semua", "ms": "Semua"],
+        "leave_filter_all_staff":       ["en": "All Staff", "th": "พนักงานทุกคน", "zh": "全部员工", "ja": "全スタッフ", "ko": "전체 직원", "id": "Semua Staf", "ms": "Semua Kakitangan"],
+        "leave_search_placeholder":     ["en": "Search staff or reason…", "th": "ค้นหาพนักงานหรือเหตุผล…", "zh": "搜索员工或原因…", "ja": "スタッフまたは理由を検索…", "ko": "직원 또는 사유 검색…", "id": "Cari staf atau alasan…", "ms": "Cari kakitangan atau sebab…"],
+        "leave_empty_title":            ["en": "No leave records", "th": "ไม่มีรายการลา", "zh": "暂无请假记录", "ja": "休暇記録なし", "ko": "휴가 기록 없음", "id": "Tidak ada catatan cuti", "ms": "Tiada rekod cuti"],
+        "leave_status_pending":         ["en": "Pending", "th": "รออนุมัติ", "zh": "待审批", "ja": "承認待ち", "ko": "승인 대기", "id": "Menunggu", "ms": "Menunggu"],
+        "leave_status_approved":        ["en": "Approved", "th": "อนุมัติ", "zh": "已批准", "ja": "承認済み", "ko": "승인됨", "id": "Disetujui", "ms": "Diluluskan"],
+        "leave_status_rejected":        ["en": "Rejected", "th": "ปฏิเสธ", "zh": "已拒绝", "ja": "却下", "ko": "거부됨", "id": "Ditolak", "ms": "Ditolak"],
+        "leave_status_cancelled":       ["en": "Cancelled", "th": "ยกเลิก", "zh": "已取消", "ja": "キャンセル済", "ko": "취소됨", "id": "Dibatalkan", "ms": "Dibatalkan"],
+        "leave_status_lbl":             ["en": "Status", "th": "สถานะ", "zh": "状态", "ja": "ステータス", "ko": "상태", "id": "Status", "ms": "Status"],
+        "leave_unpaid_badge":           ["en": "Unpaid", "th": "ไม่ได้รับเงิน", "zh": "无薪", "ja": "無給", "ko": "무급", "id": "Tanpa Bayar", "ms": "Tanpa Bayaran"],
+        "leave_days_unit":              ["en": "days", "th": "วัน", "zh": "天", "ja": "日", "ko": "일", "id": "hari", "ms": "hari"],
+        "leave_type_lbl":               ["en": "Leave Type", "th": "ประเภทการลา", "zh": "请假类型", "ja": "休暇種別", "ko": "휴가 유형", "id": "Jenis Cuti", "ms": "Jenis Cuti"],
+        "leave_type_sick":              ["en": "Sick Leave", "th": "ลาป่วย", "zh": "病假", "ja": "病気休暇", "ko": "병가", "id": "Sakit", "ms": "Cuti Sakit"],
+        "leave_type_annual":            ["en": "Annual Leave", "th": "ลาพักร้อน", "zh": "年假", "ja": "年次有給休暇", "ko": "연차", "id": "Cuti Tahunan", "ms": "Cuti Tahunan"],
+        "leave_type_personal":          ["en": "Personal Leave", "th": "ลากิจ", "zh": "事假", "ja": "私用休暇", "ko": "개인 휴가", "id": "Cuti Pribadi", "ms": "Cuti Peribadi"],
+        "leave_type_unpaid":            ["en": "Unpaid Leave", "th": "ลาไม่ได้รับเงิน", "zh": "无薪假", "ja": "無給休暇", "ko": "무급 휴가", "id": "Cuti Tanpa Bayar", "ms": "Cuti Tanpa Gaji"],
+        "leave_type_maternity":         ["en": "Maternity Leave", "th": "ลาคลอด", "zh": "产假", "ja": "産前産後休暇", "ko": "출산 휴가", "id": "Cuti Melahirkan", "ms": "Cuti Bersalin"],
+        "leave_type_paternity":         ["en": "Paternity Leave", "th": "ลาเลี้ยงดูบุตร", "zh": "陪产假", "ja": "育児休暇", "ko": "육아 휴가", "id": "Cuti Ayah", "ms": "Cuti Bapa"],
+        "leave_type_other":             ["en": "Other", "th": "อื่นๆ", "zh": "其他", "ja": "その他", "ko": "기타", "id": "Lainnya", "ms": "Lain-lain"],
+        "leave_employee_section":       ["en": "Employee", "th": "พนักงาน", "zh": "员工", "ja": "従業員", "ko": "직원", "id": "Karyawan", "ms": "Kakitangan"],
+        "leave_employee_lbl":           ["en": "Select Employee", "th": "เลือกพนักงาน", "zh": "选择员工", "ja": "従業員を選択", "ko": "직원 선택", "id": "Pilih Karyawan", "ms": "Pilih Kakitangan"],
+        "leave_select_employee":        ["en": "— Select —", "th": "— เลือกพนักงาน —", "zh": "— 选择 —", "ja": "— 選択 —", "ko": "— 선택 —", "id": "— Pilih —", "ms": "— Pilih —"],
+        "leave_details_section":        ["en": "Leave Details", "th": "รายละเอียดการลา", "zh": "请假详情", "ja": "休暇詳細", "ko": "휴가 세부사항", "id": "Detail Cuti", "ms": "Butiran Cuti"],
+        "leave_start_date":             ["en": "Start Date", "th": "วันที่เริ่ม", "zh": "开始日期", "ja": "開始日", "ko": "시작일", "id": "Tanggal Mulai", "ms": "Tarikh Mula"],
+        "leave_end_date":               ["en": "End Date", "th": "วันที่สิ้นสุด", "zh": "结束日期", "ja": "終了日", "ko": "종료일", "id": "Tanggal Selesai", "ms": "Tarikh Tamat"],
+        "leave_half_day_toggle":        ["en": "Half Day", "th": "ลาครึ่งวัน", "zh": "半天", "ja": "半日", "ko": "반일", "id": "Setengah Hari", "ms": "Separuh Hari"],
+        "leave_total_days":             ["en": "Total Days", "th": "จำนวนวัน", "zh": "总天数", "ja": "合計日数", "ko": "총 일수", "id": "Total Hari", "ms": "Jumlah Hari"],
+        "leave_paid_toggle":            ["en": "Paid Leave", "th": "ลาได้รับเงิน", "zh": "带薪假", "ja": "有給休暇", "ko": "유급 휴가", "id": "Cuti Berbayar", "ms": "Cuti Berbayar"],
+        "leave_reason_section":         ["en": "Reason", "th": "เหตุผล", "zh": "原因", "ja": "理由", "ko": "사유", "id": "Alasan", "ms": "Sebab"],
+        "leave_reason_placeholder":     ["en": "Enter reason (optional)…", "th": "กรอกเหตุผล (ไม่บังคับ)…", "zh": "输入原因（可选）…", "ja": "理由を入力（任意）…", "ko": "사유 입력 (선택)…", "id": "Masukkan alasan (opsional)…", "ms": "Masukkan sebab (pilihan)…"],
+        "leave_save_btn":               ["en": "Submit Request", "th": "ส่งคำขอ", "zh": "提交申请", "ja": "申請を送信", "ko": "신청 제출", "id": "Kirim Permohonan", "ms": "Hantar Permohonan"],
+        "leave_action_section":         ["en": "Action", "th": "การดำเนินการ", "zh": "操作", "ja": "アクション", "ko": "작업", "id": "Tindakan", "ms": "Tindakan"],
+        "leave_approve_btn":            ["en": "Approve", "th": "อนุมัติ", "zh": "批准", "ja": "承認", "ko": "승인", "id": "Setujui", "ms": "Luluskan"],
+        "leave_reject_btn":             ["en": "Reject", "th": "ปฏิเสธ", "zh": "拒绝", "ja": "却下", "ko": "거부", "id": "Tolak", "ms": "Tolak"],
+        "leave_approved_by_placeholder": ["en": "Your name (approver)", "th": "ชื่อผู้อนุมัติ", "zh": "审批人姓名", "ja": "承認者名", "ko": "승인자 이름", "id": "Nama penyetuju", "ms": "Nama pelulus"],
+        "leave_approved_by_lbl":        ["en": "Approved by", "th": "อนุมัติโดย", "zh": "审批人", "ja": "承認者", "ko": "승인자", "id": "Disetujui oleh", "ms": "Diluluskan oleh"],
+        "leave_details_title":          ["en": "Leave Details", "th": "รายละเอียดการลา", "zh": "请假详情", "ja": "休暇詳細", "ko": "휴가 세부정보", "id": "Detail Cuti", "ms": "Butiran Cuti"],
+        "leave_dates_section":          ["en": "Dates", "th": "วันที่", "zh": "日期", "ja": "日付", "ko": "날짜", "id": "Tanggal", "ms": "Tarikh"]
+        ,
+        // M-10: Billing
+        "org_current_plan":         ["en": "Current Plan", "th": "แพ็คเกจปัจจุบัน", "zh": "当前计划", "ja": "現在のプラン", "ko": "현재 플랜", "id": "Paket Saat Ini", "ms": "Pelan Semasa"],
+        "org_billing_next_cycle":   ["en": "Next billing cycle: 1st of next month", "th": "รอบถัดไป: 1 ของเดือนหน้า", "zh": "下次账单: 下月1日", "ja": "次の請求: 来月1日", "ko": "다음 결제: 다음달 1일", "id": "Siklus berikutnya: 1 bulan depan", "ms": "Kitaran seterusnya: 1 bulan hadapan"],
+        "org_upgrade_btn":          ["en": "Upgrade", "th": "อัพเกรด", "zh": "升级", "ja": "アップグレード", "ko": "업그레이드", "id": "Upgrade", "ms": "Naik Taraf"],
+        "org_billing_history":      ["en": "BILLING HISTORY", "th": "ประวัติการชำระเงิน", "zh": "账单历史", "ja": "支払履歴", "ko": "결제 내역", "id": "Riwayat Tagihan", "ms": "Sejarah Bil"],
+        "org_billing_upcoming":     ["en": "Upcoming", "th": "กำลังจะถึง", "zh": "即将", "ja": "予定", "ko": "예정", "id": "Mendatang", "ms": "Akan Datang"],
+        "org_billing_paid":         ["en": "Paid", "th": "ชำระแล้ว", "zh": "已付", "ja": "支払済", "ko": "결제완료", "id": "Dibayar", "ms": "Dibayar"],
+        "org_billing_amount_pending": ["en": "Pending", "th": "รอชำระ", "zh": "待付", "ja": "未払い", "ko": "미결제", "id": "Tertunda", "ms": "Belum Bayar"],
+        "org_offline_billing_warning": ["en": "Offline: billing data unavailable", "th": "ออฟไลน์: ไม่สามารถดูข้อมูลการชำระเงิน", "zh": "离线: 账单不可用", "ja": "オフライン: 請求不可", "ko": "오프라인: 결제 정보 불가", "id": "Offline: data tagihan tidak tersedia", "ms": "Luar talian: data bil tidak tersedia"],
+        // M-11: API Keys
+        "org_api_new_key_btn":          ["en": "New Key", "th": "สร้างคีย์ใหม่", "zh": "新建密钥", "ja": "新規キー", "ko": "새 키", "id": "Kunci Baru", "ms": "Kunci Baharu"],
+        "org_no_api_keys":              ["en": "No API keys yet", "th": "ยังไม่มี API Key", "zh": "暂无API密钥", "ja": "APIキーなし", "ko": "API 키 없음", "id": "Belum ada kunci API", "ms": "Tiada kunci API"],
+        "org_api_key_default_name":     ["en": "Integration Key", "th": "คีย์เชื่อมต่อ", "zh": "集成密钥", "ja": "連携キー", "ko": "통합 키", "id": "Kunci Integrasi", "ms": "Kunci Integrasi"],
+        "org_api_key_name_lbl":         ["en": "Key Name", "th": "ชื่อคีย์", "zh": "密钥名称", "ja": "キー名", "ko": "키 이름", "id": "Nama Kunci", "ms": "Nama Kunci"],
+        "org_api_key_name_placeholder": ["en": "e.g. Shopify Integration", "th": "เช่น Shopify Integration", "zh": "如: Shopify集成", "ja": "例: Shopify連携", "ko": "예: Shopify 연동", "id": "cth: Shopify Integration", "ms": "cth: Integrasi Shopify"],
+        "org_api_generate_btn":         ["en": "Generate", "th": "สร้าง", "zh": "生成", "ja": "生成", "ko": "생성", "id": "Buat", "ms": "Jana"],
+        "org_api_key_copy_hint":        ["en": "Copy and store this key securely — it won't be shown again", "th": "คัดลอกและเก็บคีย์นี้ไว้อย่างปลอดภัย — จะไม่แสดงอีก", "zh": "复制并安全保存 — 不会再次显示", "ja": "コピーして安全に保管 — 再表示されません", "ko": "복사하여 안전하게 저장 — 다시 표시되지 않음", "id": "Salin dan simpan dengan aman — tidak akan ditampilkan lagi", "ms": "Salin dan simpan dengan selamat — tidak akan dipaparkan lagi"],
+        "org_offline_api_warning":      ["en": "Offline: API key management disabled", "th": "ออฟไลน์: การจัดการ API Key ถูกปิด", "zh": "离线: API密钥管理已禁用", "ja": "オフライン: APIキー管理無効", "ko": "오프라인: API 키 관리 비활성화", "id": "Offline: manajemen kunci API dinonaktifkan", "ms": "Luar talian: pengurusan kunci API dilumpuhkan"],
+        // M-12: Data Export
+        "org_offline_export_warning":   ["en": "Offline: cloud backup disabled", "th": "ออฟไลน์: สำรองข้อมูลบนคลาวด์ถูกปิด", "zh": "离线: 云备份已禁用", "ja": "オフライン: クラウドバックアップ無効", "ko": "오프라인: 클라우드 백업 비활성화", "id": "Offline: backup cloud dinonaktifkan", "ms": "Luar talian: sandaran awan dilumpuhkan"],
+        "org_backup_auto_msg":          ["en": "Backups run automatically every 24h via Supabase", "th": "ข้อมูลสำรองทำงานอัตโนมัติทุก 24 ชั่วโมงผ่าน Supabase", "zh": "每24小时通过Supabase自动备份", "ja": "24時間ごとにSupabaseで自動バックアップ", "ko": "24시간마다 Supabase를 통해 자동 백업", "id": "Backup otomatis setiap 24 jam via Supabase", "ms": "Sandaran automatik setiap 24 jam melalui Supabase"],
+        "org_import_confirm_title":     ["en": "Import Data?", "th": "นำเข้าข้อมูล?", "zh": "导入数据?", "ja": "データをインポート?", "ko": "데이터 가져오기?", "id": "Impor Data?", "ms": "Import Data?"],
+        "org_import_confirm_msg":       ["en": "This will merge external data into the current database. Existing records will not be overwritten.", "th": "การดำเนินการนี้จะรวมข้อมูลภายนอกเข้ากับฐานข้อมูลปัจจุบัน ข้อมูลที่มีอยู่จะไม่ถูกเขียนทับ", "zh": "这将把外部数据合并到当前数据库中", "ja": "外部データを現在のDBにマージします", "ko": "외부 데이터를 현재 DB에 병합합니다", "id": "Ini akan menggabungkan data eksternal ke database saat ini", "ms": "Ini akan menggabungkan data luar ke pangkalan data semasa"],
+        "org_import_confirm_btn":       ["en": "Import", "th": "นำเข้า", "zh": "导入", "ja": "インポート", "ko": "가져오기", "id": "Impor", "ms": "Import"],
+        "org_import_coming_soon":       ["en": "Import via file picker — coming in next update", "th": "นำเข้าผ่าน File Picker — จะมาในการอัปเดตถัดไป", "zh": "文件导入 — 即将推出", "ja": "ファイルインポート — 近日公開", "ko": "파일 가져오기 — 다음 업데이트 예정", "id": "Import via file picker — akan hadir di update berikutnya", "ms": "Import melalui pemilih fail — akan datang dalam kemaskini seterusnya"],
+        "org_delete_all_title":         ["en": "Delete ALL Data?", "th": "ลบข้อมูลทั้งหมด?", "zh": "删除所有数据?", "ja": "全データ削除?", "ko": "모든 데이터 삭제?", "id": "Hapus SEMUA Data?", "ms": "Padam SEMUA Data?"],
+        "org_delete_all_msg":           ["en": "This is irreversible. All local data will be permanently removed.", "th": "การดำเนินการนี้ไม่สามารถเลิกทำได้ ข้อมูลในเครื่องทั้งหมดจะถูกลบอย่างถาวร", "zh": "此操作不可撤销", "ja": "元に戻せません", "ko": "되돌릴 수 없습니다", "id": "Tindakan ini tidak dapat dibatalkan", "ms": "Tindakan ini tidak boleh dibuat asal"],
+        "org_delete_all_confirm_btn":   ["en": "Delete Everything", "th": "ลบทั้งหมด", "zh": "删除所有", "ja": "全て削除", "ko": "모두 삭제", "id": "Hapus Semua", "ms": "Padam Semua"],
+        "org_delete_all_coming_soon":   ["en": "Full wipe requires confirmation from Supabase dashboard — coming in next update", "th": "การลบข้อมูลทั้งหมดต้องยืนยันผ่าน Supabase dashboard — จะมาในการอัปเดตถัดไป", "zh": "完整清除需要通过Supabase仪表板确认", "ja": "完全削除はSupabaseダッシュボードでの確認が必要", "ko": "전체 삭제는 Supabase 대시보드 확인 필요", "id": "Penghapusan penuh memerlukan konfirmasi dari dasbor Supabase", "ms": "Pemadaman penuh memerlukan pengesahan dari papan pemuka Supabase"],
+        "org_export_success_msg":       ["en": "Export complete", "th": "ส่งออกข้อมูลสำเร็จ", "zh": "导出完成", "ja": "エクスポート完了", "ko": "내보내기 완료", "id": "Ekspor selesai", "ms": "Eksport selesai"],
+        "org_export_failed_msg":        ["en": "Export failed", "th": "ส่งออกข้อมูลล้มเหลว", "zh": "导出失败", "ja": "エクスポート失敗", "ko": "내보내기 실패", "id": "Ekspor gagal", "ms": "Eksport gagal"]
+        ,
+        // L-5: Social Security & Tax Withholding
+        "payroll_ss_settings_title":  ["en": "SOCIAL SECURITY", "th": "ประกันสังคม", "zh": "社保", "ja": "社会保険", "ko": "사회보험", "id": "Jaminan Sosial", "ms": "Keselamatan Sosial"],
+        "payroll_ss_rate_lbl":        ["en": "SS Contribution Rate", "th": "อัตราเงินสมทบ", "zh": "社保费率", "ja": "保険料率", "ko": "보험료율", "id": "Tarif Kontribusi SS", "ms": "Kadar Caruman SS"],
+        "payroll_ss_cap_lbl":         ["en": "Monthly Cap", "th": "เพดานรายเดือน", "zh": "月上限", "ja": "月額上限", "ko": "월 상한선", "id": "Batas Bulanan", "ms": "Had Bulanan"],
+        "payroll_ss_min_wage_lbl":    ["en": "Min. Wage for SS", "th": "ค่าแรงขั้นต่ำที่ต้องหักประกันสังคม", "zh": "最低工资(需缴社保)", "ja": "社保対象最低賃金", "ko": "사회보험 최저임금", "id": "Upah Min. untuk SS", "ms": "Upah Min. untuk SS"],
+        "payroll_ss_hint":            ["en": "Standard: 5% up to ฿750/month, applies when wage ≥ ฿1,650", "th": "มาตรฐาน: 5% สูงสุด ฿750/เดือน ใช้เมื่อค่าแรง ≥ ฿1,650", "zh": "标准: 5%最高฿750/月,工资≥฿1,650时适用", "ja": "標準: 5%上限฿750/月,賃金≥฿1,650", "ko": "기준: 5% 최대 ฿750/월, 임금 ≥ ฿1,650 적용", "id": "Standar: 5% maks ฿750/bulan, berlaku jika gaji ≥ ฿1.650", "ms": "Piawaian: 5% maks ฿750/bulan, berlaku jika gaji ≥ ฿1,650"],
+        "payroll_tax_settings_title": ["en": "TAX WITHHOLDING", "th": "ภาษีหัก ณ ที่จ่าย", "zh": "代扣所得税", "ja": "源泉徴収", "ko": "원천징수", "id": "Pemotongan Pajak", "ms": "Potongan Cukai"],
+        "payroll_tax_enable_toggle":  ["en": "Enable Tax Withholding", "th": "เปิดใช้ภาษีหัก ณ ที่จ่าย", "zh": "启用代扣所得税", "ja": "源泉徴収を有効にする", "ko": "원천징수 활성화", "id": "Aktifkan Pemotongan Pajak", "ms": "Aktifkan Potongan Cukai"],
+        "payroll_tax_allowance_lbl":  ["en": "Personal Allowance", "th": "ค่าลดหย่อนส่วนตัว", "zh": "个人减免", "ja": "個人控除", "ko": "인적공제", "id": "Tunjangan Pribadi", "ms": "Elaun Peribadi"],
+        "payroll_tax_hint":           ["en": "Thai PIT progressive brackets 2024: 0–5–10–15–20–25–30–35%", "th": "ภาษีเงินได้บุคคลธรรมดา 2567: ขั้นบันได 0–5–10–15–20–25–30–35%", "zh": "泰国所得税2024累进税率: 0–5–10–15–20–25–30–35%", "ja": "タイ所得税2024累進税率: 0–5–10–15–20–25–30–35%", "ko": "태국 소득세 2024 누진세율: 0–5–10–15–20–25–30–35%", "id": "PIT Thailand 2024 progresif: 0–5–10–15–20–25–30–35%", "ms": "PIT Thailand 2024 progresif: 0–5–10–15–20–25–30–35%"]
+        ,
+        // L-2: Monthly Comparison Report
+        "report_monthly_comparison_title": ["en": "Monthly Comparison", "th": "เปรียบเทียบรายเดือน", "zh": "月度对比", "ja": "月別比較", "ko": "월별 비교", "id": "Perbandingan Bulanan", "ms": "Perbandingan Bulanan"],
+        "report_months_3":   ["en": "3 months", "th": "3 เดือน", "zh": "3个月", "ja": "3ヶ月", "ko": "3개월", "id": "3 bulan", "ms": "3 bulan"],
+        "report_months_6":   ["en": "6 months", "th": "6 เดือน", "zh": "6个月", "ja": "6ヶ月", "ko": "6개월", "id": "6 bulan", "ms": "6 bulan"],
+        "report_months_12":  ["en": "12 months", "th": "12 เดือน", "zh": "12个月", "ja": "12ヶ月", "ko": "12개월", "id": "12 bulan", "ms": "12 bulan"],
+        "report_revenue":    ["en": "Revenue", "th": "ยอดขาย", "zh": "营收", "ja": "売上", "ko": "매출", "id": "Pendapatan", "ms": "Hasil"],
+        "report_orders":     ["en": "Orders", "th": "ออเดอร์", "zh": "订单", "ja": "注文数", "ko": "주문수", "id": "Pesanan", "ms": "Pesanan"],
+        "report_avg_order":  ["en": "Avg. Order", "th": "เฉลี่ยต่อบิล", "zh": "均单", "ja": "平均注文", "ko": "평균 주문", "id": "Rata-rata Pesanan", "ms": "Purata Pesanan"],
+        "report_tax_collected": ["en": "Tax Collected", "th": "ภาษีที่เก็บ", "zh": "已收税额", "ja": "徴収税額", "ko": "징수 세금", "id": "Pajak Terkumpul", "ms": "Cukai Terkumpul"],
+        "report_revenue_trend": ["en": "REVENUE TREND", "th": "แนวโน้มยอดขาย", "zh": "营收趋势", "ja": "売上推移", "ko": "매출 추이", "id": "Tren Pendapatan", "ms": "Trend Hasil"],
+        "report_monthly_breakdown": ["en": "MONTHLY BREAKDOWN", "th": "รายละเอียดรายเดือน", "zh": "月度明细", "ja": "月別詳細", "ko": "월별 상세", "id": "Rincian Bulanan", "ms": "Pecahan Bulanan"],
+        "report_month_col":   ["en": "Month", "th": "เดือน", "zh": "月份", "ja": "月", "ko": "월", "id": "Bulan", "ms": "Bulan"],
+        "report_revenue_col": ["en": "Revenue", "th": "ยอดขาย", "zh": "营收", "ja": "売上", "ko": "매출", "id": "Pendapatan", "ms": "Hasil"],
+        "report_orders_col":  ["en": "Orders", "th": "บิล", "zh": "单数", "ja": "注文", "ko": "주문", "id": "Pesanan", "ms": "Pesanan"],
+        "report_avg_col":     ["en": "Avg.", "th": "เฉลี่ย", "zh": "均单", "ja": "平均", "ko": "평균", "id": "Rata-rata", "ms": "Purata"],
+        "report_top_item_col": ["en": "Top Item", "th": "สินค้าขายดี", "zh": "最热单品", "ja": "ベスト商品", "ko": "베스트 상품", "id": "Item Terlaris", "ms": "Item Terlaris"],
+        "report_no_data":     ["en": "No data to compare yet", "th": "ยังไม่มีข้อมูลสำหรับเปรียบเทียบ", "zh": "暂无可比较数据", "ja": "比較データなし", "ko": "비교할 데이터 없음", "id": "Belum ada data untuk dibandingkan", "ms": "Tiada data untuk dibandingkan"]
+        ,
+        // L-6: Multi-Branch UI
+        "store_branches_tab":         ["en": "Branches", "th": "สาขา", "zh": "分店", "ja": "支店", "ko": "지점", "id": "Cabang", "ms": "Cawangan"],
+        "store_no_branches_hint":     ["en": "No branches yet — add your first branch", "th": "ยังไม่มีสาขา — เพิ่มสาขาแรก", "zh": "还没有分店 — 添加第一家", "ja": "支店なし — 最初の支店を追加", "ko": "지점 없음 — 첫 지점 추가", "id": "Belum ada cabang — tambahkan cabang pertama", "ms": "Belum ada cawangan — tambah cawangan pertama"],
+        "store_active_badge":         ["en": "Active", "th": "สาขาที่ใช้งาน", "zh": "当前", "ja": "現在", "ko": "현재", "id": "Aktif", "ms": "Aktif"],
+        "store_branch_summary_title": ["en": "BRANCH SUMMARY", "th": "สรุปสาขา", "zh": "分店概览", "ja": "支店概要", "ko": "지점 요약", "id": "Ringkasan Cabang", "ms": "Ringkasan Cawangan"],
+        "store_branch_count_unit":    ["en": "branches registered", "th": "สาขาที่ลงทะเบียน", "zh": "家分店", "ja": "店舗登録済み", "ko": "지점 등록됨", "id": "cabang terdaftar", "ms": "cawangan didaftar"],
+        "store_edit_branch_title":    ["en": "Edit Branch", "th": "แก้ไขสาขา", "zh": "编辑分店", "ja": "支店編集", "ko": "지점 수정", "id": "Edit Cabang", "ms": "Edit Cawangan"],
+        "branch_name_placeholder":    ["en": "e.g. Siam Paragon Branch", "th": "เช่น สาขาสยามพารากอน", "zh": "如: 暹罗百丽宫店", "ja": "例: サイアムパラゴン店", "ko": "예: 시암파라곤 지점", "id": "cth: Cabang Siam Paragon", "ms": "cth: Cawangan Siam Paragon"],
+        "branch_address_placeholder": ["en": "Street address, City", "th": "ที่อยู่, เมือง", "zh": "街道地址, 城市", "ja": "住所, 市区町村", "ko": "주소, 도시", "id": "Alamat, Kota", "ms": "Alamat, Bandar"],
+        "branch_phone_placeholder":   ["en": "Branch contact number", "th": "เบอร์โทรศัพท์สาขา", "zh": "分店联系电话", "ja": "支店電話番号", "ko": "지점 연락처", "id": "Nomor kontak cabang", "ms": "Nombor hubungi cawangan"]
+        ,
+        // L-1: Waitlist / Queue System
+        "waitlist_title":                ["en": "Waitlist", "th": "คิวรอ", "zh": "等候名单", "ja": "順番待ち", "ko": "대기 목록", "id": "Daftar Tunggu", "ms": "Senarai Tunggu"],
+        "waitlist_add_btn":              ["en": "Add to Queue", "th": "เพิ่มคิว", "zh": "加入排队", "ja": "順番追加", "ko": "대기 추가", "id": "Tambah ke Antrian", "ms": "Tambah ke Baris"],
+        "waitlist_add_title":            ["en": "New Queue Entry", "th": "เพิ่มลูกค้าเข้าคิว", "zh": "新增等候", "ja": "新規順番", "ko": "새 대기 추가", "id": "Entri Antrian Baru", "ms": "Entri Baris Baharu"],
+        "waitlist_tab_waiting":          ["en": "Waiting", "th": "รออยู่", "zh": "等候中", "ja": "待ち", "ko": "대기 중", "id": "Menunggu", "ms": "Menunggu"],
+        "waitlist_tab_history":          ["en": "History", "th": "ประวัติ", "zh": "历史", "ja": "履歴", "ko": "이력", "id": "Riwayat", "ms": "Sejarah"],
+        "waitlist_stat_waiting":         ["en": "Waiting Now", "th": "รออยู่ขณะนี้", "zh": "当前等候", "ja": "現在待ち", "ko": "현재 대기", "id": "Sedang Menunggu", "ms": "Menunggu Sekarang"],
+        "waitlist_stat_avg_wait":        ["en": "Avg. Wait", "th": "รอเฉลี่ย", "zh": "平均等候", "ja": "平均待ち", "ko": "평균 대기", "id": "Rata-rata Tunggu", "ms": "Purata Tunggu"],
+        "waitlist_stat_seated_today":    ["en": "Seated Today", "th": "นั่งแล้ววันนี้", "zh": "今日已入座", "ja": "本日着席", "ko": "오늘 착석", "id": "Duduk Hari Ini", "ms": "Duduk Hari Ini"],
+        "waitlist_min_unit":             ["en": "min", "th": "นาที", "zh": "分钟", "ja": "分", "ko": "분", "id": "mnt", "ms": "min"],
+        "waitlist_overdue_badge":        ["en": "Overdue!", "th": "เกินเวลา!", "zh": "超时！", "ja": "時間超過！", "ko": "초과！", "id": "Terlambat!", "ms": "Terlewat!"],
+        "waitlist_empty_title":          ["en": "No one waiting", "th": "ไม่มีลูกค้ารอ", "zh": "暂无等候", "ja": "待ち客なし", "ko": "대기 없음", "id": "Tidak ada yang menunggu", "ms": "Tiada yang menunggu"],
+        "waitlist_empty_desc":           ["en": "Tap '+' to add customers to the queue", "th": "กด '+' เพื่อเพิ่มลูกค้าเข้าคิว", "zh": "点击'+'将客户加入排队", "ja": "'+'をタップして追加", "ko": "'+'를 눌러 대기 추가", "id": "Ketuk '+' untuk menambahkan", "ms": "Ketuk '+' untuk tambah pelanggan"],
+        "waitlist_guest_section":        ["en": "Guest Details", "th": "ข้อมูลลูกค้า", "zh": "客人详情", "ja": "ゲスト詳細", "ko": "고객 정보", "id": "Detail Tamu", "ms": "Butiran Tetamu"],
+        "waitlist_name_placeholder":     ["en": "Guest name", "th": "ชื่อลูกค้า", "zh": "客人姓名", "ja": "ゲスト名", "ko": "고객 이름", "id": "Nama tamu", "ms": "Nama tetamu"],
+        "waitlist_party_size_lbl":       ["en": "Party Size", "th": "จำนวนคน", "zh": "人数", "ja": "人数", "ko": "인원수", "id": "Jumlah Tamu", "ms": "Saiz Kumpulan"],
+        "waitlist_phone_placeholder":    ["en": "Phone (optional)", "th": "โทรศัพท์ (ไม่บังคับ)", "zh": "电话（选填）", "ja": "電話（任意）", "ko": "전화(선택)", "id": "Telepon (opsional)", "ms": "Telefon (pilihan)"],
+        "waitlist_wait_section":         ["en": "Wait Time", "th": "เวลารอ", "zh": "等待时间", "ja": "待ち時間", "ko": "대기 시간", "id": "Waktu Tunggu", "ms": "Masa Tunggu"],
+        "waitlist_est_wait_lbl":         ["en": "Estimated Wait", "th": "เวลารอโดยประมาณ", "zh": "预计等待", "ja": "予想待ち時間", "ko": "예상 대기", "id": "Perkiraan Tunggu", "ms": "Anggaran Tunggu"],
+        "waitlist_notes_section":        ["en": "Notes", "th": "หมายเหตุ", "zh": "备注", "ja": "メモ", "ko": "메모", "id": "Catatan", "ms": "Nota"],
+        "waitlist_notes_placeholder":    ["en": "Allergies, preferences…", "th": "อาหารที่แพ้, ความต้องการ…", "zh": "过敏, 偏好…", "ja": "アレルギー, 好み…", "ko": "알레르기, 선호도…", "id": "Alergi, preferensi…", "ms": "Alahan, pilihan…"],
+        "waitlist_save_btn":             ["en": "Add to Queue", "th": "เพิ่มเข้าคิว", "zh": "加入排队", "ja": "キューに追加", "ko": "대기 추가", "id": "Tambahkan ke Antrian", "ms": "Tambah ke Baris"],
+        "waitlist_seat_section":         ["en": "Seat Guest", "th": "ให้ลูกค้านั่ง", "zh": "安排入座", "ja": "着席案内", "ko": "착석 안내", "id": "Dudukkan Tamu", "ms": "Dudukkan Tetamu"],
+        "waitlist_table_number_placeholder": ["en": "Table number", "th": "หมายเลขโต๊ะ", "zh": "桌号", "ja": "テーブル番号", "ko": "테이블 번호", "id": "Nomor meja", "ms": "Nombor meja"],
+        "waitlist_seat_btn":             ["en": "Seat Now", "th": "ให้นั่งได้เลย", "zh": "立即入座", "ja": "今すぐ着席", "ko": "지금 착석", "id": "Dudukkan Sekarang", "ms": "Duduk Sekarang"],
+        "waitlist_cancel_section":       ["en": "Other Actions", "th": "การดำเนินการอื่น", "zh": "其他操作", "ja": "その他", "ko": "기타 작업", "id": "Tindakan Lain", "ms": "Tindakan Lain"],
+        "waitlist_cancel_btn":           ["en": "Cancel / Left", "th": "ยกเลิก / กลับไปแล้ว", "zh": "取消/离开", "ja": "キャンセル", "ko": "취소/퇴장", "id": "Batal/Pergi", "ms": "Batal/Pergi"],
+        "waitlist_no_show_btn":          ["en": "No Show", "th": "ไม่มา", "zh": "未出现", "ja": "ノーショー", "ko": "노쇼", "id": "Tidak Hadir", "ms": "Tidak Hadir"],
+        "waitlist_queue_number_lbl":     ["en": "Queue #", "th": "หมายเลขคิว", "zh": "排队号", "ja": "順番号", "ko": "대기 번호", "id": "No. Antrian", "ms": "No. Baris"],
+        "waitlist_status_lbl":           ["en": "Status", "th": "สถานะ", "zh": "状态", "ja": "ステータス", "ko": "상태", "id": "Status", "ms": "Status"],
+        "waitlist_status_waiting":       ["en": "Waiting", "th": "รออยู่", "zh": "等候中", "ja": "待ち", "ko": "대기", "id": "Menunggu", "ms": "Menunggu"],
+        "waitlist_status_seated":        ["en": "Seated", "th": "นั่งแล้ว", "zh": "已入座", "ja": "着席", "ko": "착석", "id": "Duduk", "ms": "Duduk"],
+        "waitlist_status_no_show":       ["en": "No Show", "th": "ไม่มา", "zh": "未出现", "ja": "ノーショー", "ko": "노쇼", "id": "Tidak Hadir", "ms": "Tidak Hadir"],
+        "waitlist_status_cancelled":     ["en": "Cancelled", "th": "ยกเลิก", "zh": "已取消", "ja": "キャンセル", "ko": "취소", "id": "Dibatalkan", "ms": "Dibatalkan"]
+        ,
+        // L-7: Multiple KDS Routing
+        "kds_routing_section_title": ["en": "CATEGORY ROUTING", "th": "การกำหนด KDS ตามหมวดหมู่", "zh": "按分类路由", "ja": "カテゴリルーティング", "ko": "카테고리 라우팅", "id": "Routing Kategori", "ms": "Laluan Kategori"],
+        "kds_no_categories_hint":    ["en": "No menu categories found — add categories in Menus first", "th": "ไม่พบหมวดหมู่เมนู — เพิ่มหมวดหมู่ใน Menus ก่อน", "zh": "没有菜单分类 — 请先在菜单中添加", "ja": "カテゴリなし — メニューで追加してください", "ko": "메뉴 카테고리 없음 — 메뉴에서 먼저 추가하세요", "id": "Tidak ada kategori menu — tambahkan di Menu dulu", "ms": "Tiada kategori menu — tambah di Menu dahulu"],
+        "kds_route_kitchen":         ["en": "Kitchen", "th": "ครัว", "zh": "厨房", "ja": "キッチン", "ko": "주방", "id": "Dapur", "ms": "Dapur"],
+        "kds_route_bar":             ["en": "Bar", "th": "บาร์", "zh": "吧台", "ja": "バー", "ko": "바", "id": "Bar", "ms": "Bar"],
+        "kds_route_both":            ["en": "Both", "th": "ทั้งคู่", "zh": "两者", "ja": "両方", "ko": "모두", "id": "Keduanya", "ms": "Kedua-dua"],
+        "kds_routing_hint":          ["en": "Each category routes to Kitchen, Bar, or both screens. Items without a rule use the beverage keyword heuristic.", "th": "แต่ละหมวดหมู่จะส่งไปยัง ครัว บาร์ หรือทั้งคู่ รายการที่ไม่มีกฎจะใช้การตรวจสอบจากชื่อหมวด", "zh": "每个分类路由到厨房、吧台或两者。无规则的使用饮料关键词启发", "ja": "カテゴリごとにキッチン、バー、または両方へ。ルールなしはキーワード判定", "ko": "각 카테고리를 주방, 바 또는 둘 다로 라우팅. 규칙 없으면 음료 키워드 사용", "id": "Setiap kategori diarahkan ke Dapur, Bar, atau keduanya. Tanpa aturan, gunakan heuristik kata kunci", "ms": "Setiap kategori dihalakan ke Dapur, Bar atau kedua-dua. Tanpa peraturan, gunakan heuristik kata kunci"]
+        ,
+        // L-9: Physical KDS / Bump Bar Keyboard Shortcuts
+        "kds_physical_section_title":    ["en": "PHYSICAL KDS / BUMP BAR", "th": "KDS แบบมีปุ่มกด", "zh": "实体KDS/拍单器", "ja": "物理KDS/バンプバー", "ko": "물리 KDS/범프바", "id": "KDS Fisik/Bump Bar", "ms": "KDS Fizikal/Bump Bar"],
+        "kds_keyboard_shortcuts_toggle": ["en": "Enable Keyboard Shortcuts", "th": "เปิดใช้แป้นพิมพ์ลัด", "zh": "启用快捷键", "ja": "キーボードショートカットを有効にする", "ko": "키보드 단축키 활성화", "id": "Aktifkan Pintasan Keyboard", "ms": "Aktifkan Pintasan Papan Kekunci"],
+        "kds_keyboard_shortcuts_desc":   ["en": "Use Space/Return to bump, arrows to navigate, ⌘K/⌘B to toggle stations. Works with external keyboard or bump bar.", "th": "Space/Return เพื่อ bump, ลูกศรเพื่อนำทาง, ⌘K/⌘B เพื่อสลับสถานี ใช้ได้กับ External Keyboard หรือ Bump Bar", "zh": "空格/回车=拍单, 方向键=导航, ⌘K/⌘B=切换站台", "ja": "スペース/リターン=バンプ, 矢印キー=移動, ⌘K/⌘B=切替", "ko": "스페이스/리턴=범프, 화살표=이동, ⌘K/⌘B=스테이션 전환", "id": "Spasi/Return=bump, panah=navigasi, ⌘K/⌘B=ganti stasiun", "ms": "Spasi/Return=bump, anak panah=navigasi, ⌘K/⌘B=tukar stesen"],
+        "kds_kb_bump":                   ["en": "Bump", "th": "ส่งเสร็จ", "zh": "完成", "ja": "バンプ", "ko": "범프", "id": "Selesai", "ms": "Bump"],
+        "kds_kb_navigate":               ["en": "Navigate", "th": "เลื่อน", "zh": "导航", "ja": "移動", "ko": "이동", "id": "Navigasi", "ms": "Navigasi"],
+        "kds_kb_deselect":               ["en": "Deselect", "th": "ยกเลิกการเลือก", "zh": "取消选择", "ja": "選択解除", "ko": "선택 해제", "id": "Batalkan Pilihan", "ms": "Nyahpilih"],
+        "kds_kb_toggle_kitchen":         ["en": "Kitchen", "th": "ครัว", "zh": "厨房", "ja": "キッチン", "ko": "주방", "id": "Dapur", "ms": "Dapur"],
+        "kds_kb_toggle_bar":             ["en": "Bar", "th": "บาร์", "zh": "吧台", "ja": "バー", "ko": "바", "id": "Bar", "ms": "Bar"]
+        ,
+        // L-8: Online Menu Preview
+        "menu_preview_title":           ["en": "Menu Preview", "th": "ดูตัวอย่างเมนู", "zh": "菜单预览", "ja": "メニュープレビュー", "ko": "메뉴 미리보기", "id": "Pratinjau Menu", "ms": "Pratonton Menu"],
+        "menu_preview_loading":         ["en": "Loading menu preview…", "th": "กำลังโหลดตัวอย่างเมนู…", "zh": "加载菜单预览中…", "ja": "メニュー読み込み中…", "ko": "메뉴 로딩 중…", "id": "Memuat pratinjau menu…", "ms": "Memuatkan pratonton menu…"],
+        "menu_preview_error_title":     ["en": "Unable to Load Preview", "th": "โหลดตัวอย่างไม่ได้", "zh": "无法加载预览", "ja": "プレビューを読み込めません", "ko": "미리보기 로드 실패", "id": "Tidak dapat memuat pratinjau", "ms": "Tidak dapat muatkan pratonton"],
+        "menu_preview_invalid_url":     ["en": "Preview URL not configured", "th": "ยังไม่ได้ตั้งค่า URL สำหรับ Preview", "zh": "预览URL未配置", "ja": "プレビューURLが未設定", "ko": "미리보기 URL 미설정", "id": "URL pratinjau belum dikonfigurasi", "ms": "URL pratonton belum dikonfigurasikan"],
+        "menu_preview_web_btn":         ["en": "Web Preview", "th": "ดูแบบ Web", "zh": "网页预览", "ja": "Web表示", "ko": "웹 미리보기", "id": "Pratinjau Web", "ms": "Pratonton Web"],
+        "menu_preview_offline_btn":     ["en": "Local List", "th": "รายการในเครื่อง", "zh": "本地列表", "ja": "ローカルリスト", "ko": "로컬 목록", "id": "Daftar Lokal", "ms": "Senarai Tempatan"],
+        "menu_preview_offline_title":   ["en": "Local Menu Preview", "th": "ตัวอย่างเมนู (ออฟไลน์)", "zh": "本地菜单预览", "ja": "ローカルメニュープレビュー", "ko": "로컬 메뉴 미리보기", "id": "Pratinjau Menu Lokal", "ms": "Pratonton Menu Tempatan"],
+        "menu_preview_offline_desc":    ["en": "Showing local menu data. Web preview requires internet connection.", "th": "แสดงข้อมูลเมนูในเครื่อง ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อดูแบบ Web", "zh": "显示本地菜单数据。网页预览需要网络连接", "ja": "ローカルデータを表示中。Web表示はインターネット接続が必要", "ko": "로컬 메뉴 데이터 표시 중. 웹 미리보기는 인터넷 필요", "id": "Menampilkan data menu lokal. Pratinjau web memerlukan koneksi internet", "ms": "Memaparkan data menu tempatan. Pratonton web memerlukan sambungan internet"],
+        "menu_preview_no_category":     ["en": "Uncategorised", "th": "ไม่ระบุหมวดหมู่", "zh": "未分类", "ja": "未分類", "ko": "미분류", "id": "Tidak Berkategori", "ms": "Tidak Berkategori"],
+        "menu_preview_no_items":        ["en": "No menu items yet", "th": "ยังไม่มีรายการเมนู", "zh": "暂无菜单", "ja": "メニューなし", "ko": "메뉴 없음", "id": "Belum ada item menu", "ms": "Tiada item menu"],
+        "menu_preview_unavailable":     ["en": "Unavailable", "th": "ไม่พร้อมขาย", "zh": "不可用", "ja": "提供不可", "ko": "판매 불가", "id": "Tidak Tersedia", "ms": "Tidak Tersedia"]
     ]
 }

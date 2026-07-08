@@ -24,17 +24,17 @@ struct NotificationAlert: Identifiable, Equatable {
     let createdAt: Date
     var isRead: Bool = false
     var isAcknowledged: Bool = false
-    
+
     enum AlertPriority: Int, Comparable, CaseIterable {
         case critical = 0
         case high = 1
         case medium = 2
         case low = 3
-        
+
         static func < (lhs: AlertPriority, rhs: AlertPriority) -> Bool {
             lhs.rawValue < rhs.rawValue
         }
-        
+
         var color: Color {
             switch self {
             case .critical: return Color(hex: "EF4444")
@@ -43,7 +43,7 @@ struct NotificationAlert: Identifiable, Equatable {
             case .low: return Color(hex: "9CA3AF")
             }
         }
-        
+
         var label: String {
             switch self {
             case .critical: return "Critical"
@@ -53,7 +53,7 @@ struct NotificationAlert: Identifiable, Equatable {
             }
         }
     }
-    
+
     enum AlertCategory: String, CaseIterable, Identifiable {
         case all = "All"
         case orders = "Orders"
@@ -62,9 +62,9 @@ struct NotificationAlert: Identifiable, Equatable {
         case system = "System"
         case customer = "Customer"
         case payment = "Payment"
-        
+
         var id: String { rawValue }
-        
+
         var icon: String {
             switch self {
             case .all: return "bell.fill"
@@ -76,7 +76,7 @@ struct NotificationAlert: Identifiable, Equatable {
             case .payment: return "creditcard.fill"
             }
         }
-        
+
         var color: Color {
             switch self {
             case .all: return .appAccent
@@ -104,23 +104,23 @@ struct NotificationAlert: Identifiable, Equatable {
 @MainActor
 final class NotificationStore: ObservableObject {
     static let shared = NotificationStore()
-    
+
     /// All alerts (newest first)
     @Published var alerts: [NotificationAlert] = []
-    
+
     /// Unread count (for badges)
     var unreadCount: Int {
         alerts.filter { !$0.isRead }.count
     }
-    
+
     /// Active (unacknowledged) alert count
     var activeCount: Int {
         alerts.filter { !$0.isAcknowledged }.count
     }
-    
+
     private var cancellables = Set<AnyCancellable>()
     private let maxAlerts = 200 // Keep last 200 alerts in memory
-    
+
     private init() {
         // Subscribe to InAppNotificationManager to auto-capture all alerts
         InAppNotificationManager.shared.$latestNotification
@@ -129,7 +129,7 @@ final class NotificationStore: ObservableObject {
                 self?.captureFromInApp(notification)
             }
             .store(in: &cancellables)
-        
+
         // Subscribe to SyncEngine active service requests
         SyncEngine.shared.$activeRequests
             .removeDuplicates { old, new in old.count == new.count }
@@ -138,9 +138,9 @@ final class NotificationStore: ObservableObject {
             }
             .store(in: &cancellables)
     }
-    
+
     // MARK: - Capture from InAppNotificationManager
-    
+
     private func captureFromInApp(_ notification: InAppNotification) {
         let alert = NotificationAlert(
             priority: mapPriority(notification.type),
@@ -154,11 +154,11 @@ final class NotificationStore: ObservableObject {
         )
         addAlert(alert)
     }
-    
+
     // MARK: - Capture Service Requests
-    
+
     private var trackedRequestIds = Set<String>()
-    
+
     private func captureServiceRequests(_ requests: [ServiceRequest]) {
         for request in requests where !trackedRequestIds.contains(request.id) {
             trackedRequestIds.insert(request.id)
@@ -175,9 +175,9 @@ final class NotificationStore: ObservableObject {
             addAlert(alert)
         }
     }
-    
+
     // MARK: - Public API
-    
+
     /// Post a custom alert from anywhere in the app (e.g. payment failure, sync error)
     func postAlert(
         priority: NotificationAlert.AlertPriority,
@@ -200,21 +200,21 @@ final class NotificationStore: ObservableObject {
         )
         addAlert(alert)
     }
-    
+
     /// Mark alert as read
     func markRead(_ alertId: UUID) {
         if let idx = alerts.firstIndex(where: { $0.id == alertId }) {
             alerts[idx].isRead = true
         }
     }
-    
+
     /// Acknowledge (dismiss) alert
     func acknowledge(_ alertId: UUID) {
         if let idx = alerts.firstIndex(where: { $0.id == alertId }) {
             alerts[idx].isAcknowledged = true
         }
     }
-    
+
     /// Acknowledge all alerts
     func acknowledgeAll() {
         for i in alerts.indices {
@@ -222,21 +222,21 @@ final class NotificationStore: ObservableObject {
             alerts[i].isRead = true
         }
     }
-    
+
     /// Get alerts filtered by category
     func filtered(by category: NotificationAlert.AlertCategory) -> [NotificationAlert] {
         if category == .all { return alerts.filter { !$0.isAcknowledged } }
         return alerts.filter { $0.category == category && !$0.isAcknowledged }
     }
-    
+
     /// Clear acknowledged alerts older than X hours
     func cleanup(olderThan hours: Int = 24) {
         let cutoff = Date().addingTimeInterval(-TimeInterval(hours * 3600))
         alerts.removeAll { $0.isAcknowledged && $0.createdAt < cutoff }
     }
-    
+
     // MARK: - Private Helpers
-    
+
     private func addAlert(_ alert: NotificationAlert) {
         alerts.insert(alert, at: 0)
         // Trim to maxAlerts
@@ -244,26 +244,28 @@ final class NotificationStore: ObservableObject {
             alerts = Array(alerts.prefix(maxAlerts))
         }
     }
-    
+
     private func mapPriority(_ type: InAppNotificationType) -> NotificationAlert.AlertPriority {
         switch type {
-        case .cookingAlert, .deliveryAlert: return .critical
+        case .cookingAlert, .deliveryAlert, .printerAlert: return .critical
         case .newOrder: return .high
         case .serviceRequest: return .medium
         case .staleShift: return .low
         }
     }
-    
+
+
     private func mapCategory(_ type: InAppNotificationType) -> NotificationAlert.AlertCategory {
         switch type {
         case .newOrder: return .orders
         case .serviceRequest: return .customer
         case .cookingAlert: return .kitchen
         case .deliveryAlert: return .orders
-        case .staleShift: return .system
+        case .staleShift, .printerAlert: return .system
         }
     }
-    
+
+
     private func deviceName(for type: InAppNotificationType) -> String {
         switch type {
         case .newOrder: return "Customer Web"
@@ -271,9 +273,11 @@ final class NotificationStore: ObservableObject {
         case .cookingAlert: return "Kitchen Display"
         case .deliveryAlert: return "Delivery System"
         case .staleShift: return "System"
+        case .printerAlert: return "Printer"
         }
     }
-    
+
+
     private func extractOrderNumber(_ title: String) -> String? {
         // Extract #XXX from title
         if let range = title.range(of: "#\\d+", options: .regularExpression) {

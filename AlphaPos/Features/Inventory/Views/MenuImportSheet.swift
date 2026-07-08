@@ -7,47 +7,48 @@ import PhotosUI
 
 struct MenuImportSheet: View {
     let onDismiss: () -> Void
-    
+
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \MenuItem.name) private var existingProducts: [MenuItem]
-    
+
     @State private var viewModel = InventoryViewModel()
     @State private var currentStep: MenuImportStep = .upload
-    
+
     @AppStorage("gemini_api_key") private var geminiApiKey = ""
+    @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @State private var showApiSettings = false
-    
+
     // Step 1: Upload
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var selectedImages: [Data] = []
     @State private var selectedImagePreviews: [UIImage] = []
     @State private var isAnalyzing = false
     @State private var analyzeError: String? = nil
-    
+
     // Step 2: Review
     @State private var parsedItems: [ParsedMenuItem] = []
     @State private var parseConfidence: Double = 0.0
     @State private var isImporting = false
-    
+
     // Step 3: Complete
     @State private var importSummary = MenuImportSummary()
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 VStack(spacing: 0) {
                     // Step Indicator
                     stepIndicator
                         .padding(.horizontal, APSpacing.md)
                         .padding(.vertical, APSpacing.sm)
                         .background(Color.appSurface)
-                    
+
                     Divider().background(Color.appDivider)
-                    
+
                     // Content
                     Group {
                         switch currentStep {
@@ -87,9 +88,9 @@ struct MenuImportSheet: View {
         }
         .apColorScheme()
     }
-    
+
     // MARK: - Step Indicator
-    
+
     private var stepIndicator: some View {
         HStack(spacing: 0) {
             ForEach(MenuImportStep.allCases, id: \.rawValue) { step in
@@ -98,7 +99,7 @@ struct MenuImportSheet: View {
                         Circle()
                             .fill(stepColor(for: step))
                             .frame(width: 28, height: 28)
-                        
+
                         if step.rawValue < currentStep.rawValue {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 12, weight: .bold))
@@ -109,14 +110,14 @@ struct MenuImportSheet: View {
                                 .foregroundColor(step == currentStep ? .white : .textTertiary)
                         }
                     }
-                    
+
                     Text(step.title)
                         .font(.caption2)
                         .fontWeight(step == currentStep ? .bold : .regular)
                         .foregroundColor(step == currentStep ? .textPrimary : .textTertiary)
                         .lineLimit(1)
                 }
-                
+
                 if step.rawValue < MenuImportStep.allCases.count - 1 {
                     Rectangle()
                         .fill(step.rawValue < currentStep.rawValue ? Color.appAccent : Color.appBorderSubtle)
@@ -127,7 +128,7 @@ struct MenuImportSheet: View {
         }
         .padding(.vertical, APSpacing.xs)
     }
-    
+
     private func stepColor(for step: MenuImportStep) -> Color {
         if step.rawValue < currentStep.rawValue {
             return .appTeal
@@ -137,9 +138,9 @@ struct MenuImportSheet: View {
             return .appSurfaceHigh
         }
     }
-    
+
     // MARK: - Step 1: Upload
-    
+
     private var uploadStepContent: some View {
         ScrollView {
             VStack(spacing: APSpacing.lg) {
@@ -154,24 +155,24 @@ struct MenuImportSheet: View {
                                 endPoint: .bottomTrailing
                             )
                         )
-                    
+
                     Text("menu_import_upload_hint".t)
                         .font(.subheadline)
                         .foregroundColor(.textSecondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, APSpacing.lg)
-                    
+
                     Text("menu_import_max_photos".t)
                         .font(.caption)
                         .foregroundColor(.textTertiary)
                 }
                 .padding(.top, APSpacing.xl)
-                
+
                 // Image previews
                 if !selectedImagePreviews.isEmpty {
                     imagePreviewGrid
                 }
-                
+
                 // API Key Settings (Collapsible)
                 VStack(alignment: .leading, spacing: APSpacing.xs) {
                     Button(action: {
@@ -194,13 +195,13 @@ struct MenuImportSheet: View {
                         .padding(.vertical, APSpacing.sm)
                     }
                     .buttonStyle(.plain)
-                    
+
                     if showApiSettings {
                         VStack(alignment: .leading, spacing: APSpacing.sm) {
                             Text("หากไม่มี GEMINI_API_KEY ใน Supabase Secrets คุณสามารถใส่ API Key เพื่อใช้งานผ่านแอปได้โดยตรง")
                                 .font(.caption)
                                 .foregroundColor(.textSecondary)
-                            
+
                             HStack(spacing: APSpacing.sm) {
                                 SecureField("AI Studio API Key", text: $geminiApiKey)
                                     .textFieldStyle(PlainTextFieldStyle())
@@ -208,7 +209,7 @@ struct MenuImportSheet: View {
                                     .background(Color.appSurfaceHigh)
                                     .cornerRadius(APRadius.sm)
                                     .foregroundColor(.textPrimary)
-                                
+
                                 if !geminiApiKey.isEmpty {
                                     Button(action: { geminiApiKey = "" }) {
                                         Image(systemName: "xmark.circle.fill")
@@ -216,7 +217,7 @@ struct MenuImportSheet: View {
                                     }
                                 }
                             }
-                            
+
                             Link(destination: URL(string: "https://aistudio.google.com/")!) {
                                 HStack(spacing: 4) {
                                     Text("รับ API Key ฟรีที่ Google AI Studio")
@@ -240,29 +241,42 @@ struct MenuImportSheet: View {
                         .stroke(Color.appBorderSubtle, lineWidth: 1)
                 )
                 .padding(.horizontal, APSpacing.md)
-                
+
                 // Action buttons
                 VStack(spacing: APSpacing.sm) {
-                    // Photo Library
-                    PhotosPicker(
-                        selection: $selectedPhotoItems,
-                        maxSelectionCount: 5,
-                        matching: .images,
-                        photoLibrary: .shared()
-                    ) {
-                        Label("menu_import_add_photos".t, systemImage: "photo.on.rectangle")
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(APGradient.accent)
-                            .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
+                    if offlineSyncMode {
+                        HStack(spacing: 8) {
+                            Image(systemName: "wifi.slash")
+                                .foregroundColor(.orange)
+                            Text("โหมดออฟไลน์เปิดอยู่: ไม่สามารถใช้งาน AI สแกนในโหมดนี้ได้")
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                        }
+                        .padding(APSpacing.md)
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(APRadius.md)
+                    } else {
+                        // Photo Library
+                        PhotosPicker(
+                            selection: $selectedPhotoItems,
+                            maxSelectionCount: 5,
+                            matching: .images,
+                            photoLibrary: .shared()
+                        ) {
+                            Label("menu_import_add_photos".t, systemImage: "photo.on.rectangle")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(APGradient.accent)
+                                .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, APSpacing.md)
-                
+
                 // Error message
                 if let error = analyzeError {
                     HStack(spacing: 8) {
@@ -277,9 +291,9 @@ struct MenuImportSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
                     .padding(.horizontal, APSpacing.md)
                 }
-                
+
                 // Analyze button
-                if !selectedImages.isEmpty {
+                if !selectedImages.isEmpty && !offlineSyncMode {
                     Button(action: analyzeMenuImages) {
                         HStack(spacing: 8) {
                             if isAnalyzing {
@@ -288,7 +302,7 @@ struct MenuImportSheet: View {
                                 Text("menu_import_analyzing".t)
                             } else {
                                 Image(systemName: "sparkles")
-                                Text("menu_import_analyze_btn".t)
+                                  Text("menu_import_analyze_btn".t)
                             }
                         }
                         .font(.headline)
@@ -303,15 +317,15 @@ struct MenuImportSheet: View {
                         .clipShape(RoundedRectangle(cornerRadius: APRadius.lg))
                     }
                     .buttonStyle(.plain)
-                    .disabled(isAnalyzing)
+                    .disabled(isAnalyzing || offlineSyncMode)
                     .padding(.horizontal, APSpacing.md)
                 }
-                
+
                 Spacer(minLength: 40)
             }
         }
     }
-    
+
     private var imagePreviewGrid: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: APSpacing.sm) {
@@ -326,7 +340,7 @@ struct MenuImportSheet: View {
                                 RoundedRectangle(cornerRadius: APRadius.md)
                                     .stroke(Color.appBorderSubtle, lineWidth: 1)
                             )
-                        
+
                         Button(action: {
                             removeImage(at: index)
                         }) {
@@ -342,16 +356,16 @@ struct MenuImportSheet: View {
             .padding(.horizontal, APSpacing.md)
         }
     }
-    
+
     // MARK: - Step 2: Review
-    
+
     private var reviewStepContent: some View {
         VStack(spacing: 0) {
             // Header with stats
             reviewHeader
-            
+
             Divider().background(Color.appDivider)
-            
+
             // Items list
             ScrollView {
                 LazyVStack(spacing: APSpacing.xs) {
@@ -361,14 +375,14 @@ struct MenuImportSheet: View {
                 }
                 .padding(APSpacing.md)
             }
-            
+
             Divider().background(Color.appDivider)
-            
+
             // Import button
             importActionBar
         }
     }
-    
+
     private var reviewHeader: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
@@ -376,14 +390,14 @@ struct MenuImportSheet: View {
                     .font(.subheadline)
                     .fontWeight(.bold)
                     .foregroundColor(.textPrimary)
-                
+
                 Text(LocalizationManager.shared.t("menu_import_confidence", Int(parseConfidence * 100)))
                     .font(.caption2)
                     .foregroundColor(.textTertiary)
             }
-            
+
             Spacer()
-            
+
             // Select all / deselect all
             Button(action: toggleSelectAll) {
                 Text(allSelected ? "menu_import_deselect_all".t : "menu_import_select_all".t)
@@ -396,7 +410,7 @@ struct MenuImportSheet: View {
         .padding(.vertical, APSpacing.sm)
         .background(Color.appSurface)
     }
-    
+
     private func reviewItemRow(item: Binding<ParsedMenuItem>) -> some View {
         HStack(spacing: APSpacing.sm) {
             // Checkbox
@@ -406,7 +420,7 @@ struct MenuImportSheet: View {
                     .foregroundColor(item.wrappedValue.isSelected ? .appAccent : .textTertiary)
             }
             .buttonStyle(.plain)
-            
+
             // Item info
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
@@ -415,7 +429,7 @@ struct MenuImportSheet: View {
                         .fontWeight(.medium)
                         .foregroundColor(item.wrappedValue.isDuplicate ? .textTertiary : .textPrimary)
                         .strikethrough(item.wrappedValue.isDuplicate)
-                    
+
                     if item.wrappedValue.isDuplicate {
                         Text("menu_import_duplicate_badge".t)
                             .font(.system(size: 8, weight: .bold))
@@ -425,7 +439,7 @@ struct MenuImportSheet: View {
                             .foregroundColor(.appAmber)
                             .clipShape(Capsule())
                     }
-                    
+
                     if let cat = item.wrappedValue.suggestedCategory,
                        !categories.contains(where: { $0.name == cat }) {
                         Text("menu_import_new_category".t)
@@ -437,7 +451,7 @@ struct MenuImportSheet: View {
                             .clipShape(Capsule())
                     }
                 }
-                
+
                 HStack(spacing: 6) {
                     if let cat = item.wrappedValue.suggestedCategory {
                         // Category picker
@@ -480,9 +494,9 @@ struct MenuImportSheet: View {
                     }
                 }
             }
-            
+
             Spacer()
-            
+
             // Price (editable)
             HStack(spacing: 2) {
                 Text("฿")
@@ -498,7 +512,7 @@ struct MenuImportSheet: View {
         .apCard()
         .opacity(item.wrappedValue.isSelected ? 1.0 : 0.5)
     }
-    
+
     private var importActionBar: some View {
         VStack(spacing: APSpacing.sm) {
             Button(action: performImport) {
@@ -525,7 +539,7 @@ struct MenuImportSheet: View {
             }
             .buttonStyle(.plain)
             .disabled(selectedCount == 0 || isImporting)
-            
+
             // Back button
             if !isImporting {
                 Button(action: {
@@ -542,19 +556,19 @@ struct MenuImportSheet: View {
         .padding(APSpacing.md)
         .background(Color.appSurface)
     }
-    
+
     // MARK: - Step 3: Complete
-    
+
     private var completeStepContent: some View {
         VStack(spacing: APSpacing.xl) {
             Spacer()
-            
+
             // Success icon
             ZStack {
                 Circle()
                     .fill(Color.appTeal.opacity(0.1))
                     .frame(width: 100, height: 100)
-                
+
                 Image(systemName: "checkmark.seal.fill")
                     .font(.system(size: 48))
                     .foregroundStyle(
@@ -565,12 +579,12 @@ struct MenuImportSheet: View {
                         )
                     )
             }
-            
+
             Text("menu_import_success_title".t)
                 .font(.title2)
                 .fontWeight(.bold)
                 .foregroundColor(.textPrimary)
-            
+
             // Summary stats
             VStack(spacing: APSpacing.sm) {
                 summaryRow(
@@ -578,7 +592,7 @@ struct MenuImportSheet: View {
                     color: .appTeal,
                     text: LocalizationManager.shared.t("menu_import_imported_count", importSummary.imported)
                 )
-                
+
                 if importSummary.skipped > 0 {
                     summaryRow(
                         icon: "arrow.right.circle.fill",
@@ -586,7 +600,7 @@ struct MenuImportSheet: View {
                         text: LocalizationManager.shared.t("menu_import_skipped_count", importSummary.skipped)
                     )
                 }
-                
+
                 if importSummary.duplicatesSkipped > 0 {
                     summaryRow(
                         icon: "doc.on.doc.fill",
@@ -594,7 +608,7 @@ struct MenuImportSheet: View {
                         text: LocalizationManager.shared.t("menu_import_skipped_count", importSummary.duplicatesSkipped) + " (" + "menu_import_duplicate_badge".t + ")"
                     )
                 }
-                
+
                 if importSummary.categoriesCreated > 0 {
                     summaryRow(
                         icon: "folder.badge.plus",
@@ -604,9 +618,9 @@ struct MenuImportSheet: View {
                 }
             }
             .padding(.horizontal, APSpacing.xl)
-            
+
             Spacer()
-            
+
             // Done button
             Button(action: onDismiss) {
                 Text("menu_import_done_btn".t)
@@ -622,7 +636,7 @@ struct MenuImportSheet: View {
             .padding(.bottom, APSpacing.lg)
         }
     }
-    
+
     private func summaryRow(icon: String, color: Color, text: String) -> some View {
         HStack(spacing: APSpacing.sm) {
             Image(systemName: icon)
@@ -636,17 +650,17 @@ struct MenuImportSheet: View {
         .padding(APSpacing.sm)
         .apCard()
     }
-    
+
     // MARK: - Computed Properties
-    
+
     private var allSelected: Bool {
         parsedItems.allSatisfy { $0.isSelected }
     }
-    
+
     private var selectedCount: Int {
         parsedItems.filter { $0.isSelected }.count
     }
-    
+
     private var allCategoryOptions: [String] {
         var options = categories.map { $0.name }
         // Add AI-suggested categories that don't exist yet
@@ -655,13 +669,13 @@ struct MenuImportSheet: View {
         options.append(contentsOf: suggestedNew.sorted())
         return options
     }
-    
+
     // MARK: - Actions
-    
+
     private func loadSelectedPhotos(from items: [PhotosPickerItem]) async {
         var newImages: [Data] = []
         var newPreviews: [UIImage] = []
-        
+
         for item in items {
             if let data = try? await item.loadTransferable(type: Data.self),
                let uiImage = UIImage(data: data) {
@@ -672,14 +686,14 @@ struct MenuImportSheet: View {
                 }
             }
         }
-        
+
         await MainActor.run {
             selectedImages = newImages
             selectedImagePreviews = newPreviews
             analyzeError = nil
         }
     }
-    
+
     private func compressForAPI(_ image: UIImage) -> Data? {
         // Resize to max 2048px longest side for API efficiency
         let maxDimension: CGFloat = 2048
@@ -690,16 +704,16 @@ struct MenuImportSheet: View {
         } else {
             scale = 1.0
         }
-        
+
         let newSize = CGSize(width: size.width * scale, height: size.height * scale)
         let renderer = UIGraphicsImageRenderer(size: newSize)
         let resized = renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: newSize))
         }
-        
+
         return resized.jpegData(compressionQuality: 0.85)
     }
-    
+
     private func removeImage(at index: Int) {
         guard index < selectedImages.count else { return }
         selectedImages.remove(at: index)
@@ -709,20 +723,20 @@ struct MenuImportSheet: View {
             selectedPhotoItems.remove(at: index)
         }
     }
-    
+
     private func analyzeMenuImages() {
         guard !selectedImages.isEmpty else { return }
         isAnalyzing = true
         analyzeError = nil
-        
+
         Task {
             do {
                 let result = try await callParseMenuEdgeFunction(images: selectedImages)
-                
+
                 await MainActor.run {
                     // Mark duplicates
                     let existingNames = Set(existingProducts.map { $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) })
-                    
+
                     parsedItems = result.items.map { item in
                         var mutable = item
                         let normalizedName = item.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -732,10 +746,10 @@ struct MenuImportSheet: View {
                         }
                         return mutable
                     }
-                    
+
                     parseConfidence = result.confidence
                     isAnalyzing = false
-                    
+
                     if parsedItems.isEmpty {
                         analyzeError = "menu_import_no_items".t
                     } else {
@@ -752,22 +766,22 @@ struct MenuImportSheet: View {
             }
         }
     }
-    
+
     private func toggleSelectAll() {
         let newValue = !allSelected
         for i in parsedItems.indices {
             parsedItems[i].isSelected = newValue
         }
     }
-    
+
     private func performImport() {
         isImporting = true
-        
+
         Task {
             let selectedItems = parsedItems.filter { $0.isSelected }
             var summary = MenuImportSummary()
             summary.totalFound = parsedItems.count
-            
+
             // Map existing categories (lowercase name -> actual category name and ID)
             var categoryMap: [String: UUID] = [:]
             var existingCategoriesLower: [String: Category] = [:]
@@ -776,10 +790,10 @@ struct MenuImportSheet: View {
                 existingCategoriesLower[normalized] = cat
                 categoryMap[cat.name] = cat.id
             }
-            
+
             // Resolve categories: case-insensitively map or prepare to create new ones
             var newCategoriesToSave: [Category] = []
-            
+
             for item in selectedItems {
                 if let suggestedCat = item.suggestedCategory {
                     let trimmed = suggestedCat.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -802,15 +816,15 @@ struct MenuImportSheet: View {
                     }
                 }
             }
-            
+
             if !newCategoriesToSave.isEmpty {
                 modelContext.saveWithLogging(label: #function)
             }
-            
+
             // 2. Create products
             for item in selectedItems {
                 let categoryId = item.suggestedCategory.flatMap { categoryMap[$0.trimmingCharacters(in: .whitespacesAndNewlines)] }
-                
+
                 viewModel.addProduct(
                     name: item.name,
                     price: item.price,
@@ -818,31 +832,31 @@ struct MenuImportSheet: View {
                     categoryId: categoryId,
                     isAvailable: true
                 )
-                
+
                 summary.imported += 1
             }
-            
+
             // Count skipped
             summary.skipped = parsedItems.filter { !$0.isSelected && !$0.isDuplicate }.count
             summary.duplicatesSkipped = parsedItems.filter { $0.isDuplicate }.count
-            
+
             await MainActor.run {
                 importSummary = summary
                 isImporting = false
-                
+
                 withAnimation(.spring(response: 0.35)) {
                     currentStep = .complete
                 }
             }
         }
     }
-    
+
     // MARK: - Edge Function Call
-    
+
     private func callParseMenuEdgeFunction(images: [Data]) async throws -> MenuParseResult {
         let config = AppConfig.shared
         let url = URL(string: config.supabaseURL.absoluteString + "/functions/v1/parse-menu-image")!
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -852,24 +866,24 @@ struct MenuImportSheet: View {
             request.setValue(geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines), forHTTPHeaderField: "x-gemini-api-key")
         }
         request.timeoutInterval = 60
-        
+
         // Convert image data to base64 strings
         let base64Images = images.map { $0.base64EncodedString() }
-        
+
         let payload: [String: Any] = ["images": base64Images]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
         guard let httpResponse = response as? HTTPURLResponse else {
             throw MenuImportError.invalidResponse
         }
-        
+
         guard (200...299).contains(httpResponse.statusCode) else {
             let errorMsg = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw MenuImportError.serverError(httpResponse.statusCode, errorMsg)
         }
-        
+
         let decoder = JSONDecoder()
         return try decoder.decode(MenuParseResult.self, from: data)
     }
@@ -881,7 +895,7 @@ enum MenuImportError: LocalizedError {
     case invalidResponse
     case serverError(Int, String)
     case noItems
-    
+
     var errorDescription: String? {
         switch self {
         case .invalidResponse:

@@ -256,7 +256,7 @@
 				INFOPLIST_FILE = AlphaPos/ATS.plist;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = NO;
-				INFOPLIST_KEY_NSCameraUsageDescription = "AlphaPos requires camera access to scan barcodes.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "AlphaPos uses the camera to scan barcodes and preview staff attendance verification.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AlphaPos connects to the restaurant's local Supabase server.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -307,7 +307,7 @@
 				INFOPLIST_FILE = AlphaPos/ATS.plist;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = NO;
-				INFOPLIST_KEY_NSCameraUsageDescription = "AlphaPos requires camera access to scan barcodes.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "AlphaPos uses the camera to scan barcodes and preview staff attendance verification.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AlphaPos connects to the restaurant's local Supabase server.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;

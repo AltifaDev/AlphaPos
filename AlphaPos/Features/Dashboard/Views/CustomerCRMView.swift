@@ -20,27 +20,27 @@ import SwiftData
 struct CustomerCRMView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
-    
+
     @Query(sort: \Customer.name) private var customers: [Customer]
     @Query(sort: \Order.createdAt, order: .reverse) private var allOrders: [Order]
     @State private var searchText = ""
     @State private var selectedSegment: CustomerSegment = .all
     @State private var selectedCustomer: Customer? = nil
-    
+
     @State private var showingAddCustomerSheet = false
     @State private var newCustomerName = ""
     @State private var newCustomerPhone = ""
     @State private var newCustomerEmail = ""
-    
+
     enum CustomerSegment: String, CaseIterable, Identifiable {
         case all = "All"
         case vip = "VIP"
         case regular = "Regular"
         case new = "New"
         case atRisk = "At Risk"
-        
+
         var id: String { rawValue }
-        
+
         var color: Color {
             switch self {
             case .all: return .appAccent
@@ -50,7 +50,7 @@ struct CustomerCRMView: View {
             case .atRisk: return Color(hex: "EF4444")
             }
         }
-        
+
         var icon: String {
             switch self {
             case .all: return "person.3.fill"
@@ -61,22 +61,22 @@ struct CustomerCRMView: View {
             }
         }
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
             headerSection
-            
+
             Divider().background(Color.appDivider)
-            
+
             // Content
             HStack(spacing: 0) {
                 // Customer list
                 customerListSection
                     .frame(maxWidth: .infinity)
-                
+
                 Divider().background(Color.appDivider)
-                
+
                 // Customer detail
                 customerDetailSection
                     .frame(maxWidth: .infinity)
@@ -113,18 +113,18 @@ struct CustomerCRMView: View {
             }
         }
     }
-    
+
     private func clearAddCustomerFields() {
         newCustomerName = ""
         newCustomerPhone = ""
         newCustomerEmail = ""
     }
-    
+
     private func saveCustomer() {
         let name = newCustomerName.trimmingCharacters(in: .whitespacesAndNewlines)
         let phone = newCustomerPhone.trimmingCharacters(in: .whitespacesAndNewlines)
         let email = newCustomerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        
+
         let newCustomer = Customer(
             name: name,
             email: email.isEmpty ? nil : email,
@@ -132,20 +132,20 @@ struct CustomerCRMView: View {
         )
         modelContext.insert(newCustomer)
         try? modelContext.save()
-        
+
         // Background sync
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
-        
+
         selectedCustomer = newCustomer
         showingAddCustomerSheet = false
         clearAddCustomerFields()
         APHaptic.trigger()
     }
-    
+
     // MARK: - Header
-    
+
     private var headerSection: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
@@ -156,9 +156,9 @@ struct CustomerCRMView: View {
                     .font(.subheadline)
                     .foregroundColor(.textSecondary)
             }
-            
+
             Spacer()
-            
+
             // Segment pills
             HStack(spacing: 8) {
                 ForEach(CustomerSegment.allCases) { segment in
@@ -180,9 +180,9 @@ struct CustomerCRMView: View {
                     .buttonStyle(.plain)
                 }
             }
-            
+
             Spacer()
-            
+
             // Add customer button
             Button {
                 showingAddCustomerSheet = true
@@ -202,9 +202,9 @@ struct CustomerCRMView: View {
         }
         .padding()
     }
-    
+
     // MARK: - Customer List
-    
+
     private var customerListSection: some View {
         VStack(spacing: 0) {
             // Search bar
@@ -218,7 +218,7 @@ struct CustomerCRMView: View {
             .background(Color.appSurfaceHigh)
             .cornerRadius(10)
             .padding()
-            
+
             // Customer rows
             ScrollView {
                 LazyVStack(spacing: 4) {
@@ -243,7 +243,7 @@ struct CustomerCRMView: View {
             }
         }
     }
-    
+
     private func customerRow(_ customer: Customer) -> some View {
         HStack(spacing: 12) {
             // Avatar
@@ -255,7 +255,7 @@ struct CustomerCRMView: View {
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(.appAccent)
             }
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(customer.name)
                     .font(.system(size: 14, weight: .medium))
@@ -264,9 +264,9 @@ struct CustomerCRMView: View {
                     .font(.system(size: 11))
                     .foregroundColor(.textTertiary)
             }
-            
+
             Spacer()
-            
+
             // LTV
             VStack(alignment: .trailing, spacing: 2) {
                 Text("฿\(customer.totalSpend.formatted(.number.precision(.fractionLength(0))))")
@@ -285,9 +285,9 @@ struct CustomerCRMView: View {
             withAnimation { selectedCustomer = customer }
         }
     }
-    
+
     // MARK: - Customer Detail
-    
+
     private var customerDetailSection: some View {
         Group {
             if let customer = selectedCustomer {
@@ -319,16 +319,19 @@ struct CustomerCRMView: View {
                                 }
                             }
                         }
-                        
+
                         // Stats
                         HStack(spacing: 16) {
                             statCard(title: "Total Spent", value: "฿\(customer.totalSpend.formatted(.number.precision(.fractionLength(0))))", color: .green)
                             statCard(title: "Visits", value: "\(customer.visitCount)", color: .blue)
                             statCard(title: "Points", value: "\(customer.loyaltyPoints)", color: .purple)
                         }
-                        
+
                         // Purchase history from actual orders
                         let customerOrders = allOrders.filter { $0.customer?.id == customer.id && $0.status == "completed" }
+
+                        // Personalized recommendations
+                        personalizedRecommendationsCard(for: customer, orders: customerOrders)
 
                         VStack(alignment: .leading, spacing: 8) {
                             Text("crm_purchase_history".t)
@@ -418,9 +421,96 @@ struct CustomerCRMView: View {
         }
         return result
     }
-    
+
     private func customerInitials(_ name: String) -> String {
         let letters = name.split(separator: " ").prefix(2).compactMap { $0.first }
         return letters.isEmpty ? "?" : String(letters).uppercased()
+    }
+
+    private func personalizedRecommendationsCard(for customer: Customer, orders: [Order]) -> some View {
+        // 1. Get favorite item of this customer
+        var clientItemCounts: [String: Int] = [:]
+        for order in orders {
+            for item in order.items where !item.isDeleted && item.status != "cancelled" {
+                if let name = item.menuItem?.name {
+                    clientItemCounts[name] = (clientItemCounts[name] ?? 0) + item.quantity
+                }
+            }
+        }
+        let favoriteItem = clientItemCounts.max(by: { $0.value < $1.value })?.key
+
+        // 2. Get overall best seller from all orders
+        var globalItemCounts: [String: Int] = [:]
+        let completedAllOrders = allOrders.filter { $0.status == "completed" && !$0.isDeleted }
+        for order in completedAllOrders {
+            for item in order.items where !item.isDeleted && item.status != "cancelled" {
+                if let name = item.menuItem?.name {
+                    globalItemCounts[name] = (globalItemCounts[name] ?? 0) + item.quantity
+                }
+            }
+        }
+        let overallBestSeller = globalItemCounts.max(by: { $0.value < $1.value })?.key
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "sparkles")
+                    .foregroundColor(.appAccent)
+                Text("ระบบแนะนำโปรโมชันส่วนบุคคล (Personalized Recommendations)")
+                    .font(.subheadline.bold())
+                    .foregroundColor(.textPrimary)
+            }
+
+            VStack(spacing: 8) {
+                if let fav = favoriteItem {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "heart.fill")
+                            .foregroundColor(.appRose)
+                            .padding(.top, 2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("โปรโมชันลูกค้าประจำ (Favorite BOGO)")
+                                .font(.caption.bold())
+                                .foregroundColor(.textPrimary)
+                            Text("เนื่องจากลูกค้าชอบ '\(fav)' แนะนำให้เสนอโปรโมชัน ซื้อ 1 แถม 1 (BOGO) เพื่อกระตุ้นยอดขายซ้ำ")
+                                .font(.system(size: 11))
+                                .foregroundColor(.textSecondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(Color.appSurface)
+                    .cornerRadius(8)
+                }
+
+                if let best = overallBestSeller, best != favoriteItem {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "star.fill")
+                            .foregroundColor(.appAmber)
+                            .padding(.top, 2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("เมนูขายดีประจำร้านที่ยังไม่เคยสั่ง (Store Best-Seller)")
+                                .font(.caption.bold())
+                                .foregroundColor(.textPrimary)
+                            Text("แนะนำเสนอส่วนลด 15% สำหรับเมนูยอดนิยม '\(best)' ที่ลูกค้ารายนี้ยังไม่เคยสั่งซื้อ")
+                                .font(.system(size: 11))
+                                .foregroundColor(.textSecondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(Color.appSurface)
+                    .cornerRadius(8)
+                }
+
+                if favoriteItem == nil && overallBestSeller == nil {
+                    Text("ไม่มีข้อมูลการซื้อเพียงพอสำหรับการวิเคราะห์พฤติกรรม")
+                        .font(.caption)
+                        .foregroundColor(.textTertiary)
+                        .padding(.vertical, 8)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.appSurfaceHigh)
+        .cornerRadius(12)
     }
 }

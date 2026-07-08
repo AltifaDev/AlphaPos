@@ -81,7 +81,7 @@ extension SyncEngine {
                     local.vatAmount = remoteDouble(remote["vat_amount"])
                     local.paymentMethod = remote["payment_method"] as? String ?? local.paymentMethod
                     local.status = remote["status"] as? String ?? local.status
-                    local.isCapEx = remoteBool(remote["is_cap_ex"])
+                    local.isCapEx = remoteBool(remote["is_capex"])
                     local.date = remoteDate(remote["date"])
                     local.notes = remote["notes"] as? String
                     local.supplier = supplier
@@ -102,7 +102,7 @@ extension SyncEngine {
                         vatAmount: remoteDouble(remote["vat_amount"]),
                         paymentMethod: remote["payment_method"] as? String ?? "Cash",
                         status: remote["status"] as? String ?? "Paid",
-                        isCapEx: remoteBool(remote["is_cap_ex"]),
+                        isCapEx: remoteBool(remote["is_capex"]),
                         date: remoteDate(remote["date"]),
                         notes: remote["notes"] as? String,
                         supplier: supplier,

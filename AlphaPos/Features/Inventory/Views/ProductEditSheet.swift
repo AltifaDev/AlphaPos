@@ -11,15 +11,15 @@ import UniformTypeIdentifiers
 struct ProductEditSheet: View {
     let menuItem: MenuItem? // Nil when creating new
     let onDismiss: () -> Void
-    
+
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \ModifierGroup.name) private var allModifierGroups: [ModifierGroup]
     @Query(sort: \InventoryItem.name) private var allIngredients: [InventoryItem]
-    
+
     @State private var viewModel = InventoryViewModel()
     @State private var activeTab = 0 // 0: Details, 1: Recipe, 2: Extras
-    
+
     // Tab 1: General Details
     @State private var name = ""
     @State private var priceString = ""
@@ -27,13 +27,13 @@ struct ProductEditSheet: View {
     @State private var selectedCategoryId: UUID? = nil
     @State private var isAvailable = true
     @State private var showingDeleteAlert = false
-    
+
     // Translations
     @State private var nameEn = ""
     @State private var nameZh = ""
     @State private var descEn = ""
     @State private var descZh = ""
-    
+
     // New Standard POS States
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var imageDataItems: [Data] = []
@@ -47,7 +47,7 @@ struct ProductEditSheet: View {
     @State private var isTaxInclusive = true
     @State private var taxRateString = "7.0"
     @State private var selectedColorHex: String? = nil
-    
+
     private let colorOptions = [
         (name: "Default", hex: nil as String?, color: Color.appAccent),
         (name: "Rose", hex: "BE123C", color: Color(hex: "BE123C")),
@@ -58,11 +58,11 @@ struct ProductEditSheet: View {
         (name: "Slate", hex: "374151", color: Color(hex: "374151")),
         (name: "Emerald", hex: "047857", color: Color(hex: "047857"))
     ]
-    
+
     // Tab 2: Recipe Config (Loaded from RecipeBuilderSheet implementation)
     @State private var trackingMode = "not_tracked"
     @State private var selectedIngredientId: UUID? = nil
-    
+
     struct RecipeLineInput: Identifiable {
         let id = UUID()
         let ingredient: InventoryItem
@@ -71,19 +71,19 @@ struct ProductEditSheet: View {
     }
     @State private var recipeLines: [RecipeLineInput] = []
     @State private var showingAddIngredient = false
-    
+
     struct DeliveryPriceInput: Identifiable {
         let id: UUID
         var brandName: String
         var priceString: String
     }
     @State private var deliveryPriceInputs: [DeliveryPriceInput] = []
-    
+
     // Tab 3: Modifier Groups linking
     @State private var linkedModifierGroupIds: Set<UUID> = []
-    
+
     var isEditing: Bool { menuItem != nil }
-    
+
     // Recipe costing calculations
     private var totalCost: Double {
         switch trackingMode {
@@ -103,25 +103,25 @@ struct ProductEditSheet: View {
             return 0.0
         }
     }
-    
+
     private var menuPrice: Double {
         Double(priceString) ?? 0.0
     }
-    
+
     private var foodCostPercent: Double {
         guard menuPrice > 0 else { return 0.0 }
         return (totalCost / menuPrice) * 100.0
     }
-    
+
     private var grossMarginPercent: Double {
         return max(0.0, 100.0 - foodCostPercent)
     }
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
-                
+
                 VStack(spacing: 0) {
                     // Header tabs (Visible only if editing)
                     if isEditing {
@@ -134,10 +134,10 @@ struct ProductEditSheet: View {
                         .padding(.horizontal, APSpacing.md)
                         .padding(.vertical, APSpacing.sm)
                         .background(Color.appSurface)
-                        
+
                         Divider().background(Color.appDivider)
                     }
-                    
+
                     ScrollView {
                         VStack(spacing: APSpacing.md) {
                             switch activeTab {
@@ -153,7 +153,7 @@ struct ProductEditSheet: View {
                         }
                         .padding(APSpacing.md)
                     }
-                    
+
                     bottomActionPanel
                 }
             }
@@ -189,9 +189,9 @@ struct ProductEditSheet: View {
         }
         .apColorScheme()
     }
-    
+
     // MARK: - Tab 1: Details View
-    
+
     private var detailsTabContent: some View {
         VStack(spacing: APSpacing.md) {
             // 1. Product media
@@ -285,23 +285,23 @@ struct ProductEditSheet: View {
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
                     .textCase(.uppercase)
-                
+
                 inputFieldRow(label: "Product Name", placeholder: "e.g., Iced Cappuccino, Gyoza", text: $name)
                 inputFieldRow(label: "Product Name (English)", placeholder: "e.g., Iced Cappuccino, Gyoza", text: $nameEn)
                 inputFieldRow(label: "Product Name (Chinese)", placeholder: "e.g., 冰卡布奇诺, 饺子", text: $nameZh)
-                
+
                 inputFieldRow(label: "Selling Price (฿)", placeholder: "0.00", text: $priceString)
                     .keyboardType(.decimalPad)
-                
+
                 inputFieldRow(label: "Description (Optional)", placeholder: "e.g., Double espresso shot with textured milk over ice", text: $description)
                 inputFieldRow(label: "Description (English)", placeholder: "e.g., Double espresso shot with textured milk over ice", text: $descEn)
                 inputFieldRow(label: "Description (Chinese)", placeholder: "e.g., 双份浓缩咖啡配打发牛奶", text: $descZh)
-                
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text("product_category_label".t)
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
-                    
+
                     Picker("Category Picker", selection: $selectedCategoryId) {
                         Text("uncategorized_label".t).tag(nil as UUID?)
                         ForEach(categories) { cat in
@@ -311,16 +311,16 @@ struct ProductEditSheet: View {
                     .pickerStyle(.menu)
                     .tint(.appAccent)
                 }
-                
+
                 inputFieldRow(label: "SKU Code (Optional)", placeholder: "e.g., SKU-12345", text: $sku)
                 inputFieldRow(label: "Barcode / UPC (Optional)", placeholder: "e.g., 8851234567890", text: $barcode)
-                
+
                 // Color Tag Picker
                 VStack(alignment: .leading, spacing: 4) {
                     Text("card_color_fallback".t)
                         .font(.caption2)
                         .foregroundColor(.textSecondary)
-                    
+
                     HStack(spacing: APSpacing.sm) {
                         ForEach(colorOptions, id: \.hex) { option in
                             Button(action: { selectedColorHex = option.hex }) {
@@ -338,13 +338,13 @@ struct ProductEditSheet: View {
                     }
                 }
                 .padding(.vertical, 4)
-                
+
                 Toggle("Available for Sale", isOn: $isAvailable)
                     .toggleStyle(SwitchToggleStyle(tint: .appAccent))
                     .font(.subheadline)
                     .foregroundColor(.textPrimary)
                     .padding(.vertical, 4)
-                
+
                 Toggle(isOn: $isFavorite) {
                     Label("pin_to_favorites".t, systemImage: "star.fill")
                 }
@@ -352,20 +352,20 @@ struct ProductEditSheet: View {
                 .font(.subheadline)
                 .foregroundColor(.textPrimary)
                 .padding(.vertical, 4)
-                
+
                 Divider().background(Color.appDivider).padding(.vertical, 4)
-                
+
                 Toggle("Price is Tax-Inclusive", isOn: $isTaxInclusive)
                     .toggleStyle(SwitchToggleStyle(tint: .appAccent))
                     .font(.subheadline)
                     .foregroundColor(.textPrimary)
                     .padding(.vertical, 4)
-                
+
                 inputFieldRow(label: "Tax Rate (%)", placeholder: "7.0", text: $taxRateString)
                     .keyboardType(.decimalPad)
             }
             .apCard()
-            
+
             // Delivery Pricing Section
             VStack(alignment: .leading, spacing: APSpacing.sm) {
                 HStack {
@@ -380,11 +380,11 @@ struct ProductEditSheet: View {
                             .foregroundColor(.textTertiary)
                     }
                     Spacer()
-                    
+
                     let availableBrands = ["GrabFood", "LINE MAN", "ShopeeFood", "Foodpanda", "Robinhood"].filter { brand in
                         !deliveryPriceInputs.contains(where: { $0.brandName == brand })
                     }
-                    
+
                     if !availableBrands.isEmpty {
                         Menu {
                             ForEach(availableBrands, id: \.self) { brand in
@@ -402,7 +402,7 @@ struct ProductEditSheet: View {
                         }
                     }
                 }
-                
+
                 if deliveryPriceInputs.isEmpty {
                     Text("no_delivery_prices_desc".t)
                         .font(.caption2)
@@ -415,9 +415,9 @@ struct ProductEditSheet: View {
                             HStack(spacing: APSpacing.md) {
                                 DeliveryBrandLogo(brandName: input.brandName)
                                     .frame(width: 80, alignment: .leading)
-                                
+
                                 Spacer()
-                                
+
                                 HStack(spacing: 4) {
                                     Text("฿")
                                         .font(.subheadline)
@@ -435,7 +435,7 @@ struct ProductEditSheet: View {
                                         )
                                         .frame(width: 90)
                                 }
-                                
+
                                 Button(action: {
                                     deliveryPriceInputs.removeAll(where: { $0.id == input.id })
                                 }) {
@@ -446,7 +446,7 @@ struct ProductEditSheet: View {
                                 .buttonStyle(.plain)
                             }
                             .padding(.vertical, 4)
-                            
+
                             Divider().background(Color.appDivider)
                         }
                     }
@@ -454,13 +454,13 @@ struct ProductEditSheet: View {
             }
             .padding(APSpacing.md)
             .apCard()
-            
+
             if isEditing {
                 deleteSectionCard
             }
         }
     }
-    
+
     private var deleteSectionCard: some View {
         VStack(alignment: .leading, spacing: APSpacing.sm) {
             Text("danger_zone_title".t)
@@ -468,11 +468,11 @@ struct ProductEditSheet: View {
                 .fontWeight(.bold)
                 .foregroundColor(.appRose)
                 .textCase(.uppercase)
-            
+
             Text("delete_product_danger_desc".t)
                 .font(.caption2)
                 .foregroundColor(.textSecondary)
-            
+
             Button(action: { showingDeleteAlert = true }) {
                 Text("prod_delete_btn".t)
                     .font(.subheadline)
@@ -488,9 +488,9 @@ struct ProductEditSheet: View {
         .padding(APSpacing.md)
         .apCard()
     }
-    
+
     // MARK: - Tab 2: Recipe View
-    
+
     private var recipeTabContent: some View {
         VStack(spacing: APSpacing.md) {
             VStack(alignment: .leading, spacing: APSpacing.sm) {
@@ -499,7 +499,7 @@ struct ProductEditSheet: View {
                     .fontWeight(.bold)
                     .foregroundColor(.textSecondary)
                     .textCase(.uppercase)
-                
+
                 Picker("Tracking Mode", selection: $trackingMode) {
                     Text("stock_mode_not_tracked".t).tag("not_tracked")
                     Text("stock_mode_finished_good".t).tag("finished_good")
@@ -509,7 +509,7 @@ struct ProductEditSheet: View {
             }
             .padding(APSpacing.md)
             .apCard()
-            
+
             if trackingMode == "finished_good" {
                 VStack(alignment: .leading, spacing: APSpacing.md) {
                     Text("finished_good_settings".t)
@@ -517,11 +517,11 @@ struct ProductEditSheet: View {
                         .fontWeight(.bold)
                         .foregroundColor(.textSecondary)
                         .textCase(.uppercase)
-                    
+
                     Text("finished_good_settings_desc".t)
                         .font(.caption2)
                         .foregroundColor(.textTertiary)
-                    
+
                     Picker("Linked Inventory Item", selection: $selectedIngredientId) {
                         Text("auto_create_matching_item".t).tag(nil as UUID?)
                         ForEach(allIngredients) { ingredient in
@@ -550,7 +550,7 @@ struct ProductEditSheet: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    
+
                     if recipeLines.isEmpty {
                         Text("no_ingredients_linked".t)
                             .font(.caption2)
@@ -600,13 +600,13 @@ struct ProductEditSheet: View {
                 .padding(APSpacing.md)
                 .apCard()
             }
-            
+
             if trackingMode != "not_tracked" {
                 costingAnalysisCard
             }
         }
     }
-    
+
     private var costingAnalysisCard: some View {
         VStack(alignment: .leading, spacing: APSpacing.md) {
             Text("margins_analysis_title".t)
@@ -614,7 +614,7 @@ struct ProductEditSheet: View {
                 .fontWeight(.bold)
                 .foregroundColor(.textSecondary)
                 .textCase(.uppercase)
-            
+
             HStack(spacing: APSpacing.md) {
                 VStack(spacing: 4) {
                     ZStack {
@@ -636,7 +636,7 @@ struct ProductEditSheet: View {
                     }
                     Text("margin_pct".t).font(.system(size: 8)).foregroundColor(.textSecondary)
                 }
-                
+
                 VStack(alignment: .leading, spacing: 4) {
                     costRow(label: "Selling Price", val: "฿\(String(format: "%.2f", menuPrice))")
                     costRow(label: "Ingredient Cost", val: "฿\(String(format: "%.2f", totalCost))")
@@ -648,7 +648,7 @@ struct ProductEditSheet: View {
         .padding(APSpacing.md)
         .apCard()
     }
-    
+
     private func costRow(label: String, val: String) -> some View {
         HStack {
             Text(label).font(.system(size: 9)).foregroundColor(.textSecondary)
@@ -656,7 +656,7 @@ struct ProductEditSheet: View {
             Text(val).font(.system(size: 10)).bold().foregroundColor(.textPrimary)
         }
     }
-    
+
     private var ingredientSelectionSheet: some View {
         NavigationStack {
             List(allIngredients) { ingredient in
@@ -686,9 +686,9 @@ struct ProductEditSheet: View {
         }
         .apColorScheme()
     }
-    
+
     // MARK: - Tab 3: Extras (Modifiers)
-    
+
     private var extrasTabContent: some View {
         VStack(alignment: .leading, spacing: APSpacing.md) {
             Text("link_customization_options".t)
@@ -696,11 +696,11 @@ struct ProductEditSheet: View {
                 .fontWeight(.bold)
                 .foregroundColor(.textSecondary)
                 .textCase(.uppercase)
-            
+
             Text("link_customization_desc".t)
                 .font(.caption2)
                 .foregroundColor(.textSecondary)
-            
+
             if allModifierGroups.isEmpty {
                 Text("no_custom_options_desc".t)
                     .font(.caption)
@@ -730,7 +730,7 @@ struct ProductEditSheet: View {
                         }
                         .toggleStyle(SwitchToggleStyle(tint: .appAccent))
                         .padding(.vertical, 4)
-                        
+
                         Divider().background(Color.appDivider)
                     }
                 }
@@ -739,9 +739,9 @@ struct ProductEditSheet: View {
             }
         }
     }
-    
+
     // MARK: - Save Logic
-    
+
     private var bottomActionPanel: some View {
         HStack(spacing: APSpacing.md) {
             Button(action: onDismiss) {
@@ -755,7 +755,7 @@ struct ProductEditSheet: View {
                     .cornerRadius(APRadius.md)
             }
             .buttonStyle(.plain)
-            
+
             Button(action: saveProduct) {
                 Text(isEditing ? "Save Changes" : "Create Product")
                     .font(.subheadline)
@@ -774,7 +774,7 @@ struct ProductEditSheet: View {
         .background(Color.appSurface)
         .overlay(Rectangle().fill(Color.appDivider).frame(height: 1), alignment: .top)
     }
-    
+
     private func inputFieldRow(label: String, placeholder: String, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
@@ -907,7 +907,7 @@ struct ProductEditSheet: View {
         }
         return resized.jpegData(compressionQuality: 0.75)
     }
-    
+
     private func loadProductData() {
         if let item = menuItem {
             name = item.name
@@ -915,7 +915,7 @@ struct ProductEditSheet: View {
             description = item.itemDescription ?? ""
             selectedCategoryId = item.category?.id
             isAvailable = item.isAvailable
-            
+
             // Load new fields
             barcode = item.barcode ?? ""
             sku = item.sku ?? ""
@@ -925,7 +925,7 @@ struct ProductEditSheet: View {
             imageDataItems = [item.imageData, item.imageData2, item.imageData3].compactMap { $0 }
             videoData = item.videoData
             taxRateString = String(format: "%.1f", item.taxRate)
-            
+
             // Load translations
             let nameTrans = item.nameTranslations
             let descTrans = item.descriptionTranslations
@@ -933,7 +933,7 @@ struct ProductEditSheet: View {
             nameZh = nameTrans["zh"] ?? ""
             descEn = descTrans["en"] ?? ""
             descZh = descTrans["zh"] ?? ""
-            
+
             // Load delivery prices
             deliveryPriceInputs = item.deliveryPrices.map { dp in
                 DeliveryPriceInput(
@@ -942,7 +942,7 @@ struct ProductEditSheet: View {
                     priceString: String(format: "%.2f", dp.price)
                 )
             }
-            
+
             // Load recipe
             let recipes = item.recipes
             if recipes.isEmpty {
@@ -961,36 +961,42 @@ struct ProductEditSheet: View {
                     )
                 }
             }
-            
+
             // Load linked modifiers
             linkedModifierGroupIds = Set(item.modifierGroupsRelations.compactMap { $0.modifierGroup?.id })
         }
     }
-    
+
     private func saveProduct() {
         let price = Double(priceString) ?? 0.0
         let taxRate = Double(taxRateString) ?? 7.0
         let barcodeVal = barcode.trimmingCharacters(in: .whitespacesAndNewlines)
         let skuVal = sku.trimmingCharacters(in: .whitespacesAndNewlines)
-        
+
         let deliveryPricesList = deliveryPriceInputs.compactMap { input -> (brandName: String, price: Double)? in
             guard let pr = Double(input.priceString) else { return nil }
             return (brandName: input.brandName, price: pr)
         }
-        
+
         var nameTrans: [String: String] = [:]
         var descTrans: [String: String] = [:]
-        
+
         let nEn = nameEn.trimmingCharacters(in: .whitespacesAndNewlines)
         let nZh = nameZh.trimmingCharacters(in: .whitespacesAndNewlines)
         let dEn = descEn.trimmingCharacters(in: .whitespacesAndNewlines)
         let dZh = descZh.trimmingCharacters(in: .whitespacesAndNewlines)
-        
+
         if !nEn.isEmpty { nameTrans["en"] = nEn }
         if !nZh.isEmpty { nameTrans["zh"] = nZh }
         if !dEn.isEmpty { descTrans["en"] = dEn }
         if !dZh.isEmpty { descTrans["zh"] = dZh }
-        
+
+        // Snapshot images to upload after the local save completes.
+        let imagesToUpload = imageDataItems
+
+        // Resolve the MenuItem instance that was saved so we can upload its media.
+        var savedItem: MenuItem?
+
         if let item = menuItem {
             // Update details
             viewModel.updateProduct(
@@ -1014,7 +1020,7 @@ struct ProductEditSheet: View {
                 nameTranslations: nameTrans,
                 descriptionTranslations: descTrans
             )
-            
+
             // Update recipes
             let linesData = recipeLines.map { (ingredientId: $0.ingredient.id, qty: $0.qty) }
             viewModel.saveRecipe(
@@ -1023,10 +1029,12 @@ struct ProductEditSheet: View {
                 selectedIngredientId: selectedIngredientId,
                 recipeLines: linesData
             )
-            
+
             // Update modifiers linkage
             viewModel.updateProductModifierGroups(menuItem: item, selectedGroupIds: Array(linkedModifierGroupIds))
-            
+
+            savedItem = item
+
         } else {
             // Add new product
             viewModel.addProduct(
@@ -1049,8 +1057,49 @@ struct ProductEditSheet: View {
                 nameTranslations: nameTrans,
                 descriptionTranslations: descTrans
             )
+
+            // Fetch the freshly created item so its media can be uploaded.
+            let newName = name
+            let descriptor = FetchDescriptor<MenuItem>(
+                predicate: #Predicate { $0.name == newName },
+                sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+            )
+            savedItem = try? modelContext.fetch(descriptor).first
         }
-        
+
+        // Upload product images to Supabase Storage, then persist the returned URLs.
+        if !imagesToUpload.isEmpty, let uploadItem = savedItem {
+            let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+            let itemId = uploadItem.id
+            let context = modelContext
+
+            Task { @MainActor in
+                for (index, data) in imagesToUpload.enumerated() {
+                    let fileName = "image_\(index + 1).jpg"
+                    do {
+                        let url = try await NetworkManager.shared.uploadProductMedia(
+                            data,
+                            merchantId: merchantId,
+                            itemId: itemId,
+                            fileName: fileName,
+                            contentType: "image/jpeg"
+                        )
+                        switch index {
+                        case 0: uploadItem.imageUrl = url
+                        case 1: uploadItem.imageUrl2 = url
+                        case 2: uploadItem.imageUrl3 = url
+                        default: break
+                        }
+                    } catch {
+                        #if DEBUG
+                        print("ProductEditSheet: uploadProductMedia failed for \(fileName): \(error.localizedDescription)")
+                        #endif
+                    }
+                }
+                context.saveWithLogging(label: "ProductEditSheet.uploadProductMedia")
+            }
+        }
+
         onDismiss()
     }
 }
@@ -1088,11 +1137,11 @@ private enum ProductMediaError: LocalizedError {
 
 struct DeliveryBrandLogo: View {
     let brandName: String
-    
+
     var body: some View {
         let text: String
         let bgColor: Color
-        
+
         switch brandName.lowercased() {
         case "grabfood", "grab":
             text = "Grab"
@@ -1113,7 +1162,7 @@ struct DeliveryBrandLogo: View {
             text = brandName
             bgColor = Color.gray
         }
-        
+
         return Text(text)
             .font(.system(size: 9, weight: .black))
             .foregroundColor(.white)
