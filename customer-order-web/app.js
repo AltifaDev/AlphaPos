@@ -1966,6 +1966,21 @@ class AlphaPosApp {
                     </div>
                 `;
             } else {
+                let mediaHtml;
+                if (item.videoUrl) {
+                    mediaHtml = `
+                        <video class="list-item-img" autoplay loop muted playsinline style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                            <source src="${escapeHtml(item.videoUrl)}" type="video/mp4">
+                            <img class="list-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                        </video>
+                        <img class="list-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" style="display:none;" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                    `;
+                } else {
+                    mediaHtml = `
+                        <img class="list-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                    `;
+                }
+
                 element.innerHTML = `
                     <div class="list-item-content">
                         <div class="list-item-category">${escapeHtml(itemSubcategory)}</div>
@@ -1983,7 +1998,7 @@ class AlphaPosApp {
                         </div>
                     </div>
                     <div class="list-item-img-container" onclick="event.stopPropagation()">
-                        <img class="list-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                        ${mediaHtml}
                     </div>
                 `;
             }

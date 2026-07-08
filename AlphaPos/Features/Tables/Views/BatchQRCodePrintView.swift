@@ -96,15 +96,18 @@ struct BatchQRCodePrintView: View {
     
     /// Generates QR Code on background thread to keep main thread buttery smooth
     private func generateAllQRCodes() {
-        let tablesCopy = self.tables
+        // Fetch properties on the main thread to ensure thread safety with SwiftData
+        let tableData = self.tables.map { (id: $0.id, tableNumber: $0.tableNumber) }
         let merchantId = self.activeMerchantId
+        let baseUrl = self.customerWebBaseUrl
         
         DispatchQueue.global(qos: .userInitiated).async {
             var temporaryCache: [UUID: UIImage] = [:]
             
-            for table in tablesCopy {
-                let qrUrl = "\(customerWebBaseUrl)/?table=\(table.tableNumber)&merchant=\(merchantId)"
-                if let image = generateQRCodeSync(from: qrUrl) {
+            for table in tableData {
+                let encodedTable = table.tableNumber.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? table.tableNumber
+                let qrUrl = "\(baseUrl)/?table=\(encodedTable)&merchant=\(merchantId)"
+                if let image = Self.generateQRCodeSync(from: qrUrl) {
                     temporaryCache[table.id] = image
                 }
             }
@@ -116,7 +119,7 @@ struct BatchQRCodePrintView: View {
     }
     
     /// Synchronous QR Code Generator helper (runs inside background queue)
-    private func generateQRCodeSync(from string: String) -> UIImage? {
+    private static func generateQRCodeSync(from string: String) -> UIImage? {
         let showLogo = UserDefaults.standard.object(forKey: "qr_custom_show_logo") as? Bool ?? true
         let logoPreset = UserDefaults.standard.string(forKey: "qr_custom_logo_preset") ?? "bolt.fill"
         let colorHex = UserDefaults.standard.string(forKey: "qr_custom_color") ?? "#111115"
@@ -187,7 +190,8 @@ struct BatchQRCodePrintView: View {
                     .fontWeight(.bold)
                     .foregroundColor(Color(hex: qrCustomColor))
                 
-                let qrUrl = "\(customerWebBaseUrl)/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
+                let encodedTable = table.tableNumber.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? table.tableNumber
+                let qrUrl = "\(customerWebBaseUrl)/?table=\(encodedTable)&merchant=\(activeMerchantId)"
                 
                 if let qrImage = qrCodeCache[table.id] {
                     Image(uiImage: qrImage)
@@ -318,8 +322,9 @@ struct BatchQRCodePrintView: View {
                         let nameFont = UIFont.boldSystemFont(ofSize: 13)
                         tableName.draw(at: CGPoint(x: x + 20, y: y + 26), withAttributes: [.font: nameFont, .foregroundColor: themeColor])
                         
-                        let qrUrl = "\(customerWebBaseUrl)/?table=\(table.tableNumber)&merchant=\(activeMerchantId)"
-                        if let qrImage = generateQRCodeSync(from: qrUrl) {
+                        let encodedTable = table.tableNumber.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? table.tableNumber
+                        let qrUrl = "\(customerWebBaseUrl)/?table=\(encodedTable)&merchant=\(activeMerchantId)"
+                        if let qrImage = Self.generateQRCodeSync(from: qrUrl) {
                             qrImage.draw(in: CGRect(x: x + (colWidth - 100) / 2, y: y + 45, width: 100, height: 100))
                         }
                         

@@ -2864,7 +2864,8 @@ struct TableDetailView: View {
                                     if enableWebOrdering && !offlineSyncMode {
                                         // QR Code Link Row
                                         HStack(spacing: 8) {
-                                            Text("\(customerWebBaseUrl)/?table=\(table.tableNumber)&token=\(session.sessionToken.prefix(8))")
+                                            let encodedTable = table.tableNumber.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? table.tableNumber
+                                            Text("\(customerWebBaseUrl)/?table=\(encodedTable)&token=\(session.sessionToken.prefix(8))")
                                                 .font(.system(.caption2, design: .monospaced))
                                                 .foregroundColor(.appAccent)
                                                 .lineLimit(1)
@@ -2874,7 +2875,8 @@ struct TableDetailView: View {
                                                 .cornerRadius(APRadius.sm)
 
                                             Button(action: {
-                                                dynamicQRUrl = "\(customerWebBaseUrl)/?table=\(table.tableNumber)&token=\(session.sessionToken)"
+                                                let encodedTable = table.tableNumber.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? table.tableNumber
+                                                dynamicQRUrl = "\(customerWebBaseUrl)/?table=\(encodedTable)&token=\(session.sessionToken)"
                                                 showingQRPopover = true
                                             }) {
                                                 Image(systemName: "qrcode")
