@@ -9,6 +9,8 @@ import os
 import json
 import sqlite3
 import urllib.request
+import hmac
+import uuid
 from contextlib import closing
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
+from fastapi.responses import JSONResponse
 
 from api.deps import (
     DB_FILE, MERCHANT_ID, SUPABASE_URL, SUPABASE_ANON_KEY,
@@ -23,8 +26,6 @@ from api.deps import (
     get_db_connection, get_utc_now_iso, log_event
 )
 from api import menu, orders, payments, sessions, tables, staff, promotions, requests as svc_requests, sync, feedback, wait_time, merchants
-
-from seed import DEFAULT_EMPLOYEES, DEFAULT_MENU, get_default_tables
 
 # ==========================================
 # App Instance
@@ -47,6 +48,44 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+PUBLIC_GET_PATHS = (
+    "/v1/menu", "/v1/merchants", "/v1/promotions", "/v1/wait-time",
+    "/v1/sync/supabase-health", "/health",
+)
+
+def problem(status: int, code: str, title: str, trace_id: str):
+    return JSONResponse(
+        status_code=status,
+        content={"type": f"https://alphaposweb.com/problems/{code.lower().replace('_', '-')}",
+                 "title": title, "status": status, "code": code, "traceId": trace_id},
+        media_type="application/problem+json",
+        headers={"X-Request-ID": trace_id, "Cache-Control": "no-store"},
+    )
+
+@app.middleware("http")
+async def api_security(request: Request, call_next):
+    trace_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    request.state.trace_id = trace_id
+    path = request.url.path
+    if path.startswith("/v1/"):
+        is_public_get = request.method == "GET" and any(path.startswith(p) for p in PUBLIC_GET_PATHS)
+        if not is_public_get:
+            expected = API_AUTH_TOKEN or ""
+            supplied = request.headers.get("authorization", "")
+            supplied = supplied[7:] if supplied.lower().startswith("bearer ") else ""
+            if not expected or not hmac.compare_digest(supplied, expected):
+                return problem(401, "ADMIN_AUTH_REQUIRED", "Administrative authentication is required", trace_id)
+    try:
+        response = await call_next(request)
+    except Exception:
+        log_event("error", "http.unhandled", trace_id=trace_id, path=path)
+        return problem(500, "INTERNAL_ERROR", "The request could not be completed", trace_id)
+    response.headers["X-Request-ID"] = trace_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+    return response
 
 # ==========================================
 # Include API Routers
@@ -107,15 +146,21 @@ def init_db():
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS orders (
             id TEXT PRIMARY KEY, order_number TEXT NOT NULL, table_number TEXT NOT NULL,
-            total REAL NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL,
+            total REAL NOT NULL, subtotal REAL DEFAULT 0, tax REAL DEFAULT 0, service_charge REAL DEFAULT 0,
+            status TEXT NOT NULL, created_at TEXT NOT NULL,
             updated_at TEXT, session_token TEXT, guest_count INTEGER DEFAULT 2,
-            merchant_id TEXT, is_synced INTEGER DEFAULT 0
+            merchant_id TEXT, branch_id TEXT, row_version INTEGER DEFAULT 1,
+            support_program_name TEXT, support_government_rate REAL DEFAULT 0,
+            support_citizen_amount REAL DEFAULT 0, support_government_amount REAL DEFAULT 0,
+            support_settlement_status TEXT DEFAULT 'not_applicable',
+            is_synced INTEGER DEFAULT 0
         )''')
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS order_items (
             id TEXT PRIMARY KEY, order_id TEXT NOT NULL, item_name TEXT NOT NULL,
             quantity INTEGER NOT NULL, price REAL NOT NULL, status TEXT DEFAULT 'cooking',
-            item_id TEXT, merchant_id TEXT, notes TEXT,
+            item_id TEXT, merchant_id TEXT, branch_id TEXT, notes TEXT,
+            row_version INTEGER DEFAULT 1,
             FOREIGN KEY (order_id) REFERENCES orders (id)
         )''')
 
@@ -123,29 +168,35 @@ def init_db():
             id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT,
             price REAL NOT NULL, category TEXT NOT NULL, emoji TEXT,
             img_class TEXT, image_url TEXT,
-            name_translations TEXT DEFAULT '{}', description_translations TEXT DEFAULT '{}'
+            name_translations TEXT DEFAULT '{}', description_translations TEXT DEFAULT '{}',
+            merchant_id TEXT, branch_id TEXT, is_available INTEGER DEFAULT 1,
+            is_deleted INTEGER DEFAULT 0, row_version INTEGER DEFAULT 1
         )''')
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS table_sessions (
             id TEXT PRIMARY KEY, table_number TEXT NOT NULL, session_token TEXT NOT NULL,
             is_active INTEGER NOT NULL, created_at TEXT NOT NULL, ended_at TEXT,
-            guest_count INTEGER DEFAULT 2, merchant_id TEXT
+            guest_count INTEGER DEFAULT 2, merchant_id TEXT, branch_id TEXT,
+            row_version INTEGER DEFAULT 1
         )''')
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS service_requests (
             id TEXT PRIMARY KEY, table_number TEXT NOT NULL, request_type TEXT NOT NULL,
-            status TEXT DEFAULT 'pending', created_at TEXT NOT NULL, merchant_id TEXT
+            status TEXT DEFAULT 'pending', created_at TEXT NOT NULL, merchant_id TEXT,
+            branch_id TEXT, restaurant_table_id TEXT, dining_area_id TEXT, expires_at TEXT
         )''')
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS payments (
             id TEXT PRIMARY KEY, order_id TEXT NOT NULL, amount REAL NOT NULL,
-            payment_method TEXT NOT NULL, created_at TEXT NOT NULL, merchant_id TEXT
+            payment_method TEXT NOT NULL, created_at TEXT NOT NULL, merchant_id TEXT,
+            branch_id TEXT
         )''')
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS restaurant_tables (
             id TEXT PRIMARY KEY, table_number TEXT NOT NULL, capacity INTEGER DEFAULT 4,
-            status TEXT DEFAULT 'vacant', merchant_id TEXT, position_x REAL DEFAULT 0,
-            position_y REAL DEFAULT 0, floor INTEGER DEFAULT 1
+            status TEXT DEFAULT 'vacant', merchant_id TEXT, branch_id TEXT, dining_area_id TEXT,
+            position_x REAL DEFAULT 0, position_y REAL DEFAULT 0, floor INTEGER DEFAULT 1,
+            row_version INTEGER DEFAULT 1
         )''')
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS employees (
@@ -167,13 +218,14 @@ def init_db():
             id TEXT PRIMARY KEY, name TEXT NOT NULL, selection_type TEXT DEFAULT 'single',
             min_selections INTEGER DEFAULT 0, max_selections INTEGER DEFAULT 1,
             sort_order INTEGER DEFAULT 0, is_available INTEGER DEFAULT 1,
-            menu_item_ids TEXT DEFAULT '[]'
+            menu_item_ids TEXT DEFAULT '[]', merchant_id TEXT, branch_id TEXT
         )''')
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS modifiers (
             id TEXT PRIMARY KEY, group_id TEXT, name TEXT NOT NULL,
             extra_price REAL DEFAULT 0, is_available INTEGER DEFAULT 1,
-            is_default INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0
+            is_default INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0,
+            merchant_id TEXT, branch_id TEXT, is_deleted INTEGER DEFAULT 0
         )''')
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS pending_supabase_writes (
@@ -189,6 +241,8 @@ def init_db():
             is_table_system_enabled INTEGER DEFAULT 1,
             is_web_ordering_enabled INTEGER DEFAULT 1,
             branch_code TEXT,
+            web_cover_url TEXT,
+            web_cover_media_type TEXT DEFAULT 'image',
             latitude REAL,
             longitude REAL,
             geofence_radius_meters INTEGER DEFAULT 50
@@ -203,50 +257,13 @@ def init_db():
 
         conn.commit()
 
-        # Seed defaults if tables are empty
-        cursor.execute("SELECT COUNT(*) FROM menu_items")
-        if cursor.fetchone()[0] == 0:
-            _seed_menu(cursor)
-
-        cursor.execute("SELECT COUNT(*) FROM restaurant_tables")
-        if cursor.fetchone()[0] == 0:
-            _seed_tables(cursor)
-
-        cursor.execute("SELECT COUNT(*) FROM employees")
-        if cursor.fetchone()[0] == 0:
-            _seed_employees(cursor)
-
-        conn.commit()
+        # Catalog / tables / staff come from Supabase sync — no local demo seed.
 
         # Sync from Supabase
         _sync_from_supabase(conn)
 
     finally:
         conn.close()
-
-
-def _seed_menu(cursor):
-    for item in DEFAULT_MENU:
-        cursor.execute(
-            "INSERT OR IGNORE INTO menu_items (id, name, description, price, category, emoji, img_class) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (item["id"], item["name"], item.get("description", ""), item["price"], item["category"], item.get("emoji", "🍽️"), item.get("img_class", ""))
-        )
-
-
-def _seed_tables(cursor):
-    for table in get_default_tables():
-        cursor.execute(
-            "INSERT OR IGNORE INTO restaurant_tables (id, table_number, capacity, status, merchant_id) VALUES (?, ?, ?, 'vacant', ?)",
-            (table["id"], table["table_number"], table.get("capacity", 4), MERCHANT_ID)
-        )
-
-
-def _seed_employees(cursor):
-    for emp in DEFAULT_EMPLOYEES:
-        cursor.execute(
-            "INSERT OR IGNORE INTO employees (id, first_name, last_name, role, passcode_hash, merchant_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (emp["id"], emp.get("first_name", ""), emp.get("last_name", ""), emp.get("role", "staff"), emp.get("passcode_hash", ""), MERCHANT_ID)
-        )
 
 
 def _sync_from_supabase(conn):

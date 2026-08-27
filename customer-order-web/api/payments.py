@@ -16,7 +16,12 @@ router = APIRouter(prefix="/v1", tags=["payments"])
 
 @router.post("/payments")
 async def post_payment(request: Request):
-    """Record a payment for an order."""
+    """Retired: only provider webhooks or staff atomic checkout may settle orders."""
+    raise HTTPException(status_code=410, detail={
+        "code": "LEGACY_PAYMENT_WRITE_RETIRED",
+        "message": "Use a provider webhook or complete_checkout_atomic."
+    })
+    """Legacy implementation retained temporarily for rollback reference."""
     try:
         pay_data = await request.json()
         pay_id = clean_string(pay_data.get("id") or str(uuid.uuid4()), "id", 50, required=True, pattern=r"[A-Za-z0-9_-]+")

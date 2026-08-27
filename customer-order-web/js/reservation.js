@@ -42,13 +42,13 @@ export class ReservationSystem {
             try {
                 const { data } = await this.supabase
                     .from('merchants')
-                    .select('reservation_enabled, max_party_size, slot_duration_minutes, reservation_advance_days')
+                    .select('reservation_enabled, reservation_max_party_size, reservation_slot_duration_minutes, reservation_advance_days')
                     .eq('id', merchantId)
                     .single();
 
                 if (data) {
-                    if (data.max_party_size) this.settings.maxPartySize = data.max_party_size;
-                    if (data.slot_duration_minutes) this.settings.slotDuration = data.slot_duration_minutes;
+                    if (data.reservation_max_party_size) this.settings.maxPartySize = data.reservation_max_party_size;
+                    if (data.reservation_slot_duration_minutes) this.settings.slotDuration = data.reservation_slot_duration_minutes;
                     if (data.reservation_advance_days) this.settings.advanceDays = data.reservation_advance_days;
                 }
             } catch (e) {

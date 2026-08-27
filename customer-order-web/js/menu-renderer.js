@@ -6,17 +6,43 @@ import { escapeHtml, formatCurrency } from './app-core.js';
 
 export const MenuRendererMixin = {
     async loadMenuFromServer() {
-        try {
-            const response = await fetch('/v1/menu');
-            if (response.ok) {
-                const data = await response.json();
-                if (data && data.length > 0) {
-                    this.menuItems = data;
-                    console.log(`[Menu] Loaded ${data.length} items from server`);
+        if (this.supabase) {
+            try {
+                let query = this.supabase
+                    .from('menu_items')
+                    .select('*')
+                    .eq('is_deleted', false);
+
+                if (this.branchId) {
+                    query = query.or(`branch_id.is.null,branch_id.eq.${this.branchId}`);
                 }
+                if (this.merchantId) {
+                    query = query.eq('merchant_id', this.merchantId);
+                }
+
+                const { data, error } = await query;
+                if (!error && data && data.length > 0) {
+                    this.menuItems = data;
+                    console.log(`[Menu] Loaded ${data.length} items from Supabase`);
+                }
+            } catch (e) {
+                console.warn('[Menu] Supabase fetch failed, trying local server:', e);
             }
-        } catch (e) {
-            console.warn('[Menu] Server fetch failed, using defaults:', e);
+        }
+
+        if ((!this.menuItems || this.menuItems.length === 0) && this.isLocalServerAvailable) {
+            try {
+                const response = await fetch('/v1/menu');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data && data.length > 0) {
+                        this.menuItems = data;
+                        console.log(`[Menu] Loaded ${data.length} items from local server`);
+                    }
+                }
+            } catch (e) {
+                console.warn('[Menu] Server fetch failed, using defaults:', e);
+            }
         }
 
         // Extract categories
@@ -66,7 +92,7 @@ export const MenuRendererMixin = {
             const query = searchInput.value.trim().toLowerCase();
             items = items.filter(i =>
                 (i.name || '').toLowerCase().includes(query) ||
-                (i.desc || '').toLowerCase().includes(query)
+                (i.desc || i.description || '').toLowerCase().includes(query)
             );
         }
 
@@ -83,25 +109,36 @@ export const MenuRendererMixin = {
         const desc = this.getItemDesc(item);
         const price = formatCurrency(item.price);
         const qty = this.getItemTotalQuantity(item.id);
+        const isAvailable = item.is_available !== false && item.is_available !== 0 && item.is_available !== '0';
         const allergenBadges = this._allergenFilter ? this._allergenFilter.renderBadges(item.id) : '';
+        const outOfStockBadge = !isAvailable
+            ? `<span class="out-of-stock-badge">${this.translate('outOfStock', 'สินค้าหมด / Sold Out')}</span>`
+            : '';
+
+        let actionControl = '';
+        if (!isAvailable) {
+            actionControl = `<button class="add-btn disabled" disabled aria-disabled="true">${this.translate('outOfStockBtn', 'หมด')}</button>`;
+        } else if (qty > 0) {
+            actionControl = `
+                <div class="qty-control">
+                    <button onclick="app.updateCartQuantity('${item.id}', -1)">−</button>
+                    <span>${qty}</span>
+                    <button onclick="app.updateCartQuantity('${item.id}', 1)">+</button>
+                </div>`;
+        } else {
+            actionControl = `<button class="add-btn" onclick="app.addToCart('${item.id}')">+</button>`;
+        }
 
         return `
-            <div class="menu-card" data-item-id="${item.id}">
-                ${item.image_url ? `<div class="menu-card-img" style="background-image:url('${escapeHtml(item.image_url)}')"></div>` : ''}
+            <div class="menu-card ${!isAvailable ? 'out-of-stock' : ''}" data-item-id="${item.id}">
+                ${item.image_url ? `<div class="menu-card-img" style="background-image:url('${escapeHtml(item.image_url)}')">${outOfStockBadge}</div>` : (outOfStockBadge ? `<div class="menu-card-badge-container">${outOfStockBadge}</div>` : '')}
                 <div class="menu-card-body">
                     <h3 class="menu-card-name">${escapeHtml(name)}</h3>
                     ${desc ? `<p class="menu-card-desc">${escapeHtml(desc)}</p>` : ''}
                     ${allergenBadges}
                     <div class="menu-card-footer">
                         <span class="menu-card-price">${price}</span>
-                        ${qty > 0
-                            ? `<div class="qty-control">
-                                <button onclick="app.updateCartQuantity('${item.id}', -1)">−</button>
-                                <span>${qty}</span>
-                                <button onclick="app.updateCartQuantity('${item.id}', 1)">+</button>
-                               </div>`
-                            : `<button class="add-btn" onclick="app.addToCart('${item.id}')">+</button>`
-                        }
+                        ${actionControl}
                     </div>
                 </div>
             </div>

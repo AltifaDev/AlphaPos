@@ -9,7 +9,7 @@ import uuid
 
 from .deps import (
     get_db_connection, get_db_row_connection, get_utc_now_iso,
-    MERCHANT_ID, web_ordering_enabled_for_payload, supabase_post, log_event
+    MERCHANT_ID, web_ordering_enabled_for_payload, supabase_request, log_event
 )
 
 router = APIRouter(prefix="/v1", tags=["sessions"])
@@ -73,12 +73,12 @@ def open_session(data: OpenSessionRequest):
         with closing(get_db_connection()) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT session_token FROM table_sessions WHERE table_number = ? AND is_active = 1",
+                "SELECT id, session_token, created_at FROM table_sessions WHERE table_number = ? AND is_active = 1",
                 (table_number,)
             )
             row = cursor.fetchone()
             if row:
-                session_token = row[0]
+                session_id, session_token, created_at = row
             else:
                 session_token = str(uuid.uuid4())
                 session_id = str(uuid.uuid4())
@@ -91,6 +91,18 @@ def open_session(data: OpenSessionRequest):
                     UPDATE restaurant_tables SET status = 'occupied' WHERE table_number = ? AND merchant_id = ?
                 """, (table_number, MERCHANT_ID))
                 conn.commit()
+
+        success, result = supabase_request("POST", "table_sessions", {
+            "id": session_id,
+            "table_number": table_number,
+            "session_token": session_token,
+            "is_active": 1,
+            "created_at": created_at,
+            "guest_count": guest_count,
+            "merchant_id": MERCHANT_ID
+        }, {"on_conflict": "session_token"})
+        if not success:
+            raise RuntimeError(f"Could not sync session to Supabase: {result}")
 
         log_event("info", "session.opened", table_number=table_number, guest_count=guest_count)
         return {"success": True, "session_token": session_token, "table_number": table_number}
@@ -129,6 +141,18 @@ def close_session(data: CloseSessionRequest):
                     (table_number, MERCHANT_ID)
                 )
             conn.commit()
+
+        query = {"merchant_id": f"eq.{MERCHANT_ID}", "is_active": "eq.1"}
+        if session_token:
+            query["session_token"] = f"eq.{session_token}"
+        else:
+            query["table_number"] = f"eq.{table_number}"
+        success, result = supabase_request("PATCH", "table_sessions", {
+            "is_active": 0,
+            "ended_at": ended_at
+        }, query)
+        if not success:
+            raise RuntimeError(f"Could not close Supabase session: {result}")
 
         log_event("info", "session.closed", table_number=table_number)
         return {"success": True}

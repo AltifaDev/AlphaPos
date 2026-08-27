@@ -22,13 +22,23 @@ export class BillView {
         this.itemAssignments = {}; // itemId -> personIndex
         this.serviceChargeRate = 0.10;
         this.vatRate = 0.07;
+        this.taxType = 'inclusive';
         this._translate = (key, fallback) => fallback || key;
     }
 
-    init(supabaseClient, merchantId, translateFn) {
+    init(supabaseClient, merchantId, translateFn, merchantSettings = {}) {
         this.supabase = supabaseClient;
         this.merchantId = merchantId;
         if (translateFn) this._translate = translateFn;
+        if (merchantSettings.service_charge_rate !== undefined) {
+            this.serviceChargeRate = Number(merchantSettings.service_charge_rate) / 100;
+        }
+        if (merchantSettings.tax_rate !== undefined) {
+            this.vatRate = Number(merchantSettings.tax_rate) / 100;
+        }
+        if (merchantSettings.tax_type) {
+            this.taxType = String(merchantSettings.tax_type).toLowerCase();
+        }
     }
 
     t(key, fallback) {
@@ -39,24 +49,43 @@ export class BillView {
     // BILL CALCULATION
     // ========================================
 
-    calculateBill(items, discounts = [], tipPercent = 0, loyaltyDiscount = 0) {
+    calculateBill(items, discounts = [], tipPercent = 0, loyaltyDiscount = 0, supportProgram = null) {
         const subtotal = items.reduce((sum, item) => {
-            const itemTotal = item.price * item.quantity;
-            const modifierTotal = (item.modifiers || []).reduce((ms, mod) => ms + (mod.price || 0) * item.quantity, 0);
+            const itemTotal = Number(item.price || 0) * Number(item.quantity || 1);
+            const modifierTotal = (item.modifiers || []).reduce((ms, mod) => ms + Number(mod.price || 0) * Number(item.quantity || 1), 0);
             return sum + itemTotal + modifierTotal;
         }, 0);
 
         const discountTotal = discounts.reduce((sum, d) => {
-            if (d.type === 'percent') return sum + (subtotal * d.value / 100);
-            return sum + d.value;
+            if (d.type === 'percent') return sum + (subtotal * Number(d.value || 0) / 100);
+            return sum + Number(d.value || 0);
         }, 0);
 
         const afterDiscount = Math.max(0, subtotal - discountTotal - loyaltyDiscount);
-        const serviceCharge = afterDiscount * this.serviceChargeRate;
-        const vatBase = afterDiscount + serviceCharge;
-        const vat = vatBase * this.vatRate;
-        const tipAmount = tipPercent > 0 ? (afterDiscount * tipPercent / 100) : this.tipAmount;
-        const grandTotal = afterDiscount + serviceCharge + vat + tipAmount;
+        const serviceCharge = Math.round(afterDiscount * this.serviceChargeRate * 100) / 100;
+
+        let vat = 0;
+        let totalBeforeSupport = 0;
+        if (this.taxType === 'exclusive') {
+            vat = Math.round((afterDiscount + serviceCharge) * this.vatRate * 100) / 100;
+            totalBeforeSupport = afterDiscount + serviceCharge + vat;
+        } else {
+            totalBeforeSupport = afterDiscount + serviceCharge;
+            vat = this.vatRate > 0 ? Math.round(totalBeforeSupport * this.vatRate / (1 + this.vatRate) * 100) / 100 : 0;
+        }
+
+        let supportGovAmount = 0;
+        let supportCitizenAmount = totalBeforeSupport;
+        if (supportProgram && supportProgram.rate > 0) {
+            supportGovAmount = Math.round(totalBeforeSupport * supportProgram.rate * 100) / 100;
+            supportCitizenAmount = Math.max(0, totalBeforeSupport - supportGovAmount);
+        } else if (supportProgram && supportProgram.amount > 0) {
+            supportGovAmount = Math.min(totalBeforeSupport, supportProgram.amount);
+            supportCitizenAmount = Math.max(0, totalBeforeSupport - supportGovAmount);
+        }
+
+        const tipAmount = tipPercent > 0 ? Math.round(afterDiscount * tipPercent) / 100 : this.tipAmount;
+        const grandTotal = supportCitizenAmount + tipAmount;
 
         return {
             subtotal,
@@ -65,9 +94,12 @@ export class BillView {
             afterDiscount,
             serviceCharge,
             vat,
+            totalBeforeSupport,
+            supportGovAmount,
+            supportCitizenAmount,
             tipAmount,
             grandTotal,
-            itemCount: items.reduce((sum, i) => sum + i.quantity, 0)
+            itemCount: items.reduce((sum, i) => sum + (Number(i.quantity) || 1), 0)
         };
     }
 
@@ -85,21 +117,28 @@ export class BillView {
         const discounts = orderData.discounts || [];
         const loyaltyDiscount = options.loyaltyDiscount || 0;
         const loyaltyPointsEarn = options.loyaltyPointsEarn || 0;
-        const calc = this.calculateBill(items, discounts, this.tipPercent, loyaltyDiscount);
+        const supportProgram = orderData.support_program_name ? {
+            name: orderData.support_program_name,
+            rate: Number(orderData.support_government_rate || 0),
+            amount: Number(orderData.support_government_amount || 0),
+            citizenAmount: Number(orderData.support_citizen_amount || 0)
+        } : null;
+
+        const calc = this.calculateBill(items, discounts, this.tipPercent, loyaltyDiscount, supportProgram);
 
         const panel = document.getElementById('billViewPanel');
         if (!panel) return;
 
-        panel.innerHTML = this._renderBillHTML(items, discounts, calc, loyaltyPointsEarn, loyaltyDiscount);
+        panel.innerHTML = this._renderBillHTML(items, discounts, calc, loyaltyPointsEarn, loyaltyDiscount, supportProgram);
         panel.classList.remove('hidden');
         panel.classList.add('active');
         document.body.classList.add('bill-open');
 
         // Bind events
-        this._bindBillEvents(items, discounts, loyaltyDiscount, loyaltyPointsEarn);
+        this._bindBillEvents(items, discounts, loyaltyDiscount, loyaltyPointsEarn, supportProgram);
     }
 
-    _renderBillHTML(items, discounts, calc, loyaltyPointsEarn, loyaltyDiscount) {
+    _renderBillHTML(items, discounts, calc, loyaltyPointsEarn, loyaltyDiscount, supportProgram = null) {
         const itemsHTML = items.map(item => {
             const modifiersHTML = (item.modifiers || []).map(mod => 
                 `<div class="bill-modifier">+ ${this._escape(mod.name)} ${mod.price > 0 ? `<span>+฿${mod.price.toFixed(2)}</span>` : ''}</div>`
@@ -131,12 +170,23 @@ export class BillView {
             </div>
         ` : '';
 
+        const supportHTML = (supportProgram && calc.supportGovAmount > 0) ? `
+            <div class="bill-discount-row support-program">
+                <span>🏛️ ${this._escape(supportProgram.name)}</span>
+                <span>-฿${calc.supportGovAmount.toFixed(2)}</span>
+            </div>
+        ` : '';
+
         const earnHTML = loyaltyPointsEarn > 0 ? `
             <div class="bill-earn-row">
                 <span>⭐ ${this.t('pointsEarned', 'Points Earned')}</span>
                 <span class="earn-value">+${loyaltyPointsEarn}</span>
             </div>
         ` : '';
+
+        const scRateDisplay = Math.round(this.serviceChargeRate * 100);
+        const vatRateDisplay = Math.round(this.vatRate * 100);
+        const vatLabel = this.taxType === 'inclusive' ? `${this.t('vat', 'VAT')} (${vatRateDisplay}% ${this.t('inclusiveTax', 'incl.')})` : `${this.t('vat', 'VAT')} (${vatRateDisplay}%)`;
 
         return `
             <div class="bill-view">
@@ -152,11 +202,13 @@ export class BillView {
 
                 ${discountsHTML ? `<div class="bill-discounts-section">${discountsHTML}</div>` : ''}
                 ${loyaltyHTML}
+                ${supportHTML}
 
                 <div class="bill-subtotal-section">
                     <div class="bill-line"><span>${this.t('subtotal', 'Subtotal')}</span><span>฿${calc.afterDiscount.toFixed(2)}</span></div>
-                    <div class="bill-line"><span>${this.t('serviceCharge', 'Service Charge')} (10%)</span><span>฿${calc.serviceCharge.toFixed(2)}</span></div>
-                    <div class="bill-line"><span>${this.t('vat', 'VAT')} (7%)</span><span>฿${calc.vat.toFixed(2)}</span></div>
+                    ${this.serviceChargeRate > 0 ? `<div class="bill-line"><span>${this.t('serviceCharge', 'Service Charge')} (${scRateDisplay}%)</span><span>฿${calc.serviceCharge.toFixed(2)}</span></div>` : ''}
+                    ${this.vatRate > 0 ? `<div class="bill-line"><span>${vatLabel}</span><span>฿${calc.vat.toFixed(2)}</span></div>` : ''}
+                    ${supportProgram ? `<div class="bill-line bill-order-total"><span>${this.t('billTotal', 'Order Total')}</span><span>฿${calc.totalBeforeSupport.toFixed(2)}</span></div>` : ''}
                 </div>
 
                 <!-- Tip Section -->
@@ -179,9 +231,9 @@ export class BillView {
 
                 ${earnHTML}
 
-                <!-- Grand Total -->
+                <!-- Grand Total / Citizen Amount -->
                 <div class="bill-total-row">
-                    <span>${this.t('grandTotal', 'Total')}</span>
+                    <span>${supportProgram ? this.t('payableTotal', 'Payable Amount') : this.t('grandTotal', 'Total')}</span>
                     <span id="billGrandTotal">฿${calc.grandTotal.toFixed(2)}</span>
                 </div>
 

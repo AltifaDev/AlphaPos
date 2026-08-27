@@ -2,7 +2,7 @@
 // AlphaPos — Modern Modular Web API Service
 // This separates backend REST/Supabase interaction from UI rendering.
 
-const BASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://your-project-id.supabase.co/rest/v1';
+const BASE_URL = import.meta.env.VITE_SUPABASE_URL || 'http://127.0.0.1:54321/rest/v1';
 const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'your-anon-key';
 
 const defaultHeaders = {
@@ -50,13 +50,9 @@ export const APIService = {
     });
   },
 
-  /**
-   * Trigger checkout RPC.
-   */
-  async completeCheckout(orderPayload) {
-    return request('/rpc/complete_checkout', {
-      method: 'POST',
-      body: JSON.stringify(orderPayload),
-    });
+  async completeCheckout() {
+    const error = new Error('Customer checkout is staff-authorized and cannot be completed from the web client.');
+    error.code = 'CUSTOMER_CHECKOUT_FORBIDDEN';
+    throw error;
   }
 };

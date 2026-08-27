@@ -2,6 +2,20 @@ export default {
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
+      const supabaseOrigin = (env.SUPABASE_URL || "https://api.alphaposweb.com").replace(/\/$/, "");
+      const supabaseWs = supabaseOrigin
+        .replace("https://", "wss://")
+        .replace("http://", "ws://");
+      const csp = [
+        "default-src 'self'",
+        "media-src 'self' blob: https:",
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com",
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com",
+        "img-src 'self' data: https:",
+        `connect-src 'self' https://cdn.jsdelivr.net ${supabaseOrigin} ${supabaseWs}`,
+        "font-src 'self' data: https://fonts.gstatic.com",
+        "frame-ancestors 'none'",
+      ].join("; ");
 
       // Handle CORS preflight options directly
       if (request.method === "OPTIONS") {
@@ -100,21 +114,29 @@ export default {
       }
 
       // Never cache index.html — always serve fresh so asset ?v= bumps take effect immediately
-      const isHtml = url.pathname === "/" || url.pathname.endsWith(".html");
+      const isHtml = url.pathname === "/" || url.pathname === "/privacy" || url.pathname.endsWith(".html");
 
       // Production must be explicitly configured. A loopback/LAN fallback
       // would point customers at the wrong machine.
       if (url.pathname === "/config.js" || url.pathname === "config.js") {
         const supabaseAnonKey = env.SUPABASE_LEGACY_ANON_KEY || env.SUPABASE_ANON_KEY;
-        if (!env.SUPABASE_URL || !supabaseAnonKey || !env.MERCHANT_ID) {
+        // MERCHANT_ID is optional. In multi-tenant mode the merchant is taken from
+        // the QR code URL (?merchant=<uuid> or ?jwt=<token>) and resolved client-side
+        // in app.js. A configured env.MERCHANT_ID (if present) only acts as a
+        // single-tenant fallback for deployments that serve exactly one store.
+        if (!env.SUPABASE_URL || !supabaseAnonKey) {
           return new Response("Missing Supabase Worker configuration", { status: 500 });
         }
-        // Force the supabaseUrl and localServerURL to point to the Cloudflare Worker itself to route through the proxy!
+        // REST goes through this Worker (HTTPS proxy). Realtime WSS must hit the
+        // public Supabase API host directly — Workers cannot upgrade WebSockets
+        // to the self-hosted Kong/Realtime stack.
+        const realtimeUrl = env.SUPABASE_URL || "https://api.alphaposweb.com";
         const configJs = `window.ALPHAPOS_CONFIG = ${JSON.stringify({
           supabaseUrl: url.origin,
+          supabaseRealtimeUrl: realtimeUrl,
           supabaseKey: supabaseAnonKey,
           localServerURL: url.origin,
-          merchantId: env.MERCHANT_ID,
+          merchantId: env.MERCHANT_ID || "",
           isProduction: true
         })};`;
         return new Response(configJs, {
@@ -126,6 +148,11 @@ export default {
             "Expires": "0"
           }
         });
+      }
+
+      if (url.pathname === "/privacy") {
+        url.pathname = "/privacy.html";
+        request = new Request(url, request);
       }
 
       // Otherwise, fall back to serving static assets
@@ -146,7 +173,10 @@ export default {
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
             "Expires": "0",
-            "Access-Control-Allow-Origin": "*"
+            "Access-Control-Allow-Origin": "*",
+            "Content-Security-Policy": csp,
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
           }
         });
       }

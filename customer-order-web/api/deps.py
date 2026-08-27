@@ -156,7 +156,10 @@ def supabase_request(method: str, endpoint: str, payload: dict = None, query_par
         req.add_header("apikey", SUPABASE_ANON_KEY)
         req.add_header("Authorization", f"Bearer {SUPABASE_ANON_KEY}")
         req.add_header("Content-Type", "application/json")
-        req.add_header("Prefer", "return=minimal")
+        prefer = "return=minimal"
+        if query_params and "on_conflict" in query_params:
+            prefer += ",resolution=merge-duplicates"
+        req.add_header("Prefer", prefer)
         req.add_header("x-merchant-id", MERCHANT_ID)
         with urllib.request.urlopen(req, timeout=5) as response:
             return True, response.read().decode()

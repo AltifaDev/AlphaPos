@@ -1,6 +1,6 @@
 /**
  * AlphaPos — Onboarding Module
- * Handles the check-in wizard: location verification, guest count, session opening.
+ * Check-in wizard: guest count → open table session (no GPS / Wi-Fi gate).
  */
 import { fetchWithFallback } from './api.js';
 
@@ -8,29 +8,11 @@ export const OnboardingMixin = {
     showOnboardingPanel() {
         const el = document.getElementById('onboardingWizard');
         if (el) el.classList.add('active');
-        this.updateOnboardingVerification();
     },
 
     hideOnboardingPanel() {
         const el = document.getElementById('onboardingWizard');
         if (el) el.classList.remove('active');
-    },
-
-    updateOnboardingVerification() {
-        // If we have location verifier, run it
-        if (window.locationVerifier) {
-            window.locationVerifier.runVerification();
-        }
-        // Auto-allow after 2s for dev
-        setTimeout(() => {
-            const btn = document.getElementById('btnOnboardingNext1');
-            if (btn) {
-                btn.disabled = false;
-                btn.classList.remove('disabled');
-            }
-            const title = document.getElementById('verifyTitle');
-            if (title) title.textContent = this.translate('locationVerified', 'Location Verified ✓');
-        }, 2000);
     },
 
     nextOnboardingStep() {
@@ -46,24 +28,15 @@ export const OnboardingMixin = {
     },
 
     prevOnboardingStep() {
-        const steps = document.querySelectorAll('.onboarding-card');
-        let currentIdx = -1;
-        steps.forEach((step, i) => {
-            if (step.classList.contains('active')) currentIdx = i;
-        });
-        if (currentIdx > 0) {
-            steps[currentIdx].classList.remove('active');
-            steps[currentIdx - 1].classList.add('active');
-        }
+        // Guest count is the first step; nothing to go back to.
     },
 
     setGuestCount(count) {
         if (count === '8+') count = 8;
         this.guestCount = parseInt(count) || 1;
-        // Update UI pills
         document.querySelectorAll('.guest-pill').forEach(pill => {
             pill.classList.remove('active');
-            if (pill.textContent.trim() === String(this.guestCount) || 
+            if (pill.textContent.trim() === String(this.guestCount) ||
                 (this.guestCount >= 8 && pill.textContent.trim() === '8+')) {
                 pill.classList.add('active');
             }
@@ -78,47 +51,39 @@ export const OnboardingMixin = {
         const count = Math.min(this.guestCount, 8);
         for (let i = 0; i < count; i++) {
             const seat = document.createElement('div');
-            seat.className = 'seat occupied';
-            seat.style.transform = `rotate(${(360 / count) * i}deg) translateY(-60px)`;
+            seat.className = 'seat';
+            seat.style.setProperty('--i', i);
             container.appendChild(seat);
         }
     },
 
     async confirmGuestCount() {
-        // Open session on server
-        try {
-            const { success, data } = await fetchWithFallback({
-                localUrl: '/v1/sessions/open',
-                localOptions: {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        table_number: this.tableNumber,
-                        guest_count: this.guestCount
-                    })
-                }
-            });
-            if (success && data) {
-                this.sessionToken = data.session_token || '';
-            }
-        } catch (e) {
-            console.error('[Onboarding] Session open failed:', e);
+        // Delegated to AlphaPosApp.confirmGuestCount in app.js when using the main entry.
+        if (typeof this.openTableSession === 'function') {
+            return this.openTableSession();
         }
-
-        // Advance to step 3 (loading) then hide
-        this.nextOnboardingStep();
-        setTimeout(() => {
-            this.hideOnboardingPanel();
-            this.renderCategories();
-            this.renderMenuItems();
-        }, 2500);
     },
 
-    autoOnboardIfRequested() {
-        const params = new URLSearchParams(window.location.search);
-        if (params.get('autoOnboard') === 'true') {
-            this.guestCount = 2;
-            this.confirmGuestCount();
+    async openTableSession() {
+        const guestCount = this.guestCount || 2;
+        const tableNumber = this.tableNumber;
+        const merchantId = this.merchantId;
+        try {
+            const data = await fetchWithFallback('/v1/sessions/open', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    table_number: tableNumber,
+                    guest_count: guestCount,
+                    merchant_id: merchantId
+                })
+            });
+            if (data && data.session_token) {
+                this.sessionToken = data.session_token;
+                localStorage.setItem(`sessionToken_T${tableNumber}`, data.session_token);
+            }
+        } catch (e) {
+            console.error('[Onboarding] Failed to open session:', e);
         }
     }
 };

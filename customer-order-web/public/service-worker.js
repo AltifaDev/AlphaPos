@@ -1,10 +1,10 @@
-const CACHE_NAME = 'alphapos-customer-web-v24';
+const CACHE_NAME = 'alphapos-customer-web-v41';
+// Do NOT precache config.js — it is merchant/runtime-specific and always network-only.
 const ASSETS_TO_CACHE = [
     './',
-    './index.html',
-    './config.js'
-    // Note: app.js, styles.css, hybrid-location.js are bundled into /assets/ by Vite
-    // The bundled assets are cached dynamically by the fetch handler below
+    './index.html'
+    // Note: app.js / styles.css (and modules under js/) are bundled into /assets/ by Vite.
+    // Bundled assets are cached dynamically by the fetch handler below.
 ];
 
 // Install Event
@@ -16,6 +16,10 @@ self.addEventListener('install', (event) => {
                 return cache.addAll(ASSETS_TO_CACHE);
             })
             .then(() => self.skipWaiting())
+            .catch((err) => {
+                console.warn('[Service Worker] Precache failed (continuing):', err);
+                return self.skipWaiting();
+            })
     );
 });
 
@@ -35,7 +39,7 @@ self.addEventListener('activate', (event) => {
     );
 });
 
-// Fetch Event (Cache-First, Fallback to Network)
+// Fetch Event
 self.addEventListener('fetch', (event) => {
     // Avoid caching POST requests or non-HTTP protocols (e.g. chrome-extension)
     if (event.request.method !== 'GET' || !event.request.url.startsWith(self.location.origin)) {
@@ -48,9 +52,8 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    // Always check for a fresh app shell so deployments do not keep serving
-    // an old hashed bundle from the service-worker cache.
-    if (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('.html')) {
+    // Deployments must win over stale cached application code.
+    if (event.request.mode === 'navigate' || /\.(?:html|js|css)$/.test(url.pathname)) {
         event.respondWith(
             fetch(event.request)
                 .then((response) => {
@@ -69,10 +72,9 @@ self.addEventListener('fetch', (event) => {
                 if (cachedResponse) {
                     return cachedResponse;
                 }
-                
+
                 return fetch(event.request)
                     .then((networkResponse) => {
-                        // Dynamically cache new GET requests (like remote static assets)
                         if (networkResponse && networkResponse.status === 200) {
                             const responseClone = networkResponse.clone();
                             caches.open(CACHE_NAME).then((cache) => {
@@ -82,7 +84,7 @@ self.addEventListener('fetch', (event) => {
                         return networkResponse;
                     })
                     .catch(() => {
-                        // Return empty response or basic offline page placeholder if needed
+                        // offline placeholder
                     });
             })
     );

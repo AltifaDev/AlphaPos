@@ -70,8 +70,46 @@ DB_FILE = "alphapos.db"
 # ==========================================
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+# Browser-facing Supabase origin (CSP connect-src + client config). Server-side
+# SUPABASE_URL is often loopback / plain-HTTP VPS IP and must not be used as CSP.
+DEFAULT_PUBLIC_SUPABASE_URL = "https://api.alphaposweb.com"
 
 MERCHANT_ID = os.getenv("MERCHANT_ID", "")
+
+
+def browser_supabase_url():
+    """HTTPS origin browsers use for Supabase REST/Realtime."""
+    explicit = (os.getenv("PUBLIC_SUPABASE_URL") or "").rstrip("/")
+    if explicit:
+        return explicit
+    url = (SUPABASE_URL or "").rstrip("/")
+    if not url:
+        return DEFAULT_PUBLIC_SUPABASE_URL
+    host = url.split("://", 1)[-1].split("/")[0].split(":")[0]
+    if (
+        url.startswith("http://")
+        or host in ("127.0.0.1", "localhost", "::1")
+        or host.startswith(("10.", "192.168.", "172."))
+    ):
+        return DEFAULT_PUBLIC_SUPABASE_URL
+    return url
+
+
+def supabase_csp_connect_src():
+    """Space-prefixed connect-src hosts (https + wss/ws) for Content-Security-Policy."""
+    origin = browser_supabase_url()
+    if not origin:
+        return ""
+    ws = origin.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
+    parts = [origin] if ws == origin else [origin, ws]
+    return " " + " ".join(parts)
+
+# Web Push (VAPID) configuration — used for browser push notifications.
+# Generate a key pair once and store in .env. Public key is exposed to the
+# browser; private key stays server-side and signs push messages.
+VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
+VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "mailto:admin@alphapos.local")
 
 # Allowed origins for CORS (comma-separated in env, defaults to localhost only)
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080").split(",")
@@ -147,6 +185,20 @@ def calculate_order_total(subtotal):
     service_charge = subtotal * SERVICE_CHARGE_RATE
     vat = (subtotal + service_charge) * VAT_RATE
     return subtotal + service_charge + vat
+
+def calculate_order_breakdown(subtotal):
+    """Return the full order amount breakdown so callers can persist each
+    component (subtotal / service_charge / tax / total) instead of only total.
+    Keeps the same formula as calculate_order_total."""
+    service_charge = subtotal * SERVICE_CHARGE_RATE
+    vat = (subtotal + service_charge) * VAT_RATE
+    total = subtotal + service_charge + vat
+    return {
+        "subtotal": subtotal,
+        "service_charge": service_charge,
+        "tax": vat,
+        "total": total,
+    }
 
 def sync_menu_from_supabase(conn):
     """
@@ -233,7 +285,12 @@ def sync_promotions_from_supabase(conn):
                 is_deleted = 1 if is_deleted else 0
 
             cursor.execute(
-                "INSERT OR REPLACE INTO promotions (id, title, promo_description, image_data, media_type, is_active, is_deleted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                """INSERT OR REPLACE INTO promotions (
+                    id, title, promo_description, image_data, media_type,
+                    is_active, is_deleted, updated_at,
+                    discount_type, discount_value, minimum_spend, starts_at, ends_at,
+                    applies_to_menu_item_id, required_quantity, reward_quantity
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     item.get("id"),
                     item.get("title", ""),
@@ -242,7 +299,15 @@ def sync_promotions_from_supabase(conn):
                     item.get("media_type", "image"),
                     is_active,
                     is_deleted,
-                    item.get("updated_at", "")
+                    item.get("updated_at", ""),
+                    item.get("discount_type", "none"),
+                    float(item.get("discount_value") or 0),
+                    float(item.get("minimum_spend") or 0),
+                    item.get("starts_at") or "",
+                    item.get("ends_at") or "",
+                    item.get("applies_to_menu_item_id") or "",
+                    int(item.get("required_quantity") or 1),
+                    int(item.get("reward_quantity") or 0),
                 )
             )
         conn.commit()
@@ -288,7 +353,9 @@ def supabase_request(method, endpoint, payload=None, query_params=None):
         req.add_header("apikey", SUPABASE_ANON_KEY)
         req.add_header("Authorization", f"Bearer {SUPABASE_ANON_KEY}")
         req.add_header("Content-Type", "application/json")
-        req.add_header("Prefer", "return=minimal")
+        # RPCs need a response body; table writes can stay minimal.
+        prefer = "return=representation" if str(endpoint).startswith("rpc/") else "return=minimal"
+        req.add_header("Prefer", prefer)
         req.add_header("x-merchant-id", MERCHANT_ID)
 
         with urllib.request.urlopen(req, timeout=5) as response:
@@ -370,6 +437,80 @@ def close_thread_connections():
             except Exception:
                 pass
         thread_local.connections.clear()
+
+
+
+def send_web_push(subscription_info, payload_dict):
+    """Send a single Web Push message. Returns (ok, status_or_error).
+
+    Requires VAPID_PRIVATE_KEY/VAPID_PUBLIC_KEY to be configured and the
+    `pywebpush` package installed. Fails soft: never raises to the caller.
+    """
+    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
+        return (False, "vapid_not_configured")
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError:
+        print("[Push] pywebpush not installed — run: pip install pywebpush")
+        return (False, "pywebpush_missing")
+    try:
+        webpush(
+            subscription_info=subscription_info,
+            data=json.dumps(payload_dict),
+            vapid_private_key=VAPID_PRIVATE_KEY,
+            vapid_claims={"sub": VAPID_SUBJECT},
+        )
+        return (True, "sent")
+    except WebPushException as e:
+        # 404/410 mean the subscription is dead and should be pruned.
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        return (False, status or str(e))
+    except Exception as e:
+        return (False, str(e))
+
+
+def push_order_status_update(order_id, status, table_number=None):
+    """Look up subscriptions for an order and push a status update to each.
+
+    Prunes dead subscriptions (HTTP 404/410). Safe to call from order flows.
+    """
+    if not VAPID_PRIVATE_KEY:
+        return
+    try:
+        with closing(get_db_connection()) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            # Table may not exist yet if no one has subscribed.
+            try:
+                cursor.execute(
+                    "SELECT * FROM push_subscriptions WHERE order_id = ? OR table_number = ?",
+                    (order_id, str(table_number or "")),
+                )
+                rows = cursor.fetchall()
+            except sqlite3.OperationalError:
+                return
+            payload = {
+                "title": "AlphaPos",
+                "body": f"Order {order_id}: {status}",
+                "type": "order_update",
+                "orderId": order_id,
+                "url": "/",
+            }
+            dead = []
+            for row in rows:
+                sub_info = {
+                    "endpoint": row["endpoint"],
+                    "keys": {"p256dh": row["p256dh"], "auth": row["auth"]},
+                }
+                ok, info = send_web_push(sub_info, payload)
+                if not ok and info in (404, 410):
+                    dead.append(row["endpoint"])
+            for endpoint in dead:
+                cursor.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+            if dead:
+                conn.commit()
+    except Exception as e:
+        print(f"[Push] push_order_status_update failed: {e}")
 
 
 def _as_bool(value, default=True):
@@ -624,15 +765,31 @@ def _init_db_helper(conn):
             order_number TEXT NOT NULL,
             table_number TEXT NOT NULL,
             total REAL NOT NULL,
+            subtotal REAL DEFAULT 0,
+            tax REAL DEFAULT 0,
+            service_charge REAL DEFAULT 0,
             status TEXT NOT NULL, -- 'preparing', 'ready', 'served', 'completed', 'cancelled'
             created_at TEXT NOT NULL,
             updated_at TEXT,
             session_token TEXT,
             guest_count INTEGER DEFAULT 2,
             merchant_id TEXT,
+            branch_id TEXT,
+            row_version INTEGER DEFAULT 1,
+            support_program_name TEXT,
+            support_government_rate REAL DEFAULT 0,
+            support_citizen_amount REAL DEFAULT 0,
+            support_government_amount REAL DEFAULT 0,
+            support_settlement_status TEXT DEFAULT 'not_applicable',
             is_synced INTEGER DEFAULT 0
         )
     ''')
+    # Backfill breakdown columns on pre-existing local databases (idempotent).
+    for _col in ("subtotal", "tax", "service_charge"):
+        try:
+            cursor.execute(f"ALTER TABLE orders ADD COLUMN {_col} REAL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
     # 2. Order Items table
     cursor.execute('''
@@ -645,6 +802,8 @@ def _init_db_helper(conn):
             status TEXT DEFAULT 'cooking',
             item_id TEXT,
             merchant_id TEXT,
+            branch_id TEXT,
+            row_version INTEGER DEFAULT 1,
             FOREIGN KEY (order_id) REFERENCES orders (id)
         )
     ''')
@@ -661,7 +820,12 @@ def _init_db_helper(conn):
             img_class TEXT,
             image_url TEXT,
             name_translations TEXT DEFAULT '{}',
-            description_translations TEXT DEFAULT '{}'
+            description_translations TEXT DEFAULT '{}',
+            merchant_id TEXT,
+            branch_id TEXT,
+            is_available INTEGER DEFAULT 1,
+            is_deleted INTEGER DEFAULT 0,
+            row_version INTEGER DEFAULT 1
         )
     ''')
 
@@ -691,7 +855,9 @@ def _init_db_helper(conn):
             created_at TEXT NOT NULL,
             ended_at TEXT,
             guest_count INTEGER DEFAULT 2,
-            merchant_id TEXT
+            merchant_id TEXT,
+            branch_id TEXT,
+            row_version INTEGER DEFAULT 1
         )
     ''')
 
@@ -703,7 +869,11 @@ def _init_db_helper(conn):
             request_type TEXT NOT NULL,
             status TEXT NOT NULL, -- 'pending', 'completed'
             created_at TEXT NOT NULL,
-            merchant_id TEXT
+            merchant_id TEXT,
+            branch_id TEXT,
+            restaurant_table_id TEXT,
+            dining_area_id TEXT,
+            expires_at TEXT
         )
     ''')
 
@@ -762,6 +932,7 @@ def _init_db_helper(conn):
             created_at TEXT NOT NULL,
             status TEXT DEFAULT 'completed',
             merchant_id TEXT,
+            branch_id TEXT,
             FOREIGN KEY (order_id) REFERENCES orders (id)
         )
     ''')
@@ -787,7 +958,8 @@ def _init_db_helper(conn):
             name TEXT NOT NULL,
             min_selection INTEGER DEFAULT 0,
             max_selection INTEGER DEFAULT 1,
-            merchant_id TEXT
+            merchant_id TEXT,
+            branch_id TEXT
         )
     ''')
 
@@ -799,7 +971,9 @@ def _init_db_helper(conn):
             name TEXT NOT NULL,
             extra_price REAL DEFAULT 0.0,
             is_available INTEGER DEFAULT 1,
+            is_deleted INTEGER DEFAULT 0,
             merchant_id TEXT,
+            branch_id TEXT,
             FOREIGN KEY (modifier_group_id) REFERENCES modifier_groups (id)
         )
     ''')
@@ -834,6 +1008,8 @@ def _init_db_helper(conn):
         CREATE TABLE IF NOT EXISTS restaurant_tables (
             id TEXT PRIMARY KEY,
             merchant_id TEXT NOT NULL,
+            branch_id TEXT,
+            dining_area_id TEXT,
             table_number TEXT NOT NULL,
             capacity INTEGER NOT NULL DEFAULT 2,
             status TEXT NOT NULL DEFAULT 'vacant',
@@ -843,7 +1019,8 @@ def _init_db_helper(conn):
             floor INTEGER NOT NULL DEFAULT 1,
             is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
             is_round BOOLEAN NOT NULL DEFAULT FALSE,
-            zone TEXT NOT NULL DEFAULT 'Indoor'
+            zone TEXT NOT NULL DEFAULT 'Indoor',
+            row_version INTEGER DEFAULT 1
         )
     ''')
 
@@ -865,7 +1042,9 @@ def _init_db_helper(conn):
             receipt_header TEXT,
             receipt_footer TEXT,
             is_table_system_enabled BOOLEAN DEFAULT TRUE,
-            is_web_ordering_enabled BOOLEAN DEFAULT TRUE
+            is_web_ordering_enabled BOOLEAN DEFAULT TRUE,
+            web_cover_url TEXT,
+            web_cover_media_type TEXT DEFAULT 'image'
         )
     ''')
 
@@ -894,38 +1073,111 @@ def _init_db_helper(conn):
 
     cursor.execute("SELECT COUNT(*) FROM restaurant_tables")
     if cursor.fetchone()[0] == 0:
-        default_tables = get_default_tables(MERCHANT_ID)
-        cursor.executemany("INSERT INTO restaurant_tables VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", default_tables)
-        conn.commit()
-        print("Database initialized and restaurant_tables seeded successfully.")
+        print("Database initialized — restaurant_tables empty (awaiting sync from POS/Supabase).")
 
     # Migration: Add missing columns to existing tables (idempotent)
     for table, col, col_type in [
         ("orders", "merchant_id", "TEXT"),
         ("orders", "updated_at", "TEXT"),
+        ("orders", "branch_id", "TEXT"),
+        ("orders", "row_version", "INTEGER"),
+        ("orders", "support_program_name", "TEXT"),
+        ("orders", "support_government_rate", "REAL"),
+        ("orders", "support_citizen_amount", "REAL"),
+        ("orders", "support_government_amount", "REAL"),
+        ("orders", "support_settlement_status", "TEXT"),
         ("order_items", "merchant_id", "TEXT"),
+        ("order_items", "branch_id", "TEXT"),
+        ("order_items", "row_version", "INTEGER"),
         ("payments", "merchant_id", "TEXT"),
+        ("payments", "branch_id", "TEXT"),
         ("table_sessions", "merchant_id", "TEXT"),
+        ("table_sessions", "branch_id", "TEXT"),
+        ("table_sessions", "row_version", "INTEGER"),
         ("service_requests", "merchant_id", "TEXT"),
+        ("service_requests", "branch_id", "TEXT"),
+        ("service_requests", "restaurant_table_id", "TEXT"),
+        ("service_requests", "dining_area_id", "TEXT"),
+        ("service_requests", "expires_at", "TEXT"),
         ("timecards", "merchant_id", "TEXT"),
         ("restaurant_tables", "zone", "TEXT"),
+        ("restaurant_tables", "branch_id", "TEXT"),
+        ("restaurant_tables", "dining_area_id", "TEXT"),
+        ("restaurant_tables", "row_version", "INTEGER"),
         ("merchants", "is_table_system_enabled", "BOOLEAN"),
         ("merchants", "branch_code", "TEXT"),
+        ("merchants", "web_cover_url", "TEXT"),
+        ("merchants", "web_cover_media_type", "TEXT"),
+        ("menu_items", "merchant_id", "TEXT"),
+        ("menu_items", "branch_id", "TEXT"),
+        ("menu_items", "is_available", "INTEGER"),
+        ("menu_items", "is_deleted", "INTEGER"),
+        ("menu_items", "row_version", "INTEGER"),
+        ("modifiers", "merchant_id", "TEXT"),
+        ("modifiers", "branch_id", "TEXT"),
+        ("modifiers", "is_available", "INTEGER"),
+        ("modifiers", "is_deleted", "INTEGER"),
         ("promotions", "media_type", "TEXT"),
+        ("promotions", "discount_type", "TEXT"),
+        ("promotions", "discount_value", "REAL"),
+        ("promotions", "minimum_spend", "REAL"),
+        ("promotions", "starts_at", "TEXT"),
+        ("promotions", "ends_at", "TEXT"),
+        ("promotions", "applies_to_menu_item_id", "TEXT"),
+        ("promotions", "required_quantity", "INTEGER"),
+        ("promotions", "reward_quantity", "INTEGER"),
     ]:
         # Statically define all allowed queries to completely avoid dynamic SQL formatting / SQL injection risk
         queries = {
             ("orders", "merchant_id", "TEXT"): ("PRAGMA table_info(orders)", "ALTER TABLE orders ADD COLUMN merchant_id TEXT"),
             ("orders", "updated_at", "TEXT"): ("PRAGMA table_info(orders)", "ALTER TABLE orders ADD COLUMN updated_at TEXT"),
+            ("orders", "branch_id", "TEXT"): ("PRAGMA table_info(orders)", "ALTER TABLE orders ADD COLUMN branch_id TEXT"),
+            ("orders", "row_version", "INTEGER"): ("PRAGMA table_info(orders)", "ALTER TABLE orders ADD COLUMN row_version INTEGER DEFAULT 1"),
+            ("orders", "support_program_name", "TEXT"): ("PRAGMA table_info(orders)", "ALTER TABLE orders ADD COLUMN support_program_name TEXT"),
+            ("orders", "support_government_rate", "REAL"): ("PRAGMA table_info(orders)", "ALTER TABLE orders ADD COLUMN support_government_rate REAL DEFAULT 0"),
+            ("orders", "support_citizen_amount", "REAL"): ("PRAGMA table_info(orders)", "ALTER TABLE orders ADD COLUMN support_citizen_amount REAL DEFAULT 0"),
+            ("orders", "support_government_amount", "REAL"): ("PRAGMA table_info(orders)", "ALTER TABLE orders ADD COLUMN support_government_amount REAL DEFAULT 0"),
+            ("orders", "support_settlement_status", "TEXT"): ("PRAGMA table_info(orders)", "ALTER TABLE orders ADD COLUMN support_settlement_status TEXT DEFAULT 'not_applicable'"),
             ("order_items", "merchant_id", "TEXT"): ("PRAGMA table_info(order_items)", "ALTER TABLE order_items ADD COLUMN merchant_id TEXT"),
+            ("order_items", "branch_id", "TEXT"): ("PRAGMA table_info(order_items)", "ALTER TABLE order_items ADD COLUMN branch_id TEXT"),
+            ("order_items", "row_version", "INTEGER"): ("PRAGMA table_info(order_items)", "ALTER TABLE order_items ADD COLUMN row_version INTEGER DEFAULT 1"),
             ("payments", "merchant_id", "TEXT"): ("PRAGMA table_info(payments)", "ALTER TABLE payments ADD COLUMN merchant_id TEXT"),
+            ("payments", "branch_id", "TEXT"): ("PRAGMA table_info(payments)", "ALTER TABLE payments ADD COLUMN branch_id TEXT"),
             ("table_sessions", "merchant_id", "TEXT"): ("PRAGMA table_info(table_sessions)", "ALTER TABLE table_sessions ADD COLUMN merchant_id TEXT"),
+            ("table_sessions", "branch_id", "TEXT"): ("PRAGMA table_info(table_sessions)", "ALTER TABLE table_sessions ADD COLUMN branch_id TEXT"),
+            ("table_sessions", "row_version", "INTEGER"): ("PRAGMA table_info(table_sessions)", "ALTER TABLE table_sessions ADD COLUMN row_version INTEGER DEFAULT 1"),
             ("service_requests", "merchant_id", "TEXT"): ("PRAGMA table_info(service_requests)", "ALTER TABLE service_requests ADD COLUMN merchant_id TEXT"),
+            ("service_requests", "branch_id", "TEXT"): ("PRAGMA table_info(service_requests)", "ALTER TABLE service_requests ADD COLUMN branch_id TEXT"),
+            ("service_requests", "restaurant_table_id", "TEXT"): ("PRAGMA table_info(service_requests)", "ALTER TABLE service_requests ADD COLUMN restaurant_table_id TEXT"),
+            ("service_requests", "dining_area_id", "TEXT"): ("PRAGMA table_info(service_requests)", "ALTER TABLE service_requests ADD COLUMN dining_area_id TEXT"),
+            ("service_requests", "expires_at", "TEXT"): ("PRAGMA table_info(service_requests)", "ALTER TABLE service_requests ADD COLUMN expires_at TEXT"),
             ("timecards", "merchant_id", "TEXT"): ("PRAGMA table_info(timecards)", "ALTER TABLE timecards ADD COLUMN merchant_id TEXT"),
             ("restaurant_tables", "zone", "TEXT"): ("PRAGMA table_info(restaurant_tables)", "ALTER TABLE restaurant_tables ADD COLUMN zone TEXT"),
+            ("restaurant_tables", "branch_id", "TEXT"): ("PRAGMA table_info(restaurant_tables)", "ALTER TABLE restaurant_tables ADD COLUMN branch_id TEXT"),
+            ("restaurant_tables", "dining_area_id", "TEXT"): ("PRAGMA table_info(restaurant_tables)", "ALTER TABLE restaurant_tables ADD COLUMN dining_area_id TEXT"),
+            ("restaurant_tables", "row_version", "INTEGER"): ("PRAGMA table_info(restaurant_tables)", "ALTER TABLE restaurant_tables ADD COLUMN row_version INTEGER DEFAULT 1"),
             ("merchants", "is_table_system_enabled", "BOOLEAN"): ("PRAGMA table_info(merchants)", "ALTER TABLE merchants ADD COLUMN is_table_system_enabled BOOLEAN"),
             ("merchants", "branch_code", "TEXT"): ("PRAGMA table_info(merchants)", "ALTER TABLE merchants ADD COLUMN branch_code TEXT"),
+            ("merchants", "web_cover_url", "TEXT"): ("PRAGMA table_info(merchants)", "ALTER TABLE merchants ADD COLUMN web_cover_url TEXT"),
+            ("merchants", "web_cover_media_type", "TEXT"): ("PRAGMA table_info(merchants)", "ALTER TABLE merchants ADD COLUMN web_cover_media_type TEXT DEFAULT 'image'"),
+            ("menu_items", "merchant_id", "TEXT"): ("PRAGMA table_info(menu_items)", "ALTER TABLE menu_items ADD COLUMN merchant_id TEXT"),
+            ("menu_items", "branch_id", "TEXT"): ("PRAGMA table_info(menu_items)", "ALTER TABLE menu_items ADD COLUMN branch_id TEXT"),
+            ("menu_items", "is_available", "INTEGER"): ("PRAGMA table_info(menu_items)", "ALTER TABLE menu_items ADD COLUMN is_available INTEGER DEFAULT 1"),
+            ("menu_items", "is_deleted", "INTEGER"): ("PRAGMA table_info(menu_items)", "ALTER TABLE menu_items ADD COLUMN is_deleted INTEGER DEFAULT 0"),
+            ("menu_items", "row_version", "INTEGER"): ("PRAGMA table_info(menu_items)", "ALTER TABLE menu_items ADD COLUMN row_version INTEGER DEFAULT 1"),
+            ("modifiers", "merchant_id", "TEXT"): ("PRAGMA table_info(modifiers)", "ALTER TABLE modifiers ADD COLUMN merchant_id TEXT"),
+            ("modifiers", "branch_id", "TEXT"): ("PRAGMA table_info(modifiers)", "ALTER TABLE modifiers ADD COLUMN branch_id TEXT"),
+            ("modifiers", "is_available", "INTEGER"): ("PRAGMA table_info(modifiers)", "ALTER TABLE modifiers ADD COLUMN is_available INTEGER DEFAULT 1"),
+            ("modifiers", "is_deleted", "INTEGER"): ("PRAGMA table_info(modifiers)", "ALTER TABLE modifiers ADD COLUMN is_deleted INTEGER DEFAULT 0"),
             ("promotions", "media_type", "TEXT"): ("PRAGMA table_info(promotions)", "ALTER TABLE promotions ADD COLUMN media_type TEXT"),
+            ("promotions", "discount_type", "TEXT"): ("PRAGMA table_info(promotions)", "ALTER TABLE promotions ADD COLUMN discount_type TEXT"),
+            ("promotions", "discount_value", "REAL"): ("PRAGMA table_info(promotions)", "ALTER TABLE promotions ADD COLUMN discount_value REAL"),
+            ("promotions", "minimum_spend", "REAL"): ("PRAGMA table_info(promotions)", "ALTER TABLE promotions ADD COLUMN minimum_spend REAL"),
+            ("promotions", "starts_at", "TEXT"): ("PRAGMA table_info(promotions)", "ALTER TABLE promotions ADD COLUMN starts_at TEXT"),
+            ("promotions", "ends_at", "TEXT"): ("PRAGMA table_info(promotions)", "ALTER TABLE promotions ADD COLUMN ends_at TEXT"),
+            ("promotions", "applies_to_menu_item_id", "TEXT"): ("PRAGMA table_info(promotions)", "ALTER TABLE promotions ADD COLUMN applies_to_menu_item_id TEXT"),
+            ("promotions", "required_quantity", "INTEGER"): ("PRAGMA table_info(promotions)", "ALTER TABLE promotions ADD COLUMN required_quantity INTEGER"),
+            ("promotions", "reward_quantity", "INTEGER"): ("PRAGMA table_info(promotions)", "ALTER TABLE promotions ADD COLUMN reward_quantity INTEGER"),
         }
 
         query_key = (table, col, col_type)
@@ -999,27 +1251,15 @@ def _init_db_helper(conn):
 
     conn.commit()
 
-    # Seed default menu items if table is empty
+    # Menu is populated via Supabase sync — do not insert demo catalog locally.
     cursor.execute("SELECT COUNT(*) FROM menu_items")
-    if cursor.fetchone()[0] == 0:
-        default_menu = DEFAULT_MENU
-        cursor.executemany(
-            """
-            INSERT INTO menu_items (
-                id, name, description, price, category, emoji, img_class, image_url
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            default_menu
-        )
-        conn.commit()
-        print("Database initialized and Isan menu (50 items) seeded successfully.")
+    menu_count = cursor.fetchone()[0]
+    if menu_count == 0:
+        print("Database initialized — menu_items empty (awaiting sync from POS/Supabase).")
 
-    # Always sync latest menu from Supabase on startup (single source of truth)
-    sync_menu_from_supabase(conn)
-    sync_table_sessions_from_supabase(conn)
-    sync_promotions_from_supabase(conn)
-    sync_modifiers_from_supabase(conn)
-    flush_pending_supabase_writes()
+    # NOTE: Supabase startup sync moved to a background thread in run() so a
+    # slow/hanging Supabase call can never block the HTTP server from binding.
+    # (See startup_supabase_sync() + run().)
 
 
 # ==========================================
@@ -1050,14 +1290,22 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 
     def _send_json_response(self, status_code, data):
         self.send_response(status_code)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/problem+json" if status_code >= 400 else "application/json")
         body = json.dumps(data).encode("utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def _send_error_json(self, status_code, message):
-        self._send_json_response(status_code, {"error": message})
+        trace_id = str(uuid.uuid4())
+        code = "ADMIN_AUTH_REQUIRED" if status_code == 401 else "REQUEST_REJECTED"
+        self._send_json_response(status_code, {
+            "type": f"https://alphaposweb.com/problems/{code.lower().replace('_', '-')}",
+            "title": message,
+            "status": status_code,
+            "code": code,
+            "traceId": trace_id,
+        })
 
     def _require_auth(self):
         """Bearer token authentication for API endpoints. Required by default."""
@@ -1073,16 +1321,14 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         return False
 
     def _is_public_customer_post(self, path):
-        return path in {"/v1/sessions/open", "/v1/orders", "/v1/requests", "/v1/payments/intent"}
+        # Customer mutations use branch-scoped PostgreSQL RPCs. The local
+        # compatibility API is administrative only.
+        return False
 
     def end_headers(self):
         allowed = self._get_allowed_origin()
-        supabase_connect_src = ""
-        if SUPABASE_URL:
-            supabase_connect_src = (
-                f" {SUPABASE_URL.rstrip('/')}"
-                f" {SUPABASE_URL.rstrip('/').replace('https://', 'wss://').replace('http://', 'ws://')}"
-            )
+        # Use the public API host browsers actually call (not server-local SUPABASE_URL).
+        supabase_connect_src = supabase_csp_connect_src()
         if allowed:
             self.send_header('Access-Control-Allow-Origin', allowed)
             self.send_header('Vary', 'Origin')
@@ -1097,10 +1343,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Security-Policy',
             "default-src 'self'; "
             "media-src 'self' blob: https:; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
-            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "img-src 'self' data: https:; "
-            f"connect-src 'self' https://cdn.jsdelivr.net{supabase_connect_src}; "
+            f"connect-src 'self'{supabase_connect_src}; "
             "font-src 'self' data: https://fonts.gstatic.com; "
             "frame-ancestors 'none'")
         if not IS_PRODUCTION:
@@ -1119,12 +1365,19 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
 
-        # GET endpoints are read-only / public data — no auth required.
-        # Auth is enforced on POST (write) endpoints.
+        # Only runtime config and static assets are public. Catalog/order/session
+        # reads happen directly through branch-scoped customer JWT policies.
+        if path.startswith("/v1/") and path != "/v1/push/vapid-key" and not self._require_auth():
+            return
 
         # 1. API Endpoint: GET /v1/menu
         if path == "/v1/menu":
             self.handle_get_menu()
+            return
+
+        # 1b. API Endpoint: GET /v1/push/vapid-key (Web Push public key)
+        if path == "/v1/push/vapid-key":
+            self.handle_get_vapid_key()
             return
 
         # 2. API Endpoint: GET /v1/orders (Returns list of orders for POS/KDS syncing)
@@ -1205,6 +1458,11 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         # 1. API Endpoint: POST /v1/orders (Submits new orders from Mobile or iPad POS)
         if path == "/v1/orders":
             self.handle_post_order()
+            return
+
+        # 1b. API Endpoint: POST /v1/push/subscribe (store Web Push subscription)
+        if path == "/v1/push/subscribe":
+            self.handle_post_push_subscribe()
             return
 
         # 2. API Endpoint: POST /v1/payments (Simulates uploading POS payments)
@@ -1293,6 +1551,19 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     ORDER BY count DESC, endpoint ASC
                 ''').fetchall()
 
+                # Shared hub metrics (same RPC used by POS + Staff).
+                hub = {}
+                try:
+                    ok, raw = supabase_request(
+                        "POST",
+                        "rpc/get_sync_health",
+                        payload={"p_merchant_id": MERCHANT_ID} if MERCHANT_ID else {},
+                    )
+                    if ok and raw:
+                        hub = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                except Exception as hub_err:
+                    print(f"[Sync] get_sync_health unavailable: {hub_err}")
+
                 self._send_json_response(200, {
                     "pendingCount": row["pending_count"],
                     "maxAttempts": row["max_attempts"],
@@ -1301,7 +1572,11 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     "byEndpoint": [
                         {"endpoint": item["endpoint"], "count": item["count"]}
                         for item in by_endpoint_rows
-                    ]
+                    ],
+                    "hub": hub,
+                    "pending_count": (hub.get("pending_count") or 0) + (row["pending_count"] or 0),
+                    "failed_count": hub.get("failed_count") or 0,
+                    "server_time": hub.get("server_time"),
                 })
         except Exception as e:
             self._send_error_json(500, f"Sync status error: {str(e)}")
@@ -1468,6 +1743,11 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             self.send_error(500, f"Database error: {str(e)}")
 
     def handle_post_order(self):
+        # Customer orders have exactly one write path: create_customer_order().
+        # Keeping a local SQLite writer here created split-brain sessions/orders.
+        self._send_error_json(410, "Use the atomic customer-order endpoint.")
+        return
+
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length)
 
@@ -1599,6 +1879,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         )
 
                     total = computed_total
+                    _breakdown = calculate_order_breakdown(computed_subtotal)
+                    order_subtotal = _breakdown["subtotal"]
+                    order_service_charge = _breakdown["service_charge"]
+                    order_tax = _breakdown["tax"]
                     items = verified_items
 
                     # Check if there is an active session for this table
@@ -1624,13 +1908,18 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     exists = cursor.fetchone()
 
                     if exists:
+                        # Capture the previous status so we can detect a real transition
+                        # and only push a notification when the status actually changes.
+                        cursor.execute("SELECT status FROM orders WHERE id = ?", (order_id,))
+                        _prev_row = cursor.fetchone()
+                        self._push_prev_status = _prev_row[0] if _prev_row else None
                         # Update Order
                         updated_at_str = get_utc_now_iso()
                         cursor.execute('''
                             UPDATE orders
-                            SET status = ?, total = ?, updated_at = ?, session_token = COALESCE(?, session_token), guest_count = ?, is_synced = 0
+                            SET status = ?, total = ?, subtotal = ?, tax = ?, service_charge = ?, updated_at = ?, session_token = COALESCE(?, session_token), guest_count = ?, is_synced = 0
                             WHERE id = ?
-                        ''', (status, total, updated_at_str, session_token, guest_count, order_id))
+                        ''', (status, total, order_subtotal, order_tax, order_service_charge, updated_at_str, session_token, guest_count, order_id))
 
                         # Upsert Order Items
                         for item in items:
@@ -1683,9 +1972,9 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         # Insert New Order
                         updated_at_str = get_utc_now_iso()
                         cursor.execute('''
-                            INSERT INTO orders (id, order_number, table_number, total, status, created_at, updated_at, session_token, guest_count, merchant_id, is_synced)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (order_id, order_number, table_number, total, status, created_at_str, updated_at_str, session_token, guest_count, MERCHANT_ID, 0))
+                            INSERT INTO orders (id, order_number, table_number, total, subtotal, tax, service_charge, status, created_at, updated_at, session_token, guest_count, merchant_id, is_synced)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (order_id, order_number, table_number, total, order_subtotal, order_tax, order_service_charge, status, created_at_str, updated_at_str, session_token, guest_count, MERCHANT_ID, 0))
 
                         # Insert Order Items
                         for item in items:
@@ -1721,6 +2010,9 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                 "order_number": order_number,
                 "table_number": table_number,
                 "total": total,
+                "subtotal": order_subtotal,
+                "tax": order_tax,
+                "service_charge": order_service_charge,
                 "status": status,
                 "created_at": created_at_str,
                 "updated_at": get_utc_now_iso(),
@@ -1789,11 +2081,37 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(response).encode("utf-8"))
             log_event("info", "order.saved", order_number=order_number, table_number=table_number, total=round(total, 2), status=status)
 
+            # Notify the customer's browser when the order status changes to a
+            # customer-relevant state (ready / served / cancelled). Runs after the
+            # response is already sent, and in a daemon thread so a slow push
+            # never delays the POS. Only fires on an actual transition.
+            try:
+                _prev = getattr(self, "_push_prev_status", None)
+                _notify_states = {"ready", "served", "cancelled"}
+                if status in _notify_states and status != _prev:
+                    threading.Thread(
+                        target=push_order_status_update,
+                        args=(order_id, status, table_number),
+                        daemon=True,
+                    ).start()
+            except Exception as _push_err:
+                log_event("warning", "order.push.hook_failed", str(_push_err), order_number=order_number)
+
         except Exception as e:
             log_event("warning", "order.rejected", str(e))
             self._send_error_json(400, f"Invalid order payload: {str(e)}")
 
     def handle_post_payment(self):
+        # Retired permanently: payment and order settlement must be performed by
+        # the atomic, idempotent backend checkout transaction used by POS/Staff.
+        # Keeping this handler as an explicit tombstone prevents an older client
+        # or administrator from resurrecting the former dual-write path.
+        self._send_error_json(
+            410,
+            "Legacy payment writes are retired; complete checkout through the atomic staff workflow.",
+        )
+        return
+
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length)
         try:
@@ -1905,6 +2223,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
     def handle_get_sessions(self):
         try:
             with closing(get_db_connection()) as conn:
+                sync_table_sessions_from_supabase(conn)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 if MERCHANT_ID:
@@ -2041,6 +2360,75 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             print(f"Server API [Request]: New request from Table {table_number}: {request_type}")
         except Exception as e:
             self.send_error(500, f"Error posting service request: {str(e)}")
+
+    def handle_get_vapid_key(self):
+        """GET /v1/push/vapid-key — return the Web Push public (VAPID) key."""
+        if not VAPID_PUBLIC_KEY:
+            # Push not configured — tell the client gracefully (not a 404 error).
+            self._send_json_response(200, {"publicKey": None, "enabled": False})
+            return
+        self._send_json_response(200, {"publicKey": VAPID_PUBLIC_KEY, "enabled": True})
+
+    def handle_post_push_subscribe(self):
+        """POST /v1/push/subscribe — store a browser push subscription."""
+        try:
+            content_length = int(self.headers.get('Content-Length', '0'))
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode("utf-8"))
+        except Exception as e:
+            self._send_error_json(400, f"Invalid JSON: {e}")
+            return
+
+        subscription = data.get("subscription")
+        if not subscription or not isinstance(subscription, dict) or not subscription.get("endpoint"):
+            self._send_error_json(400, "subscription with endpoint is required")
+            return
+
+        endpoint = subscription.get("endpoint")
+        keys = subscription.get("keys", {}) or {}
+        p256dh = keys.get("p256dh", "")
+        auth = keys.get("auth", "")
+        order_id = data.get("order_id")
+        table_number = str(data.get("table_number") or "")
+        sub_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+
+        try:
+            with closing(get_db_connection()) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS push_subscriptions (
+                        id TEXT PRIMARY KEY,
+                        endpoint TEXT UNIQUE NOT NULL,
+                        p256dh TEXT NOT NULL,
+                        auth TEXT NOT NULL,
+                        order_id TEXT,
+                        table_number TEXT,
+                        merchant_id TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                """)
+                # Upsert by endpoint (a device re-subscribing keeps one row).
+                cursor.execute("SELECT id FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+                existing = cursor.fetchone()
+                if existing:
+                    cursor.execute("""
+                        UPDATE push_subscriptions
+                        SET p256dh = ?, auth = ?, order_id = ?, table_number = ?, updated_at = ?
+                        WHERE endpoint = ?
+                    """, (p256dh, auth, order_id, table_number, now, endpoint))
+                else:
+                    cursor.execute("""
+                        INSERT INTO push_subscriptions
+                            (id, endpoint, p256dh, auth, order_id, table_number, merchant_id, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (sub_id, endpoint, p256dh, auth, order_id, table_number, MERCHANT_ID, now, now))
+                conn.commit()
+            self._send_json_response(200, {"success": True, "id": (existing[0] if existing else sub_id)})
+        except Exception as e:
+            print(f"[Push] Failed to store subscription: {e}")
+            self._send_error_json(500, "Failed to store subscription")
 
     def handle_get_requests(self):
         try:
@@ -2410,12 +2798,13 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             if SUPABASE_URL and SUPABASE_ANON_KEY:
                 import urllib.request
                 import json
-                url = f"{SUPABASE_URL}/rest/v1/merchants?select=id,name,kitchen_workflow_required,is_table_system_enabled,is_web_ordering_enabled"
+                url = f"{SUPABASE_URL}/rest/v1/merchants?select=id,name,kitchen_workflow_required,is_table_system_enabled,is_web_ordering_enabled,tax_rate,tax_type,service_charge_rate"
                 req = urllib.request.Request(
                     url,
                     headers={
                         "apikey": SUPABASE_ANON_KEY,
-                        "Authorization": f"Bearer {SUPABASE_ANON_KEY}"
+                        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+                        "x-merchant-id": MERCHANT_ID
                     }
                 )
                 try:
@@ -2435,7 +2824,8 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     conn.row_factory = sqlite3.Row
                     rows = conn.execute('''
                         SELECT id, name, branch_code, kitchen_workflow_required,
-                               is_table_system_enabled, is_web_ordering_enabled
+                               is_table_system_enabled, is_web_ordering_enabled,
+                               tax_rate, tax_type, service_charge_rate
                         FROM merchants
                         ORDER BY name ASC
                     ''').fetchall()
@@ -2446,7 +2836,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             "branch_code": row["branch_code"],
                             "kitchen_workflow_required": _as_bool(row["kitchen_workflow_required"], False),
                             "is_table_system_enabled": _as_bool(row["is_table_system_enabled"]),
-                            "is_web_ordering_enabled": _as_bool(row["is_web_ordering_enabled"])
+                            "is_web_ordering_enabled": _as_bool(row["is_web_ordering_enabled"]),
+                            "tax_rate": row["tax_rate"],
+                            "tax_type": row["tax_type"],
+                            "service_charge_rate": row["service_charge_rate"]
                         } for row in rows])
                         return
             except Exception as local_ex:
@@ -2550,7 +2943,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     if row:
                         employee_id = row[0]
                     else:
-                        employee_id = "11111111-1111-1111-1111-111111111111"
+                        employee_id = str(uuid.uuid4())
 
                 cursor.execute("SELECT id FROM timecards WHERE id = ?", (tc_id,))
                 exists = cursor.fetchone()
@@ -2590,11 +2983,20 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             with closing(get_db_connection()) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, title, promo_description, image_data, media_type, is_active, is_deleted, updated_at FROM promotions WHERE is_active = 1 AND is_deleted = 0 ORDER BY updated_at DESC")
+                cursor.execute("""
+                    SELECT id, title, promo_description, image_data, media_type,
+                           is_active, is_deleted, updated_at,
+                           discount_type, discount_value, minimum_spend, starts_at, ends_at,
+                           applies_to_menu_item_id, required_quantity, reward_quantity
+                    FROM promotions
+                    WHERE is_active = 1 AND is_deleted = 0
+                    ORDER BY updated_at DESC
+                """)
                 rows = cursor.fetchall()
 
                 promotions = []
                 for row in rows:
+                    keys = row.keys()
                     promotions.append({
                         "id": row["id"],
                         "title": row["title"],
@@ -2603,7 +3005,15 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                         "mediaType": row["media_type"] or "image",
                         "isActive": bool(row["is_active"]),
                         "isDeleted": bool(row["is_deleted"]),
-                        "updatedAt": row["updated_at"]
+                        "updatedAt": row["updated_at"],
+                        "discountType": row["discount_type"] if "discount_type" in keys else "none",
+                        "discountValue": row["discount_value"] if "discount_value" in keys else 0,
+                        "minimumSpend": row["minimum_spend"] if "minimum_spend" in keys else 0,
+                        "startsAt": row["starts_at"] if "starts_at" in keys else None,
+                        "endsAt": row["ends_at"] if "ends_at" in keys else None,
+                        "appliesToMenuItemId": row["applies_to_menu_item_id"] if "applies_to_menu_item_id" in keys else None,
+                        "requiredQuantity": row["required_quantity"] if "required_quantity" in keys else 1,
+                        "rewardQuantity": row["reward_quantity"] if "reward_quantity" in keys else 0,
                     })
 
             response_data = json.dumps(promotions).encode("utf-8")
@@ -2762,10 +3172,15 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"Error reading physical config.js: {e}")
 
+        # Prefer the public HTTPS API host for browser REST/Realtime when the
+        # process-local SUPABASE_URL is loopback / plain-HTTP / private.
+        public_supabase = browser_supabase_url()
         js_content = f"""window.ALPHAPOS_CONFIG = {{
-    supabaseUrl: '{SUPABASE_URL}',
+    supabaseUrl: '{public_supabase}',
+    supabaseRealtimeUrl: '{public_supabase}',
     supabaseKey: '{SUPABASE_ANON_KEY}',
     merchantId: '{MERCHANT_ID}',
+    localServerURL: '{os.getenv("PUBLIC_LOCAL_SERVER_URL", "https://sync.alphaposweb.com")}',
     apiAuthToken: '{API_AUTH_TOKEN if not IS_PRODUCTION else ""}',
     paymentProviders: {{
         promptpay: {str(bool(PROMPTPAY_ID)).lower()},
@@ -2830,16 +3245,36 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
 # ==========================================
 # Server Launcher
 # ==========================================
+def startup_supabase_sync():
+    """Run the initial Supabase->SQLite sync in the background.
+
+    Kept OFF the HTTP-bind critical path: even if Supabase is slow or a call
+    hangs, the web server stays up serving cached SQLite data.
+    """
+    try:
+        with closing(get_db_connection()) as conn:
+            sync_menu_from_supabase(conn)
+            sync_table_sessions_from_supabase(conn)
+            sync_promotions_from_supabase(conn)
+            sync_modifiers_from_supabase(conn)
+        flush_pending_supabase_writes()
+        print("[Sync] Startup Supabase sync complete.", flush=True)
+    except Exception as e:
+        print(f"[Sync] Startup sync failed (non-fatal): {e}", flush=True)
+
+
 def run():
     if IS_PRODUCTION and not API_AUTH_TOKEN:
         raise RuntimeError("API_AUTH_TOKEN is required when ALPHAPOS_ENV=production")
     init_db()
     server_address = ('', PORT)
     httpd = ThreadingHTTPServer(server_address, UnifiedRequestHandler)
-    print(f"==========================================================")
-    print(f"      Unified API Backend Server active on port: {PORT}")
-    print(f"      Database: {DB_FILE} (SQLite)")
-    print(f"==========================================================")
+    print(f"==========================================================", flush=True)
+    print(f"      Unified API Backend Server active on port: {PORT}", flush=True)
+    print(f"      Database: {DB_FILE} (SQLite)", flush=True)
+    print(f"==========================================================", flush=True)
+    # Kick off the Supabase sync AFTER the port is bound, in a daemon thread.
+    threading.Thread(target=startup_supabase_sync, daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

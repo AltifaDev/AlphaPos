@@ -9,7 +9,10 @@ export class PushNotificationManager {
     constructor() {
         this.isSupported = ('serviceWorker' in navigator) && ('PushManager' in window) && ('Notification' in window);
         this.subscription = null;
-        this.permission = Notification.permission; // 'default', 'granted', 'denied'
+        // Safari/WebViews may omit the Notification global entirely. Never
+        // dereference it until feature detection has succeeded, otherwise the
+        // whole ordering app fails during module evaluation.
+        this.permission = this.isSupported ? window.Notification.permission : 'unsupported';
         this._orderId = null;
         this._translate = (key, fallback) => {
             if (window.app && typeof window.app.translate === 'function') {

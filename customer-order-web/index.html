@@ -2,16 +2,14 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
-    <title>AlphaPos | Mobile Self-Ordering</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
+    <title>Restaurant | Order Online</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2230%22 fill=%22%232d71f8%22/><text x=%2250%22 y=%2268%22 font-size=%2255%22 font-family=%22Outfit, sans-serif%22 font-weight=%22800%22 fill=%22%23ffffff%22 text-anchor=%22middle%22>A</text></svg>">
     <!-- Modern Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=22">
-    <!-- Supabase JS Client SDK -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <link rel="stylesheet" href="styles.css?v=33">
     <!-- AlphaPos Runtime Config (served dynamically by Cloudflare Worker with HTTPS URLs) -->
     <script src="/config.js"></script>
 </head>
@@ -35,41 +33,11 @@
             </div>
         </div>
 
-        <!-- Step 1: Welcome & Verification -->
-        <div id="onboardingStep1" class="onboarding-card">
-            <div class="onboarding-header anim-fade-in-scale">
-                <div class="logo-animation-container">
-                    <span class="logo-pulse-circle"></span>
-                    <span class="logo-pulse-circle delay-1"></span>
-                    <span class="logo-pulse-circle delay-2"></span>
-                    <span class="logo-icon app-icon icon-utensils" aria-hidden="true"></span>
-                </div>
-                <h2><span data-translate-key="welcomeTable">Welcome to Table</span> <span id="welcomeTableNum">--</span></h2>
-                <p class="subtitle" data-translate-key="diningExperience">AlphaPos Dining Experience</p>
-            </div>
-            
-            <div class="verification-status-box anim-fade-in-up anim-delay-2">
-                <div class="radar-container">
-                    <div class="radar-dot"></div>
-                    <div class="radar-ring"></div>
-                    <div class="radar-ring-2"></div>
-                </div>
-                <div class="verification-text">
-                    <div id="verifyTitle" class="verify-title font-outfit" data-translate-key="verifyingLocation">Verifying Location...</div>
-                    <div id="verifyDesc" class="verify-desc" data-translate-key="checkingProximity">Checking GPS and Guest Wi-Fi proximity</div>
-                </div>
-            </div>
-            
-            <button id="btnOnboardingNext1" class="onboarding-next-btn disabled anim-fade-in-up anim-delay-3" disabled onclick="app.nextOnboardingStep()">
-                <span data-translate-key="proceedCheckin">Proceed to Check-in</span>
-            </button>
-        </div>
-
-        <!-- Step 2: Guest Pax Selection -->
+        <!-- Guest Pax Selection (entry step — no GPS / Wi-Fi gate) -->
         <div id="onboardingStep2" class="onboarding-card">
             <div class="onboarding-header anim-fade-in-down">
                 <span class="onboarding-emoji app-icon icon-users" aria-hidden="true"></span>
-                <h2 data-translate-key="selectGuests">Select Number of Guests</h2>
+                <h2><span data-translate-key="welcomeTable">Welcome to Table</span> <span id="welcomeTableNum">--</span></h2>
                 <p data-translate-key="howManyPeople">How many people are dining at your table?</p>
             </div>
             
@@ -98,13 +66,8 @@
             </div>
             
             <div class="onboarding-action-row anim-fade-in-up anim-delay-3">
-                <button class="onboarding-back-btn" onclick="app.prevOnboardingStep()" data-translate-key="back">Back</button>
                 <button id="startOrderBtn" class="start-order-btn" onclick="app.confirmGuestCount()">
                     <span data-translate-key="startOrdering">Start Ordering</span>
-                </button>
-                <button class="service-capsule service-capsule-feedback anim-fade-in-up anim-delay-7" onclick="app.triggerFeedback()">
-                    <span class="service-icon" aria-hidden="true">⭐</span>
-                    <span class="service-label" data-translate-key="feedbackTitle">Leave Feedback</span>
                 </button>
             </div>
 
@@ -139,6 +102,9 @@
             </div>
             <h2 id="blockingTitle" class="blocking-title font-outfit"></h2>
             <p id="blockingDesc" class="blocking-desc"></p>
+            <button id="blockingRetryBtn" class="blocking-retry-btn hide" type="button" onclick="location.reload()">
+                <span data-translate-key="configRetry">Try Again</span>
+            </button>
             <div class="blocking-footer">
                 <span id="blockingFooterText"></span>
             </div>
@@ -149,10 +115,10 @@
         <!-- Header HUD -->
         <header class="app-header anim-fade-in-down">
             <div class="brand-section">
-                <div class="header-logo-circle">
+                <div class="header-logo-circle" id="merchantLogo">
                     <span class="header-logo-inner">A</span>
                 </div>
-                <h1 class="brand-title">AlphaPos</h1>
+                <h1 class="brand-title" id="merchantBrandName">Restaurant</h1>
             </div>
             <div class="header-actions">
                 <div id="loyaltyMiniContainer" class="loyalty-mini-container"></div>
@@ -190,31 +156,19 @@
         </header>
 
 
-        <!-- Dynamic Security HUD Banner (Hidden in CSS, runs in background) -->
-        <div id="securityBanner" class="security-banner checking">
-            <div class="banner-icon app-icon icon-signal" aria-hidden="true"></div>
-            <div class="banner-content">
-                <div class="banner-title" id="bannerTitle">Verifying Location...</div>
-                <div class="banner-desc" id="bannerDesc">Checking Wi-Fi and GPS signal...</div>
-            </div>
-            <div class="spinner" id="bannerSpinner"></div>
-        </div>
-
-
         <!-- Promotions Banner Carousel -->
         <div id="promotionsBannerContainer" class="promo-banner-container anim-fade-in-scale">
             <div id="promotionsSlider" class="promo-slider">
                 <div class="promo-slide active">
-                    <div class="promo-placeholder-bg"></div>
+                    <video class="merchant-cover-video" src="https://player.vimeo.com/external/435674703.sd.mp4?s=7f773cdccf1a0e784534f5263a232f3c64e5ba79&profile_id=139&oauth2_token_id=57447761" autoplay muted loop playsinline poster="https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=1200&q=80"></video>
                     <div class="promo-overlay">
-                        <h3 class="promo-title" data-translate-key="welcomeTitle">ยินดีต้อนรับสู่ AlphaPos</h3>
+                        <span class="promo-kicker">FRESHLY MADE · ORDER AT YOUR TABLE</span>
+                        <h3 class="promo-title" id="merchantWelcomeTitle">ยินดีต้อนรับ</h3>
                         <p class="promo-desc" data-translate-key="welcomeDesc">สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ</p>
                     </div>
                 </div>
             </div>
-            <div id="promoIndicators" class="promo-indicators">
-                <span class="indicator active"></span>
-            </div>
+            <div id="promoIndicators" class="promo-indicators"></div>
         </div>
 
         <!-- Main Navigation Tabs -->
@@ -295,6 +249,9 @@
                     <div class="search-empty-state" id="searchEmptyState">
                         <span class="search-empty-icon app-icon icon-search" aria-hidden="true"></span>
                         <p class="search-empty-text" data-translate-key="noSearchResults">No items found</p>
+                        <button id="menuRetryBtn" class="menu-retry-btn hide" type="button" onclick="app.retryLoadMenu()">
+                            <span data-translate-key="menuRetry">Reload Menu</span>
+                        </button>
                     </div>
                 </section>
             </main>
@@ -381,6 +338,12 @@
             </div>
         </div>
 
+        <footer class="platform-attribution" aria-label="Platform provider">
+            <span>Powered by</span>
+            <strong><span class="platform-mark">A</span> AlphaPos</strong>
+            <a href="/privacy.html">Privacy</a>
+        </footer>
+
         <!-- Floating Cart Bar -->
         <div class="cart-bar-container" id="cartBar">
             <div class="cart-bar-content" onclick="app.toggleCartDrawer(true)">
@@ -404,7 +367,10 @@
                 <div class="drawer-header anim-fade-in-down">
                     <div class="drawer-notch"></div>
                     <div class="drawer-title-row">
-                        <h3 data-translate-key="yourOrderTray">Your Order Tray</h3>
+                        <div>
+                            <h3 data-translate-key="yourOrderTray">Your Order Tray</h3>
+                            <p id="cartDrawerCount" class="drawer-item-count" aria-live="polite"></p>
+                        </div>
                         <button class="close-drawer-btn" type="button" aria-label="Close cart" onclick="app.toggleCartDrawer(false)">✕</button>
                     </div>
                 </div>
@@ -418,6 +384,10 @@
                         <div class="breakdown-row">
                             <span data-translate-key="subtotal">Subtotal</span>
                             <span id="breakdownSubtotal">฿0.00</span>
+                        </div>
+                        <div class="breakdown-row" id="breakdownDiscountRow" style="display:none; color:#059669;">
+                            <span id="breakdownDiscountLabel" data-translate-key="discount">Discount</span>
+                            <span id="breakdownDiscount">-฿0.00</span>
                         </div>
                         <div class="breakdown-row">
                             <span data-translate-key="serviceCharge">Service Charge (10%)</span>
@@ -443,7 +413,7 @@
                             <span class="btn-text" data-translate-key="sendToKitchen">Send to Kitchen</span>
                             <div class="btn-spinner hide"></div>
                         </button>
-                        <p class="location-warning-text" id="btnWarningText" data-translate-key="locationWarning">Please connect to restaurant Wi-Fi or share your location to order.</p>
+                        <p class="location-warning-text hide" id="btnWarningText" data-translate-key="orderingBlockedSession">This table session is closed. Please scan the QR code again if you need to order.</p>
                     </div>
                 </div>
             </div>
@@ -469,7 +439,14 @@
                 </div>
                 
                 <div class="modal-footer">
-                    <div class="modal-price" id="modalProductPrice">฿0.00</div>
+                    <div class="modal-footer-top">
+                        <div class="modal-qty-stepper">
+                            <button class="modal-qty-btn" id="modalQtyDec" onclick="app.changeModalQty(-1)" aria-label="Decrease quantity">−</button>
+                            <span class="modal-qty-val" id="modalQtyVal">1</span>
+                            <button class="modal-qty-btn" id="modalQtyInc" onclick="app.changeModalQty(1)" aria-label="Increase quantity">+</button>
+                        </div>
+                        <div class="modal-price" id="modalProductPrice">฿0.00</div>
+                    </div>
                     <button class="modal-add-btn" id="modalAddBtn" onclick="app.addProductFromModal()" data-translate-key="addToCart">Add to Cart</button>
                 </div>
             </div>
@@ -556,7 +533,6 @@
     <div id="allergenDetailSheet" class="allergen-sheet" role="dialog" aria-modal="true" aria-label="Allergen information">
     </div>
 
-    <script type="module" src="hybrid-location.js?v=22"></script>
-    <script type="module" src="app.js?v=22"></script>
+    <script type="module" src="app.js?v=35"></script>
 </body>
 </html>

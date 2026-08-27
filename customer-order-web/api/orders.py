@@ -11,7 +11,8 @@ import uuid
 from .deps import (
     get_db_connection, get_db_row_connection, get_utc_now_iso,
     clean_string, parse_positive_float, calculate_order_total,
-    MERCHANT_ID, web_ordering_enabled_for_payload, supabase_post, log_event
+    MERCHANT_ID, SERVICE_CHARGE_RATE, VAT_RATE,
+    web_ordering_enabled_for_payload, supabase_rpc, log_event
 )
 
 router = APIRouter(prefix="/v1", tags=["orders"])
@@ -58,7 +59,7 @@ class DeleteOrderItemRequest(BaseModel):
 
 
 @router.get("/orders")
-def get_orders(table_number: Optional[str] = None, status: Optional[str] = None):
+def get_orders(table_number: Optional[str] = None, session_token: Optional[str] = None, status: Optional[str] = None):
     """Returns orders, optionally filtered by table_number or status."""
     try:
         with closing(get_db_row_connection()) as conn:
@@ -70,6 +71,9 @@ def get_orders(table_number: Optional[str] = None, status: Optional[str] = None)
             if table_number:
                 query += " AND table_number = ?"
                 params.append(table_number)
+            if session_token:
+                query += " AND session_token = ?"
+                params.append(session_token)
             if status:
                 query += " AND status = ?"
                 params.append(status)
@@ -104,11 +108,21 @@ def get_orders(table_number: Optional[str] = None, status: Optional[str] = None)
                     "order_number": order["order_number"],
                     "table_number": order["table_number"],
                     "total": order["total"],
+                    "subtotal": order["subtotal"] if "subtotal" in order_keys else order["total"],
+                    "tax": order["tax"] if "tax" in order_keys else 0,
+                    "service_charge": order["service_charge"] if "service_charge" in order_keys else 0,
                     "status": order["status"],
                     "created_at": order["created_at"],
                     "updated_at": order["updated_at"] if "updated_at" in order_keys else "",
                     "session_token": order["session_token"] if "session_token" in order_keys else "",
                     "guest_count": order["guest_count"] if "guest_count" in order_keys else 2,
+                    "branch_id": order["branch_id"] if "branch_id" in order_keys else None,
+                    "row_version": order["row_version"] if "row_version" in order_keys else 1,
+                    "support_program_name": order["support_program_name"] if "support_program_name" in order_keys else None,
+                    "support_government_rate": order["support_government_rate"] if "support_government_rate" in order_keys else 0,
+                    "support_citizen_amount": order["support_citizen_amount"] if "support_citizen_amount" in order_keys else 0,
+                    "support_government_amount": order["support_government_amount"] if "support_government_amount" in order_keys else 0,
+                    "support_settlement_status": order["support_settlement_status"] if "support_settlement_status" in order_keys else "not_applicable",
                     "items": item_list,
                 })
             return result
@@ -118,7 +132,12 @@ def get_orders(table_number: Optional[str] = None, status: Optional[str] = None)
 
 @router.post("/orders")
 async def create_order(request: Request):
-    """Submit a new order or update existing. Server-side price validation."""
+    """Retired: production customer orders use the branch-aware PostgreSQL RPC."""
+    raise HTTPException(status_code=410, detail={
+        "code": "LEGACY_ORDER_WRITE_RETIRED",
+        "message": "Use create_customer_order with a customer-session JWT."
+    })
+    """Legacy implementation retained temporarily for rollback reference."""
     try:
         order_data = await request.json()
 
@@ -140,7 +159,7 @@ async def create_order(request: Request):
             order_data.get("id") or str(uuid.uuid4()), "id", 50, required=True, pattern=r"[A-Za-z0-9_-]+"
         )
         status = clean_string(order_data.get("status") or "preparing", "status", 20, required=True)
-        allowed_statuses = {"preparing", "ready", "served", "completed", "cancelled", "confirmed"}
+        allowed_statuses = {"pending", "preparing", "ready", "served", "completed", "cancelled", "confirmed"}
         if status not in allowed_statuses:
             raise ValueError(f"Invalid order status '{status}'.")
 
@@ -195,7 +214,6 @@ async def create_order(request: Request):
                             "modifier_id": mod_id,
                             "price": mod_price
                         })
-
                     computed_item_price = base_price + modifier_price_sum
                     computed_subtotal += computed_item_price * qty
                     verified_items.append({
@@ -214,6 +232,8 @@ async def create_order(request: Request):
                     raise ValueError(f"Total mismatch. Client: {total_client:.2f}, Server: {computed_total:.2f}")
 
                 total = computed_total
+                service_charge = computed_subtotal * SERVICE_CHARGE_RATE
+                tax = (computed_subtotal + service_charge) * VAT_RATE
 
                 # Validate active session exists before allowing order
                 if session_token:
@@ -253,11 +273,35 @@ async def create_order(request: Request):
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, (vi["id"], order_id, vi["name"], vi["quantity"], vi["price"], vi["status"], vi["item_id"], MERCHANT_ID, vi["notes"]))
 
-        # Dual-write to Supabase (best-effort)
-        supabase_post("orders", {
-            "id": order_id, "order_number": order_number, "table_number": table_number,
-            "total": total, "status": status, "created_at": created_at_str, "merchant_id": MERCHANT_ID
+        items_payload = []
+        modifiers_payload = []
+        for vi in verified_items:
+            items_payload.append({
+                "id": vi["id"], "order_id": order_id, "item_name": vi["name"],
+                "quantity": vi["quantity"], "price": vi["price"], "status": "pending",
+                "item_id": vi["item_id"], "merchant_id": MERCHANT_ID, "notes": vi["notes"]
+            })
+            for mod in vi["modifiers"]:
+                modifiers_payload.append({
+                    "id": mod["id"], "order_item_id": vi["id"],
+                    "modifier_id": mod["modifier_id"], "price": mod["price"],
+                    "merchant_id": MERCHANT_ID
+                })
+
+        rpc_result = supabase_rpc("create_customer_order", {
+            "p_order": {
+                "id": order_id, "order_number": order_number, "table_number": table_number,
+                "total": total, "subtotal": computed_subtotal, "tax": tax,
+                "service_charge": service_charge, "discount": 0,
+                "status": "pending", "order_source": "web", "is_staff_confirmed": False,
+                "session_token": session_token, "guest_count": guest_count,
+                "created_at": created_at_str, "merchant_id": MERCHANT_ID
+            },
+            "p_items": items_payload,
+            "p_modifiers": modifiers_payload
         })
+        if rpc_result is None:
+            raise ValueError("Could not sync order to Supabase.")
 
         log_event("info", "order.created", order_id=order_id, total=total, items=len(verified_items))
         return {"success": True, "id": order_id, "total": total, "order_number": order_number}

@@ -1,74 +1,9 @@
-DEFAULT_EMPLOYEES = [
-    ("11111111-1111-1111-1111-111111111111", "Somchai", "Suksabai", "081-234-5678", "1234567890123", "monthly", 25000.0, "somchai", "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4", "Manager"),
-    ("22222222-2222-2222-2222-222222222222", "Somsri", "Jaidee", "089-876-5432", "9876543210987", "hourly", 75.0, "somsri", "3f786850e387550fdab836ed7e6dc881de23001bdec45830613a48e7347793d4", "Barista")
-]
+# Demo/sample catalog seeds removed intentionally.
+# Customer-order-web relies on synced merchant data from Supabase / POS.
 
-DEFAULT_MENU = [
-    # Mains (25)
-    ("eaa14775-851a-5e23-8139-25c92ce38a0b", "Classic Som Tum Thai", "Green papaya salad with peanuts, dried shrimp, lime, palm sugar, and fish sauce.", 85.00, "mains", "🥗", "img-main", "https://images.unsplash.com/photo-1626132647523-66f5bf380027?w=400&q=80"),
-    ("b5fc717b-4399-5e82-ada9-659920a3c71f", "Som Tum Boo Plarah", "Papaya salad with fermented fish sauce, salted crab, and fresh Thai herbs.", 90.00, "mains", "🥗", "img-main", "https://images.unsplash.com/photo-1625813506062-0aeb1d7a094b?w=400&q=80"),
-    ("e6c78acc-5f78-599c-8c7b-516f0f1778bf", "Som Tum Korat", "Papaya salad combining Som Tum Thai and Boo Plarah styles with rice noodles.", 95.00, "mains", "🥗", "img-main", "https://images.unsplash.com/photo-1617470703128-26a0fc9af10f?w=400&q=80"),
-    ("5a137396-b738-521e-90d7-71ea33e7490b", "Som Tum Suan Pak", "Herbal papaya salad with seasonal Isan wild vegetables and bitter herbs.", 100.00, "mains", "🥗", "img-main", "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=400&q=80"),
-    ("13ad4eac-894d-59e6-b394-2c9c6588931f", "Som Tum Tard Platter", "Platter-sized papaya salad served with boiled eggs, pork cracklings, and noodles.", 220.00, "mains", "🍱", "img-main", "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80"),
-    ("4fdd0a12-598c-50c2-9d56-825f47268493", "Tum Corn with Salted Egg", "Sweet yellow corn salad tossed with rich salted egg yolk and lime juice.", 110.00, "mains", "🌽", "img-main", "https://images.unsplash.com/photo-1551248429-40975aa4de74?w=400&q=80"),
-    ("b022e4b2-5482-5324-ab1b-1aa9490b200d", "Tum Cucumber (Tum Tang)", "Spicy cucumber salad with fermented fish sauce, chilies, and garlic.", 80.00, "mains", "🥒", "img-main", "https://images.unsplash.com/photo-1603052875302-d376b7c0638a?w=400&q=80"),
-    ("182d367c-5e2e-5f6b-8ab1-06409f0d3365", "Tum Tray Seafood", "Papaya salad platter served with giant river prawns, green mussels, and squid.", 250.00, "mains", "🍛", "img-main", "https://images.unsplash.com/photo-1534422298391-e4f8c172dddb?w=400&q=80"),
-    ("a90d1ac7-4cfd-57f0-b58d-b950fa78c6e2", "Spicy Minced Pork Larb", "Minced pork salad with roasted ground rice, mint, lime, and dried chili.", 120.00, "mains", "🥩", "img-main", "https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=400&q=80"),
-    ("253f45ec-9b3b-5142-b22d-15f1e483abf4", "Spicy Minced Chicken Larb", "Minced chicken breast salad seasoned with Isan herbs and fresh lime juice.", 120.00, "mains", "🍗", "img-main", "https://images.unsplash.com/photo-1606787366850-de6330128bfc?w=400&q=80"),
-    ("8c834c1d-56ba-557f-9c04-21b5c4f8bac0", "Spicy Minced Duck Larb", "Authentic minced duck salad seasoned with roasted ground rice, mint, and galangal.", 140.00, "mains", "🦆", "img-main", "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=400&q=80"),
-    ("7329e327-33cd-55d2-ae19-001db13cb1d7", "Larb Woon Sen (Glass Noodle)", "Spicy glass noodle salad with minced pork, red onions, lime, and chilies.", 115.00, "mains", "🍜", "img-main", "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=400&q=80"),
-    ("70ebcb16-a04b-5045-9923-8cfdf3a6131b", "Larb Mushroom (Vegetarian)", "Vegetarian Larb with mixed forest mushrooms, mint, and roasted rice powder.", 105.00, "mains", "🍄", "img-main", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-    ("acfb7451-353c-5804-bfe3-272c25f09e6e", "Nam Tok Moo (Pork Salad)", "Grilled sliced pork collar salad with roasted ground rice, chili, and fresh mint.", 130.00, "mains", "🐷", "img-main", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-    ("b3ef5f0b-2ec8-5512-be00-36b12db900c4", "Nam Tok Neua (Beef Salad)", "Grilled sliced beef ribeye salad with authentic Isan herbs and lime dressing.", 160.00, "mains", "🐮", "img-main", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-    ("5915f632-94e1-5bd2-a24c-7ddfdd261b13", "Sup Nor Mai (Bamboo Salad)", "Spicy warm shredded bamboo shoot salad infused with aromatic yanang leaf juice.", 95.00, "mains", "🎋", "img-main", "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=400&q=80"),
-    ("1fae5622-572b-55b7-b3df-5792a3c93fcf", "Tom Zap Pork Ribs", "Hot, sour, and aromatic soup with tender pork ribs and fresh lemongrass.", 150.00, "mains", "🍲", "img-main", "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80"),
-    ("8e642afb-50ad-585a-a1d3-0a8729a332df", "Tom Zap Beef Shank", "Spicy herbal soup with slow-braised beef shank, toasted rice, and fresh lime.", 180.00, "mains", "🍲", "img-main", "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80"),
-    ("c94ba3dd-a9c6-5210-aa87-6a5485649f72", "Kaeng Om Pork (Isan Curry)", "Isan herbal soup with pork, dill, cabbage, pumpkin, and yanang juice.", 140.00, "mains", "🍲", "img-main", "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80"),
-    ("73695899-7cce-542b-b7bd-0f97b1c4dbf7", "Kaeng Om Chicken", "Spicy herbal soup with chicken, dill, local vegetables, and roasted rice.", 135.00, "mains", "🍲", "img-main", "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80"),
-    ("db80a823-64a6-57a6-9816-de05ead0db7a", "Kaeng Pak Wahn with Ant Eggs", "Clear seasonal soup with wild star gooseberry leaves and premium ant eggs.", 150.00, "mains", "🥣", "img-main", "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80"),
-    ("4a9b97e1-a6d4-5277-aea9-553003773b54", "Koi Neua (Beef Tartare)", "Isan-style raw minced beef salad with fresh chili, herbs, and bitter bile.", 175.00, "mains", "🥩", "img-main", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-    ("5ff0c760-45e4-565c-b2ad-75323ebad44d", "Sizzling Moo Nam Tok", "Sizzling hot plate of grilled pork neck tossed with lime, herbs, and roasted rice.", 165.00, "mains", "🍳", "img-main", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-    ("ea99c462-2374-5286-b409-f4960eeec87c", "Yum Moo Yor (Pork Sausage)", "Spicy Vietnamese pork sausage salad with onions, tomatoes, and lime juice.", 110.00, "mains", "🍥", "img-main", "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80"),
-    ("830d9916-0d89-573f-a3df-b6a708aebae9", "Yum Glass Noodle Seafood", "Spicy salad with glass noodles, fresh river prawns, squid, and celery.", 160.00, "mains", "🥗", "img-main", "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=400&q=80"),
-    # Appetizers (15)
-    ("7271cc13-4ab8-5440-95fd-b1cddeecaf95", "Classic Gai Yang (Half)", "Charcoal-grilled marinated chicken served with sweet chili and spicy Jaew sauces.", 180.00, "appetizers", "🍗", "img-app", "https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?w=400&q=80"),
-    ("2a0d075b-0633-5ed3-a2d3-81172b802434", "Classic Gai Yang (Whole)", "Full-sized charcoal-grilled marinated chicken with authentic Isan spices.", 340.00, "appetizers", "🐔", "img-app", "https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?w=400&q=80"),
-    ("2759f6f4-1a3b-59f7-a444-2200221c7faa", "Moo Ping with Sticky Rice", "Three skewers of grilled sweet pork served with warm steamed sticky rice.", 95.00, "appetizers", "🍢", "img-app", "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80"),
-    ("e59dd72d-df21-5344-ae9c-f30b53aa7a2d", "Kor Moo Yang (Pork Neck)", "Sliced charcoal-grilled pork neck served with spicy tamarind Jaew dipping sauce.", 150.00, "appetizers", "🥩", "img-app", "https://images.unsplash.com/photo-1603048588665-791ca8aea617?w=400&q=80"),
-    ("bd7a1f87-2a6f-525e-9d1f-c45485d414f9", "Suea Rong Hai (Crying Tiger)", "Charcoal-grilled marinated beef brisket served with dynamic chili Jaew sauce.", 220.00, "appetizers", "🥩", "img-app", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-    ("3a1c0c95-86d2-5956-b5bb-545d3cf50ceb", "Isan Sausage Skewers", "Grilled fermented pork and rice sausage served with ginger and cabbage leaves.", 110.00, "appetizers", "🍥", "img-app", "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80"),
-    ("83c185d5-037d-5c52-857d-c7b8d0a92977", "Sai Krok E-San Moo (Balls)", "Grilled round fermented pork and garlic sausage balls served with fresh chilies.", 110.00, "appetizers", "🍡", "img-app", "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80"),
-    ("89d5ba0e-bb1c-5441-a530-9559cb2f4dd1", "Fried Larb Balls (Larb Tod)", "Deep-fried spicy minced pork balls with roasted ground rice and lime leaves.", 115.00, "appetizers", "🧆", "img-app", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-    ("600a37af-2a64-5a99-a680-fdf6a682d862", "Crispy Isan Chicken Wings", "Deep-fried marinated chicken wings tossed in garlic and light soy sauce.", 120.00, "appetizers", "🍗", "img-app", "https://images.unsplash.com/photo-1569058242253-92a9c755a0ec?w=400&q=80"),
-    ("d5af3be7-68cf-544d-a428-7407bed26d90", "Deep Fried Pork Ribs", "Crispy deep-fried marinated pork ribs topped with crispy golden garlic.", 140.00, "appetizers", "🥩", "img-app", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-    ("d7e54c34-540a-5920-a590-6fb1741efb82", "Crispy Pork Crackling", "Crunchy deep-fried pork rinds, the perfect accompaniment for papaya salad.", 40.00, "appetizers", "🥓", "img-app", "https://images.unsplash.com/photo-1608039829572-78524f79c4c7?w=400&q=80"),
-    ("dc18c79a-c8c4-57ed-8e82-d4e4812d86a3", "Fried Sun-Dried Pork (Moo Dad Deaw)", "Deep-fried sweet and salty marinated sun-dried pork strips.", 130.00, "appetizers", "🥩", "img-app", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-    ("de317bcd-3e36-5dbc-9f63-ff9ab8245c67", "Fried Sun-Dried Beef (Neua Dad Deaw)", "Deep-fried marinated sun-dried beef strips served with chili sauce.", 160.00, "appetizers", "🥩", "img-app", "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80"),
-    ("8b8231c9-5351-5e5b-a966-d5323a205866", "Grilled River Prawn (Single)", "Charcoal grilled giant river prawn served with spicy garlic seafood sauce.", 145.00, "appetizers", "🦐", "img-app", "https://images.unsplash.com/photo-1559314809-0d155014e29e?w=400&q=80"),
-    ("66bdbb6d-11a6-57af-92ca-e125f9aafbfd", "Steamed Sticky Rice (Khao Niew)", "Warm steamed Thai glutinous rice served in a traditional bamboo basket.", 20.00, "appetizers", "🍚", "img-app", "https://images.unsplash.com/photo-1536304997881-a372c179924b?w=400&q=80"),
-    # Drinks (10)
-    ("b7964db7-aaa4-545e-b43d-ec6efcf2086a", "Cold Chrysanthemum Tea", "Sweet and cooling herbal chrysanthemum infusion served over ice.", 45.00, "drinks", "🥤", "img-drink", "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80"),
-    ("a4bd91e9-2060-5f81-bffb-1a42e2bf89c6", "Cold Roselle Juice", "Sweet and tart herbal roselle flower tea served with ice cubes.", 45.00, "drinks", "🥤", "img-drink", "https://images.unsplash.com/photo-1497534446932-c925b458314e?w=400&q=80"),
-    ("a5c2d68b-5dfe-5d77-afee-21df3d7622db", "Lemongrass Pandan Iced Tea", "Fragrant iced tea brewed with fresh lemongrass stalk and sweet pandan leaves.", 50.00, "drinks", "🥤", "img-drink", "https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?w=400&q=80"),
-    ("b57c387b-3990-506a-b479-3783ddf900ca", "Traditional Thai Iced Milk Tea", "Sweet brewed orange Thai tea topped with evaporated milk over shaved ice.", 65.00, "drinks", "🥤", "img-drink", "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80"),
-    ("100a8148-52f0-50a0-a885-1be33fb27afe", "Thai Black Tea (Cha Dum Yen)", "Sweetened dark brewed Thai tea served chilled over crushed ice.", 55.00, "drinks", "🥤", "img-drink", "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80"),
-    ("c8f7627f-bde6-5d8d-880e-e7c3777b9cc6", "Fresh Whole Young Coconut", "Freshly opened sweet young coconut juice with tender coconut flesh.", 80.00, "drinks", "🥥", "img-drink", "https://images.unsplash.com/photo-1526318896980-cf78c088247c?w=400&q=80"),
-    ("061e9f82-01c5-5680-a0ba-b06f1bcbf3fc", "Singha Lager Beer (Small)", "Premium clean Thai lager beer bottle, served chilled.", 95.00, "drinks", "🍺", "img-drink", "https://images.unsplash.com/photo-1608270586620-248524c67de9?w=400&q=80"),
-    ("4d7f35fe-187a-53b4-a9e6-0194f254a61c", "Chang Lager Beer (Small)", "Famous crisp and strong Thai lager beer, served ice-cold.", 90.00, "drinks", "🍺", "img-drink", "https://images.unsplash.com/photo-1608270586620-248524c67de9?w=400&q=80"),
-    ("cb5af05b-0ce8-5e96-9d1b-010fcd456d33", "Sparkling Lime Pandan Soda", "Refreshing carbonated soda infused with fresh lime juice and pandan syrup.", 55.00, "drinks", "🍹", "img-drink", "https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?w=400&q=80"),
-    ("26071c63-5356-5188-a7ba-da677b4bbb07", "Mineral Drinking Water", "Chilled bottled mineral drinking water served with a glass of ice.", 20.00, "drinks", "🥛", "img-drink", "https://images.unsplash.com/photo-1548865140-64a23cf87aee?w=400&q=80"),
-]
+DEFAULT_EMPLOYEES = []
+DEFAULT_MENU = []
+
 
 def get_default_tables(merchant_id):
-    return [
-        ("436490cb-2f10-4d16-938d-332b61b5181f", merchant_id, "4", 6, "vacant", "t4_static_hash", 40.0, 200.0, 1, 0, 0, "Indoor"),
-        ("8715ff6f-2918-480e-8d98-2aeceaf2ad7e", merchant_id, "VIP 1", 10, "vacant", "tvip1_static_hash", 140.0, 360.0, 1, 0, 0, "Outdoor"),
-        ("612077f4-8ea1-4953-b449-21ac188dbff8", merchant_id, "2", 4, "vacant", "t2_static_hash", 200.0, 40.0, 1, 0, 0, "Indoor"),
-        ("d2c655ee-7bd0-48bc-83d1-d5ce34b3c9c4", merchant_id, "1", 2, "vacant", "t1_static_hash", 40.0, 40.0, 1, 0, 0, "Indoor"),
-        ("7ba6b519-fd1b-4d52-99f1-0d62bf3f0157", merchant_id, "3", 2, "vacant", "t3_static_hash", 327.5, 36.5, 1, 0, 0, "Outdoor"),
-        ("d1921924-9a88-4fc1-bdac-4c69b18ca3b4", merchant_id, "5", 8, "vacant", "t5_static_hash", 202.5, 190.5, 1, 0, 0, "Outdoor"),
-        ("2f2c9f86-6e59-4030-995d-544bd482a1a3", merchant_id, "201", 4, "vacant", "t201_static_hash", 60.0, 60.0, 2, 0, 0, "Indoor"),
-        ("51573667-fe9d-466b-8a52-d9b5e127a54a", merchant_id, "202", 4, "vacant", "t202_static_hash", 240.0, 60.0, 2, 0, 0, "Indoor"),
-        ("b272e586-ab81-4478-99a5-77818b3257b7", merchant_id, "203", 6, "vacant", "t203_static_hash", 420.0, 60.0, 2, 0, 0, "Indoor"),
-        ("d57c7c5c-4fa7-4b9f-b104-a270aeb965ac", merchant_id, "301 (ROOF)", 8, "vacant", "t301_static_hash", 120.0, 120.0, 3, 0, 0, "Rooftop")
-    ]
+    return []

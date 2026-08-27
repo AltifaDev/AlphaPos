@@ -1,5 +1,40 @@
 # Customer Order Web — System Analysis
 
+> Current production baseline: 2026-08-11. Earlier recommendations below are
+> historical context; this section is authoritative for the deployed design.
+
+## Current architecture and trust boundary
+
+1. A QR code contains an opaque active table-session token. The browser exchanges
+   it with `issue-customer-session-token` for a short-lived, branch-scoped JWT.
+2. PostgreSQL RLS derives merchant, branch, table, and session authority from that
+   signed JWT. URL parameters and browser storage are not authorization sources.
+3. `create_customer_order` is the only customer order-write path. It validates
+   menu/modifier prices, calculates totals on the server, creates the full order
+   atomically, records an idempotency operation, and commits a `sync_outbox` event.
+4. Realtime status is consumed only after the database commit. The shared order
+   state machine rejects invalid regressions; polling is only a recovery path.
+5. Customer web can request a bill, but cannot record payment, complete checkout,
+   or close a table session. AlphaPos/AlphaPosStaff owns atomic payment settlement.
+
+Branch isolation is enforced with restrictive RLS policies, including when other
+legacy permissive policies exist. Anonymous order RPC access and legacy REST order
+and payment writes are retired. Production operational APIs require a constant-time
+admin bearer token and return structured problem responses with trace identifiers.
+
+## Verification baseline
+
+- Backend E2E: token exchange, atomic order creation, retry idempotency, conflict
+  rejection, anonymous denial, service request, cross-branch invisibility, closed
+  session denial, and cleanup.
+- Contract tests: required JWT/RPC/realtime/branch invariants.
+- API security tests: private route denial and HTTP 410 legacy tombstones.
+- Frontend: production build, dependency audit, and order-state transition tests.
+
+Physical two-device testing remains a release gate: iPad POS + iPhone Staff/customer
+browser, including network loss/recovery, duplicate payment attempts, and app
+termination during an active order.
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -16,13 +51,11 @@
 
 ```
 Browser (app.js)
-  ├── Supabase JS SDK (direct reads: menu, modifiers, sessions, orders)
-  │     └── Supabase Realtime (WebSocket subscriptions)
-  │
-  └── Python HTTP Server (server.py)
-        ├── Local SQLite (read/write cache)
-        └── Supabase REST API (dual-write proxy)
-              └── Supabase PostgreSQL (cloud master)
+  ├── Supabase REST (via Cloudflare Worker proxy origin)
+  ├── Supabase Realtime WSS → supabaseRealtimeUrl (api.alphaposweb.com)
+  │     └── postgres_changes on orders / table_sessions (+ 10s poll fallback)
+  └── Order writes: RPC create_customer_order ONLY (price-validated in Postgres)
+        └── POST /v1/orders returns 410 (retired dual-write path)
 ```
 
 ---
@@ -36,8 +69,8 @@ Browser (app.js)
 - **Realtime updates** — Supabase WebSocket subscriptions + 10s polling fallback
 - **UI polish** — 30+ CSS animations, dark/light theme, onboarding wizard, bottom sheets, toast system
 - **Modifier system** — radio/checkbox groups, per-modifier pricing, min/max constraints
-- **Dual-write pattern** — writes go to both SQLite and Supabase for redundancy
-- **Comprehensive API** — 16 GET + 12 POST endpoints covering orders, sessions, payments, menu, promotions, modifiers, employees, timecards, service requests
+- **Single order write path** — `create_customer_order` RPC validates menu/modifier prices server-side
+- **Comprehensive API** — GET history/status via `/v1/orders`; POST create is retired (410)
 
 ---
 
@@ -56,10 +89,11 @@ Browser (app.js)
 | Hardcoded Swift app fallback credentials | Removed from POS and Staff config code. |
 | Hardcoded customer web CSP Supabase host | Replaced with dynamic CSP host generation from `SUPABASE_URL`. |
 | Missing requirements.txt | Added. |
-| Direct customer order writes to Supabase | Customer orders now submit through `/v1/orders` so server-side validation is enforced before dual-write. |
-| Missing server-side price validation for customer orders | `/v1/orders` recalculates menu item, modifier, service charge, VAT, and total from server-side data and rejects mismatches. |
-| Silent Supabase dual-write failures | Failed Supabase writes are now stored in `pending_supabase_writes` and retried on server startup. |
-| Missing retry queue visibility | Added `/v1/sync/status` and authenticated `/v1/sync/retry` endpoints for queue monitoring and manual retry. |
+| Direct customer order writes without validation | Orders submit via `rpc/create_customer_order`; Postgres validates menu + modifier unit prices and subtotal. |
+| Dual write `/v1/orders` + RPC | `POST /v1/orders` returns 410; atomic RPC is the only create path. |
+| Customer Realtime disabled behind Worker | REST stays on Worker; WSS uses `supabaseRealtimeUrl` (api host) with 10s poll fallback. |
+| Silent Supabase dual-write failures | Local-server `pending_supabase_writes` retained for non-order sync; cloud `sync_outbox` is the shared hub. |
+| Missing retry queue visibility | `/v1/sync/status` + RPC `get_sync_health` expose pending/failed outbox lag for all clients. |
 
 ---
 

@@ -4,5 +4,7 @@ pydantic
 python-dotenv
 requests
 python-multipart
+httpx2
 selenium
 webdriver-manager
+pywebpush

@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+config.js
+alphapos.db*
+*.log
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+node_modules/
+dist/
+.DS_Store
+.coverage
+coverage/
+playwright-report/
+test-results/

@@ -3,6 +3,8 @@
  * Handles Supabase Realtime subscriptions and polling fallback.
  */
 
+import { pushManager } from './push-notifications.js';
+
 export const RealtimeManagerMixin = {
     setupRealtimeSubscriptions() {
         if (!this.supabase) {
@@ -87,6 +89,42 @@ export const RealtimeManagerMixin = {
         if (this._orderTracker && order.id === this._lastOrderId) {
             this._orderTracker.updateStatus(order.status);
         }
+
+        // Notify the customer when their order reaches a relevant status.
+        // Only fires for this table's active order, only on a real change,
+        // and only when notification permission was granted. Uses the service
+        // worker notification already wired in push-notifications.js.
+        try {
+            const notifyStatuses = {
+                ready: {
+                    title: this.translate ? this.translate('pushOrderReadyTitle', 'Order Ready! 🔔') : 'Order Ready! 🔔',
+                    body: this.translate ? this.translate('pushOrderReadyBody', 'Your order is ready to be served.') : 'Your order is ready to be served.'
+                },
+                served: {
+                    title: this.translate ? this.translate('pushOrderServedTitle', 'Enjoy your meal! 🍽️') : 'Enjoy your meal! 🍽️',
+                    body: this.translate ? this.translate('pushOrderServedBody', 'Your order has been served.') : 'Your order has been served.'
+                },
+                cancelled: {
+                    title: this.translate ? this.translate('pushOrderCancelledTitle', 'Order Cancelled') : 'Order Cancelled',
+                    body: this.translate ? this.translate('pushOrderCancelledBody', 'Your order has been cancelled. Please contact staff.') : 'Your order has been cancelled. Please contact staff.'
+                }
+            };
+            const isThisTablesOrder = !this._lastOrderId || order.id === this._lastOrderId;
+            const changed = order.status !== this._lastNotifiedStatus;
+            const info = notifyStatuses[order.status];
+            if (info && isThisTablesOrder && changed && pushManager && pushManager.permission === 'granted') {
+                pushManager.showLocalNotification(info.title, info.body, {
+                    tag: `order-${order.id}`,
+                    orderId: order.id,
+                    type: 'order_update',
+                    url: '/'
+                });
+                this._lastNotifiedStatus = order.status;
+            }
+        } catch (e) {
+            console.warn('[Realtime] Order status notification failed:', e);
+        }
+
         // Trigger feedback when served
         if (order.status === 'served' && this._feedbackSystem) {
             setTimeout(() => {

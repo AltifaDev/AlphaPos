@@ -173,39 +173,17 @@ export class ReorderHistory {
 
         container.classList.remove('hidden');
 
-        const availableItems = lastOrder.items.filter(i => this.isItemAvailable(i.itemId));
-        const unavailableItems = lastOrder.items.filter(i => !this.isItemAvailable(i.itemId));
-
         const timeAgo = this._formatTimeAgo(lastOrder.createdAt);
 
         container.innerHTML = `
-            <div class="reorder-widget">
-                <div class="reorder-widget-header">
-                    <div class="reorder-widget-left">
-                        <span class="reorder-widget-icon">🔄</span>
-                        <div class="reorder-widget-text">
-                            <span class="reorder-widget-title">${this.translateFn('lastOrder', 'Last Order')}</span>
-                            <span class="reorder-widget-time">${timeAgo}</span>
-                        </div>
-                    </div>
-                    <button class="reorder-btn" onclick="window._reorderHistory.reorder('${lastOrder.id}')">
-                        ${this.translateFn('orderAgain', 'Order Again')}
-                    </button>
-                </div>
-                <div class="reorder-items-pills">
-                    ${availableItems.map(item => `
-                        <span class="reorder-pill">${this._escapeHtml(item.name)} ×${item.quantity}</span>
-                    `).join('')}
-                    ${unavailableItems.map(item => `
-                        <span class="reorder-pill unavailable">${this._escapeHtml(item.name)} ×${item.quantity}</span>
-                    `).join('')}
-                </div>
-                ${unavailableItems.length > 0 ? `
-                    <div class="reorder-unavailable-note">
-                        ⚠️ ${unavailableItems.length} ${this.translateFn('itemUnavailable', 'item(s) unavailable')}
-                    </div>
-                ` : ''}
-            </div>
+            <button class="recent-order-trigger" type="button" onclick="app.showOrderHistory()">
+                <span class="recent-order-icon" aria-hidden="true">↻</span>
+                <span class="recent-order-copy">
+                    <strong>${this.translateFn('lastOrder', 'Last Order')}</strong>
+                    <small>${timeAgo}</small>
+                </span>
+                <span class="recent-order-chevron" aria-hidden="true">›</span>
+            </button>
         `;
     }
 

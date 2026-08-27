@@ -1,74 +1,144 @@
 /**
  * AlphaPos — Order Submission Module
- * Handles order creation, submission to server, and order history.
+ * Handles order creation via PostgreSQL RPC create_customer_order and order history.
  */
-import { fetchWithFallback } from './api.js';
 import { formatCurrency } from './app-core.js';
+import { orderingSessionGate } from './ordering-session-gate.js';
 
 export const OrderSubmissionMixin = {
     async submitOrder() {
-        if (this.cart.length === 0) return;
+        if (this._submitInProgress) return;
+        if (!orderingSessionGate.canOrder()) {
+            this._showToast(this.translate('orderingBlockedSession', 'This table session is closed. Please scan QR again.'), 'error');
+            return;
+        }
 
-        const { total } = this.calculateTotals();
-        const orderId = `ord-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const orderNumber = `ORD-${String(Date.now()).slice(-4)}`;
+        const cartItems = Array.isArray(this.cart) ? this.cart : Object.values(this.cart || {});
+        if (cartItems.length === 0) return;
+
+        this._submitInProgress = true;
+        const generateUUID = () => (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+                const r = Math.random() * 16 | 0;
+                return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+            });
+
+        const orderId = generateUUID();
+        const idempotencyKey = generateUUID();
+        const now = new Date();
+        const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+        const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+        const orderNumber = `ORD-${dateStr}-${randomSuffix}`;
+
+        const { subtotal = 0, discount = 0, serviceCharge = 0, tax = 0, total = 0 } = this.calculateTotals ? this.calculateTotals() : { total: 0 };
 
         const orderPayload = {
             id: orderId,
-            tableNumber: this.tableNumber,
+            order_number: orderNumber,
             table_number: this.tableNumber,
             total: total,
-            status: 'preparing',
-            sessionToken: this.sessionToken,
-            guestCount: this.guestCount,
-            orderNumber: orderNumber,
-            items: this.cart.map(item => ({
-                id: item.id,
-                item_id: item.item_id,
-                name: item.name,
-                quantity: item.quantity,
-                price: item.price,
-                status: 'cooking',
-                notes: item.notes || '',
-                modifiers: item.modifiers || []
-            }))
+            subtotal: subtotal,
+            discount: discount,
+            tax: tax,
+            service_charge: serviceCharge,
+            status: 'pending',
+            order_source: 'web',
+            is_staff_confirmed: false,
+            session_token: this.sessionToken,
+            guest_count: Number(this.selectedGuestCount || this.guestCount || 2),
+            merchant_id: this.merchantId,
+            branch_id: this.branchId,
+            idempotency_key: idempotencyKey,
+            created_at: now.toISOString()
         };
 
-        try {
-            const response = await fetch('/v1/orders', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(orderPayload)
+        const itemsPayload = [];
+        const modifiersPayload = [];
+
+        cartItems.forEach(item => {
+            if (!item) return;
+            const itemId = item.item_id || item.id;
+            const itemRowId = generateUUID();
+            const qty = Math.max(1, Number(item.quantity || item.qty || 1));
+            const price = Number(item.price || 0);
+
+            itemsPayload.push({
+                id: itemRowId,
+                order_id: orderId,
+                item_name: item.name || item.item_name || 'Item',
+                quantity: qty,
+                price: price,
+                status: 'pending',
+                item_id: itemId,
+                merchant_id: this.merchantId,
+                branch_id: this.branchId,
+                notes: item.notes || ''
             });
 
-            if (!response.ok) {
-                const err = await response.json();
-                throw new Error(err.detail || err.error || 'Order submission failed');
+            if (item.modifiers && Array.isArray(item.modifiers)) {
+                item.modifiers.forEach(mod => {
+                    modifiersPayload.push({
+                        id: generateUUID(),
+                        order_item_id: itemRowId,
+                        modifier_id: mod.modifier_id || mod.id,
+                        price: Number(mod.price || mod.extra_price || 0),
+                        merchant_id: this.merchantId
+                    });
+                });
+            }
+        });
+
+        try {
+            if (this.supabase) {
+                const { data, error } = await this.supabase.rpc('create_customer_order', {
+                    p_order: orderPayload,
+                    p_items: itemsPayload,
+                    p_modifiers: modifiersPayload
+                });
+                if (error) throw error;
+            } else if (this.isLocalServerAvailable && !window.ALPHAPOS_CONFIG?.isProduction) {
+                const res = await fetch(`${this.localServerURL || ''}/v1/orders`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(orderPayload)
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail?.message || err.detail || 'Order failed');
+                }
+            } else {
+                throw new Error('No connection to ordering server.');
             }
 
-            const result = await response.json();
             this._lastOrderId = orderId;
+            this._lastOrderNumber = orderNumber;
 
             // Clear cart
-            this.clearCartState();
+            if (this.clearCartState) this.clearCartState();
+            else if (this.cart) {
+                this.cart = Array.isArray(this.cart) ? [] : {};
+                if (this.saveCartToStorage) this.saveCartToStorage();
+                if (this.updateCartUI) this.updateCartUI();
+            }
 
             // Show success
             this._showOrderSuccess(orderNumber, total);
 
-            // Trigger wait time + order tracker
+            // Trigger wait time + tracker
             setTimeout(() => {
                 if (this.showWaitTime) this.showWaitTime();
                 if (this.showOrderTracker) this.showOrderTracker(orderId);
             }, 2500);
 
-            // Trigger feedback after delay (if order gets served)
-            console.log(`[Order] ✅ Submitted: ${orderNumber} (${formatCurrency(total)})`);
-            return result;
-
+            console.log(`[Order] ✅ Submitted via RPC: ${orderNumber} (${formatCurrency(total)})`);
+            return { id: orderId, order_number: orderNumber };
         } catch (e) {
             console.error('[Order] Submit failed:', e);
-            this._showToast(e.message || 'Order failed', 'error');
+            this._showToast?.(e.message || 'Order failed', 'error');
             throw e;
+        } finally {
+            this._submitInProgress = false;
         }
     },
 
@@ -89,6 +159,19 @@ export const OrderSubmissionMixin = {
     },
 
     async loadOrderHistory() {
+        if (this.supabase && this.sessionToken) {
+            try {
+                const { data, error } = await this.supabase
+                    .from('orders')
+                    .select('*, order_items(*)')
+                    .eq('session_token', this.sessionToken)
+                    .order('created_at', { ascending: false });
+                if (!error && data) return data;
+            } catch (err) {
+                console.warn('[OrderHistory] Supabase fetch failed:', err);
+            }
+        }
+
         try {
             const response = await fetch(`/v1/orders?table_number=${this.tableNumber}`);
             if (response.ok) {
@@ -116,7 +199,7 @@ export const OrderSubmissionMixin = {
                     <span class="order-num">${order.order_number}</span>
                     <span class="order-status ${order.status}">${order.status}</span>
                 </div>
-                <div class="order-items-summary">${order.items?.length || 0} items</div>
+                <div class="order-items-summary">${(order.order_items || order.items)?.length || 0} items</div>
                 <div class="order-total">${formatCurrency(order.total)}</div>
             </div>
         `).join('');

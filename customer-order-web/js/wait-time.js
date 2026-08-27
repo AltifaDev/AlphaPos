@@ -123,6 +123,8 @@ export class WaitTimeWidget {
         const colorClass = this.getColorClass(minutes);
         const statusMsg = this.getStatusMessage(minutes);
         const progress = Math.min(1, minutes / 45); // Normalize to max 45 min
+        const circumference = 2 * Math.PI * 52;
+        const targetOffset = circumference * (1 - progress);
 
         container.innerHTML = `
             <div class="wait-time-widget wait-time-${colorClass}" data-wait-type="full">
@@ -130,8 +132,9 @@ export class WaitTimeWidget {
                     <svg class="wait-time-ring" viewBox="0 0 120 120" aria-hidden="true">
                         <circle class="wait-time-ring-bg" cx="60" cy="60" r="52" />
                         <circle class="wait-time-ring-progress" cx="60" cy="60" r="52"
-                            stroke-dasharray="${2 * Math.PI * 52}"
-                            stroke-dashoffset="${2 * Math.PI * 52 * (1 - progress)}"
+                            stroke-dasharray="${circumference}"
+                            stroke-dashoffset="${circumference}"
+                            data-target-offset="${targetOffset}"
                         />
                         <circle class="wait-time-ring-pulse" cx="60" cy="60" r="52" />
                     </svg>
@@ -157,6 +160,10 @@ export class WaitTimeWidget {
         const widget = container.querySelector('.wait-time-widget');
         if (widget) {
             widget.classList.add('anim-fade-in-scale');
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+                const ring = widget.querySelector('.wait-time-ring-progress');
+                if (ring) ring.style.strokeDashoffset = ring.dataset.targetOffset;
+            }));
         }
     }
 

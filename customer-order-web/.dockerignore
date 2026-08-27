@@ -1,0 +1,9 @@
+.env*
+config.js
+alphapos.db*
+venv
+node_modules
+dist
+__pycache__
+*.log
+.DS_Store

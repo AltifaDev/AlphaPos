@@ -1,8 +1,26 @@
-export function showToast(message, duration = 3000) {
+export function showToast(message, durationOrOptions = 3000) {
     const toast = document.getElementById("toast");
     if (!toast) return;
+
+    let duration = 3000;
+    let type = "";
+    if (typeof durationOrOptions === "number" && Number.isFinite(durationOrOptions)) {
+        duration = durationOrOptions;
+    } else if (typeof durationOrOptions === "string") {
+        // Back-compat: callers sometimes pass a type label ('success') as the 2nd arg
+        type = durationOrOptions;
+        duration = 3000;
+    } else if (durationOrOptions && typeof durationOrOptions === "object") {
+        if (typeof durationOrOptions.duration === "number" && Number.isFinite(durationOrOptions.duration)) {
+            duration = durationOrOptions.duration;
+        }
+        if (typeof durationOrOptions.type === "string") {
+            type = durationOrOptions.type;
+        }
+    }
+
     toast.textContent = message;
-    toast.className = "toast show";
+    toast.className = type ? `toast show toast-${type}` : "toast show";
     setTimeout(() => {
         toast.className = "toast";
     }, duration);

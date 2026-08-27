@@ -24,7 +24,6 @@ from api.deps import (
 )
 from api import menu, orders, payments, sessions, tables, staff, promotions, requests as svc_requests, sync, feedback, wait_time, merchants
 
-from seed import DEFAULT_EMPLOYEES, DEFAULT_MENU, get_default_tables
 
 # ==========================================
 # App Instance
@@ -203,20 +202,7 @@ def init_db():
 
         conn.commit()
 
-        # Seed defaults if tables are empty
-        cursor.execute("SELECT COUNT(*) FROM menu_items")
-        if cursor.fetchone()[0] == 0:
-            _seed_menu(cursor)
-
-        cursor.execute("SELECT COUNT(*) FROM restaurant_tables")
-        if cursor.fetchone()[0] == 0:
-            _seed_tables(cursor)
-
-        cursor.execute("SELECT COUNT(*) FROM employees")
-        if cursor.fetchone()[0] == 0:
-            _seed_employees(cursor)
-
-        conn.commit()
+        # Catalog / tables / staff come from Supabase sync — no local demo seed.
 
         # Sync from Supabase
         _sync_from_supabase(conn)
@@ -224,29 +210,6 @@ def init_db():
     finally:
         conn.close()
 
-
-def _seed_menu(cursor):
-    for item in DEFAULT_MENU:
-        cursor.execute(
-            "INSERT OR IGNORE INTO menu_items (id, name, description, price, category, emoji, img_class) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (item["id"], item["name"], item.get("description", ""), item["price"], item["category"], item.get("emoji", "🍽️"), item.get("img_class", ""))
-        )
-
-
-def _seed_tables(cursor):
-    for table in get_default_tables():
-        cursor.execute(
-            "INSERT OR IGNORE INTO restaurant_tables (id, table_number, capacity, status, merchant_id) VALUES (?, ?, ?, 'vacant', ?)",
-            (table["id"], table["table_number"], table.get("capacity", 4), MERCHANT_ID)
-        )
-
-
-def _seed_employees(cursor):
-    for emp in DEFAULT_EMPLOYEES:
-        cursor.execute(
-            "INSERT OR IGNORE INTO employees (id, first_name, last_name, role, passcode_hash, merchant_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (emp["id"], emp.get("first_name", ""), emp.get("last_name", ""), emp.get("role", "staff"), emp.get("passcode_hash", ""), MERCHANT_ID)
-        )
 
 
 def _sync_from_supabase(conn):

@@ -1,5 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+
+const root = fileURLToPath(new URL('.', import.meta.url));
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -25,6 +29,10 @@ export default defineConfig({
     minify: 'esbuild', // Minify and obfuscate production JS bundle
     sourcemap: false,
     rollupOptions: {
+      input: {
+        index: resolve(root, 'index.html'),
+        privacy: resolve(root, 'privacy.html'),
+      },
       external: ['/config.js', 'config.js'],
       output: {
         manualChunks(id) {

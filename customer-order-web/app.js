@@ -11,6 +11,9 @@ import { reorderHistory } from './js/reorder-history.js';
 import { billView } from './js/bill-view.js';
 import { loyaltySystem } from './js/loyalty.js';
 import { pushManager } from './js/push-notifications.js';
+import { orderingSessionGate } from './js/ordering-session-gate.js';
+import { createClient } from '@supabase/supabase-js';
+import { canTransitionOrder, normalizeOrderState } from './js/order-state-machine.js';
 
 
 
@@ -81,6 +84,20 @@ function safeInnerHtml(el, html) {
     el.innerHTML = html.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 }
 
+function resolvePromoMediaSrc(mediaData, defaultMimeType = 'image/jpeg') {
+    if (!mediaData) return '';
+    const value = String(mediaData).trim();
+    if (!value) return '';
+    if (value.startsWith('http://') || value.startsWith('https://') || value.startsWith('blob:') || value.startsWith('data:')) {
+        return value;
+    }
+    // Legacy rows stored raw base64 in image_data
+    if (defaultMimeType.startsWith('video/')) {
+        return base64ToBlobUrl(value, defaultMimeType);
+    }
+    return `data:${defaultMimeType};base64,${value}`;
+}
+
 function base64ToBlobUrl(base64Data, defaultMimeType = 'video/mp4') {
     if (!base64Data) return '';
     if (base64Data.startsWith('http://') || base64Data.startsWith('https://') || base64Data.startsWith('blob:')) {
@@ -123,6 +140,34 @@ function createSafeElement(tag, attrs = {}, textContent = '') {
     Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
     if (textContent) el.textContent = textContent;
     return el;
+}
+
+function safeStorageGet(storage, key, fallback = null) {
+    try {
+        const value = storage?.getItem(key);
+        return value === null || value === undefined ? fallback : value;
+    } catch (error) {
+        console.warn(`[Storage] Read unavailable for ${key}; continuing without persistence.`, error);
+        return fallback;
+    }
+}
+
+function safeStorageSet(storage, key, value) {
+    try {
+        storage?.setItem(key, value);
+        return true;
+    } catch (error) {
+        console.warn(`[Storage] Write unavailable for ${key}; continuing in memory.`, error);
+        return false;
+    }
+}
+
+function safeStorageRemove(storage, key) {
+    try {
+        storage?.removeItem(key);
+    } catch (error) {
+        console.warn(`[Storage] Remove unavailable for ${key}.`, error);
+    }
 }
 
 function formatCurrency(amount, currency = 'THB', locale = 'th-TH') {
@@ -176,28 +221,48 @@ class AlphaPosApp {
         this.searchQuery = "";
         this.cart = {}; // Format: { cartKey: { itemId, quantity, selectedModifiers: [], notes } }
         this.modifiersConfig = { groups: [], modifiers: [], links: [] };
-        this.menuViewMode = localStorage.getItem('menuViewMode') || 'grid'; // 'list' | 'grid'
-        this.tableNumber = "1"; // Default fallback
+        this.menuViewMode = safeStorageGet(localStorage, 'menuViewMode', 'grid'); // 'list' | 'grid'
+        this.tableNumber = ""; // Set only from QR URL (?table=) or session recovery
         this.sessionToken = null;
         this.selectedGuestCount = 2; // Default
         this.currentOnboardingStep = 1;
         this.currentView = "menu";
         this.branchCode = "";
+        this.branchId = "";
+        this.tableSessionId = "";
+        this.permanentQRKey = "";
+        this.customerTokenRefreshTimer = null;
 
         // Configuration (loaded from config.js or environment)
         const cfg = window.ALPHAPOS_CONFIG || {};
         this.supabaseUrl = cfg.supabaseUrl || '';
+        // WSS host for postgres_changes (may differ from REST proxy origin).
+        this.supabaseRealtimeUrl = cfg.supabaseRealtimeUrl || cfg.supabaseUrl || '';
         this.supabaseKey = cfg.supabaseKey || '';
         this.edgeFunctionUrl = cfg.edgeFunctionUrl || '';
         this.supabase = null;
+        this.supabaseRealtime = null;
         this.merchantId = cfg.merchantId || '';
         this.localServerURL = cfg.localServerURL || window.location.origin;
         this.isLocalServerAvailable = true; // Always enable local server fallback via proxy
         this.merchantToken = null; // JWT token with merchant_id claim
         this._submitInProgress = false;
         this.syncHealthInterval = null;
+        this._realtimeLive = false;
+        this._knownOrderIds = new Set();
+        this._orderHistoryFetchInFlight = false;
+        this._lastHistoryRefreshAt = 0;
+        this._orderHistorySignature = '';
+        this._lastSessionCheckAt = 0;
+        this._statusVisibilityHandler = null;
+        this._lastNotifiedStatus = null;
+        this._orderStates = new Map();
         this._activeModal = null;
         this._lastFocusedElement = null;
+        this._activePromotions = [];
+        this._appliedPromotions = [];
+        this.merchantSettings = {};
+        this.merchantDisplayName = 'Restaurant';
 
         this.lastFetchedOrders = [];
         this.currentLanguage = 'th';
@@ -220,16 +285,23 @@ class AlphaPosApp {
      * Show enhanced bill view with itemized breakdown, tip, and split options
      */
     showEnhancedBill() {
-        // Initialize bill view with supabase and translation
-        billView.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback));
+        // Initialize bill view with supabase, translation, and merchant settings
+        billView.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback), this.merchantSettings);
 
-        // Gather order data from current session
-        const items = (this.cart || []).map(item => ({
-            name: this.getItemName ? this.getItemName(item) : item.name,
-            price: item.price,
-            quantity: item.quantity,
-            modifiers: item.selectedModifiers || []
-        }));
+        // Cart is an object map: { cartKey: { itemId, quantity, selectedModifiers } } or legacy { itemId: qty }
+        const items = Object.entries(this.cart || {}).map(([key, entry]) => {
+            const isObj = entry && typeof entry === 'object';
+            const itemId = isObj ? entry.itemId : key;
+            const quantity = isObj ? (entry.quantity || 0) : (Number(entry) || 0);
+            const menuItem = (this.menuItems || []).find(m => String(m.id) === String(itemId));
+            const modifiers = isObj ? (entry.selectedModifiers || []) : [];
+            return {
+                name: menuItem ? this.getItemName(menuItem) : String(itemId),
+                price: menuItem ? (menuItem.price || 0) : 0,
+                quantity,
+                modifiers
+            };
+        }).filter(item => item.quantity > 0);
 
         // Gather active discounts
         const discounts = (this._appliedPromotions || []).map(p => ({
@@ -255,7 +327,7 @@ class AlphaPosApp {
      * Show receipt after successful payment
      */
     showReceipt(paymentData) {
-        billView.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback));
+        billView.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback), this.merchantSettings);
 
         const orderData = {
             items: this._lastOrderItems || [],
@@ -316,17 +388,9 @@ class AlphaPosApp {
             this.saveCartToStorage();
 
             // 4. Mark payment completed in location verifier (permanent block)
-            if (window.locationVerifier) {
-                window.locationVerifier.markPaymentCompleted();
-            }
+            orderingSessionGate.markSessionClosed();
 
-            // 5. Hide app UI
-            const appContainer = document.querySelector(".app-container");
-            const onboardingWizard = document.getElementById("onboardingWizard");
-            if (appContainer) appContainer.style.display = "none";
-            if (onboardingWizard) onboardingWizard.style.display = "none";
-
-            // 6. Show blocking screen
+            // 5–6. Hide app UI and show blocking screen
             this.showBlockingState(
                 "paymentCompleteTitle",
                 "paymentCompleteDesc",
@@ -359,22 +423,24 @@ class AlphaPosApp {
             this.cart = loadCart(this.tableNumber);
         } catch (e) {
             console.error("Failed to parse saved cart:", e);
-            clearCart(this.tableNumber);
+            try { clearCart(this.tableNumber); } catch (_) { /* storage may be unavailable */ }
             this.cart = {};
         }
     }
 
     unsubscribeRealtimeChannels() {
-        if (this.supabase && this.realtimeChannels) {
+        const rt = this.supabaseRealtime || this.supabase;
+        if (rt && this.realtimeChannels) {
             this.realtimeChannels.forEach(ch => {
                 try {
-                    this.supabase.removeChannel(ch);
+                    rt.removeChannel(ch);
                 } catch (e) {
                     console.error("Failed to remove channel:", e);
                 }
             });
             this.realtimeChannels = [];
         }
+        this._realtimeLive = false;
     }
 
     shutdownRealtime() {
@@ -391,26 +457,175 @@ class AlphaPosApp {
             clearInterval(this.promoCarouselInterval);
             this.promoCarouselInterval = null;
         }
+        if (this.customerTokenRefreshTimer) {
+            clearTimeout(this.customerTokenRefreshTimer);
+            this.customerTokenRefreshTimer = null;
+        }
+        if (this._statusVisibilityHandler) {
+            document.removeEventListener('visibilitychange', this._statusVisibilityHandler);
+            this._statusVisibilityHandler = null;
+        }
+    }
+
+    /**
+     * Live order-status via Supabase Realtime (WSS on supabaseRealtimeUrl).
+     * Polling in startStatusPolling remains as the always-on fallback.
+     */
+    setupCustomerRealtime() {
+        const rt = this.supabaseRealtime || this.supabase;
+        if (!rt || !this.tableNumber) {
+            console.warn('[Realtime] No client/table — poll-only mode');
+            return;
+        }
+        this.unsubscribeRealtimeChannels();
+        this.realtimeChannels = [];
+
+        try {
+            const statusChannel = rt
+                .channel(`customer-status-${this.tableSessionId}`)
+                .on('postgres_changes', {
+                    event: 'UPDATE',
+                    schema: 'public',
+                    table: 'orders',
+                    filter: `session_token=eq.${this.sessionToken}`
+                }, (payload) => {
+                    this._handleLiveOrderChange(payload.new);
+                })
+                // The customer status screen is item-based. POS/KDS can mark one
+                // item served without changing the parent order until every item
+                // is terminal, so listening to orders alone leaves the UI stale.
+                .on('postgres_changes', {
+                    event: 'UPDATE',
+                    schema: 'public',
+                    table: 'order_items'
+                }, (payload) => {
+                    this._handleLiveOrderItemChange(payload.new);
+                })
+                .on('postgres_changes', {
+                    event: 'INSERT',
+                    schema: 'public',
+                    table: 'orders',
+                    filter: `session_token=eq.${this.sessionToken}`
+                }, (payload) => {
+                    this._handleLiveOrderChange(payload.new);
+                })
+                .subscribe((status) => {
+                    if (status === 'SUBSCRIBED') {
+                        this._realtimeLive = true;
+                        console.log('[Realtime] Subscribed to order status for table', this.tableNumber);
+                    } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+                        this._realtimeLive = false;
+                        console.warn('[Realtime] Channel', status, '— relying on poll fallback');
+                    }
+                });
+            this.realtimeChannels.push(statusChannel);
+
+            if (this.merchantId) {
+                const sessionChannel = rt
+                    .channel(`customer-session-${this.tableSessionId}`)
+                    .on('postgres_changes', {
+                        event: 'UPDATE',
+                        schema: 'public',
+                        table: 'table_sessions',
+                        filter: `id=eq.${this.tableSessionId}`
+                    }, async (payload) => {
+                        const row = payload.new || {};
+                        if (String(row.table_number) !== String(this.tableNumber)) return;
+                        if (row.is_active === 0 || row.is_active === false) {
+                            if (this.sessionToken && row.session_token === this.sessionToken) {
+                                orderingSessionGate.markSessionClosed();
+                                this.showBlockingState(
+                                    "sessionClosedTitle",
+                                    "sessionClosedDesc",
+                                    "pleaseOrderStaff"
+                                );
+                            }
+                        }
+                    })
+                    .subscribe();
+                this.realtimeChannels.push(sessionChannel);
+
+                const menuChannel = rt
+                    .channel(`customer-menu-${this.merchantId}`)
+                    .on('postgres_changes', {
+                        event: '*',
+                        schema: 'public',
+                        table: 'menu_items'
+                    }, () => {
+                        console.log('[Realtime] Menu items updated on server, refreshing menu...');
+                        this.loadMenuFromServer();
+                    })
+                    .subscribe();
+                this.realtimeChannels.push(menuChannel);
+            }
+        } catch (e) {
+            this._realtimeLive = false;
+            console.warn('[Realtime] Setup failed — poll fallback only:', e);
+        }
+    }
+
+    _handleLiveOrderChange(order) {
+        if (!order) return;
+        const nextState = normalizeOrderState(order.status);
+        const previousState = this._orderStates.get(order.id) || null;
+        if (!nextState || !canTransitionOrder(previousState, nextState)) {
+            console.warn(JSON.stringify({ level: 'warning', event: 'order_state.invalid_transition', orderId: order.id, from: previousState, to: order.status }));
+            return;
+        }
+        this._orderStates.set(order.id, nextState);
+        if (this._debouncedFetchHistory) {
+            this._debouncedFetchHistory();
+        } else if (this.currentView === "status") {
+            this.fetchOrderHistory();
+        } else {
+            this.updateStatusTabBadgeCount();
+        }
+        // Notify when status reaches a customer-relevant state.
+        try {
+            const notifyStatuses = {
+                ready: {
+                    title: this.translate ? this.translate('pushOrderReadyTitle', 'Order Ready') : 'Order Ready',
+                    body: this.translate ? this.translate('pushOrderReadyBody', 'Your order is ready to be served.') : 'Your order is ready to be served.'
+                },
+                served: {
+                    title: this.translate ? this.translate('pushOrderServedTitle', 'Enjoy your meal!') : 'Enjoy your meal!',
+                    body: this.translate ? this.translate('pushOrderServedBody', 'Your order has been served.') : 'Your order has been served.'
+                },
+                cancelled: {
+                    title: this.translate ? this.translate('pushOrderCancelledTitle', 'Order Cancelled') : 'Order Cancelled',
+                    body: this.translate ? this.translate('pushOrderCancelledBody', 'Your order has been cancelled. Please contact staff.') : 'Your order has been cancelled. Please contact staff.'
+                }
+            };
+            const info = notifyStatuses[order.status];
+            const changed = order.status !== this._lastNotifiedStatus;
+            if (info && changed && typeof pushManager !== 'undefined' && pushManager?.permission === 'granted') {
+                pushManager.showLocalNotification(info.title, info.body, {
+                    tag: `order-${order.id}`,
+                    orderId: order.id,
+                    type: 'order_update',
+                    url: '/'
+                });
+                this._lastNotifiedStatus = order.status;
+            }
+        } catch (e) {
+            console.warn('[Realtime] Notification failed:', e);
+        }
+    }
+
+    _handleLiveOrderItemChange(item) {
+        if (!item?.order_id || !this._knownOrderIds.has(item.order_id)) return;
+        if (this._debouncedFetchHistory) {
+            this._debouncedFetchHistory();
+        } else if (this.currentView === "status") {
+            this.fetchOrderHistory({ showLoading: false });
+        } else {
+            this.updateStatusTabBadgeCount();
+        }
     }
 
     /**
      * GUEST COUNT PERSISTENCE (SessionStorage)
      */
-
-    setGuestCount(count) {
-        // Parse guest count (handle "8+" special case)
-        this.selectedGuestCount = count === '8+' ? 8 : parseInt(count);
-
-        // Persist to SessionStorage
-        sessionStorage.setItem('alphapos_guest_count', this.selectedGuestCount);
-        sessionStorage.setItem('alphapos_guest_count_timestamp', Date.now());
-
-        console.log(`[Guest Count] Set to ${this.selectedGuestCount} persons`);
-
-        // Update UI
-        this.renderInteractiveSeats();
-        this.updateTableVisualization();
-    }
 
     restoreGuestCount() {
         const saved = sessionStorage.getItem('alphapos_guest_count');
@@ -444,65 +659,6 @@ class AlphaPosApp {
 
     getGuestCount() {
         return this.selectedGuestCount || this.restoreGuestCount();
-    }
-
-    /**
-     * SEAT VISUALIZATION
-     */
-
-    renderInteractiveSeats() {
-        const container = document.getElementById('interactiveSeatsContainer');
-        if (!container) return;
-
-        container.innerHTML = ''; // Clear existing
-
-        const TOTAL_SEATS = 8;  // Show up to 8 seats visually
-        const guestCount = this.selectedGuestCount || 2;
-
-        // Create seat grid
-        for (let i = 1; i <= TOTAL_SEATS; i++) {
-            const seat = document.createElement('div');
-            seat.className = 'interactive-seat';
-            seat.setAttribute('data-seat-number', i);
-
-            // Color seats based on occupancy status
-            if (i <= guestCount) {
-                // Active seat (guest assigned)
-                seat.classList.add('seat-occupied');
-                seat.style.opacity = '1';
-                seat.style.cursor = 'pointer';
-                seat.title = `Seat ${i} (Occupied)`;
-
-                // Optional: add visual indicator
-                const occupant = document.createElement('span');
-                occupant.className = 'seat-occupant';
-                occupant.className = 'seat-occupant app-icon icon-users';
-                occupant.setAttribute('aria-hidden', 'true');
-                seat.appendChild(occupant);
-
-            } else {
-                // Vacant seat (gray out)
-                seat.classList.add('seat-vacant');
-                seat.style.opacity = '0.4';
-                seat.style.pointerEvents = 'none';
-                seat.style.cursor = 'not-allowed';
-                seat.style.backgroundColor = '#d3d3d3'; // Light gray
-                seat.title = 'No guest assigned';
-            }
-
-            container.appendChild(seat);
-        }
-
-        console.log(`[Seats] Rendered ${TOTAL_SEATS} seats (${guestCount} occupied)`);
-    }
-
-    updateTableVisualization() {
-        const tableLabel = document.getElementById('tableLabelNum');
-        const guestCount = this.selectedGuestCount || 2;
-
-        if (tableLabel) {
-            tableLabel.textContent = guestCount;
-        }
     }
 
     validateGuestCount() {
@@ -539,6 +695,30 @@ class AlphaPosApp {
         window.addEventListener("beforeunload", () => this.shutdownRealtime());
         window.addEventListener("pagehide", () => this.shutdownRealtime());
 
+        // Exchange the opaque QR session token for a short-lived, branch-scoped
+        // customer JWT before creating any Supabase client. URL/localStorage
+        // merchant values are hints only; signed claims become authoritative.
+        const cachedQrToken = this.tableNumber
+            ? safeStorageGet(localStorage, `sessionToken_T${this.tableNumber}`)
+            : null;
+        const qrToken = this.sessionToken || cachedQrToken;
+        if (this.permanentQRKey) {
+            const approved = await this.exchangePermanentQR(this.permanentQRKey);
+            if (!approved && window.ALPHAPOS_CONFIG?.isProduction) {
+                this.showQrInvalidError();
+                return;
+            }
+        } else if (qrToken) {
+            const exchanged = await this.exchangeCustomerSession(qrToken);
+            if (!exchanged && window.ALPHAPOS_CONFIG?.isProduction) {
+                this.showQrInvalidError();
+                return;
+            }
+        } else if (window.ALPHAPOS_CONFIG?.isProduction) {
+            this.showQrInvalidError();
+            return;
+        }
+
         // Initialize Supabase Client
         // If a JWT token with merchant_id claim is available (from QR code URL),
         // use it as the access token. This replaces the old x-merchant-id header approach.
@@ -548,17 +728,31 @@ class AlphaPosApp {
             !this.supabaseUrl.includes('your-supabase-project') &&
             !this.supabaseKey.includes('your-anon-key');
         const effectiveKey = this.merchantToken || this.supabaseKey;
-        this.supabase = (window.supabase && hasSupabaseConfig) ? window.supabase.createClient(this.supabaseUrl, this.supabaseKey, {
-            global: {
-                headers: {
-                    // When using JWT, merchant_id is embedded in the token claims — no header needed
-                    // Keep x-merchant-id as fallback for backward compatibility during transition
-                    ...(this.merchantToken
-                        ? { 'Authorization': `Bearer ${this.merchantToken}` }
-                        : { 'x-merchant-id': this.merchantId })
-                }
-            }
+        const clientHeaders = {
+            // When using JWT, merchant_id is embedded in the token claims — no header needed
+            // Keep x-merchant-id as fallback for backward compatibility during transition
+            ...(this.merchantToken
+                ? { 'Authorization': `Bearer ${this.merchantToken}` }
+                : { 'x-merchant-id': this.merchantId })
+        };
+        this.supabase = hasSupabaseConfig ? createClient(this.supabaseUrl, this.supabaseKey, {
+            global: { headers: clientHeaders }
         }) : null;
+        // Dedicated Realtime client: REST may be Worker-proxied, but WSS must
+        // open against the public API host (Caddy → Kong Realtime).
+        const realtimeHost = this.supabaseRealtimeUrl || this.supabaseUrl;
+        const realtimeDistinct = realtimeHost && realtimeHost !== this.supabaseUrl;
+        this.supabaseRealtime = (hasSupabaseConfig && realtimeHost)
+            ? (realtimeDistinct
+                ? createClient(realtimeHost, this.supabaseKey, {
+                    global: { headers: clientHeaders },
+                    realtime: { params: { apikey: this.supabaseKey } }
+                })
+                : this.supabase)
+            : null;
+        if (this.merchantToken && this.supabaseRealtime?.realtime?.setAuth) {
+            try { this.supabaseRealtime.realtime.setAuth(this.merchantToken); } catch (_) { /* ignore */ }
+        }
 
         const isAllowed = await this.checkOrOpenSession();
         if (isAllowed === false) {
@@ -566,15 +760,27 @@ class AlphaPosApp {
             return;
         }
         await this.loadMenuFromServer();
+
+        // Paint the catalog as soon as the core menu query completes. Optional
+        // integrations must never leave customers looking at an empty shell.
+        this.renderCategories();
+        this.renderMenuItems();
+        this.updateCartUI();
+
         await this.loadModifiersConfig();
         await this.loadPromotions();
 
         // Initialize loyalty system
         if (this.supabase || this.localServerURL) {
-            await loyaltySystem.init(this.supabase, this.merchantId, this.localServerURL);
-            loyaltySystem.renderMiniWidget('loyaltyMiniContainer');
+            try {
+                await loyaltySystem.init(this.supabase, this.merchantId, this.localServerURL);
+                loyaltySystem.renderMiniWidget('loyaltyMiniContainer');
+            } catch (error) {
+                console.warn('[Loyalty] Optional initialization failed; menu remains available.', error);
+            }
         }
 
+        // Repaint once optional configuration is ready (modifier/promotion badges).
         this.renderCategories();
         this.renderMenuItems();
         this.updateCartUI();
@@ -620,11 +826,121 @@ class AlphaPosApp {
             }
         });
 
-        // ── Scroll-hide header: hide promo banner on scroll down, restore on scroll up ──
-        this._initScrollHideHeader();
+        // Keep the document height stable while customers scroll. Collapsing the
+        // promo banner on scroll causes iOS Safari rubber-band events to expand it
+        // again at the bottom, producing a visible flash and a large layout jump.
+        document.body.classList.remove("header-scrolled-up");
+        this.initMotionSystem();
 
         // Developer auto-onboard check for headless testing
         this.autoOnboardIfRequested();
+    }
+
+    async exchangeCustomerSession(sessionToken) {
+        if (!sessionToken || !this.tableNumber || !this.supabaseUrl || !this.supabaseKey) return false;
+        try {
+            const base = (this.edgeFunctionUrl || `${this.supabaseUrl.replace(/\/$/, '')}/functions/v1`).replace(/\/$/, '');
+            const response = await fetch(`${base}/issue-customer-session-token`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'apikey': this.supabaseKey,
+                    'Authorization': `Bearer ${this.supabaseKey}`
+                },
+                body: JSON.stringify({ table_number: String(this.tableNumber), session_token: sessionToken })
+            });
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok || !body.access_token || !body.branch_id) {
+                throw Object.assign(new Error(body.title || 'Customer session rejected'), { code: body.code, traceId: body.traceId });
+            }
+            this.merchantToken = body.access_token;
+            this.merchantId = body.merchant_id;
+            this.branchId = body.branch_id;
+            this.tableSessionId = body.table_session_id;
+            this.tableNumber = String(body.table_number);
+            this.sessionToken = sessionToken;
+            safeStorageRemove(sessionStorage, 'alphapos_customer_jwt');
+            safeStorageSet(localStorage, 'active_merchant_id', body.merchant_id);
+            safeStorageSet(localStorage, `sessionToken_T${this.tableNumber}`, sessionToken);
+            if (this.customerTokenRefreshTimer) clearTimeout(this.customerTokenRefreshTimer);
+            const refreshInMs = Math.max(60_000, (Number(body.expires_in || 1800) - 120) * 1000);
+            this.customerTokenRefreshTimer = setTimeout(() => {
+                // Reload is deliberate: it atomically replaces REST and Realtime
+                // clients with a new signed session while preserving the cart.
+                window.location.reload();
+            }, refreshInMs);
+            return true;
+        } catch (error) {
+            console.error(JSON.stringify({ level: 'error', event: 'customer_session.exchange_failed', code: error.code || 'NETWORK_ERROR', traceId: error.traceId || null }));
+            safeStorageRemove(sessionStorage, 'alphapos_customer_jwt');
+            return false;
+        }
+    }
+
+    async exchangePermanentQR(permanentKey) {
+        if (!permanentKey || !this.tableNumber || !this.isMerchantIdValid() || !this.supabaseUrl || !this.supabaseKey) return false;
+        const base = (this.edgeFunctionUrl || `${this.supabaseUrl.replace(/\/$/, '')}/functions/v1`).replace(/\/$/, '');
+        let approvalRequestId = null;
+        let expiresAt = Date.now() + 5 * 60 * 1000;
+
+        try {
+            while (Date.now() < expiresAt) {
+                const response = await fetch(`${base}/issue-customer-session-token`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'apikey': this.supabaseKey,
+                        'Authorization': `Bearer ${this.supabaseKey}`
+                    },
+                    body: JSON.stringify({
+                        merchant_id: this.merchantId,
+                        table_number: String(this.tableNumber),
+                        permanent_key: permanentKey,
+                        ...(approvalRequestId ? { approval_request_id: approvalRequestId } : {})
+                    })
+                });
+                const body = await response.json().catch(() => ({}));
+                if (response.ok && body.access_token && body.session_token) {
+                    this.merchantToken = body.access_token;
+                    this.merchantId = body.merchant_id;
+                    this.branchId = body.branch_id;
+                    this.tableSessionId = body.table_session_id;
+                    this.tableNumber = String(body.table_number);
+                    this.sessionToken = body.session_token;
+                    safeStorageSet(localStorage, 'active_merchant_id', body.merchant_id);
+                    safeStorageSet(localStorage, `sessionToken_T${this.tableNumber}`, body.session_token);
+                    this.hideBlockingState();
+                    this.cleanUrlParams();
+                    return true;
+                }
+                if (response.status === 202) {
+                    this.showBlockingState(
+                        'staffApprovalWaitingTitle', 'staffApprovalWaitingDesc', 'staffApprovalWaitingFooter'
+                    );
+                }
+                // A transient Edge Function/PostgREST failure must not turn a
+                // valid pending approval into an "invalid QR" screen. Keep the
+                // current request id and retry until its normal expiry time.
+                if (response.status >= 500 && approvalRequestId) {
+                    console.warn(JSON.stringify({
+                        level: 'warn', event: 'permanent_qr.poll_retry',
+                        code: body.code || 'SERVER_ERROR', traceId: body.traceId || null
+                    }));
+                    await new Promise(resolve => setTimeout(resolve, 2500));
+                    continue;
+                }
+                if (response.status !== 202 || !body.approval_request_id) {
+                    throw Object.assign(new Error(body.title || 'Permanent QR rejected'), { code: body.code, traceId: body.traceId });
+                }
+                approvalRequestId = body.approval_request_id;
+                if (body.expires_at) expiresAt = new Date(body.expires_at).getTime();
+                await new Promise(resolve => setTimeout(resolve, 2500));
+            }
+            throw Object.assign(new Error('Staff approval timed out'), { code: 'STAFF_APPROVAL_TIMEOUT' });
+        } catch (error) {
+            console.error(JSON.stringify({ level: 'error', event: 'permanent_qr.exchange_failed', code: error.code || 'NETWORK_ERROR', traceId: error.traceId || null }));
+            return false;
+        }
     }
 
     startSyncHealthPolling() {
@@ -649,15 +965,18 @@ class AlphaPosApp {
             const res = await fetch(`${this.localServerURL}/v1/sync/status`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const status = await res.json();
-            const pending = Number(status.pendingCount || 0);
+            const localPending = Number(status.pendingCount || 0);
+            const hubPending = Number(status.hub?.pending_count || 0);
+            const hubFailed = Number(status.hub?.failed_count || status.failed_count || 0);
+            const pending = Number(status.pending_count || (localPending + hubPending));
             const maxAttempts = Number(status.maxAttempts || 0);
 
-            panel.classList.toggle("pending", pending > 0);
-            panel.classList.toggle("synced", pending === 0);
-            panel.classList.toggle("has-issue", pending > 0);
-            title.textContent = pending > 0 ? "Pending sync" : "Synced";
-            meta.textContent = pending > 0
-                ? `${pending} pending${maxAttempts > 0 ? ` · ${maxAttempts} attempts` : ""}`
+            panel.classList.toggle("pending", pending > 0 || hubFailed > 0);
+            panel.classList.toggle("synced", pending === 0 && hubFailed === 0);
+            panel.classList.toggle("has-issue", pending > 0 || hubFailed > 0);
+            title.textContent = pending > 0 || hubFailed > 0 ? "Pending sync" : "Synced";
+            meta.textContent = pending > 0 || hubFailed > 0
+                ? `${pending} pending${hubFailed ? ` · ${hubFailed} failed` : ""}${maxAttempts > 0 ? ` · ${maxAttempts} attempts` : ""}`
                 : "0 pending";
             retryBtn.classList.toggle("hide", pending === 0);
         } catch (error) {
@@ -750,38 +1069,39 @@ class AlphaPosApp {
     // Restore when scrolled back near top.
     // ─────────────────────────────────────────────────────────────
     _initScrollHideHeader() {
-        const HIDE_THRESHOLD  = 60;   // px scrolled down to trigger hide
-        const SHOW_THRESHOLD  = 20;   // px from top to restore
-        const body            = document.body;
-        let   lastScrollY     = 0;
-        let   ticking         = false;
+        document.body.classList.remove("header-scrolled-up");
+    }
 
-        const onScroll = (scrollTop) => {
-            if (ticking) return;
-            ticking = true;
-
-            requestAnimationFrame(() => {
-                const goingDown = scrollTop > lastScrollY;
-                const nearTop   = scrollTop <= SHOW_THRESHOLD;
-
-                if (nearTop) {
-                    body.classList.remove("header-scrolled-up");
-                } else if (goingDown && scrollTop > HIDE_THRESHOLD) {
-                    body.classList.add("header-scrolled-up");
-                } else if (!goingDown) {
-                    body.classList.remove("header-scrolled-up");
-                }
-
-                lastScrollY = Math.max(0, scrollTop);
-                ticking     = false;
-            });
-        };
-
-        const menuView = document.getElementById("menuView");
-        if (menuView) {
-            menuView.addEventListener("scroll", () => onScroll(menuView.scrollTop), { passive: true });
+    initMotionSystem() {
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+            document.documentElement.classList.add('reduce-motion');
+            return;
         }
-        window.addEventListener("scroll", () => onScroll(window.scrollY), { passive: true });
+        if (!this._motionObserver) {
+            this._motionObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (!entry.isIntersecting) return;
+                    entry.target.classList.add('motion-visible');
+                    this._motionObserver.unobserve(entry.target);
+                });
+            }, { rootMargin: '0px 0px -8% 0px', threshold: 0.08 });
+        }
+        this.refreshMotionTargets();
+        requestAnimationFrame(() => document.body.classList.add('motion-ready'));
+    }
+
+    refreshMotionTargets() {
+        if (!this._motionObserver) return;
+        const targets = document.querySelectorAll(
+            '.featured-item-card:not([data-motion]), .list-item-card:not([data-motion]), ' +
+            '.category-tab:not([data-motion]), .status-item-card:not([data-motion]), ' +
+            '.service-capsule:not([data-motion])'
+        );
+        targets.forEach((element, index) => {
+            element.dataset.motion = 'reveal';
+            element.style.setProperty('--motion-index', String(index % 8));
+            this._motionObserver.observe(element);
+        });
     }
 
     async autoOnboardIfRequested() {
@@ -869,7 +1189,7 @@ class AlphaPosApp {
         };
         const localUrl = `${this.localServerURL}/v1/merchants`;
 
-        if (this.isLocalServerAvailable) {
+        if (this.isLocalServerAvailable && !window.ALPHAPOS_CONFIG?.isProduction) {
             try {
                 const res = await fetch(localUrl, { headers: { 'Content-Type': 'application/json' } });
                 if (res.ok) {
@@ -886,7 +1206,7 @@ class AlphaPosApp {
         try {
             let query = this.supabase
                 .from('merchants')
-                .select('id, name, branch_code, is_table_system_enabled, is_web_ordering_enabled');
+                .select('id, name, logo_url, web_cover_url, web_cover_media_type, branch_code, is_table_system_enabled, is_web_ordering_enabled, tax_rate, tax_type, service_charge_rate');
 
             if (this.merchantId) query = query.eq('id', this.merchantId);
             if (branchCode) query = query.eq('branch_code', branchCode);
@@ -908,10 +1228,50 @@ class AlphaPosApp {
         const wizard = document.getElementById("onboardingWizard");
         if (!wizard) return;
         wizard.classList.add("active");
-        ["onboardingLoading", "onboardingStep1", "onboardingStep2", "onboardingStep3"].forEach(id => {
+        ["onboardingLoading", "onboardingStep2", "onboardingStep3"].forEach(id => {
             const panel = document.getElementById(id);
             if (panel) panel.classList.toggle("active", id === panelId);
         });
+    }
+
+    applyMerchantBranding(settings = {}) {
+        const rawName = settings.name || settings.store_name || settings.storeName || '';
+        const name = String(rawName).trim() || 'Restaurant';
+        const logoUrl = settings.logo_url || settings.logoUrl || '';
+        const initial = Array.from(name)[0]?.toUpperCase() || 'R';
+        this.merchantDisplayName = name;
+
+        const brandName = document.getElementById('merchantBrandName');
+        if (brandName) brandName.textContent = name;
+        const welcome = document.getElementById('merchantWelcomeTitle');
+        if (welcome) welcome.textContent = `${this.translate('welcomeTo', 'ยินดีต้อนรับสู่')} ${name}`;
+        const loadingTitle = document.getElementById('loadingBrandTitle');
+        if (loadingTitle) loadingTitle.textContent = name;
+        document.title = `${name} | ${this.translate('orderOnlineTitle', 'สั่งอาหารออนไลน์')}`;
+
+        const logo = document.getElementById('merchantLogo');
+        if (logo) {
+            logo.replaceChildren();
+            if (logoUrl && /^(https?:|data:image\/)/i.test(String(logoUrl))) {
+                const img = document.createElement('img');
+                img.className = 'merchant-logo-image';
+                img.alt = `${name} logo`;
+                img.src = logoUrl;
+                img.onerror = () => {
+                    logo.replaceChildren();
+                    const fallback = document.createElement('span');
+                    fallback.className = 'header-logo-inner';
+                    fallback.textContent = initial;
+                    logo.appendChild(fallback);
+                };
+                logo.appendChild(img);
+            } else {
+                const fallback = document.createElement('span');
+                fallback.className = 'header-logo-inner';
+                fallback.textContent = initial;
+                logo.appendChild(fallback);
+            }
+        }
     }
 
     showAppLoading(message = "") {
@@ -922,12 +1282,18 @@ class AlphaPosApp {
         if (descEl) descEl.textContent = message || this.translate("preparingTable", "Preparing your table...");
     }
 
-    showBlockingState(titleKey, descKey, footerKey) {
-        // Hide both main app content and onboarding wizard
+    showBlockingState(titleKey, descKey, footerKey, options = {}) {
+        // Hide both main app content and onboarding wizard via class (not inline display)
         const appContainer = document.querySelector(".app-container");
         const onboardingWizard = document.getElementById("onboardingWizard");
-        if (appContainer) appContainer.style.display = "none";
-        if (onboardingWizard) onboardingWizard.style.display = "none";
+        if (appContainer) {
+            appContainer.classList.add("is-blocked");
+            appContainer.style.display = "none";
+        }
+        if (onboardingWizard) {
+            onboardingWizard.classList.add("is-blocked");
+            onboardingWizard.style.display = "none";
+        }
 
         // Display the safe full-screen blocking overlay
         const overlay = document.getElementById("blockingOverlay");
@@ -937,6 +1303,7 @@ class AlphaPosApp {
             const titleEl = document.getElementById("blockingTitle");
             const descEl = document.getElementById("blockingDesc");
             const footerEl = document.getElementById("blockingFooterText");
+            const retryBtn = document.getElementById("blockingRetryBtn");
 
             if (titleEl) {
                 titleEl.textContent = this.translate(titleKey, titleKey);
@@ -945,9 +1312,96 @@ class AlphaPosApp {
                 descEl.textContent = this.translate(descKey, descKey);
             }
             if (footerEl) {
-                footerEl.textContent = this.translate(footerKey, footerKey);
+                footerEl.textContent = footerKey
+                    ? this.translate(footerKey, footerKey)
+                    : "";
+            }
+            if (retryBtn) {
+                retryBtn.classList.toggle("hide", !options.showRetry);
             }
         }
+    }
+
+    hideBlockingState() {
+        const appContainer = document.querySelector('.app-container');
+        const onboardingWizard = document.getElementById('onboardingWizard');
+        const overlay = document.getElementById('blockingOverlay');
+        if (appContainer) {
+            appContainer.classList.remove('is-blocked');
+            appContainer.style.display = '';
+        }
+        if (onboardingWizard) {
+            onboardingWizard.classList.remove('is-blocked');
+            onboardingWizard.style.display = '';
+        }
+        overlay?.classList.remove('active');
+    }
+
+    /**
+     * True when runtime config has usable Supabase credentials.
+     */
+    hasValidRuntimeConfig(cfg = window.ALPHAPOS_CONFIG) {
+        if (!cfg || typeof cfg !== "object") return false;
+        const url = cfg.supabaseUrl || "";
+        const key = cfg.supabaseKey || "";
+        return !!(
+            url &&
+            key &&
+            !url.includes("your-supabase-project") &&
+            !key.includes("your-anon-key")
+        );
+    }
+
+    applyRuntimeConfig(cfg = window.ALPHAPOS_CONFIG || {}) {
+        if (!cfg || typeof cfg !== "object") return;
+        if (cfg.supabaseUrl) this.supabaseUrl = cfg.supabaseUrl;
+        if (cfg.supabaseRealtimeUrl) this.supabaseRealtimeUrl = cfg.supabaseRealtimeUrl;
+        else if (cfg.supabaseUrl) this.supabaseRealtimeUrl = cfg.supabaseUrl;
+        if (cfg.supabaseKey) this.supabaseKey = cfg.supabaseKey;
+        if (cfg.edgeFunctionUrl) this.edgeFunctionUrl = cfg.edgeFunctionUrl;
+        if (cfg.merchantId) this.merchantId = cfg.merchantId || this.merchantId;
+        if (cfg.localServerURL) this.localServerURL = cfg.localServerURL;
+        if (cfg.branchCode) this.branchCode = cfg.branchCode || this.branchCode;
+    }
+
+    isMerchantIdValid(id = this.merchantId) {
+        return !!(id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
+    }
+
+    /**
+     * Resolve menu image URLs from absolute, relative, data:, or storage paths.
+     */
+    resolveMenuImageUrl(imageUrl) {
+        const placeholder = "data:image/svg+xml," + encodeURIComponent(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">' +
+            '<rect fill="#e8eeff" width="600" height="400"/>' +
+            '<text x="300" y="210" text-anchor="middle" fill="#6b7294" font-family="sans-serif" font-size="28">AlphaPos</text>' +
+            '</svg>'
+        );
+        if (!imageUrl) return placeholder;
+        const value = String(imageUrl).trim();
+        if (!value) return placeholder;
+        if (
+            value.startsWith('http://') ||
+            value.startsWith('https://') ||
+            value.startsWith('data:') ||
+            value.startsWith('blob:')
+        ) {
+            return value;
+        }
+        // Absolute path on same origin
+        if (value.startsWith('/')) {
+            return value;
+        }
+        // Supabase storage-style relative path
+        const base = (this.supabaseUrl || '').replace(/\/$/, '');
+        if (base && (value.startsWith('storage/') || value.includes('/object/'))) {
+            return `${base}/${value.replace(/^\//, '')}`;
+        }
+        if (base) {
+            return `${base}/storage/v1/object/public/${value.replace(/^\//, '')}`;
+        }
+        return placeholder;
     }
 
     finishOnboardingLoading(message, delay = 650) {
@@ -1027,11 +1481,13 @@ class AlphaPosApp {
 
     async checkOrOpenSession() {
         const urlParams = new URLSearchParams(window.location.search);
-        const tableParam = urlParams.get('table');
+        const tableParam = urlParams.get('table') || urlParams.get('t') || this.tableNumber;
         this.showAppLoading(this.translate("checkingTable", "Checking table availability..."));
 
         // Check if Table System or Web Ordering is enabled for this merchant
         const merchantSettings = await this.fetchMerchantSettings();
+        this.merchantSettings = merchantSettings || {};
+        this.applyMerchantBranding(this.merchantSettings);
         if (merchantSettings) {
             if (merchantSettings.is_table_system_enabled === false) {
                 this.showBlockingState(
@@ -1051,8 +1507,8 @@ class AlphaPosApp {
             }
         }
 
-        // Block access if table parameter is missing
-        if (!tableParam) {
+        // Block access if table parameter is missing (and nothing recovered from session)
+        if (!tableParam || String(tableParam).trim() === '' || String(tableParam).trim() === '--') {
             this.showBlockingState(
                 "tableParamMissingTitle",
                 "tableParamMissingDesc",
@@ -1061,13 +1517,30 @@ class AlphaPosApp {
             return false;
         }
 
-        document.getElementById("welcomeTableNum").innerText = this.tableNumber;
-        document.getElementById("tableLabelNum").innerText = this.tableNumber;
+        // In production identity must come from the signed customer-session JWT.
+        const isProd = !!(window.ALPHAPOS_CONFIG && window.ALPHAPOS_CONFIG.isProduction);
+        if (isProd && (!this.merchantToken || !this.isMerchantIdValid() || !this.branchId || !this.tableSessionId)) {
+            this.showBlockingState(
+                "merchantParamMissingTitle",
+                "merchantParamMissingDesc",
+                "pleaseOrderStaff"
+            );
+            return false;
+        }
+
+        // Ensure tableNumber stays in sync with the resolved param
+        this.tableNumber = String(tableParam).trim();
+        this._updateTableBadge();
+
+        const welcomeEl = document.getElementById("welcomeTableNum");
+        const labelEl = document.getElementById("tableLabelNum");
+        if (welcomeEl) welcomeEl.innerText = this.tableNumber;
+        if (labelEl) labelEl.innerText = this.tableNumber;
 
         // Verify token (either URL parameter or localStorage)
         const cachedToken = localStorage.getItem(`sessionToken_T${this.tableNumber}`);
-        // Prioritize cachedToken over this.sessionToken (URL parameter) to prevent stale URLs from resetting active sessions
-        const tokenToVerify = cachedToken || this.sessionToken;
+        // A freshly scanned QR always wins over a stale cached token.
+        const tokenToVerify = this.sessionToken || cachedToken;
 
         if (tokenToVerify) {
             // Verify if session token is still active on the server
@@ -1112,6 +1585,11 @@ class AlphaPosApp {
             }
         }
 
+        if (isProd) {
+            this.showQrInvalidError();
+            return false;
+        }
+
         const activeSession = await this.getActiveSessionForTable();
         if (activeSession && activeSession.sessionToken) {
             this.sessionToken = activeSession.sessionToken;
@@ -1123,7 +1601,7 @@ class AlphaPosApp {
             return true;
         }
 
-        // No active session exists. Ask for guest count directly; location verification runs in the background.
+        // No active session — ask guest count, then open a table session (no GPS/Wi-Fi gate).
         this.currentOnboardingStep = 2;
         this.showOnboardingPanel("onboardingStep2");
         this.renderInteractiveSeats();
@@ -1142,6 +1620,10 @@ class AlphaPosApp {
                 url.searchParams.delete('jwt');
                 replaced = true;
             }
+            if (url.searchParams.has('key')) {
+                url.searchParams.delete('key');
+                replaced = true;
+            }
             if (replaced) {
                 window.history.replaceState({}, document.title, url.pathname + url.search);
             }
@@ -1158,10 +1640,14 @@ class AlphaPosApp {
             try {
                 const { data, error } = await this.supabase
                     .from('table_sessions')
-                    .select('*')
+                    .select('id, merchant_id, branch_id, table_number, session_token, is_active, ended_at')
+                    .eq('id', this.tableSessionId)
+                    .eq('merchant_id', this.merchantId)
+                    .eq('branch_id', this.branchId)
                     .eq('table_number', this.tableNumber)
                     .eq('session_token', token)
                     .eq('is_active', 1)
+                    .is('ended_at', null)
                     .maybeSingle();
 
                 if (!error && data) {
@@ -1173,7 +1659,7 @@ class AlphaPosApp {
             }
         }
 
-        if (!success && this.isLocalServerAvailable) {
+        if (!success && this.isLocalServerAvailable && !window.ALPHAPOS_CONFIG?.isProduction) {
             try {
                 const res = await fetch(`${this.localServerURL}/v1/sessions`);
                 if (res.ok) {
@@ -1204,53 +1690,16 @@ class AlphaPosApp {
         );
     }
 
-    updateOnboardingVerification(status, title, description) {
-        const box = document.querySelector(".verification-status-box");
-        const titleEl = document.getElementById("verifyTitle");
-        const descEl = document.getElementById("verifyDesc");
-        const nextBtn = document.getElementById("btnOnboardingNext1");
-
-        if (!box || !titleEl || !descEl || !nextBtn) return;
-
-        box.className = "verification-status-box " + status;
-        titleEl.innerText = title;
-        descEl.innerText = description;
-
-        if (status === "checking") {
-            nextBtn.classList.add("disabled");
-            nextBtn.disabled = true;
-        } else {
-            nextBtn.classList.remove("disabled");
-            nextBtn.disabled = false;
-        }
-    }
-
-    nextOnboardingStep() {
-        if (this.currentOnboardingStep === 1) {
-            document.getElementById("onboardingStep1").classList.remove("active");
-            document.getElementById("onboardingStep2").classList.add("active");
-            this.currentOnboardingStep = 2;
-            this.renderInteractiveSeats();
-        }
-    }
-
-    prevOnboardingStep() {
-        if (this.currentOnboardingStep === 2) {
-            document.getElementById("onboardingStep2").classList.remove("active");
-            document.getElementById("onboardingStep1").classList.add("active");
-            this.currentOnboardingStep = 1;
-        }
-    }
-
     renderInteractiveSeats() {
         const container = document.getElementById("interactiveSeatsContainer");
         const textEl = document.getElementById("tableLabelNum");
         if (!container) return;
 
         container.innerHTML = "";
-        textEl.innerText = this.tableNumber;
+        if (textEl) textEl.innerText = this.tableNumber || "--";
 
-        const count = this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount);
+        const raw = this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount, 10);
+        const count = Number.isFinite(raw) && raw > 0 ? raw : 2;
 
         for (let i = 0; i < count; i++) {
             const angle = (i * 360 / count) * Math.PI / 180;
@@ -1269,23 +1718,37 @@ class AlphaPosApp {
     }
 
     setGuestCount(count) {
-        this.selectedGuestCount = count;
+        // Persist numeric guest count (handle "8+" special case)
+        this.selectedGuestCount = count === '8+' ? 8 : parseInt(count, 10);
+        if (!Number.isFinite(this.selectedGuestCount) || this.selectedGuestCount < 1) {
+            this.selectedGuestCount = 2;
+        }
+
+        try {
+            sessionStorage.setItem('alphapos_guest_count', String(this.selectedGuestCount));
+            sessionStorage.setItem('alphapos_guest_count_timestamp', String(Date.now()));
+        } catch (_) { /* ignore */ }
+
         const pills = document.querySelectorAll(".guest-pill");
         pills.forEach(pill => {
-            if (pill.innerText === String(count)) {
-                pill.classList.add("active");
-            } else {
-                pill.classList.remove("active");
-            }
+            const pillVal = pill.innerText.trim();
+            const matches = pillVal === String(count)
+                || (count === '8+' && pillVal === '8+')
+                || (String(this.selectedGuestCount) === pillVal)
+                || (this.selectedGuestCount >= 8 && pillVal === '8+');
+            pill.classList.toggle("active", matches);
         });
-        console.log("Selected guests count:", this.selectedGuestCount);
+
+        console.log(`[Guest Count] Set to ${this.selectedGuestCount} persons`);
         this.renderInteractiveSeats();
     }
 
     async confirmGuestCount() {
         const btn = document.getElementById("startOrderBtn");
+        if (!btn) return;
         btn.disabled = true;
-        btn.querySelector("span").innerText = "Starting session...";
+        const btnLabel = btn.querySelector("span");
+        if (btnLabel) btnLabel.innerText = "Starting session...";
 
         const generateUUID = () => {
             if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -1435,8 +1898,11 @@ class AlphaPosApp {
             console.error("Failed to open table session:", error);
             this._showToast(this.translate("failedConnectServer"), 5000);
         } finally {
-            btn.disabled = false;
-            btn.querySelector("span").innerText = this.translate("startOrdering");
+            if (btn) {
+                btn.disabled = false;
+                const label = btn.querySelector("span");
+                if (label) label.innerText = this.translate("startOrdering");
+            }
         }
     }
 
@@ -1461,7 +1927,8 @@ class AlphaPosApp {
             try {
                 const [groupsRes, modsRes, linksRes] = await Promise.all([
                     this.supabase.from('modifier_groups').select('*').eq('is_deleted', false),
-                    this.supabase.from('modifiers').select('*').eq('is_deleted', false),
+                    this.supabase.from('modifiers').select('*').eq('is_deleted', false)
+                        .or(`branch_id.is.null,branch_id.eq.${this.branchId}`),
                     this.supabase.from('menu_item_modifier_groups').select('*').eq('is_deleted', false)
                 ]);
 
@@ -1504,28 +1971,97 @@ class AlphaPosApp {
         return this.modifiersConfig.links.some(l => l.menu_item_id === itemId);
     }
 
+    _normalizeMenuItem(item) {
+        return {
+            id: item.id,
+            name: item.name,
+            desc: item.desc || item.description || "",
+            price: parseFloat(item.price) || 0,
+            category: (item.category || "mains").toString().toLowerCase().trim(),
+            emoji: item.emoji || "",
+            imgClass: item.imgClass || item.img_class || "img-main",
+            imageUrl: item.image_url || item.imageUrl || "",
+            videoUrl: item.video_url || item.videoUrl || "",
+            isAvailable: item.is_available !== false && item.isAvailable !== false,
+            isDeleted: item.is_deleted === true || item.isDeleted === true
+        };
+    }
+
+    _applyLoadedMenu(rawItems) {
+        const mapped = (rawItems || [])
+            .map(item => this._normalizeMenuItem(item))
+            .filter(item => item.isAvailable && !item.isDeleted && item.name);
+        if (mapped.length === 0) return false;
+        this.menuItems = mapped;
+        this._refreshCategoriesFromMenu();
+        return true;
+    }
+
+    _refreshCategoriesFromMenu() {
+        const categories = new Set(
+            (this.menuItems || []).map(i => (i.category || "").toLowerCase())
+        );
+        const hasDrinks = categories.has("drinks") || categories.has("beverages");
+        const hasDesserts = categories.has("desserts") || categories.has("dessert");
+        const hasFood = [...categories].some(c =>
+            c && c !== "drinks" && c !== "beverages" && c !== "desserts" && c !== "dessert"
+        );
+
+        this.categories = [];
+        if (hasFood || this.categories.length === 0) {
+            this.categories.push({ id: "foods", name: "Foods" });
+        }
+        if (hasDrinks) this.categories.push({ id: "drinks", name: "Drinks" });
+        if (hasDesserts) this.categories.push({ id: "desserts", name: "Desserts" });
+        if (this.categories.length === 0) {
+            this.categories = [
+                { id: "foods", name: "Foods" },
+                { id: "drinks", name: "Drinks" },
+                { id: "desserts", name: "Desserts" }
+            ];
+        }
+        if (!this.categories.some(c => c.id === this.currentCategory)) {
+            this.currentCategory = this.categories[0].id;
+        }
+    }
+
+    _matchesMenuCategory(item, categoryId) {
+        const cat = (item.category || "").toLowerCase();
+        if (categoryId === "foods") {
+            return cat !== "drinks" && cat !== "beverages" && cat !== "desserts" && cat !== "dessert";
+        }
+        if (categoryId === "drinks") {
+            return cat === "drinks" || cat === "beverages";
+        }
+        if (categoryId === "desserts") {
+            return cat === "desserts" || cat === "dessert";
+        }
+        return cat === categoryId;
+    }
+
     async loadMenuFromServer() {
         let success = false;
         if (this.supabase) {
             try {
-                const { data, error } = await this.supabase
+                let query = this.supabase
                     .from('menu_items')
-                    .select('*');
+                    .select('*')
+                    .eq('is_deleted', false)
+                    .eq('is_available', true)
+                    .or(`branch_id.is.null,branch_id.eq.${this.branchId}`);
 
+                // Prefer explicit merchant filter when UUID is known (RLS + header can still apply).
+                if (this.merchantId && /^[0-9a-f-]{36}$/i.test(this.merchantId)) {
+                    query = query.eq('merchant_id', this.merchantId);
+                }
+
+                const { data, error } = await query;
                 if (error) throw error;
-                if (data && data.length > 0) {
-                    this.menuItems = data.map(item => ({
-                        id: item.id,
-                        name: item.name,
-                        desc: item.description,
-                        price: parseFloat(item.price),
-                        category: item.category,
-                        emoji: item.emoji || "",
-                        imgClass: item.img_class || "img-main",
-                        imageUrl: item.image_url || item.imageUrl || "",
-                        videoUrl: item.video_url || item.videoUrl || ""
-                    }));
+                if (this._applyLoadedMenu(data)) {
                     success = true;
+                    console.log(`[Menu] Loaded ${this.menuItems.length} items from Supabase`);
+                } else {
+                    console.warn("[Menu] Supabase returned no available items for merchant", this.merchantId);
                 }
             } catch (error) {
                 console.error("Failed to load menu from Supabase, trying local server fallback...", error);
@@ -1534,23 +2070,14 @@ class AlphaPosApp {
 
         if (!success && this.isLocalServerAvailable) {
             try {
-                const res = await fetch(`${this.localServerURL}/v1/menu`);
+                const headers = {};
+                if (this.merchantId) headers['x-merchant-id'] = this.merchantId;
+                const res = await fetch(`${this.localServerURL}/v1/menu`, { headers });
                 if (res.ok) {
                     const data = await res.json();
-                    if (data && data.length > 0) {
-                        this.menuItems = data.map(item => ({
-                            id: item.id,
-                            name: item.name,
-                            desc: item.desc || item.description,
-                            price: parseFloat(item.price),
-                            category: item.category,
-                            emoji: item.emoji || "",
-                            imgClass: item.imgClass || item.img_class || "img-main",
-                            imageUrl: item.image_url || item.imageUrl || "",
-                            videoUrl: item.video_url || item.videoUrl || ""
-                        }));
+                    if (this._applyLoadedMenu(data)) {
                         success = true;
-                        console.log("Loaded menu from local server fallback.");
+                        console.log(`[Menu] Loaded ${this.menuItems.length} items from local server fallback.`);
                     }
                 }
             } catch (localErr) {
@@ -1558,16 +2085,90 @@ class AlphaPosApp {
             }
         }
 
+        this._menuLoadFailed = !success;
+
+        if (!success) {
+            // Keep demo defaults only in non-production; otherwise show a clear empty state.
+            const isProd = !!(window.ALPHAPOS_CONFIG && window.ALPHAPOS_CONFIG.isProduction);
+            if (isProd) {
+                this.menuItems = [];
+                console.warn("[Menu] No menu available from server; showing empty state.");
+            } else if (!this.menuItems || this.menuItems.length === 0) {
+                this.menuItems = defaultMenuItems.map(i => this._normalizeMenuItem(i));
+                this._menuLoadFailed = false;
+            }
+            this._refreshCategoriesFromMenu();
+        }
+
+        this._updateMenuEmptyState(!this.menuItems || this.menuItems.length === 0);
+
         // Initialize allergen filter after menu is loaded
         if (this.supabase) {
-            await this.allergenFilter.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback));
-            this.allergenFilter.renderFilters('dietaryFilterContainer');
-            // Initialize Customer Feedback System
-            this.feedbackSystem = new FeedbackSystem();
-            this.feedbackSystem.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback));
+            try {
+                await this.allergenFilter.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback));
+                document.getElementById('dietaryFilterContainer')?.classList.add('hidden');
+            } catch (error) {
+                console.warn('[Allergens] Optional initialization failed; showing the unfiltered menu.', error);
+            }
+            try {
+                if (!this.feedbackSystem) {
+                    this.feedbackSystem = new FeedbackSystem();
+                }
+                this.feedbackSystem.init(this.supabase, this.merchantId, (key, fallback) => this.translate(key, fallback));
+            } catch (error) {
+                console.warn('[Feedback] Optional initialization failed.', error);
+            }
+            try {
+                reservationSystem.init(this.supabase, this.merchantId);
+            } catch (error) {
+                console.warn('[Reservations] Optional initialization failed.', error);
+            }
+        }
+    }
 
-            // Initialize Reservation System
-            reservationSystem.init(this.supabase, this.merchantId);
+    async retryLoadMenu() {
+        const retryBtn = document.getElementById("menuRetryBtn");
+        if (retryBtn) {
+            retryBtn.disabled = true;
+            const label = retryBtn.querySelector("span");
+            if (label) label.innerText = "...";
+        }
+        try {
+            await this.loadMenuFromServer();
+            this.renderCategories();
+            this.renderMenuItems();
+        } finally {
+            if (retryBtn) {
+                retryBtn.disabled = false;
+                const label = retryBtn.querySelector("span");
+                if (label) {
+                    label.innerText = this.translate("menuRetry", "Reload Menu");
+                }
+            }
+        }
+    }
+
+    _updateMenuEmptyState(isEmpty) {
+        const emptyState = document.getElementById("searchEmptyState");
+        const emptyText = emptyState ? emptyState.querySelector(".search-empty-text") : null;
+        const retryBtn = document.getElementById("menuRetryBtn");
+        if (!emptyState) return;
+        if (isEmpty && !(this.searchQuery || "").trim()) {
+            emptyState.classList.add("visible");
+            if (emptyText) {
+                emptyText.innerText = this._menuLoadFailed
+                    ? this.translate("menuEmptyLoadFailed", "Could not load the menu. Please try again.")
+                    : this.translate(
+                        "menuEmptyNoItems",
+                        "Menu is not available yet. Please ask staff for help."
+                    );
+            }
+            if (retryBtn) {
+                retryBtn.classList.toggle("hide", !this._menuLoadFailed);
+            }
+        } else if (!isEmpty && !(this.searchQuery || "").trim()) {
+            emptyState.classList.remove("visible");
+            if (retryBtn) retryBtn.classList.add("hide");
         }
     }
 
@@ -1695,10 +2296,6 @@ class AlphaPosApp {
         this.updateCartUI();
 
         // Trigger location verifier refresh in matching language
-        if (window.locationVerifier) {
-            window.locationVerifier.runVerification();
-        }
-
         // Re-render order history if loaded
         if (this.lastFetchedOrders && this.lastFetchedOrders.length > 0) {
             this.renderOrderHistory(this.lastFetchedOrders);
@@ -1711,10 +2308,11 @@ class AlphaPosApp {
      */
     parseURLParams() {
         const urlParams = new URLSearchParams(window.location.search);
-        const table = urlParams.get('table');
-        const merchant = urlParams.get('merchant');
+        const table = urlParams.get('table') || urlParams.get('t');
+        const merchant = urlParams.get('merchant') || urlParams.get('merchant_id');
         const branch = urlParams.get('branch') || urlParams.get('branch_code');
         const token = urlParams.get('token');
+        const permanentKey = urlParams.get('key');
         const jwt = urlParams.get('jwt'); // Merchant JWT token from QR code
 
         // Validate table number: must be a non-empty string. Normalize 'T3' -> '3' for DB mapping.
@@ -1724,10 +2322,20 @@ class AlphaPosApp {
                 normalizedTable = normalizedTable.substring(1);
             }
             this.tableNumber = normalizedTable;
+            try { sessionStorage.setItem('alphapos_table', normalizedTable); } catch (_) { /* ignore */ }
+        } else {
+            // Recover table from session if QR params were stripped after first load
+            try {
+                const cached = sessionStorage.getItem('alphapos_table');
+                if (cached && cached.trim()) this.tableNumber = cached.trim();
+            } catch (_) { /* ignore */ }
         }
 
         if (token) {
             this.sessionToken = token;
+        }
+        if (permanentKey && permanentKey.length <= 255) {
+            this.permanentQRKey = permanentKey;
         }
 
         // Use JWT token from URL if provided (generated by iPad POS for this table's QR code)
@@ -1736,7 +2344,7 @@ class AlphaPosApp {
             console.log('[Auth] Using merchant JWT token from QR code URL');
         }
 
-        let savedMerchant = localStorage.getItem('active_merchant_id');
+        let savedMerchant = safeStorageGet(localStorage, 'active_merchant_id', '');
         if (savedMerchant === '00000000-0000-0000-0000-000000000000') {
             savedMerchant = '';
         }
@@ -1744,16 +2352,27 @@ class AlphaPosApp {
         // Fall back to saved merchant if URL param is absent.
         this.merchantId = (merchant && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(merchant) ? merchant : savedMerchant) || (window.ALPHAPOS_CONFIG?.merchantId || '');
         if (this.merchantId) {
-            localStorage.setItem('active_merchant_id', this.merchantId);
+            safeStorageSet(localStorage, 'active_merchant_id', this.merchantId);
         }
-        this.branchCode = branch || localStorage.getItem('active_branch_code') || (window.ALPHAPOS_CONFIG?.branchCode || '');
+        this.branchCode = branch || safeStorageGet(localStorage, 'active_branch_code', '') || (window.ALPHAPOS_CONFIG?.branchCode || '');
         if (this.branchCode) {
-            localStorage.setItem('active_branch_code', this.branchCode);
+            safeStorageSet(localStorage, 'active_branch_code', this.branchCode);
         }
 
-        // Update Header Badge
-        const badgeText = this.translate("tableBadgeText").replace("{num}", this.tableNumber);
-        document.getElementById("tableBadge").querySelector(".table-text").innerText = badgeText;
+        // Update Header Badge (null-safe — never throw and abort init)
+        this._updateTableBadge();
+    }
+
+    _updateTableBadge() {
+        try {
+            const badgeEl = document.getElementById("tableBadge");
+            const textEl = badgeEl ? badgeEl.querySelector(".table-text") : null;
+            if (!textEl) return;
+            const num = this.tableNumber && String(this.tableNumber).trim() ? this.tableNumber : "--";
+            textEl.innerText = this.translate("tableBadgeText").replace("{num}", num);
+        } catch (e) {
+            console.warn("[AlphaPos] Failed to update table badge:", e);
+        }
     }
 
     /**
@@ -1819,7 +2438,10 @@ class AlphaPosApp {
         const activeCategory = this.categories.find(c => c.id === this.currentCategory);
         const titleEl = document.getElementById("currentCategoryTitle");
         if (isSearching) {
-            if (titleEl) titleEl.innerText = this.translate('searchResults', `Search: "${this.searchQuery}"`);
+            if (titleEl) {
+                titleEl.innerText = this.translate('searchResults', `Search: "${this.searchQuery}"`)
+                    .replace('{q}', this.searchQuery);
+            }
         } else {
             if (titleEl) {
                 if (this.currentCategory === "foods") {
@@ -1839,20 +2461,28 @@ class AlphaPosApp {
                 return name.includes(query) || desc.includes(query);
             });
         } else {
-            if (this.currentCategory === "foods") {
-                itemsToRender = this.menuItems.filter(item => item.category === "mains" || item.category === "appetizers");
-            } else {
-                itemsToRender = this.menuItems.filter(item => item.category === this.currentCategory);
-            }
+            itemsToRender = this.menuItems.filter(item => this._matchesMenuCategory(item, this.currentCategory));
         }
 
         // Apply allergen & dietary filters
         itemsToRender = this.allergenFilter.applyFilters(itemsToRender);
 
-        // Show/hide empty state
+        // Show/hide empty state (search miss OR menu truly empty)
         const emptyState = document.getElementById("searchEmptyState");
         if (emptyState) {
-            emptyState.classList.toggle("visible", isSearching && itemsToRender.length === 0);
+            const menuEmpty = !this.menuItems || this.menuItems.length === 0;
+            emptyState.classList.toggle("visible", (isSearching && itemsToRender.length === 0) || menuEmpty);
+            const emptyText = emptyState.querySelector(".search-empty-text");
+            if (emptyText) {
+                if (menuEmpty) {
+                    emptyText.innerText = this.translate(
+                        "menuEmptyNoItems",
+                        "Menu is not available yet. Please ask staff for help."
+                    );
+                } else if (isSearching && itemsToRender.length === 0) {
+                    emptyText.innerText = this.translate("noSearchResults", "No items found");
+                }
+            }
         }
 
         // Hide featured section when searching
@@ -1879,9 +2509,16 @@ class AlphaPosApp {
         // Helper to render a card or row
         const createItemHTML = (item, index, isFeatured) => {
             const inCartQty = this.getItemTotalQuantity(item.id);
+            const isAvailable = item.is_available !== false && item.is_available !== 0 && item.is_available !== '0';
 
             let actionPillHtml;
-            if (inCartQty === 0) {
+            if (!isAvailable) {
+                actionPillHtml = `
+                    <button class="add-btn-only disabled" disabled aria-disabled="true" style="opacity: 0.6; cursor: not-allowed; font-size: 11px; width: auto; padding: 4px 10px; border-radius: 12px;">
+                        <span>${this.translate('outOfStockBtn', 'หมด')}</span>
+                    </button>
+                `;
+            } else if (inCartQty === 0) {
                 actionPillHtml = `
                     <button class="add-btn-only" aria-label="Add ${escapeHtml(this.getItemName(item))} to cart" onclick="app.updateCartQuantity('${item.id}', 1); event.stopPropagation();">
                         <span class="add-btn-plus">+</span>
@@ -1910,11 +2547,10 @@ class AlphaPosApp {
 
             const element = document.createElement("div");
             element.className = isFeatured 
-                ? `featured-item-card ${inCartQty > 0 ? 'selected' : ''}`
-                : `list-item-card ${inCartQty > 0 ? 'selected' : ''}`;
+                ? `featured-item-card ${inCartQty > 0 ? 'selected' : ''} ${!isAvailable ? 'out-of-stock' : ''}`
+                : `list-item-card ${inCartQty > 0 ? 'selected' : ''} ${!isAvailable ? 'out-of-stock' : ''}`;
 
             element.style.animationDelay = `${index * 0.05}s`;
-            element.setAttribute("onclick", `app.openProductDetailModal('${item.id}')`);
             element.setAttribute("role", "button");
             element.setAttribute("tabindex", "0");
             element.setAttribute("aria-label", `${this.getItemName(item)} ฿${item.price.toFixed(2)}`);
@@ -1926,22 +2562,58 @@ class AlphaPosApp {
                 }
             });
 
+            // Tap vs. scroll detection using the W3C Pointer Events API (the
+            // cross-platform standard covering mouse, touch and pen). We open the
+            // modal on pointerup only when the pointer barely moved since
+            // pointerdown — a genuine tap/click — so scrolling the list never
+            // triggers the modal. There is no synthetic 300ms click involved, so
+            // the response is immediate on both mobile and desktop.
+            let _pointerStartX = 0;
+            let _pointerStartY = 0;
+            let _pointerActive = false;
+            const TAP_SLOP = 12; // px of movement still considered a tap (iOS/Android standard ~10-12px)
+
+            const isInteractiveTarget = (target) =>
+                target.closest('button, a, input, textarea, select, .quantity-control-pill, .add-btn-only, .modal-qty-stepper');
+
+            element.addEventListener("pointerdown", (event) => {
+                if (isInteractiveTarget(event.target)) { _pointerActive = false; return; }
+                _pointerActive = true;
+                _pointerStartX = event.clientX;
+                _pointerStartY = event.clientY;
+            });
+
+            element.addEventListener("pointerup", (event) => {
+                if (!_pointerActive) return;
+                _pointerActive = false;
+                if (isInteractiveTarget(event.target)) return;
+                // If the pointer moved beyond the slop threshold it was a scroll/drag, not a tap.
+                if (Math.abs(event.clientX - _pointerStartX) > TAP_SLOP ||
+                    Math.abs(event.clientY - _pointerStartY) > TAP_SLOP) return;
+                this.openProductDetailModal(item.id);
+            });
+
+            // Cancel the pending tap if the browser takes over the gesture (e.g. scroll).
+            element.addEventListener("pointercancel", () => { _pointerActive = false; });
+
+            const resolvedImg = escapeHtml(this.resolveMenuImageUrl(item.imageUrl));
+            const imgFallback = "this.onerror=null;this.src=this.dataset.fallback||'';";
             let mediaHtml;
             if (isFeatured && item.videoUrl) {
                 mediaHtml = `
                     <video class="featured-item-img" autoplay loop muted playsinline style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
                         <source src="${escapeHtml(item.videoUrl)}" type="video/mp4">
-                        <img class="featured-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                        <img class="featured-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" onerror="${imgFallback}">
                     </video>
-                    <img class="featured-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" style="display:none;" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                    <img class="featured-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" style="display:none;" onerror="${imgFallback}">
                 `;
             } else {
-                mediaHtml = `<img class="featured-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">`;
+                mediaHtml = `<img class="featured-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" onerror="${imgFallback}">`;
             }
 
             if (isFeatured) {
                 element.innerHTML = `
-                    <div class="featured-item-img-container" onclick="event.stopPropagation()">
+                    <div class="featured-item-img-container">
                         ${mediaHtml}
                     </div>
                     <div class="featured-item-content">
@@ -1956,7 +2628,6 @@ class AlphaPosApp {
                         </div>
                         <h3 class="featured-item-title">${escapeHtml(this.getItemName(item))}</h3>
                         <p class="featured-item-desc">${escapeHtml(this.getItemDesc(item))}</p>
-                        ${this.allergenFilter.renderBadges(item.id)}
                         <div class="featured-item-price-action" onclick="event.stopPropagation()">
                             <span class="featured-item-price">฿${item.price.toFixed(2)}</span>
                             <div class="featured-item-action">
@@ -1971,13 +2642,13 @@ class AlphaPosApp {
                     mediaHtml = `
                         <video class="list-item-img" autoplay loop muted playsinline style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
                             <source src="${escapeHtml(item.videoUrl)}" type="video/mp4">
-                            <img class="list-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                            <img class="list-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" onerror="${imgFallback}">
                         </video>
-                        <img class="list-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" style="display:none;" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                        <img class="list-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" style="display:none;" onerror="${imgFallback}">
                     `;
                 } else {
                     mediaHtml = `
-                        <img class="list-item-img" src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(this.getItemName(item))}" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80';">
+                        <img class="list-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" onerror="${imgFallback}">
                     `;
                 }
 
@@ -1999,7 +2670,7 @@ class AlphaPosApp {
                             </div>
                         </div>
                     </div>
-                    <div class="list-item-img-container" onclick="event.stopPropagation()">
+                    <div class="list-item-img-container">
                         ${mediaHtml}
                         ${qtyBadgeHtml}
                     </div>
@@ -2032,6 +2703,45 @@ class AlphaPosApp {
         }
         // Sync toggle buttons
         this.setMenuView(this.menuViewMode);
+
+        // Warm the browser cache with detail images so the product modal
+        // shows its hero image instantly (no flash) when a card is tapped.
+        this.prefetchMenuImages();
+        this.refreshMotionTargets();
+    }
+
+    /**
+     * Preloads menu item images in the background so they are cached before
+     * the user opens the product detail modal. Runs during idle time and
+     * skips URLs that have already been requested.
+     */
+    prefetchMenuImages() {
+        if (!this.menuItems || !this.menuItems.length) return;
+        this._prefetchedImages = this._prefetchedImages || new Set();
+
+        const urls = [];
+        for (const item of this.menuItems) {
+            const url = item.imageUrl;
+            if (!url) continue;
+            if (!(url.startsWith('http://') || url.startsWith('https://'))) continue;
+            if (this._prefetchedImages.has(url)) continue;
+            this._prefetchedImages.add(url);
+            urls.push(url);
+        }
+        if (!urls.length) return;
+
+        const run = () => {
+            urls.forEach(url => {
+                const img = new Image();
+                img.decoding = "async";
+                img.src = url;
+            });
+        };
+        if (typeof requestIdleCallback === "function") {
+            requestIdleCallback(run, { timeout: 2000 });
+        } else {
+            setTimeout(run, 300);
+        }
     }
 
     /**
@@ -2204,10 +2914,13 @@ class AlphaPosApp {
     }
 
     /**
-     * Calculate subtotal, service charges, vat, and total
+     * Calculate subtotal, promotions, service charges, vat, and total.
+     * Rules mirror POS: cart-wide %/fixed, item-scoped %/fixed,
+     * bundle / buy X get Y / buy X pay Y.
      */
     calculateTotals() {
         let subtotal = 0;
+        const lineItems = [];
 
         Object.keys(this.cart).forEach(cartKey => {
             const cartItem = this.cart[cartKey];
@@ -2231,22 +2944,121 @@ class AlphaPosApp {
 
             const item = this.menuItems.find(m => m.id === itemId);
             if (item) {
-                subtotal += (item.price + modifierPriceSum) * qty;
+                const unit = item.price + modifierPriceSum;
+                const lineTotal = unit * qty;
+                subtotal += lineTotal;
+                lineItems.push({ itemId, qty, unit, lineTotal });
             }
         });
 
-        const serviceCharge = subtotal * 0.10; // 10% Service Charge
-        const tax = (subtotal + serviceCharge) * 0.07; // 7% VAT
-        const total = subtotal + serviceCharge + tax;
+        const promoResult = this.calculateBestPromotionDiscount(subtotal, lineItems);
+        const discount = promoResult.amount;
+        const discountedSubtotal = Math.max(0, subtotal - discount);
+        const taxRate = Number(this.merchantSettings.tax_rate ?? 7) / 100;
+        const serviceCharge = discountedSubtotal * (Number(this.merchantSettings.service_charge_rate ?? 10) / 100);
+        const inclusiveTax = (this.merchantSettings.tax_type || 'inclusive') === 'inclusive';
+        const itemTax = inclusiveTax ? discountedSubtotal * taxRate / (1 + taxRate) : discountedSubtotal * taxRate;
+        const serviceTax = serviceCharge * taxRate;
+        const tax = itemTax + serviceTax;
+        const total = discountedSubtotal + serviceCharge + serviceTax + (inclusiveTax ? 0 : itemTax);
 
-        return { subtotal, serviceCharge, tax, total };
+        this._appliedPromotions = promoResult.promotion ? [promoResult.promotion] : [];
+
+        return {
+            subtotal,
+            discount,
+            discountLabel: promoResult.label,
+            serviceCharge,
+            tax,
+            total,
+            promotion: promoResult.promotion
+        };
+    }
+
+    calculateBestPromotionDiscount(subtotal, lineItems) {
+        const promos = (this._activePromotions || []).filter(p => {
+            const type = p.discount_type || p.discountType || 'none';
+            return type && type !== 'none' && this.isPromotionCurrentlyVisible(p);
+        });
+        if (!promos.length || subtotal <= 0) {
+            return { amount: 0, label: '', promotion: null };
+        }
+
+        let best = { amount: 0, label: '', promotion: null };
+        for (const promo of promos) {
+            const amount = this.promotionDiscountAmount(promo, subtotal, lineItems);
+            if (amount > best.amount) {
+                const type = promo.discount_type || promo.discountType;
+                const value = Number(promo.discount_value ?? promo.discountValue ?? 0);
+                let label = promo.title || 'Discount';
+                if (type === 'percentage') label = `${promo.title || 'Discount'} (−${value}%)`;
+                else if (type === 'fixed') label = `${promo.title || 'Discount'} (−฿${value})`;
+                best = { amount, label, promotion: promo };
+            }
+        }
+        return best;
+    }
+
+    promotionDiscountAmount(promo, subtotal, lineItems) {
+        const type = promo.discount_type || promo.discountType || 'none';
+        const value = Number(promo.discount_value ?? promo.discountValue ?? 0);
+        const minSpend = Number(promo.minimum_spend ?? promo.minimumSpend ?? 0);
+        const itemId = promo.applies_to_menu_item_id || promo.appliesToMenuItemId || '';
+        const requiredQty = Math.max(1, Number(promo.required_quantity ?? promo.requiredQuantity ?? 1));
+        const rewardQty = Math.max(0, Number(promo.reward_quantity ?? promo.rewardQuantity ?? 0));
+
+        if (subtotal < minSpend) return 0;
+
+        if (type === 'percentage' || type === 'fixed') {
+            let base = subtotal;
+            if (itemId) {
+                base = lineItems
+                    .filter(l => String(l.itemId) === String(itemId))
+                    .reduce((sum, l) => sum + l.lineTotal, 0);
+                if (base <= 0) return 0;
+            }
+            if (type === 'percentage') return Math.min(base, base * (Math.min(100, value) / 100));
+            return Math.min(base, Math.max(0, value));
+        }
+
+        if (!itemId) return 0;
+        const lines = lineItems.filter(l => String(l.itemId) === String(itemId));
+        if (!lines.length) return 0;
+
+        if (type === 'bundle_price' && value > 0) {
+            return lines.reduce((total, line) => {
+                const bundles = Math.floor(line.qty / requiredQty);
+                if (bundles <= 0) return total;
+                const regular = line.unit * requiredQty * bundles;
+                const promoTotal = value * bundles;
+                return total + Math.max(0, regular - promoTotal);
+            }, 0);
+        }
+
+        if (type === 'buy_x_get_y' && rewardQty > 0) {
+            const groupSize = requiredQty + rewardQty;
+            return lines.reduce((total, line) => {
+                const groups = Math.floor(line.qty / groupSize);
+                return total + Math.max(0, line.unit * groups * rewardQty);
+            }, 0);
+        }
+
+        if (type === 'buy_x_pay_y' && rewardQty > 0 && rewardQty < requiredQty) {
+            return lines.reduce((total, line) => {
+                const groups = Math.floor(line.qty / requiredQty);
+                const freeUnits = groups * (requiredQty - rewardQty);
+                return total + Math.max(0, line.unit * freeUnits);
+            }, 0);
+        }
+
+        return 0;
     }
 
     /**
      * Update Floating Cart and Drawer info
      */
     updateCartUI() {
-        const { subtotal, serviceCharge, tax, total } = this.calculateTotals();
+        const { subtotal, discount, discountLabel, serviceCharge, tax, total } = this.calculateTotals();
         let totalItems = 0;
 
         Object.values(this.cart).forEach(cartItem => {
@@ -2263,6 +3075,18 @@ class AlphaPosApp {
 
         // Breakdown elements in drawer
         document.getElementById("breakdownSubtotal").innerText = `฿${subtotal.toFixed(2)}`;
+        const discountRow = document.getElementById("breakdownDiscountRow");
+        const discountEl = document.getElementById("breakdownDiscount");
+        const discountLabelEl = document.getElementById("breakdownDiscountLabel");
+        if (discountRow && discountEl) {
+            if (discount > 0) {
+                discountRow.style.display = '';
+                discountEl.innerText = `-฿${discount.toFixed(2)}`;
+                if (discountLabelEl) discountLabelEl.innerText = discountLabel || 'Discount';
+            } else {
+                discountRow.style.display = 'none';
+            }
+        }
         document.getElementById("breakdownService").innerText = `฿${serviceCharge.toFixed(2)}`;
         document.getElementById("breakdownTax").innerText = `฿${tax.toFixed(2)}`;
         document.getElementById("breakdownTotal").innerText = `฿${total.toFixed(2)}`;
@@ -2307,6 +3131,12 @@ class AlphaPosApp {
         container.innerHTML = "";
 
         const cartKeys = Object.keys(this.cart);
+        const itemCount = cartKeys.reduce((total, key) => {
+            const value = this.cart[key];
+            return total + (typeof value === 'object' ? Number(value.quantity || 0) : Number(value || 0));
+        }, 0);
+        const countEl = document.getElementById("cartDrawerCount");
+        if (countEl) countEl.textContent = `${itemCount} ${this.translate('itemsLabel', 'items')}`;
 
         if (cartKeys.length === 0) {
             container.innerHTML = `<div class="empty-state">${this.translate('emptyTray')}</div>`;
@@ -2358,6 +3188,7 @@ class AlphaPosApp {
 
             const row = document.createElement("div");
             row.className = "cart-item-row";
+            row.style.setProperty('--cart-row-index', container.children.length);
             row.innerHTML = `
                 <div class="cart-item-details">
                      <div class="cart-item-name">${escapeHtml(this.getItemName(item))}</div>
@@ -2407,76 +3238,85 @@ class AlphaPosApp {
     }
 
     switchView(viewName) {
-        this.currentView = viewName;
+        const commitView = () => {
+            this.currentView = viewName;
+            const appContainer = document.querySelector('.app-container');
+            if (appContainer) appContainer.scrollTop = 0;
 
-        // Smooth scroll to top when switching views
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        const appContainer = document.querySelector('.app-container');
-        if (appContainer) appContainer.scrollTop = 0;
+            document.querySelectorAll(".nav-tab").forEach(tab => {
+                tab.classList.remove("active");
+                tab.setAttribute('aria-selected', 'false');
+            });
+            document.querySelectorAll(".view-panel").forEach(panel => {
+                panel.classList.add("hide");
+                panel.classList.remove("active");
+            });
 
-        // Switch active tabs
-        document.querySelectorAll(".nav-tab").forEach(tab => tab.classList.remove("active"));
-        document.querySelectorAll(".view-panel").forEach(panel => {
-            panel.classList.add("hide");
-            panel.classList.remove("active");
-        });
-
-        if (viewName === "menu") {
-            document.getElementById("navTabMenu").classList.add("active");
-            document.getElementById("menuView").classList.remove("hide");
-            document.getElementById("menuView").classList.add("active");
-            this.updateCartUI();
-        } else if (viewName === "status") {
-            document.getElementById("navTabStatus").classList.add("active");
-            document.getElementById("statusView").classList.remove("hide");
-            document.getElementById("statusView").classList.add("active");
-            document.getElementById("cartBar").classList.remove("show");
-            this.fetchOrderHistory();
-        } else if (viewName === "service") {
-            document.getElementById("navTabService").classList.add("active");
-            document.getElementById("serviceView").classList.remove("hide");
-            document.getElementById("serviceView").classList.add("active");
-            document.getElementById("cartBar").classList.remove("show");
-        }
-
-        // Update floating request button visibility
-        const requestBtn = document.getElementById("floatingRequestBtn");
-        if (requestBtn) {
-            if (viewName === "service") {
-                requestBtn.style.display = "none";
-            } else {
-                requestBtn.style.display = "flex";
+            if (viewName === "menu") {
+                document.getElementById("navTabMenu").classList.add("active");
+                document.getElementById("menuView").classList.remove("hide");
+                document.getElementById("menuView").classList.add("active");
+                this.updateCartUI();
+            } else if (viewName === "status") {
+                document.getElementById("navTabStatus").classList.add("active");
+                document.getElementById("statusView").classList.remove("hide");
+                document.getElementById("statusView").classList.add("active");
+                document.getElementById("cartBar").classList.remove("show");
+                this.fetchOrderHistory();
+            } else if (viewName === "service") {
+                document.getElementById("navTabService").classList.add("active");
+                document.getElementById("serviceView").classList.remove("hide");
+                document.getElementById("serviceView").classList.add("active");
+                document.getElementById("cartBar").classList.remove("show");
             }
-        }
+
+            document.querySelector(`#navTab${viewName[0].toUpperCase()}${viewName.slice(1)}`)
+                ?.setAttribute('aria-selected', 'true');
+            const requestBtn = document.getElementById("floatingRequestBtn");
+            if (requestBtn) requestBtn.style.display = viewName === "service" ? "none" : "flex";
+        };
+
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        const canTransition = typeof document.startViewTransition === 'function'
+            && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (canTransition) document.startViewTransition(commitView);
+        else commitView();
     }
 
-    async fetchOrderHistory() {
+    async fetchOrderHistory({ showLoading = true } = {}) {
         if (!this.sessionToken) return;
+        if (this._orderHistoryFetchInFlight) return;
+        this._orderHistoryFetchInFlight = true;
+
+        const activeContainer = document.getElementById("activeOrdersList");
+        const pastContainer = document.getElementById("pastOrdersList");
+        if (showLoading && activeContainer) {
+            activeContainer.setAttribute("aria-busy", "true");
+            activeContainer.innerHTML = Array.from({ length: 5 }, () => `
+                <div class="status-row-skeleton" aria-hidden="true">
+                    <span class="skeleton-qty"></span><span class="skeleton-copy"></span><span class="skeleton-state"></span>
+                </div>`).join("");
+        }
+        if (showLoading && pastContainer) pastContainer.innerHTML = "";
 
         let success = false;
         let formattedOrders = [];
 
         if (this.supabase) {
             try {
-                const { data: sessionData, error: sessionError } = await this.supabase
-                    .from('table_sessions')
-                    .select('*')
+                // The session was already validated before ordering. Read the exact
+                // database rows for this merchant/table/session without unrelated joins.
+                const { data: ordersData, error: ordersError } = await this.supabase
+                    .from('orders')
+                    .select('*, order_items(*, order_item_modifiers(*))')
+                    .eq('merchant_id', this.merchantId)
                     .eq('table_number', this.tableNumber)
                     .eq('session_token', this.sessionToken)
-                    .eq('is_active', 1)
-                    .maybeSingle();
+                    .order('created_at', { ascending: true });
 
-                if (sessionError) throw sessionError;
-                if (sessionData) {
-                    const { data: ordersData, error: ordersError } = await this.supabase
-                        .from('orders')
-                        .select('*, order_items(*, order_item_modifiers(*)), payments(*)')
-                        .eq('session_token', this.sessionToken)
-                        .order('created_at', { ascending: true });
+                if (ordersError) throw ordersError;
 
-                    if (ordersError) throw ordersError;
-
-                    formattedOrders = ordersData.map(order => {
+                    formattedOrders = (ordersData || []).map(order => {
                         const items = (order.order_items || []).map(item => {
                             const mods = (item.order_item_modifiers || []).map(m => {
                                 const modConfig = this.modifiersConfig.modifiers.find(mc => mc.id === m.modifier_id);
@@ -2497,13 +3337,6 @@ class AlphaPosApp {
                                 modifiers: mods
                             };
                         });
-                        const payments = (order.payments || []).map(p => ({
-                            id: p.id,
-                            orderId: p.order_id,
-                            amount: p.amount,
-                            paymentMethod: p.payment_method,
-                            createdAt: p.created_at
-                        }));
                         return {
                             id: order.id,
                             orderNumber: order.order_number,
@@ -2511,12 +3344,10 @@ class AlphaPosApp {
                             total: order.total,
                             status: order.status,
                             createdAt: order.created_at,
-                            items: items,
-                            payments: payments
+                            items: items
                         };
                     });
                     success = true;
-                }
             } catch (error) {
                 console.error("Supabase error fetching order history, falling back to local server:", error);
             }
@@ -2524,7 +3355,8 @@ class AlphaPosApp {
 
         if (!success && this.isLocalServerAvailable) {
             try {
-                const res = await fetch(`${this.localServerURL}/v1/orders?table=${this.tableNumber}&token=${this.sessionToken}`);
+                const params = new URLSearchParams({ table_number: this.tableNumber, session_token: this.sessionToken });
+                const res = await fetch(`${this.localServerURL}/v1/orders?${params}`);
                 if (res.ok) {
                     formattedOrders = await res.json();
                     success = true;
@@ -2536,8 +3368,31 @@ class AlphaPosApp {
 
         if (success) {
             this.lastFetchedOrders = formattedOrders;
-            this.renderOrderHistory(formattedOrders);
+            this._knownOrderIds = new Set(formattedOrders.map(order => order.id));
+            this._lastHistoryRefreshAt = Date.now();
+            const nextSignature = JSON.stringify(formattedOrders.map(order => ({
+                id: order.id,
+                status: order.status,
+                total: order.total,
+                items: order.items.map(item => ({
+                    id: item.id,
+                    status: item.status,
+                    quantity: item.quantity,
+                    notes: item.notes,
+                    modifiers: item.modifiers
+                }))
+            })));
+            // A reconciliation response with identical data must not rebuild the
+            // status DOM: on Safari that can reset a customer's scroll position.
+            if (showLoading || nextSignature !== this._orderHistorySignature) {
+                this._orderHistorySignature = nextSignature;
+                this.renderOrderHistory(formattedOrders);
+            }
+        } else if (showLoading && activeContainer) {
+            activeContainer.removeAttribute("aria-busy");
+            activeContainer.innerHTML = `<div class="empty-state">${this.translate('noActiveItems')}</div>`;
         }
+        this._orderHistoryFetchInFlight = false;
     }
 
     renderOrderHistory(orders) {
@@ -2565,14 +3420,17 @@ class AlphaPosApp {
 
             order.items.forEach(item => {
                 const status = (item.status || "cooking").toLowerCase();
-                if (status === "cooking" || status === "preparing" || status === "ready") {
+                if (status === "pending" || status === "cooking" || status === "preparing" || status === "ready") {
                     activeItems.push({
                         orderNumber: order.orderNumber,
                         id: item.id,
                         name: item.name,
                         quantity: item.quantity,
                         price: item.price,
-                        status: status
+                        status: status,
+                        item_id: item.item_id,
+                        notes: item.notes,
+                        modifiers: item.modifiers
                     });
                     activeCookingCount += item.quantity;
                 } else {
@@ -2582,13 +3440,17 @@ class AlphaPosApp {
                         name: item.name,
                         quantity: item.quantity,
                         price: item.price,
-                        status: status
+                        status: status,
+                        item_id: item.item_id,
+                        notes: item.notes,
+                        modifiers: item.modifiers
                     });
                 }
             });
         });
 
         grandTotalEl.innerText = `฿${grandTotal.toFixed(2)}`;
+        activeContainer.removeAttribute("aria-busy");
 
         if (activeCookingCount > 0) {
             badgeEl.innerText = activeCookingCount;
@@ -2632,53 +3494,31 @@ class AlphaPosApp {
                        </div>`
                     : "";
 
-                // Stepper state classes
-                const isCooking = statusClass === "cooking" || statusClass === "preparing" || statusClass === "ready";
-                const isReady = statusClass === "ready";
-
-                const step1Class = "step active"; // Received is always active
-                const step2Class = isCooking ? "step active" : "step";
-                const step3Class = isReady ? "step active pulse" : "step";
-                
-                // Stepper progress line width
-                let progressWidth = "0%";
-                if (isReady) {
-                    progressWidth = "100%";
-                } else if (isCooking) {
-                    progressWidth = "50%";
-                }
+                const statusLabel = statusClass === "ready"
+                    ? this.translate('stepReady')
+                    : statusClass === "pending"
+                        ? this.translate('stepReceived')
+                        : this.translate('stepPreparing');
+                const statusIcon = statusClass === "ready" ? "icon-bell" : statusClass === "pending" ? "icon-check" : "icon-clock";
 
                 el.innerHTML = `
-                    <div class="status-item-body">
+                    <div class="status-item-body compact-status-row">
+                        <span class="item-qty" aria-label="${item.quantity}">×${item.quantity}</span>
                         <div class="item-info">
                             <div class="item-header">
                                 <span class="item-name">${escapeHtml(displayName)}</span>
-                                <span class="item-qty">× ${item.quantity}</span>
                             </div>
-                            <div class="item-meta">${this.translate('orderLabel')}: #<strong>${escapeHtml(item.orderNumber || '')}</strong></div>
+                            <div class="item-meta">#${escapeHtml(item.orderNumber || '')}</div>
                             ${modifiersHtml}
                             ${noteHtml}
                         </div>
                         <div class="status-action-group">
+                            <span class="status-badge ${statusClass}"><span class="app-icon ${statusIcon}" aria-hidden="true"></span>${statusLabel}</span>
                             <button class="add-note-btn" aria-label="${this.translate('addNoteBtn')}" onclick="app.addItemNote('${item.id}', '${escapeHtml(displayName)}')" title="${this.translate('addNoteBtn')}"><span class="app-icon icon-menu" aria-hidden="true"></span></button>
                         </div>
                     </div>
-                    <div class="item-progress-stepper">
-                        <div class="step-line-progress" style="width: ${progressWidth}"></div>
-                        <div class="${step1Class}">
-                            <div class="step-dot"><span class="app-icon icon-check" aria-hidden="true"></span></div>
-                            <span class="step-label">${this.translate('stepReceived')}</span>
-                        </div>
-                        <div class="${step2Class}">
-                            <div class="step-dot"><span class="app-icon icon-clock" aria-hidden="true"></span></div>
-                            <span class="step-label">${this.translate('stepPreparing')}</span>
-                        </div>
-                        <div class="${step3Class}">
-                            <div class="step-dot"><span class="app-icon icon-bell" aria-hidden="true"></span></div>
-                            <span class="step-label">${this.translate('stepReady')}</span>
-                        </div>
-                    </div>
                 `;
+                el.style.setProperty('--row-index', activeContainer.children.length);
                 activeContainer.appendChild(el);
             });
         }
@@ -2716,12 +3556,12 @@ class AlphaPosApp {
                     : "";
 
                 el.innerHTML = `
+                    <span class="item-qty" aria-label="${item.quantity}">×${item.quantity}</span>
                     <div class="item-info">
                         <div class="item-header">
                             <span class="item-name">${escapeHtml(displayName)}</span>
-                            <span class="item-qty">× ${item.quantity}</span>
                         </div>
-                        <div class="item-meta">${this.translate('orderLabel')}: ${escapeHtml(item.orderNumber || '')}</div>
+                        <div class="item-meta">#${escapeHtml(item.orderNumber || '')}</div>
                         ${modifiersHtml}
                         ${noteHtml}
                     </div>
@@ -2731,9 +3571,11 @@ class AlphaPosApp {
                         ${item.status !== "cancelled" ? `<button class="reorder-action-btn" onclick="app.reorderItem('${escapeHtml(item.name)}')">${this.translate('orderAgainBtn')}</button>` : ''}
                     </div>
                 `;
+                el.style.setProperty('--row-index', pastContainer.children.length);
                 pastContainer.appendChild(el);
             });
         }
+
     }
 
     reorderItem(name) {
@@ -2797,10 +3639,10 @@ class AlphaPosApp {
         // Try Supabase first
         if (this.supabase) {
             try {
-                const { error } = await this.supabase
-                    .from('order_items')
-                    .update({ customer_note: note })
-                    .eq('id', itemId);
+                const { error } = await this.supabase.rpc('update_customer_order_item_note', {
+                    p_order_item_id: itemId,
+                    p_note: note
+                });
                 if (!error) {
                     console.log(`[Note] Saved note for item ${itemId} to server`);
                     return;
@@ -2811,7 +3653,7 @@ class AlphaPosApp {
         }
 
         // Fallback to local server
-        if (this.isLocalServerAvailable) {
+        if (this.isLocalServerAvailable && !window.ALPHAPOS_CONFIG?.isProduction) {
             try {
                 await fetch(`${this.localServerURL}/v1/order-items/${itemId}/note`, {
                     method: 'PATCH',
@@ -2829,28 +3671,27 @@ class AlphaPosApp {
         // Debounce helper to prevent rapid-fire fetches from multiple Realtime events
         this._debouncedFetchHistory = this._debounce(() => {
             if (this.currentView === "status") {
-                this.fetchOrderHistory();
+                this.fetchOrderHistory({ showLoading: false });
             } else {
                 this.updateStatusTabBadgeCount();
             }
         }, 1500);
 
-        this.realtimeChannels = [];
+        // Live WSS via supabaseRealtimeUrl (api host); poll remains as fallback.
+        this.setupCustomerRealtime();
 
-        // NOTE: Supabase Realtime WebSocket is disabled when running behind Cloudflare Workers proxy
-        // because WebSocket upgrade requests to self-hosted Supabase (HTTP VPS) cannot pass through
-        // the HTTPS-only Cloudflare edge without a WebSocket-aware tunnel.
-        // Order status updates are handled by the polling interval below (every 15s).
-        // Re-enable Realtime only when Supabase is exposed on a public HTTPS domain with WSS support.
-
-
-        // Setup a periodic check of session validity + fetching status
+        // Realtime is primary. Polling only repairs missed websocket events and
+        // validates the session; do not re-download nested order data every 10s.
         if (this.pollingInterval) {
             clearInterval(this.pollingInterval);
         }
         this.pollingInterval = setInterval(async () => {
-            // Check session validity periodically (critical for local server fallback)
-            if (this.sessionToken) {
+            if (document.hidden) return;
+
+            const now = Date.now();
+            // Session changes normally arrive via Realtime. Keep a 60s fallback.
+            if (this.sessionToken && now - this._lastSessionCheckAt >= 60000) {
+                this._lastSessionCheckAt = now;
                 const isActive = await this.verifySessionWithServer(this.sessionToken);
                 if (!isActive) {
                     console.warn("Session closed by POS/server for table:", this.tableNumber);
@@ -2860,9 +3701,7 @@ class AlphaPosApp {
                     this.cart = {};
                     this.saveCartToStorage();
 
-                    if (window.locationVerifier) {
-                        window.locationVerifier.markPaymentCompleted();
-                    }
+                    orderingSessionGate.markSessionClosed();
 
                     this.showBlockingState(
                         "sessionClosedTitle",
@@ -2873,12 +3712,28 @@ class AlphaPosApp {
                 }
             }
 
-            if (this.currentView === "status") {
-                this.fetchOrderHistory();
-            } else {
-                this.updateStatusTabBadgeCount();
+            // When Realtime is healthy, a five-minute reconciliation is enough.
+            // If the channel is down, poll every 30s until it reconnects.
+            const reconciliationMs = this._realtimeLive ? 300000 : 30000;
+            if (now - this._lastHistoryRefreshAt >= reconciliationMs) {
+                if (this.currentView === "status") {
+                    this.fetchOrderHistory({ showLoading: false });
+                } else {
+                    this.updateStatusTabBadgeCount();
+                }
             }
-        }, 10000);
+        }, 30000);
+
+        if (this._statusVisibilityHandler) {
+            document.removeEventListener('visibilitychange', this._statusVisibilityHandler);
+        }
+        this._statusVisibilityHandler = () => {
+            if (!document.hidden && this.sessionToken) {
+                if (this.currentView === "status") this.fetchOrderHistory({ showLoading: false });
+                else this.updateStatusTabBadgeCount();
+            }
+        };
+        document.addEventListener('visibilitychange', this._statusVisibilityHandler);
     }
 
     /**
@@ -2928,7 +3783,8 @@ class AlphaPosApp {
 
         if (!success && this.isLocalServerAvailable) {
             try {
-                const res = await fetch(`${this.localServerURL}/v1/orders?table=${this.tableNumber}&token=${this.sessionToken}`);
+                const params = new URLSearchParams({ table_number: this.tableNumber, session_token: this.sessionToken });
+                const res = await fetch(`${this.localServerURL}/v1/orders?${params}`);
                 if (res.ok) {
                     ordersData = await res.json();
                     success = true;
@@ -2944,7 +3800,7 @@ class AlphaPosApp {
                 const items = order.order_items || order.items || [];
                 items.forEach(item => {
                     const status = (item.status || "cooking").toLowerCase();
-                    if (status === "cooking" || status === "preparing" || status === "ready") {
+                    if (status === "pending" || status === "cooking" || status === "preparing" || status === "ready") {
                         activeCookingCount += item.quantity;
                     }
                 });
@@ -2984,16 +3840,10 @@ class AlphaPosApp {
                         return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
                     }))();
 
-                const { error } = await this.supabase
-                    .from('service_requests')
-                    .insert([{
-                        id: reqId,
-                        table_number: this.tableNumber,
-                        request_type: type,
-                        status: 'pending',
-                        created_at: new Date().toISOString(),
-                        merchant_id: this.merchantId
-                    }]);
+                const { error } = await this.supabase.rpc('create_customer_service_request', {
+                    p_request_type: type,
+                    p_idempotency_key: reqId
+                });
 
                 if (error) throw error;
                 success = true;
@@ -3002,7 +3852,7 @@ class AlphaPosApp {
             }
         }
 
-        if (!success && this.isLocalServerAvailable) {
+        if (!success && this.isLocalServerAvailable && !window.ALPHAPOS_CONFIG?.isProduction) {
             try {
                 const res = await fetch(`${this.localServerURL}/v1/requests`, {
                     method: "POST",
@@ -3052,14 +3902,25 @@ class AlphaPosApp {
     }
 
     /**
-     * Submits order to kitchen (Validates location first)
+     * Submits order to kitchen (requires active table session; staff confirms before kitchen).
      */
     async submitOrder() {
         if (this._submitInProgress) return;
         this._submitInProgress = true;
 
-        if (!window.locationVerifier.isValid) {
-            this._showToast(this.translate("orderingBlockedPremises"));
+        // Block after payment / session close (not GPS/Wi-Fi).
+        if (!orderingSessionGate.canOrder()) {
+            this._showToast(this.translate(
+                "orderingBlockedSession",
+                "This table session is closed. Please scan the QR code again if you need to order."
+            ));
+            this._submitInProgress = false;
+            return;
+        }
+
+        // Revalidate at checkout: cached pages/QR tokens may outlive the table session.
+        if (!this.sessionToken || !(await this.verifySessionWithServer(this.sessionToken))) {
+            this.showQrInvalidError();
             this._submitInProgress = false;
             return;
         }
@@ -3087,7 +3948,11 @@ class AlphaPosApp {
             });
         };
 
-        const orderId = generateUUID();
+        const attemptKey = `alphapos-order-attempt:${this.sessionToken}`;
+        const fingerprint = JSON.stringify([this.tableNumber, this.sessionToken, this.cart]);
+        let attempt;
+        try { attempt = JSON.parse(sessionStorage.getItem(attemptKey)); } catch (_) {}
+        const orderId = attempt?.fingerprint === fingerprint ? attempt.orderId : generateUUID();
         this._lastOrderId = orderId;
         const now = new Date();
         const yyyy = now.getFullYear();
@@ -3095,7 +3960,13 @@ class AlphaPosApp {
         const dd = String(now.getDate()).padStart(2, '0');
         // Use 5-digit random number to prevent duplicate key conflicts under the 20-char VARCHAR limit (e.g. ORD-20260623-12345 is 18 chars)
         const rand = Math.floor(10000 + Math.random() * 90000);
-        const orderNum = `ORD-${yyyy}${mm}${dd}-${rand}`;
+        const orderNum = attempt?.fingerprint === fingerprint
+            ? attempt.orderNum
+            : `ORD-${yyyy}${mm}${dd}-${rand}`;
+        const idempotencyKey = attempt?.fingerprint === fingerprint && attempt?.idempotencyKey
+            ? attempt.idempotencyKey
+            : generateUUID();
+        sessionStorage.setItem(attemptKey, JSON.stringify({ fingerprint, orderId, orderNum, idempotencyKey }));
 
         const orderItems = [];
         Object.keys(this.cart).forEach(cartKey => {
@@ -3143,6 +4014,10 @@ class AlphaPosApp {
                 item_name: item.name,
                 price: item.price + modifierPriceSum,
                 quantity: qty,
+                // Web items start as 'pending' so the POS "pending self-orders"
+                // approval banner surfaces them. Staff approval on the iPad/iPhone
+                // promotes them to 'cooking' AND fires the kitchen print — nothing
+                // is sent to the kitchen or printed until that confirmation.
                 status: 'pending',
                 item_id: safeItemId,
                 merchant_id: this.merchantId,
@@ -3151,7 +4026,7 @@ class AlphaPosApp {
             });
         });
 
-        const { total } = this.calculateTotals();
+        const { subtotal, discount, serviceCharge, tax, total } = this.calculateTotals();
         let success = false;
 
         if (this.supabase) {
@@ -3161,10 +4036,22 @@ class AlphaPosApp {
                         order_number: orderNum,
                         table_number: this.tableNumber,
                         total: total,
+                        subtotal: subtotal,
+                        discount: discount || 0,
+                        tax: tax,
+                        service_charge: serviceCharge,
                         status: 'pending',
+                        // Web orders must be reviewed by staff on the iPad/iPhone
+                        // before any kitchen ticket prints. order_source flags the
+                        // channel; is_staff_confirmed stays false until the POS
+                        // approval banner is tapped.
+                        order_source: 'web',
+                        is_staff_confirmed: false,
                         session_token: this.sessionToken,
                         guest_count: this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount),
                         merchant_id: this.merchantId,
+                        branch_id: this.branchId,
+                        idempotency_key: idempotencyKey,
                         created_at: new Date().toISOString()
                     };
 
@@ -3208,55 +4095,23 @@ class AlphaPosApp {
 
                 // Push is now handled reliably by a database trigger/webhook on orders INSERT.
             } catch (sbErr) {
-                console.error("Supabase order submission failed, falling back to local server:", sbErr);
+                console.error("Supabase order submission failed:", JSON.stringify(sbErr));
             }
         }
 
-        if (!success && this.isLocalServerAvailable) {
-            try {
-                const res = await fetch(`${this.localServerURL}/v1/orders`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        id: orderId,
-                        orderNumber: orderNum,
-                        tableNumber: this.tableNumber,
-                        total: total,
-                        status: 'pending',
-                        sessionToken: this.sessionToken,
-                        guestCount: this.selectedGuestCount === '8+' ? 8 : parseInt(this.selectedGuestCount),
-                        merchant_id: this.merchantId,
-                        branch_code: this.branchCode,
-                        createdAt: new Date().toISOString(),
-                        items: orderItems
-                    })
-                });
-                if (!res.ok) {
-                    let message = "Local server failed to post order";
-                    try {
-                        const err = await res.json();
-                        message = err.error || message;
-                    } catch (_) {}
-                    throw new Error(message);
-                }
-                success = true;
-            } catch (localErr) {
-                console.error("Local order submission failed:", localErr);
-
-                // Hide status modal and notify on error
-                this._hideStatusModal();
-                this._showToast(this.translate("orderSentFailed"), 5000);
-
-                btn.classList.remove("disabled");
-                btn.removeAttribute("disabled");
-                btnText.innerText = this.translate("sendToKitchen");
-                spinner.classList.add("hide");
-                this._submitInProgress = false;
-                return;
-            }
+        if (!success) {
+            this._hideStatusModal();
+            this._showToast(this.translate("orderSentFailed"), 5000);
+            btn.classList.remove("disabled");
+            btn.removeAttribute("disabled");
+            btnText.innerText = this.translate("sendToKitchen");
+            spinner.classList.add("hide");
+            this._submitInProgress = false;
+            return;
         }
 
         if (success) {
+            sessionStorage.removeItem(attemptKey);
             console.log("Order saved successfully:", orderNum);
 
             btnText.innerText = this.translate("sendToKitchen");
@@ -3424,7 +4279,11 @@ class AlphaPosApp {
             }
         }
 
+        this._activePromotions = promoData || [];
         this.renderPromotions(promoData);
+        if (this.cart && Object.keys(this.cart).length > 0) {
+            this.updateCartUI();
+        }
     }
 
     isPromotionCurrentlyVisible(promo) {
@@ -3444,26 +4303,76 @@ class AlphaPosApp {
         slider.innerHTML = "";
         indicatorsContainer.innerHTML = "";
 
+        // Default culinary cover assets (reliable fallback when merchant has no promotions/covers)
+        const defaultCoverVideo = "https://player.vimeo.com/external/435674703.sd.mp4?s=7f773cdccf1a0e784534f5263a232f3c64e5ba79&profile_id=139&oauth2_token_id=57447761";
+        const defaultCoverImage = "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=1200&q=80";
+
         if (!promotions || promotions.length === 0) {
-            console.log("No promotions to display, using fallback slide.");
+            console.log("No promotions to display, using merchant cover or default media fallback.");
             const slide = document.createElement("div");
             slide.className = "promo-slide active";
-            slide.innerHTML = `
-                <div class="promo-placeholder-bg"></div>
-                <div class="promo-overlay">
-                    <h3 class="promo-title" data-translate-key="welcomeTitle">${this.translate ? this.translate('welcomeTitle', 'ยินดีต้อนรับสู่ AlphaPos') : 'ยินดีต้อนรับสู่ AlphaPos'}</h3>
+            const configuredCover = this.merchantSettings.web_cover_url || this.merchantSettings.webCoverUrl || '';
+            const configuredType = this.merchantSettings.web_cover_media_type || this.merchantSettings.webCoverMediaType || '';
+            const videoItem = (this.menuItems || []).find(item => item.videoUrl);
+            const imageItem = (this.menuItems || []).find(item => item.imageUrl);
+            
+            const coverMedia = configuredCover || videoItem?.videoUrl || defaultCoverVideo;
+            const coverType = configuredCover
+                ? (configuredType === 'video' ? 'video' : 'image')
+                : (coverMedia.includes('.mp4') || coverMedia.includes('vimeo') ? 'video' : 'image');
+            const merchantName = this.merchantDisplayName || 'Restaurant';
+            
+            const createCoverFallback = () => {
+                const img = document.createElement('img');
+                img.className = 'merchant-cover-image';
+                img.src = defaultCoverImage;
+                img.alt = merchantName;
+                return img;
+            };
+
+            if (coverMedia && coverType === 'video') {
+                const video = document.createElement('video');
+                video.className = 'merchant-cover-video';
+                video.src = resolvePromoMediaSrc(coverMedia, 'video/mp4');
+                video.autoplay = true;
+                video.muted = true;
+                video.defaultMuted = true;
+                video.loop = true;
+                video.playsInline = true;
+                video.preload = 'metadata';
+                video.setAttribute('playsinline', '');
+                video.setAttribute('webkit-playsinline', '');
+                if (imageItem?.imageUrl) video.poster = imageItem.imageUrl;
+                video.onerror = () => video.replaceWith(createCoverFallback());
+                slide.appendChild(video);
+                video.play()?.catch(() => { /* Safari may wait for the first user gesture. */ });
+            } else if (coverMedia) {
+                const img = document.createElement('img');
+                img.className = 'merchant-cover-image';
+                img.src = resolvePromoMediaSrc(coverMedia, 'image/jpeg');
+                img.alt = merchantName;
+                img.onerror = () => img.replaceWith(createCoverFallback());
+                slide.appendChild(img);
+            } else {
+                slide.appendChild(createCoverFallback());
+            }
+
+            const overlay = document.createElement('div');
+            overlay.className = 'promo-overlay';
+            overlay.innerHTML = `
+                    <span class="promo-kicker">FRESHLY MADE · ORDER AT YOUR TABLE</span>
+                    <h3 class="promo-title">${escapeHtml(`${this.translate('welcomeTo', 'ยินดีต้อนรับสู่')} ${merchantName}`)}</h3>
                     <p class="promo-desc" data-translate-key="welcomeDesc">${this.translate ? this.translate('welcomeDesc', 'สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ') : 'สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ'}</p>
-                </div>
             `;
+            slide.appendChild(overlay);
             slider.appendChild(slide);
 
-            const indicator = document.createElement("span");
-            indicator.className = "indicator active";
-            indicatorsContainer.appendChild(indicator);
-
+            if (this.promoCarouselInterval) {
+                clearInterval(this.promoCarouselInterval);
+                this.promoCarouselInterval = null;
+            }
             this.currentSlideIdx = 0;
             this.totalSlides = 1;
-            this.startPromotionCarousel();
             return;
         }
 
@@ -3471,32 +4380,59 @@ class AlphaPosApp {
             const slide = document.createElement("div");
             slide.className = `promo-slide ${idx === 0 ? 'active' : ''}`;
 
-            const imgData = promo.imageData || promo.image_data;
+            const imgData = promo.imageData || promo.image_data || promo.imageUrl || promo.image_url;
             const mediaType = promo.mediaType || promo.media_type || "image";
             if (imgData && mediaType === "video") {
                 const video = document.createElement("video");
-                video.src = base64ToBlobUrl(imgData, "video/mp4");
+                video.src = resolvePromoMediaSrc(imgData, "video/mp4");
                 video.autoplay = true;
                 video.muted = true;
+                video.defaultMuted = true;
                 video.loop = true;
                 video.playsInline = true;
+                video.preload = "auto";
                 video.setAttribute("playsinline", "");
+                video.setAttribute("webkit-playsinline", "");
+                video.onerror = () => {
+                    console.warn("Promo video failed to load:", String(video.src || "").slice(0, 120));
+                    const img = document.createElement("img");
+                    img.src = defaultCoverImage;
+                    video.replaceWith(img);
+                };
                 slide.appendChild(video);
+                video.play()?.catch(() => { /* autoplay may be blocked until gesture */ });
             } else if (imgData) {
                 const img = document.createElement("img");
-                img.src = imgData.startsWith("data:") ? imgData : `data:image/jpeg;base64,${imgData}`;
+                img.src = resolvePromoMediaSrc(imgData, "image/jpeg");
                 img.alt = promo.title;
+                img.onerror = () => {
+                    img.src = defaultCoverImage;
+                };
                 slide.appendChild(img);
             } else {
-                const placeholder = document.createElement("div");
-                placeholder.className = "promo-placeholder-bg";
-                slide.appendChild(placeholder);
+                const img = document.createElement("img");
+                img.src = defaultCoverImage;
+                img.alt = promo.title;
+                slide.appendChild(img);
             }
 
             const overlay = document.createElement("div");
             overlay.className = "promo-overlay";
-            const desc = promo.promoDescription || promo.promo_description || "";
+            const desc = promo.promoDescription || promo.promo_description || promo.description || "";
+            const discountType = promo.discountType || promo.discount_type || "none";
+            const discountValue = Number(promo.discountValue ?? promo.discount_value ?? 0);
+            let badge = "";
+            if (discountType === "percentage" && discountValue > 0) {
+                badge = `<span class="promo-discount-badge">-${discountValue}%</span>`;
+            } else if (discountType === "fixed" && discountValue > 0) {
+                badge = `<span class="promo-discount-badge">-฿${discountValue}</span>`;
+            } else if (discountType === "buy_x_get_y") {
+                badge = `<span class="promo-discount-badge">Buy X Get Y</span>`;
+            } else if (discountType === "bundle_price") {
+                badge = `<span class="promo-discount-badge">Bundle</span>`;
+            }
             overlay.innerHTML = `
+                ${badge}
                 <h3 class="promo-title">${escapeHtml(promo.title)}</h3>
                 <p class="promo-desc">${escapeHtml(desc)}</p>
             `;
@@ -3518,26 +4454,26 @@ class AlphaPosApp {
     goToSlide(slideIdx) {
         const slides = document.querySelectorAll(".promo-slide");
         const indicators = document.querySelectorAll(".promo-indicators .indicator");
-        if (slides.length === 0 || indicators.length === 0) return;
+        if (slides.length === 0) return;
 
-        slides[this.currentSlideIdx].classList.remove("active");
-        indicators[this.currentSlideIdx].classList.remove("active");
+        slides[this.currentSlideIdx]?.classList.remove("active");
+        indicators[this.currentSlideIdx]?.classList.remove("active");
 
         this.currentSlideIdx = (slideIdx + slides.length) % slides.length;
-        slides[this.currentSlideIdx].classList.add("active");
-        indicators[this.currentSlideIdx].classList.add("active");
+        slides[this.currentSlideIdx]?.classList.add("active");
+        indicators[this.currentSlideIdx]?.classList.add("active");
     }
 
     startPromotionCarousel() {
         if (this.promoCarouselInterval) {
             clearInterval(this.promoCarouselInterval);
+            this.promoCarouselInterval = null;
         }
-
         if (this.totalSlides <= 1) return;
 
         this.promoCarouselInterval = setInterval(() => {
             this.goToSlide(this.currentSlideIdx + 1);
-        }, 4000);
+        }, 4500);
     }
 
     /**
@@ -3548,6 +4484,8 @@ class AlphaPosApp {
         if (!item) return;
 
         this.activeModalItemId = itemId;
+        // Reset modal quantity to 1 each time modal opens
+        this.modalQty = 1;
 
         // Reset special instructions textarea
         document.getElementById("specialInstructionsInput").value = "";
@@ -3564,13 +4502,50 @@ class AlphaPosApp {
         descEl.innerText = this.getItemDesc(item);
         priceEl.innerText = `฿${item.price.toFixed(2)}`;
 
-        // Clear previous style / set background
-        const safeUrl = item.imageUrl && (item.imageUrl.startsWith('http://') || item.imageUrl.startsWith('https://'))
-            ? item.imageUrl
-            : "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&q=80";
-        imageEl.style.backgroundImage = `url('${escapeHtml(safeUrl)}')`;
-        imageEl.style.backgroundSize = "cover";
-        imageEl.style.backgroundPosition = "center";
+        // Resolve a safe image URL (relative paths → Supabase/CDN base; else local placeholder)
+        const safeUrl = this.resolveMenuImageUrl(item.imageUrl);
+
+        // Smooth image loading: show a skeleton shimmer, preload the image,
+        // then fade it in once ready. Avoids the "flash / refresh" caused by
+        // a background-image that only starts downloading when the modal opens.
+        imageEl.style.backgroundImage = "";
+        imageEl.classList.remove("is-loaded");
+        imageEl.classList.add("is-loading");
+
+        // Reuse a single <img> element inside the hero container.
+        let heroImg = imageEl.querySelector(".modal-hero-img");
+        if (!heroImg) {
+            heroImg = document.createElement("img");
+            heroImg.className = "modal-hero-img";
+            heroImg.alt = "";
+            heroImg.decoding = "async";
+            imageEl.appendChild(heroImg);
+        }
+        // Reset so the fade-in re-triggers for the new image.
+        heroImg.style.opacity = "";
+
+        // Token guards against a stale (slow) image finishing after the user
+        // has already opened a different item.
+        const loadToken = (this._heroLoadToken = (this._heroLoadToken || 0) + 1);
+        const applyImage = () => {
+            if (loadToken !== this._heroLoadToken) return; // superseded
+            heroImg.src = safeUrl;
+            imageEl.classList.remove("is-loading");
+            imageEl.classList.add("is-loaded");
+        };
+        const preloader = new Image();
+        preloader.decoding = "async";
+        preloader.onload = applyImage;
+        preloader.onerror = () => {
+            if (loadToken !== this._heroLoadToken) return;
+            heroImg.onerror = null;
+            heroImg.src = this.resolveMenuImageUrl('');
+            imageEl.classList.remove("is-loading");
+            imageEl.classList.add("is-loaded");
+        };
+        preloader.src = safeUrl;
+        // If the browser already has it cached, onload may not fire — apply now.
+        if (preloader.complete && preloader.naturalWidth > 0) applyImage();
 
         // Setup active state for add button
         const inCartQty = this.getItemTotalQuantity(itemId);
@@ -3678,7 +4653,7 @@ class AlphaPosApp {
         modal.classList.add("active");
         this.setActiveModal(modal);
 
-        const cardEl = Array.from(document.querySelectorAll('.menu-item-card')).find(card => card.getAttribute('onclick')?.includes(itemId));
+        const cardEl = document.querySelector(`[data-item-id="${itemId}"]`);
         if (cardEl) {
             cardEl.classList.add('pressed');
             setTimeout(() => cardEl.classList.remove('pressed'), 200);
@@ -3721,14 +4696,40 @@ class AlphaPosApp {
             modsPrice += parseFloat(opt.dataset.price || 0);
         });
 
-        const totalPrice = basePrice + modsPrice;
+        const qty = this.modalQty || 1;
+        const unitPrice = basePrice + modsPrice;
+        const totalPrice = unitPrice * qty;
         document.getElementById("modalProductPrice").innerText = `฿${totalPrice.toFixed(2)}`;
+
+        // Update qty stepper display
+        const qtyValEl = document.getElementById("modalQtyVal");
+        const qtyDecEl = document.getElementById("modalQtyDec");
+        if (qtyValEl) qtyValEl.textContent = qty;
+        if (qtyDecEl) qtyDecEl.disabled = qty <= 1;
+
+        // Update add button text
+        const addBtn = document.getElementById("modalAddBtn");
+        if (addBtn) {
+            const inCartQty = this.getItemTotalQuantity(this.activeModalItemId);
+            if (inCartQty > 0) {
+                addBtn.innerText = this.translate('addMore').replace('{qty}', inCartQty);
+            } else {
+                addBtn.innerText = this.translate('addToOrder');
+            }
+        }
+    }
+
+    changeModalQty(delta) {
+        const current = this.modalQty || 1;
+        this.modalQty = Math.max(1, current + delta);
+        this.updateModalPriceDisplay();
     }
 
     closeProductDetailModal() {
         const modal = document.getElementById("productDetailModal");
         modal.classList.remove("active");
         this.activeModalItemId = null;
+        this.modalQty = 1;
         if (this._activeModal === modal) this.setActiveModal(null);
     }
 
@@ -3766,7 +4767,8 @@ class AlphaPosApp {
 
         const notes = document.getElementById("specialInstructionsInput").value || "";
 
-        this.addToCart(itemId, 1, selectedModifiers, notes);
+        const qty = this.modalQty || 1;
+        this.addToCart(itemId, qty, selectedModifiers, notes);
         this.closeProductDetailModal();
     }
 
@@ -3865,7 +4867,7 @@ class AlphaPosApp {
         const granted = await pushManager.requestPermission();
         if (granted && this._lastOrderId) {
             pushManager.subscribe(this._lastOrderId);
-            this._showToast(this.translate('pushOrderConfirmed', 'Notifications enabled!'), 'success');
+            this._showToast(this.translate('pushOrderConfirmed', 'Notifications enabled!'), { type: 'success', duration: 3000 });
         }
     }
 
@@ -3933,6 +4935,8 @@ class AlphaPosApp {
 
 // Instantiate app globally
 window.app = new AlphaPosApp();
+window.orderingSessionGate = orderingSessionGate;
+orderingSessionGate.init();
 
 // Wait for config.js (window.ALPHAPOS_CONFIG) to be available before init
 // This is needed because config.js is injected by Cloudflare Worker as a separate script tag
@@ -3943,19 +4947,54 @@ async function waitForConfig(maxWaitMs = 5000) {
         await new Promise(resolve => setTimeout(resolve, 50));
     }
     if (!window.ALPHAPOS_CONFIG) {
-        console.warn('[AlphaPos] config.js not loaded within timeout, using defaults');
+        console.warn('[AlphaPos] config.js not loaded within timeout');
+    }
+    return !!window.ALPHAPOS_CONFIG;
+}
+
+async function bootAlphaPosApp() {
+    if (window.__alphaposBooted) return;
+    window.__alphaposBooted = true;
+
+    try {
+        await waitForConfig();
+        const cfg = window.ALPHAPOS_CONFIG || {};
+        window.app.applyRuntimeConfig(cfg);
+
+        const isProd = !!(cfg && cfg.isProduction);
+        const hasConfig = window.app.hasValidRuntimeConfig(cfg);
+        // In production, missing config is a hard fail with retry UI (avoid blank ordering).
+        // Local/dev can continue with local-server fallbacks.
+        if (isProd && !hasConfig) {
+            console.error('[AlphaPos] Missing or invalid runtime config in production');
+            window.app.showBlockingState(
+                "configMissingTitle",
+                "configMissingDesc",
+                "pleaseOrderStaff",
+                { showRetry: true }
+            );
+            window.__alphaposBooted = false;
+            return;
+        }
+
+        await window.app.init();
+    } catch (err) {
+        console.error('[AlphaPos] Boot failed:', err);
+        window.__alphaposBooted = false;
+        try {
+            window.app.showBlockingState(
+                "configMissingTitle",
+                "configMissingDesc",
+                "pleaseOrderStaff",
+                { showRetry: true }
+            );
+        } catch (_) { /* ignore */ }
     }
 }
 
-window.addEventListener("DOMContentLoaded", async () => {
-    await waitForConfig();
-    // Re-apply config now that it may be available
-    const cfg = window.ALPHAPOS_CONFIG || {};
-    if (cfg.supabaseUrl) {
-        window.app.supabaseUrl = cfg.supabaseUrl;
-        window.app.supabaseKey = cfg.supabaseKey;
-        window.app.merchantId = cfg.merchantId || window.app.merchantId;
-        window.app.localServerURL = cfg.localServerURL || window.app.localServerURL;
-    }
-    window.app.init();
-});
+// Avoid missing init when the module loads after DOMContentLoaded already fired
+if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', () => { bootAlphaPosApp(); });
+} else {
+    bootAlphaPosApp();
+}

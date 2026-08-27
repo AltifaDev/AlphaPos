@@ -129,6 +129,9 @@ def get_supabase_health():
 @router.post("/sync/supabase-seed")
 def post_supabase_seed():
     """Seeds actual inventory items, recipes, and lots to the remote Supabase VPS."""
+    from .deps import IS_PRODUCTION
+    if IS_PRODUCTION:
+        raise HTTPException(status_code=404, detail="Not found")
     from .deps import supabase_request, MERCHANT_ID
     import datetime
 

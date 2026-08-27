@@ -36,22 +36,39 @@ async def create_request(request: Request):
         data = await request.json()
         req_id = clean_string(data.get("id") or str(uuid.uuid4()), "id", 50, required=True, pattern=r"[A-Za-z0-9_-]+")
         table_number = clean_string(data.get("table_number") or data.get("tableNumber") or "", "table_number", 10, required=True)
-        request_type = clean_string(data.get("request_type") or data.get("type") or "call_staff", "request_type", 50, required=True)
+        request_type = clean_string(data.get("request_type") or data.get("type") or "General Help", "request_type", 50, required=True)
+        branch_id = data.get("branch_id") or data.get("branchId") or None
+        restaurant_table_id = data.get("restaurant_table_id") or data.get("tableId") or None
+        dining_area_id = data.get("dining_area_id") or data.get("areaId") or None
+        expires_at = data.get("expires_at") or None
         created_at = get_utc_now_iso()
 
         with closing(get_db_connection()) as conn:
             conn.execute("""
-                INSERT OR REPLACE INTO service_requests (id, table_number, request_type, status, created_at, merchant_id)
-                VALUES (?, ?, ?, 'pending', ?, ?)
-            """, (req_id, table_number, request_type, created_at, MERCHANT_ID))
+                INSERT OR REPLACE INTO service_requests (
+                    id, table_number, request_type, status, created_at, merchant_id,
+                    branch_id, restaurant_table_id, dining_area_id, expires_at
+                )
+                VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+            """, (req_id, table_number, request_type, created_at, MERCHANT_ID, branch_id, restaurant_table_id, dining_area_id, expires_at))
             conn.commit()
 
-        supabase_post("service_requests", {
+        post_body = {
             "id": req_id, "table_number": table_number, "request_type": request_type,
             "status": "pending", "created_at": created_at, "merchant_id": MERCHANT_ID
-        })
+        }
+        if branch_id:
+            post_body["branch_id"] = branch_id
+        if restaurant_table_id:
+            post_body["restaurant_table_id"] = restaurant_table_id
+        if dining_area_id:
+            post_body["dining_area_id"] = dining_area_id
+        if expires_at:
+            post_body["expires_at"] = expires_at
 
-        log_event("info", "request.created", table_number=table_number, type=request_type)
+        supabase_post("service_requests", post_body)
+
+        log_event("info", "request.created", table_number=table_number, type=request_type, branch_id=branch_id)
         return {"success": True, "id": req_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
