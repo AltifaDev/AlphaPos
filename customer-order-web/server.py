@@ -1343,10 +1343,10 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Security-Policy',
             "default-src 'self'; "
             "media-src 'self' blob: https:; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
             "img-src 'self' data: https:; "
-            f"connect-src 'self'{supabase_connect_src}; "
+            f"connect-src 'self' https://cdn.jsdelivr.net{supabase_connect_src}; "
             "font-src 'self' data: https://fonts.gstatic.com; "
             "frame-ancestors 'none'")
         if not IS_PRODUCTION:
@@ -1365,9 +1365,17 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
 
-        # Only runtime config and static assets are public. Catalog/order/session
-        # reads happen directly through branch-scoped customer JWT policies.
-        if path.startswith("/v1/") and path != "/v1/push/vapid-key" and not self._require_auth():
+        # Public GET endpoints accessible to customer web app without server bearer token
+        public_v1_paths = (
+            "/v1/push/vapid-key",
+            "/v1/promotions",
+            "/v1/modifiers-config",
+            "/v1/menu",
+            "/v1/merchants",
+            "/v1/wait-time",
+            "/v1/sync/supabase-health",
+        )
+        if path.startswith("/v1/") and path not in public_v1_paths and not self._require_auth():
             return
 
         # 1. API Endpoint: GET /v1/menu
@@ -2798,7 +2806,7 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
             if SUPABASE_URL and SUPABASE_ANON_KEY:
                 import urllib.request
                 import json
-                url = f"{SUPABASE_URL}/rest/v1/merchants?select=id,name,kitchen_workflow_required,is_table_system_enabled,is_web_ordering_enabled,tax_rate,tax_type,service_charge_rate"
+                url = f"{SUPABASE_URL}/rest/v1/merchants?select=id,name,logo_url,web_cover_url,web_cover_media_type,branch_code,kitchen_workflow_required,is_table_system_enabled,is_web_ordering_enabled,tax_rate,tax_type,service_charge_rate"
                 req = urllib.request.Request(
                     url,
                     headers={
@@ -2825,7 +2833,8 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                     rows = conn.execute('''
                         SELECT id, name, branch_code, kitchen_workflow_required,
                                is_table_system_enabled, is_web_ordering_enabled,
-                               tax_rate, tax_type, service_charge_rate
+                               tax_rate, tax_type, service_charge_rate,
+                               web_cover_url, web_cover_media_type
                         FROM merchants
                         ORDER BY name ASC
                     ''').fetchall()
@@ -2839,7 +2848,9 @@ class UnifiedRequestHandler(BaseHTTPRequestHandler):
                             "is_web_ordering_enabled": _as_bool(row["is_web_ordering_enabled"]),
                             "tax_rate": row["tax_rate"],
                             "tax_type": row["tax_type"],
-                            "service_charge_rate": row["service_charge_rate"]
+                            "service_charge_rate": row["service_charge_rate"],
+                            "web_cover_url": row["web_cover_url"] if "web_cover_url" in row.keys() else "",
+                            "web_cover_media_type": row["web_cover_media_type"] if "web_cover_media_type" in row.keys() else "image"
                         } for row in rows])
                         return
             except Exception as local_ex:

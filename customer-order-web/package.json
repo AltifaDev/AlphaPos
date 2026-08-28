@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test js/*.test.js"
+    "test": "node --test js/*.test.js",
+    "smoke:production": "ALLOW_PRODUCTION_SMOKE=yes ../scripts/smoke_customer_order_production.sh"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.2",

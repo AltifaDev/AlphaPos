@@ -9,7 +9,15 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=33">
+    <link rel="stylesheet" href="styles.css?v=44">
+    <!-- Import map for bare module specifiers in browser native ES modules -->
+    <script type="importmap">
+    {
+      "imports": {
+        "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm"
+      }
+    }
+    </script>
     <!-- AlphaPos Runtime Config (served dynamically by Cloudflare Worker with HTTPS URLs) -->
     <script src="/config.js"></script>
 </head>
@@ -160,12 +168,7 @@
         <div id="promotionsBannerContainer" class="promo-banner-container anim-fade-in-scale">
             <div id="promotionsSlider" class="promo-slider">
                 <div class="promo-slide active">
-                    <video class="merchant-cover-video" src="https://player.vimeo.com/external/435674703.sd.mp4?s=7f773cdccf1a0e784534f5263a232f3c64e5ba79&profile_id=139&oauth2_token_id=57447761" autoplay muted loop playsinline poster="https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=1200&q=80"></video>
-                    <div class="promo-overlay">
-                        <span class="promo-kicker">FRESHLY MADE · ORDER AT YOUR TABLE</span>
-                        <h3 class="promo-title" id="merchantWelcomeTitle">ยินดีต้อนรับ</h3>
-                        <p class="promo-desc" data-translate-key="welcomeDesc">สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ</p>
-                    </div>
+                    <div class="promo-placeholder-bg"></div>
                 </div>
             </div>
             <div id="promoIndicators" class="promo-indicators"></div>
@@ -191,14 +194,20 @@
         <!-- View Panel: Menu -->
         <div id="menuView" class="view-panel active" role="tabpanel" aria-label="Menu">
             <main id="main-content" class="menu-container anim-fade-in-up">
-                <!-- Search Bar -->
-                <div class="search-bar-container">
-                    <div class="search-bar">
-                        <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                        <input type="text" class="search-input" id="searchInput" data-translate-key="searchPlaceholder" placeholder="Search menu..." oninput="app.handleSearch(this.value)">
-                        <button class="search-clear-btn" id="searchClearBtn" onclick="app.clearSearch()">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                        </button>
+                <!-- Action Bar: Search Bar + Quick Reorder in Single Row -->
+                <div class="menu-action-bar">
+                    <div class="search-bar-container">
+                        <div class="search-bar">
+                            <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                            <input type="text" class="search-input" id="searchInput" data-translate-key="searchPlaceholder" placeholder="Search menu..." oninput="app.handleSearch(this.value)">
+                            <button class="search-clear-btn" id="searchClearBtn" onclick="app.clearSearch()">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                    <!-- Quick Reorder Widget -->
+                    <div id="reorderWidgetContainer" class="reorder-widget-container hidden">
+                        <!-- Rendered dynamically by ReorderHistory -->
                     </div>
                 </div>
 
@@ -212,15 +221,9 @@
                     </div>
                 </div>
 
-                <!-- Featured Menu Section -->
                 <!-- Dietary & Allergen Filter Bar -->
                 <div id="dietaryFilterContainer" class="dietary-filter-container">
                     <!-- Rendered dynamically by AllergenFilter -->
-                </div>
-
-                <!-- Quick Reorder Widget -->
-                <div id="reorderWidgetContainer" class="reorder-widget-container hidden">
-                    <!-- Rendered dynamically by ReorderHistory -->
                 </div>
 
                 <div id="featuredMenuSection" class="featured-menu-section">
@@ -413,7 +416,7 @@
                             <span class="btn-text" data-translate-key="sendToKitchen">Send to Kitchen</span>
                             <div class="btn-spinner hide"></div>
                         </button>
-                        <p class="location-warning-text hide" id="btnWarningText" data-translate-key="orderingBlockedSession">This table session is closed. Please scan the QR code again if you need to order.</p>
+                        <p class="location-warning-text hide" id="btnWarningText" aria-live="assertive">This table session is closed. Scan the QR code at your table again, or ask a staff member for help.</p>
                     </div>
                 </div>
             </div>
@@ -533,6 +536,6 @@
     <div id="allergenDetailSheet" class="allergen-sheet" role="dialog" aria-modal="true" aria-label="Allergen information">
     </div>
 
-    <script type="module" src="app.js?v=35"></script>
+    <script type="module" src="app.js?v=44"></script>
 </body>
 </html>

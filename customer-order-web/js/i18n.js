@@ -51,7 +51,8 @@ export const translations = {
                 menuEmptyNoItems: "ยังไม่มีเมนูอาหาร กรุณาติดต่อพนักงาน",
                 menuEmptyLoadFailed: "โหลดเมนูไม่สำเร็จ กรุณาลองใหม่",
                 menuRetry: "โหลดเมนูอีกครั้ง",
-                orderingBlockedSession: "เซสชันโต๊ะนี้ถูกปิดแล้ว กรุณาสแกน QR Code ใหม่หากต้องการสั่งเพิ่ม",
+                orderingBlockedSession: "เซสชันโต๊ะนี้ถูกปิดแล้ว กรุณาสแกน QR Code ที่โต๊ะอีกครั้ง หรือติดต่อพนักงานเพื่อขอความช่วยเหลือ",
+                orderSubmitUncertain: "ยังยืนยันไม่ได้ว่าร้านได้รับออเดอร์หรือไม่ กรุณาตรวจสอบสถานะออเดอร์หรือถามพนักงานก่อนลองอีกครั้ง การลองซ้ำจะไม่สร้างออเดอร์ซ้ำ",
                 outOfStock: "สินค้าหมด / Sold Out",
                 outOfStockBtn: "หมด",
                 
@@ -435,7 +436,8 @@ export const translations = {
                 menuEmptyNoItems: "Menu is not available yet. Please ask staff for help.",
                 menuEmptyLoadFailed: "Could not load the menu. Please try again.",
                 menuRetry: "Reload Menu",
-                orderingBlockedSession: "This table session is closed. Please scan the QR code again if you need to order.",
+                orderingBlockedSession: "This table session is closed. Scan the QR code at your table again, or ask a staff member for help.",
+                orderSubmitUncertain: "We could not confirm whether your order was received. Check Order Status or ask staff before trying again; a retry is protected from duplicates.",
                 outOfStock: "Sold Out",
                 outOfStockBtn: "Sold Out",
                 
@@ -811,7 +813,8 @@ export const translations = {
                 menuEmptyNoItems: "暂无菜单，请联系工作人员协助",
                 menuEmptyLoadFailed: "菜单加载失败，请重试",
                 menuRetry: "重新加载菜单",
-                orderingBlockedSession: "此桌会话已关闭。如需继续点餐，请重新扫描二维码。",
+                orderingBlockedSession: "此桌会话已关闭。请重新扫描桌上的二维码，或向工作人员寻求帮助。",
+                orderSubmitUncertain: "暂时无法确认餐厅是否收到订单。再次尝试前，请查看订单状态或询问工作人员；重试不会创建重复订单。",
                 outOfStock: "售罄 / Sold Out",
                 outOfStockBtn: "已售罄",
                 

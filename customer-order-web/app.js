@@ -14,6 +14,7 @@ import { pushManager } from './js/push-notifications.js';
 import { orderingSessionGate } from './js/ordering-session-gate.js';
 import { createClient } from '@supabase/supabase-js';
 import { canTransitionOrder, normalizeOrderState } from './js/order-state-machine.js';
+import { classifyOrderFailure } from './js/order-failure-state.js';
 
 
 
@@ -3928,6 +3929,12 @@ class AlphaPosApp {
         const btn = document.getElementById("submitOrderBtn");
         const btnText = btn.querySelector(".btn-text");
         const spinner = btn.querySelector(".btn-spinner");
+        const warning = document.getElementById("btnWarningText");
+
+        if (warning) {
+            warning.classList.add("hide");
+            warning.removeAttribute("role");
+        }
 
         btn.classList.add("disabled");
         btn.setAttribute("disabled", "true");
@@ -4028,6 +4035,7 @@ class AlphaPosApp {
 
         const { subtotal, discount, serviceCharge, tax, total } = this.calculateTotals();
         let success = false;
+        let submissionError = null;
 
         if (this.supabase) {
             try {
@@ -4095,15 +4103,35 @@ class AlphaPosApp {
 
                 // Push is now handled reliably by a database trigger/webhook on orders INSERT.
             } catch (sbErr) {
+                submissionError = sbErr;
                 console.error("Supabase order submission failed:", JSON.stringify(sbErr));
             }
         }
 
         if (!success) {
             this._hideStatusModal();
-            this._showToast(this.translate("orderSentFailed"), 5000);
-            btn.classList.remove("disabled");
-            btn.removeAttribute("disabled");
+            const failureState = classifyOrderFailure(submissionError);
+            const isSessionClosed = failureState === 'session-closed';
+            const messageKey = isSessionClosed ? 'orderingBlockedSession' : 'orderSubmitUncertain';
+            const fallback = isSessionClosed
+                ? 'This table session is closed. Scan the QR code at your table again, or ask a staff member for help.'
+                : 'We could not confirm whether your order was received. Check Order Status or ask staff before trying again; a retry is protected from duplicates.';
+            const message = this.translate(messageKey, fallback);
+
+            if (warning) {
+                warning.textContent = message;
+                warning.classList.remove("hide");
+                warning.setAttribute("role", "alert");
+            }
+            this._showToast(message, 8000);
+            if (isSessionClosed) {
+                orderingSessionGate.markSessionClosed();
+            } else {
+                // Retrying reuses attemptKey/idempotencyKey, so an uncertain
+                // response cannot create a second order.
+                btn.classList.remove("disabled");
+                btn.removeAttribute("disabled");
+            }
             btnText.innerText = this.translate("sendToKitchen");
             spinner.classList.add("hide");
             this._submitInProgress = false;
@@ -4112,6 +4140,7 @@ class AlphaPosApp {
 
         if (success) {
             sessionStorage.removeItem(attemptKey);
+            if (warning) warning.classList.add("hide");
             console.log("Order saved successfully:", orderNum);
 
             btnText.innerText = this.translate("sendToKitchen");
@@ -4330,22 +4359,40 @@ class AlphaPosApp {
                 return img;
             };
 
+            // Always include a dark gradient placeholder background behind the media
+            const placeholderBg = document.createElement("div");
+            placeholderBg.className = "promo-placeholder-bg";
+            slide.appendChild(placeholderBg);
+
             if (coverMedia && coverType === 'video') {
                 const video = document.createElement('video');
                 video.className = 'merchant-cover-video';
-                video.src = resolvePromoMediaSrc(coverMedia, 'video/mp4');
                 video.autoplay = true;
                 video.muted = true;
                 video.defaultMuted = true;
                 video.loop = true;
                 video.playsInline = true;
-                video.preload = 'metadata';
+                video.preload = 'auto';
+                video.setAttribute('autoplay', '');
+                video.setAttribute('muted', '');
+                video.setAttribute('loop', '');
                 video.setAttribute('playsinline', '');
                 video.setAttribute('webkit-playsinline', '');
-                if (imageItem?.imageUrl) video.poster = imageItem.imageUrl;
-                video.onerror = () => video.replaceWith(createCoverFallback());
+                
+                const resolvedSrc = resolvePromoMediaSrc(coverMedia, 'video/mp4');
+                video.src = resolvedSrc;
+
+                video.onerror = (err) => {
+                    console.warn("Cover video failed to load, falling back to cover image:", err);
+                    video.replaceWith(createCoverFallback());
+                };
                 slide.appendChild(video);
-                video.play()?.catch(() => { /* Safari may wait for the first user gesture. */ });
+                
+                const startPlay = () => {
+                    video.play()?.catch(() => { /* Safari may wait for user gesture */ });
+                };
+                video.addEventListener('canplay', startPlay, { once: true });
+                startPlay();
             } else if (coverMedia) {
                 const img = document.createElement('img');
                 img.className = 'merchant-cover-image';
@@ -4357,14 +4404,6 @@ class AlphaPosApp {
                 slide.appendChild(createCoverFallback());
             }
 
-            const overlay = document.createElement('div');
-            overlay.className = 'promo-overlay';
-            overlay.innerHTML = `
-                    <span class="promo-kicker">FRESHLY MADE · ORDER AT YOUR TABLE</span>
-                    <h3 class="promo-title">${escapeHtml(`${this.translate('welcomeTo', 'ยินดีต้อนรับสู่')} ${merchantName}`)}</h3>
-                    <p class="promo-desc" data-translate-key="welcomeDesc">${this.translate ? this.translate('welcomeDesc', 'สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ') : 'สัมผัสเมนูแนะนำสูตรพิเศษ ปรุงรสอย่างประณีตเพื่อคุณ'}</p>
-            `;
-            slide.appendChild(overlay);
             slider.appendChild(slide);
 
             if (this.promoCarouselInterval) {
@@ -4380,19 +4419,34 @@ class AlphaPosApp {
             const slide = document.createElement("div");
             slide.className = `promo-slide ${idx === 0 ? 'active' : ''}`;
 
+            const placeholderBg = document.createElement("div");
+            placeholderBg.className = "promo-placeholder-bg";
+            slide.appendChild(placeholderBg);
+
             const imgData = promo.imageData || promo.image_data || promo.imageUrl || promo.image_url;
             const mediaType = promo.mediaType || promo.media_type || "image";
             if (imgData && mediaType === "video") {
                 const video = document.createElement("video");
-                video.src = resolvePromoMediaSrc(imgData, "video/mp4");
+                video.className = "merchant-cover-video";
                 video.autoplay = true;
                 video.muted = true;
                 video.defaultMuted = true;
                 video.loop = true;
                 video.playsInline = true;
                 video.preload = "auto";
+                video.setAttribute("autoplay", "");
+                video.setAttribute("muted", "");
+                video.setAttribute("loop", "");
                 video.setAttribute("playsinline", "");
                 video.setAttribute("webkit-playsinline", "");
+
+                const resolvedSrc = resolvePromoMediaSrc(imgData, "video/mp4");
+                const source = document.createElement("source");
+                source.src = resolvedSrc;
+                source.type = "video/mp4";
+                video.appendChild(source);
+                video.src = resolvedSrc;
+
                 video.onerror = () => {
                     console.warn("Promo video failed to load:", String(video.src || "").slice(0, 120));
                     const img = document.createElement("img");
@@ -4403,8 +4457,8 @@ class AlphaPosApp {
                 video.play()?.catch(() => { /* autoplay may be blocked until gesture */ });
             } else if (imgData) {
                 const img = document.createElement("img");
+                img.className = "merchant-cover-image";
                 img.src = resolvePromoMediaSrc(imgData, "image/jpeg");
-                img.alt = promo.title;
                 img.onerror = () => {
                     img.src = defaultCoverImage;
                 };
@@ -4957,6 +5011,11 @@ async function bootAlphaPosApp() {
     window.__alphaposBooted = true;
 
     try {
+        if ('scrollRestoration' in history) {
+            history.scrollRestoration = 'manual';
+        }
+        window.scrollTo(0, 0);
+
         await waitForConfig();
         const cfg = window.ALPHAPOS_CONFIG || {};
         window.app.applyRuntimeConfig(cfg);
