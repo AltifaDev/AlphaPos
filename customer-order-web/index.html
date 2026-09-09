@@ -440,18 +440,17 @@
                     <label class="modal-input-label" for="specialInstructionsInput" data-translate-key="specialInstructions">Special Instructions (Optional)</label>
                     <textarea id="specialInstructionsInput" data-translate-key="specialInstructionsPlaceholder" placeholder="e.g. No spicy, extra vegetables, less sweet..."></textarea>
                 </div>
-                
-                <div class="modal-footer">
-                    <div class="modal-footer-top">
-                        <div class="modal-qty-stepper">
-                            <button class="modal-qty-btn" id="modalQtyDec" onclick="app.changeModalQty(-1)" aria-label="Decrease quantity">−</button>
-                            <span class="modal-qty-val" id="modalQtyVal">1</span>
-                            <button class="modal-qty-btn" id="modalQtyInc" onclick="app.changeModalQty(1)" aria-label="Increase quantity">+</button>
-                        </div>
-                        <div class="modal-price" id="modalProductPrice">฿0.00</div>
+            </div>
+            <div class="modal-footer">
+                <div class="modal-footer-top">
+                    <div class="modal-qty-stepper">
+                        <button class="modal-qty-btn" id="modalQtyDec" onclick="app.changeModalQty(-1)" aria-label="Decrease quantity">−</button>
+                        <span class="modal-qty-val" id="modalQtyVal">1</span>
+                        <button class="modal-qty-btn" id="modalQtyInc" onclick="app.changeModalQty(1)" aria-label="Increase quantity">+</button>
                     </div>
-                    <button class="modal-add-btn" id="modalAddBtn" onclick="app.addProductFromModal()" data-translate-key="addToCart">Add to Cart</button>
+                    <div class="modal-price" id="modalProductPrice">฿0.00</div>
                 </div>
+                <button class="modal-add-btn" id="modalAddBtn" onclick="app.addProductFromModal()" data-translate-key="addToCart">Add to Cart</button>
             </div>
         </div>
     </div>
