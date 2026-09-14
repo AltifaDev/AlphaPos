@@ -706,7 +706,11 @@ class AlphaPosApp {
         if (this.permanentQRKey) {
             const approved = await this.exchangePermanentQR(this.permanentQRKey);
             if (!approved && window.ALPHAPOS_CONFIG?.isProduction) {
-                this.showQrInvalidError();
+                if (this.lastPermanentQRError?.retryable) {
+                    this.showQrServiceUnavailableError();
+                } else {
+                    this.showQrInvalidError();
+                }
                 return;
             }
         } else if (qrToken) {
@@ -883,23 +887,39 @@ class AlphaPosApp {
         const base = (this.edgeFunctionUrl || `${this.supabaseUrl.replace(/\/$/, '')}/functions/v1`).replace(/\/$/, '');
         let approvalRequestId = null;
         let expiresAt = Date.now() + 5 * 60 * 1000;
+        let consecutiveServerFailures = 0;
+        this.lastPermanentQRError = null;
 
         try {
             while (Date.now() < expiresAt) {
-                const response = await fetch(`${base}/issue-customer-session-token`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'apikey': this.supabaseKey,
-                        'Authorization': `Bearer ${this.supabaseKey}`
-                    },
-                    body: JSON.stringify({
-                        merchant_id: this.merchantId,
-                        table_number: String(this.tableNumber),
-                        permanent_key: permanentKey,
-                        ...(approvalRequestId ? { approval_request_id: approvalRequestId } : {})
-                    })
-                });
+                let response;
+                const requestController = new AbortController();
+                const requestTimeout = setTimeout(() => requestController.abort(), 10_000);
+                try {
+                    response = await fetch(`${base}/issue-customer-session-token`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'apikey': this.supabaseKey,
+                            'Authorization': `Bearer ${this.supabaseKey}`
+                        },
+                        signal: requestController.signal,
+                        body: JSON.stringify({
+                            merchant_id: this.merchantId,
+                            table_number: String(this.tableNumber),
+                            permanent_key: permanentKey,
+                            ...(approvalRequestId ? { approval_request_id: approvalRequestId } : {})
+                        })
+                    });
+                } catch (networkError) {
+                    consecutiveServerFailures += 1;
+                    if (consecutiveServerFailures >= 4) throw networkError;
+                    const delayMs = Math.min(5000, 500 * (2 ** (consecutiveServerFailures - 1))) + Math.floor(Math.random() * 250);
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                    continue;
+                } finally {
+                    clearTimeout(requestTimeout);
+                }
                 const body = await response.json().catch(() => ({}));
                 if (response.ok && body.access_token && body.session_token) {
                     this.merchantToken = body.access_token;
@@ -914,20 +934,25 @@ class AlphaPosApp {
                     this.cleanUrlParams();
                     return true;
                 }
+                consecutiveServerFailures = response.status >= 500
+                    ? consecutiveServerFailures + 1
+                    : 0;
                 if (response.status === 202) {
                     this.showBlockingState(
                         'staffApprovalWaitingTitle', 'staffApprovalWaitingDesc', 'staffApprovalWaitingFooter'
                     );
                 }
                 // A transient Edge Function/PostgREST failure must not turn a
-                // valid pending approval into an "invalid QR" screen. Keep the
-                // current request id and retry until its normal expiry time.
-                if (response.status >= 500 && approvalRequestId) {
+                // valid QR into an "invalid QR" screen.
+                if (response.status >= 500 && consecutiveServerFailures < 4) {
                     console.warn(JSON.stringify({
                         level: 'warn', event: 'permanent_qr.poll_retry',
                         code: body.code || 'SERVER_ERROR', traceId: body.traceId || null
                     }));
-                    await new Promise(resolve => setTimeout(resolve, 2500));
+                    // Bounded exponential backoff with jitter prevents a brief
+                    // outage from rejecting a valid QR or creating a retry storm.
+                    const delayMs = Math.min(5000, 500 * (2 ** (consecutiveServerFailures - 1))) + Math.floor(Math.random() * 250);
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
                     continue;
                 }
                 if (response.status !== 202 || !body.approval_request_id) {
@@ -939,6 +964,15 @@ class AlphaPosApp {
             }
             throw Object.assign(new Error('Staff approval timed out'), { code: 'STAFF_APPROVAL_TIMEOUT' });
         } catch (error) {
+            const retryableCodes = new Set([
+                'NETWORK_ERROR', 'PERMANENT_QR_LOOKUP_FAILED', 'PERMANENT_QR_UNAVAILABLE',
+                'APPROVAL_LOOKUP_FAILED', 'TABLE_LOOKUP_FAILED', 'CUSTOMER_TOKEN_FAILED'
+            ]);
+            this.lastPermanentQRError = {
+                code: error.code || 'NETWORK_ERROR',
+                traceId: error.traceId || null,
+                retryable: retryableCodes.has(error.code || 'NETWORK_ERROR')
+            };
             console.error(JSON.stringify({ level: 'error', event: 'permanent_qr.exchange_failed', code: error.code || 'NETWORK_ERROR', traceId: error.traceId || null }));
             return false;
         }
@@ -1689,6 +1723,24 @@ class AlphaPosApp {
             "qrInvalidMessage",
             "pleaseOrderStaff"
         );
+    }
+
+    showQrServiceUnavailableError() {
+        console.error(JSON.stringify({
+            level: "error",
+            event: "permanent_qr.service_unavailable",
+            code: this.lastPermanentQRError?.code || "NETWORK_ERROR",
+            traceId: this.lastPermanentQRError?.traceId || null
+        }));
+        this.showBlockingState(
+            "qrServiceUnavailableTitle",
+            "qrServiceUnavailableMessage",
+            "qrServiceUnavailableFooter",
+            { showRetry: true }
+        );
+        const traceId = this.lastPermanentQRError?.traceId;
+        const footerEl = document.getElementById("blockingFooterText");
+        if (traceId && footerEl) footerEl.textContent += ` (${traceId})`;
     }
 
     renderInteractiveSeats() {
@@ -3305,17 +3357,16 @@ class AlphaPosApp {
 
         if (this.supabase) {
             try {
-                // The session was already validated before ordering. Read the exact
-                // database rows for this merchant/table/session without unrelated joins.
-                const { data: ordersData, error: ordersError } = await this.supabase
-                    .from('orders')
-                    .select('*, order_items(*, order_item_modifiers(*))')
-                    .eq('merchant_id', this.merchantId)
-                    .eq('table_number', this.tableNumber)
-                    .eq('session_token', this.sessionToken)
-                    .order('created_at', { ascending: true });
-
-                if (ordersError) throw ordersError;
+                const { data: bundle, error: bundleError } = await this.supabase
+                    .rpc('get_table_order_bundle', {
+                        p_table_session_id: this.tableSessionId,
+                        p_branch_id: this.branchId
+                    });
+                if (bundleError) throw bundleError;
+                if (!bundle || bundle.contract_version !== 1 || !Array.isArray(bundle.orders)) {
+                    throw new Error('Invalid order bundle contract');
+                }
+                const ordersData = bundle.orders;
 
                     formattedOrders = (ordersData || []).map(order => {
                         const items = (order.order_items || []).map(item => {
@@ -3768,15 +3819,17 @@ class AlphaPosApp {
                     throw new Error("No active Supabase session found");
                 }
 
-                const { data: ords, error: ordersError } = await this.supabase
-                    .from('orders')
-                    .select('*, order_items(*)')
-                    .eq('session_token', this.sessionToken);
-
-                if (!ordersError) {
-                    ordersData = ords;
-                    success = true;
+                const { data: bundle, error: bundleError } = await this.supabase
+                    .rpc('get_table_order_bundle', {
+                        p_table_session_id: this.tableSessionId || sessionData.id,
+                        p_branch_id: this.branchId
+                    });
+                if (bundleError) throw bundleError;
+                if (!bundle || bundle.contract_version !== 1 || !Array.isArray(bundle.orders)) {
+                    throw new Error('Invalid order bundle contract');
                 }
+                ordersData = bundle.orders;
+                success = true;
             } catch (e) {
                 console.error("Supabase error updating status tab badge count, falling back to local server:", e);
             }
@@ -4333,7 +4386,6 @@ class AlphaPosApp {
         indicatorsContainer.innerHTML = "";
 
         // Default culinary cover assets (reliable fallback when merchant has no promotions/covers)
-        const defaultCoverVideo = "https://player.vimeo.com/external/435674703.sd.mp4?s=7f773cdccf1a0e784534f5263a232f3c64e5ba79&profile_id=139&oauth2_token_id=57447761";
         const defaultCoverImage = "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=1200&q=80";
 
         if (!promotions || promotions.length === 0) {
@@ -4342,10 +4394,14 @@ class AlphaPosApp {
             slide.className = "promo-slide active";
             const configuredCover = this.merchantSettings.web_cover_url || this.merchantSettings.webCoverUrl || '';
             const configuredType = this.merchantSettings.web_cover_media_type || this.merchantSettings.webCoverMediaType || '';
-            const videoItem = (this.menuItems || []).find(item => item.videoUrl);
+            const videoItem = (this.menuItems || []).find(item =>
+                item.videoUrl && !String(item.videoUrl).includes('player.vimeo.com')
+            );
             const imageItem = (this.menuItems || []).find(item => item.imageUrl);
             
-            const coverMedia = configuredCover || videoItem?.videoUrl || defaultCoverVideo;
+            // Do not use a third-party default video: expiring Vimeo URLs caused
+            // a noisy error on every customer page when no cover was configured.
+            const coverMedia = configuredCover || videoItem?.videoUrl || defaultCoverImage;
             const coverType = configuredCover
                 ? (configuredType === 'video' ? 'video' : 'image')
                 : (coverMedia.includes('.mp4') || coverMedia.includes('vimeo') ? 'video' : 'image');
