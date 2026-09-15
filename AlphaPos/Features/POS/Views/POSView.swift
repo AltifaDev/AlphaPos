@@ -5,6 +5,22 @@ import SwiftUI
 import SwiftData
 import UIKit
 
+enum POSActivePaymentMethod: Identifiable {
+    case cash
+    case qrCode
+    case creditCard
+    case thaiChuaThaiPlus
+
+    var id: Int {
+        switch self {
+        case .cash: return 1
+        case .qrCode: return 2
+        case .creditCard: return 3
+        case .thaiChuaThaiPlus: return 4
+        }
+    }
+}
+
 struct POSView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var sessionManager: AppSessionManager
@@ -73,23 +89,7 @@ struct POSView: View {
     @State private var itemToEditNote: UUID? = nil
     @State private var editingNoteForOrderedItem: (identity: String, status: String)? = nil
 
-    enum ActivePaymentMethod: Identifiable {
-        case cash
-        case qrCode
-        case creditCard
-        case thaiChuaThaiPlus
-
-        var id: Int {
-            switch self {
-            case .cash: return 1
-            case .qrCode: return 2
-            case .creditCard: return 3
-            case .thaiChuaThaiPlus: return 4
-            }
-        }
-    }
-
-    @State private var activePayment: ActivePaymentMethod? = nil
+    @State private var activePayment: POSActivePaymentMethod? = nil
     @State private var externalAppHandoff = ExternalAppHandoff()
     @State private var externalAppLaunchID = UUID()
     @State private var showTungNgernOpenFailure = false
@@ -1066,52 +1066,25 @@ struct POSView: View {
 
     var body: some View {
         @Bindable var viewModel = viewModel
-        return ZStack {
-            POSReferencePalette.background.ignoresSafeArea()
-
-            if catalog.hasLoaded && catalog.totalAvailableItems == 0 {
-                emptyState
-            } else if isTableServiceMode && liveActiveSession == nil {
-                tableRequiredState
-            } else {
-                VStack(spacing: 0) {
-                    if let activeShift = activeRegisterSessions.first, isShiftStale(activeShift) {
-                        staleShiftWarningBanner(activeShift)
-                    }
-
-                    HStack(spacing: 0) {
-                        erasedMenuPanel
-                        erasedCartPanel
-                    }
+        return POSWorkspaceView(
+            hasLoadedCatalog: catalog.hasLoaded,
+            hasCatalogItems: catalog.totalAvailableItems > 0,
+            requiresTable: isTableServiceMode && liveActiveSession == nil,
+            menuContent: { erasedMenuPanel },
+            cartContent: { erasedCartPanel },
+            emptyContent: { emptyState },
+            tableContent: { tableRequiredState },
+            headerContent: {
+                if let activeShift = activeRegisterSessions.first, isShiftStale(activeShift) {
+                    staleShiftWarningBanner(activeShift)
                 }
             }
-
-            // MARK: - Error Banner Overlay
-            VStack {
-                if showingErrorBanner, let msg = errorMessage {
-                    HStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.white)
-                        Text(msg)
-                            .font(.subheadline).fontWeight(.semibold).foregroundColor(.white)
-                        Spacer()
-                        Button { withAnimation { showingErrorBanner = false } } label: {
-                            Image(systemName: "xmark").foregroundColor(.white.opacity(0.8))
-                        }
-                    }
-                    .padding(.horizontal, 16).padding(.vertical, 12)
-                    .background(Color.appRose)
-                    .cornerRadius(12)
-                    .shadow(color: Color.appRose.opacity(0.3), radius: 8, y: 4)
-                    .padding(.horizontal, 16).padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                }
-                Spacer()
-            }
-            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: showingErrorBanner)
-            .zIndex(100)
-
-        }
+        )
+        .modifier(POSAlerts(
+            showingErrorBanner: $showingErrorBanner,
+            errorMessage: $errorMessage,
+            showUnsavedCartNavigationAlert: $showUnsavedCartNavigationAlert
+        ))
         .navigationBarTitleDisplayMode(.inline)
         .disabled(externalAppHandoff.isPending)
         .overlay {
@@ -1220,47 +1193,30 @@ struct POSView: View {
                 pendingVoidReason = ""
             }
         }
-        // Payment is a focused transactional flow. A form sheet can collapse
-        // to a compact detent on iPad and clip the keypad/confirmation CTA,
-        // especially after rotation. Full-screen presentation gives every
-        // payment method stable safe-area dimensions in both orientations.
-        .fullScreenCover(item: $activePayment) { paymentMethod in
-            switch paymentMethod {
-            case .cash:
-                CashPaymentModalView(totalAmount: displayTotal, onPark: {
-                    parkPayment(methodName: "Cash")
-                }) { cashReceived in
-                    await completePayment(methodName: "Cash", cashTendered: cashReceived)
-                }
-            case .qrCode:
-                QRPaymentModalView(totalAmount: displayTotal, onPark: {
-                    parkPayment(methodName: "QR PromptPay")
-                }) {
-                    Task {
-                        await completePayment(methodName: "QR PromptPay")
-                    }
-                }
-            case .creditCard:
-                CreditCardPaymentModalView(totalAmount: displayTotal, onPark: {
-                    parkPayment(methodName: "Credit Card")
-                }) {
-                    Task {
-                        await completePayment(methodName: "Credit Card")
-                    }
-                }
-            case .thaiChuaThaiPlus:
-                ThaiChuaThaiPlusPaymentModal(totalAmount: displayTotal, onPark: {
-                    parkPayment(methodName: GovernmentSupportProgram.thaiChuaThaiPlus)
-                }) { reference in
-                    Task {
-                        await completePayment(
-                            methodName: GovernmentSupportProgram.thaiChuaThaiPlus,
-                            transactionReference: reference
-                        )
-                    }
+        // Payment sheets are isolated from the root view builder. This keeps
+        // each payment branch type-checked independently.
+        .modifier(POSPaymentSheets(
+            activePayment: $activePayment,
+            totalAmount: displayTotal,
+            onPark: { parkPayment(methodName: $0) },
+            onCash: { amount in
+                await completePayment(methodName: "Cash", cashTendered: amount)
+            },
+            onQRCode: {
+                Task { await completePayment(methodName: "QR PromptPay") }
+            },
+            onCard: {
+                Task { await completePayment(methodName: "Credit Card") }
+            },
+            onThaiChuaThaiPlus: { reference in
+                Task {
+                    await completePayment(
+                        methodName: GovernmentSupportProgram.thaiChuaThaiPlus,
+                        transactionReference: reference
+                    )
                 }
             }
-        }
+        ))
         .sheet(isPresented: $showCustomerPicker) {
             CustomerPickerView { customer in
                 viewModel.selectedCustomer = customer
@@ -1295,7 +1251,7 @@ struct POSView: View {
             }
         }
         .sheet(isPresented: $showQuickOrderQueue) {
-            QuickOrderQueueSheet(orders: quickOrderQueue) { order in
+            POSQuickOrderQueue(orders: quickOrderQueue) { order in
                 quickOrderQueueSelection(order)
             }
         }
@@ -1367,22 +1323,11 @@ struct POSView: View {
                 isQuickServiceCheckoutConfirmed = false
             }
         }
-        .onChange(of: selectedTab) { _, newValue in
-            guard newValue != .pos, !viewModel.cart.isEmpty else { return }
-            // Sidebar navigation must not discard an in-progress checkout.
-            selectedTab = .pos
-            showUnsavedCartNavigationAlert = true
-        }
-        .alert(
-            lm.currentLanguage == .thai ? "มีรายการที่ยังไม่บันทึก" : "Unsaved order",
-            isPresented: $showUnsavedCartNavigationAlert
-        ) {
-            Button(lm.currentLanguage == .thai ? "อยู่หน้านี้ต่อ" : "Stay here", role: .cancel) {}
-        } message: {
-            Text(lm.currentLanguage == .thai
-                ? "กรุณาบันทึก พักรายการ หรือเคลียร์ตะกร้าก่อนเปลี่ยนหน้า"
-                : "Save, hold, or clear the cart before leaving POS.")
-        }
+        .modifier(POSNavigationHandlers(
+            selectedTab: $selectedTab,
+            showUnsavedCartAlert: $showUnsavedCartNavigationAlert,
+            hasUnsavedCart: !viewModel.cart.isEmpty
+        ))
         .fullScreenCover(isPresented: $showStartShiftSheet) {
             StartShiftRegisterSheet(onCancel: {
                 selectedTab = isTableServiceMode ? .tables : .pos
@@ -1614,7 +1559,8 @@ struct POSView: View {
     }
 
     private var menuPanel: some View {
-        VStack(spacing: 0) {
+        POSMenuPanel {
+            VStack(spacing: 0) {
             VStack(spacing: 0) {
                 // Category pills & Favorites
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -1690,9 +1636,8 @@ struct POSView: View {
                     viewModel.selectedCategory = nil
                 }
             )
+            }
         }
-        .frame(maxWidth: .infinity)
-        .background(POSReferencePalette.background)
     }
 
     // MARK: - Cart Panel (Right)
@@ -1700,7 +1645,7 @@ struct POSView: View {
     // (EXC_BAD_ACCESS code=2) when this panel is first materialized after an empty state.
 
     private var cartPanel: some View {
-        POSOrderPanel(isPresented: animateItems) {
+        POSCartPanel(isPresented: animateItems) {
             cartPanelUpperContent
         } lowerContent: {
             cartPanelLowerContent
@@ -6222,57 +6167,6 @@ struct CreditCardPaymentModalView: View {
             }
         }
         .apColorScheme()
-    }
-}
-
-private struct QuickOrderQueueSheet: View {
-    let orders: [Order]
-    let onSelect: (Order) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var lm: LocalizationManager
-
-    var body: some View {
-        NavigationStack {
-            List(orders) { order in
-                Button {
-                    onSelect(order)
-                    dismiss()
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(order.queueNumber.map { "คิว #\($0)" } ?? order.orderNumber)
-                                .font(.headline)
-                            Text(order.orderNumber)
-                                .font(.caption.monospaced())
-                                .foregroundColor(.secondary)
-                            Text(order.orderType == "delivery" ? "Delivery" : (order.orderType == "walk_in" ? "Walk-in" : "Takeaway"))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        Spacer()
-                        Text(order.status.capitalized)
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(.appAmber)
-                    }
-                }
-                .buttonStyle(.plain)
-            }
-            .overlay {
-                if orders.isEmpty {
-                    ContentUnavailableView(
-                        lm.currentLanguage == .thai ? "ไม่มี Quick Order" : "No Quick Orders",
-                        systemImage: "takeoutbag.and.cup.and.straw",
-                        description: Text(lm.currentLanguage == .thai ? "ออเดอร์จาก iPhone จะแสดงที่นี่" : "Orders from iPhone will appear here")
-                    )
-                }
-            }
-            .navigationTitle(lm.currentLanguage == .thai ? "คิวออเดอร์ด่วน" : "Quick Order Queue")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(lm.currentLanguage == .thai ? "ปิด" : "Done") { dismiss() }
-                }
-            }
-        }
     }
 }
 
