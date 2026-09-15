@@ -15,7 +15,7 @@ extension NetworkManager {
     /// Upserts a single InventoryLot to Supabase.
     /// Called by SyncEngine+Inventory when isSynced == false.
     func uploadInventoryLot(_ lot: InventoryLot) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
 
         var payload: [String: Any] = [
             "id":                lot.id.uuidString.lowercased(),
@@ -59,7 +59,7 @@ extension NetworkManager {
     /// Idempotent via on_conflict=id. Max 200 lots per call (Supabase row limit).
     func batchUploadInventoryLots(_ lots: [InventoryLot]) async throws -> Bool {
         guard !lots.isEmpty else { return true }
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
 
         let payloads: [[String: Any]] = lots.map { lot in
             var p: [String: Any] = [
@@ -111,26 +111,21 @@ extension NetworkManager {
 
     // MARK: - Fetch (Pull)
 
-    /// Fetches all non-deleted lots for the current merchant from Supabase.
+    /// Fetches lots including tombstones so deletes propagate to other devices.
     /// Returns raw [String: Any] dicts — parsing done in SyncEngine.
     func fetchInventoryLotsFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
-        let data = try await sendSupabaseRequest(
-            method: "GET",
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
+        return try await fetchAllPages(
             endpoint: "inventory_lots",
             queryItems: [
                 URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
-                URLQueryItem(name: "is_deleted",  value: "eq.false"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
                 URLQueryItem(name: "select",       value: "*"),
-                URLQueryItem(name: "order",        value: "updated_at.desc"),
-                URLQueryItem(name: "limit",        value: "2000")   // lots can be many per item
+                URLQueryItem(name: "order",        value: "updated_at.asc,id.asc")
             ],
-            payload: nil
+            pageSize: 500
         )
-        guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return []
-        }
-        return jsonArray
     }
 
     // MARK: - Date-Only Formatter (shared)

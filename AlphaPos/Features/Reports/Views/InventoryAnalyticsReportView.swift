@@ -17,7 +17,6 @@
 
 import SwiftUI
 import SwiftData
-import Charts
 
 // MARK: - Data Models (local to this report)
 
@@ -233,11 +232,11 @@ struct InventoryAnalyticsReportView: View {
 
     private func heatColor(_ s: StockStatus) -> Color {
         switch s {
-        case .outOfStock:   return .red
-        case .lowStock, .atReorderPoint: return .orange
-        case .belowSafety:  return .yellow
-        case .overstock:    return Color("appIndigo", bundle: nil)
-        case .adequate:     return Color("appTeal",   bundle: nil)
+        case .outOfStock:   return .appRose
+        case .lowStock, .atReorderPoint: return .appAmber
+        case .belowSafety:  return .orange
+        case .overstock:    return .appIndigo
+        case .adequate:     return .appTeal
         }
     }
 
@@ -253,29 +252,26 @@ struct InventoryAnalyticsReportView: View {
             if points.isEmpty {
                 emptyState("ยังไม่มีข้อมูลการใช้งานในช่วงนี้")
             } else {
-                let categories = Array(Set(points.map { $0.category })).sorted()
-                Chart(points) { pt in
-                    BarMark(
-                        x: .value("วันที่", pt.date, unit: .day),
-                        y: .value("ปริมาณ", pt.quantity)
-                    )
-                    .foregroundStyle(by: .value("หมวด", pt.category))
-                }
-                .chartXAxis {
-                    AxisMarks(values: .stride(by: .day, count: 5)) { _ in
-                        AxisGridLine()
-                        AxisValueLabel(format: .dateTime.day().month(.abbreviated))
+                let maxQty = max(points.map(\.quantity).max() ?? 0, 1)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .bottom, spacing: 6) {
+                        ForEach(points) { pt in
+                            VStack(spacing: 4) {
+                                let ratio = CGFloat(max(pt.quantity, 0) / maxQty)
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color.blue.gradient)
+                                    .frame(width: 18, height: max(ratio * 110, 4))
+
+                                Text(pt.date.formatted(.dateTime.day().month(.defaultDigits)))
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
+                    .padding(.vertical, 8)
                 }
-                .chartYAxis {
-                    AxisMarks { AxisGridLine(); AxisValueLabel() }
-                }
-                .chartForegroundStyleScale(
-                    domain: categories,
-                    range: chartColors(count: categories.count)
-                )
-                .chartLegend(position: .bottom, alignment: .leading)
-                .frame(height: 180)
+                .frame(height: 140)
             }
         }
         .padding(APSpacing.md)
@@ -461,28 +457,40 @@ struct InventoryAnalyticsReportView: View {
                     .foregroundStyle(.pink)
             }
 
-            // Top-waste chart
+            // Top-waste list
             let wastePoints = analytics.wasteBreakdown.prefix(8)
+            let maxWaste = max(wastePoints.map(\.cost).max() ?? 0, 1)
             if !wastePoints.isEmpty {
-                Chart(Array(wastePoints), id: \.id) { pt in
-                    BarMark(
-                        x: .value("Cost", pt.cost),
-                        y: .value("Item", pt.itemName)
-                    )
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [.pink, .pink.opacity(0.5)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .annotation(position: .trailing) {
-                        Text(viewModel.formatCurrency(pt.cost))
-                            .font(.caption2).foregroundStyle(.secondary)
+                VStack(spacing: 8) {
+                    ForEach(Array(wastePoints), id: \.id) { pt in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(pt.itemName)
+                                    .font(.subheadline)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(viewModel.formatCurrency(pt.cost))
+                                    .font(.caption.weight(.semibold).monospacedDigit())
+                                    .foregroundStyle(.pink)
+                            }
+
+                            GeometryReader { geo in
+                                let width = max(CGFloat(max(pt.cost, 0) / maxWaste) * geo.size.width, 4)
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [.pink, .pink.opacity(0.6)],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                                    .frame(width: width, height: 8)
+                            }
+                            .frame(height: 8)
+                        }
                     }
                 }
-                .chartXAxis(.hidden)
-                .frame(height: CGFloat(wastePoints.count) * 34)
+                .padding(.vertical, 4)
             }
 
             // Waste % of stock value
@@ -630,7 +638,7 @@ struct InventoryAnalytics {
     private var activeItems: [InventoryItem]  { items.filter { !$0.isDeleted } }
     private var periodTxns:  [InventoryTransaction] {
         transactions.filter {
-            !$0.isDeleted && $0.updatedAt >= start && $0.updatedAt < end
+            !$0.isDeleted && $0.createdAt >= start && $0.createdAt < end
         }
     }
 
@@ -645,7 +653,10 @@ struct InventoryAnalytics {
     var periodCOGS: Double {
         periodTxns
             .filter { $0.transactionType == InventoryMovementType.sell.rawValue }
-            .reduce(0) { $0 + $1.quantity * ($1.costPrice ?? $1.item?.costPrice ?? 0) }
+            // Outbound movements (sell/waste) are stored with a NEGATIVE quantity on
+            // the real POS/FEFO path but a POSITIVE quantity on some seed/consolidated
+            // paths. Use abs() so COGS is always a positive cost regardless of sign.
+            .reduce(0) { $0 + abs($1.quantity) * ($1.costPrice ?? $1.item?.costPrice ?? 0) }
     }
 
     var periodCOGSLabel: String {
@@ -656,7 +667,7 @@ struct InventoryAnalytics {
     var totalWasteCost: Double {
         periodTxns
             .filter { $0.transactionType == InventoryMovementType.waste.rawValue }
-            .reduce(0) { $0 + $1.quantity * ($1.costPrice ?? $1.item?.costPrice ?? 0) }
+            .reduce(0) { $0 + abs($1.quantity) * ($1.costPrice ?? $1.item?.costPrice ?? 0) }
     }
 
     var wastePercent: Double {
@@ -677,23 +688,43 @@ struct InventoryAnalytics {
         return "หมุนช้า ⚠️"
     }
 
-    // ── ABC Classification (by stock value contribution) ─────────────────────
-    /// Returns a dictionary [itemId → "A"|"B"|"C"]
-    private var abcMap: [UUID: String] {
-        let sorted = activeItems.sorted { a, b in
-            (a.currentQuantity * a.costPrice) > (b.currentQuantity * b.costPrice)
-        }
-        let total = totalStockValue
-        guard total > 0 else { return [:] }
+    // ── ABC Classification (Pareto, by annualised USAGE value) ───────────────
+    /// Correct ABC basis is *consumption* value (how much the item moves), not
+    /// static stock-on-hand value. We annualise the period's sell+waste value.
+    private var annualUsageValueByItem: [UUID: Double] {
+        let days = max(Double(Calendar.current.dateComponents([.day], from: start, to: end).day ?? 1), 1)
+        let annualFactor = 365.0 / days
 
-        var cumulative = 0.0
-        var result: [UUID: String] = [:]
-        for item in sorted {
-            cumulative += (item.currentQuantity * item.costPrice)
-            let pct = cumulative / total
-            result[item.id] = pct <= 0.70 ? "A" : pct <= 0.90 ? "B" : "C"
+        var usage: [UUID: Double] = [:]
+        for txn in periodTxns where txn.transactionType == InventoryMovementType.sell.rawValue
+            || txn.transactionType == InventoryMovementType.waste.rawValue {
+            guard let item = txn.item else { continue }
+            let value = abs(txn.quantity) * (txn.costPrice ?? item.costPrice)
+            usage[item.id, default: 0] += value * annualFactor
         }
-        return result
+        return usage
+    }
+
+    /// Usage-based ABC class per item id ("A"|"B"|"C"), 80/15/5 split.
+    var abcByUsage: [UUID: InventoryABCClass] {
+        let valued = activeItems.map {
+            ABCValuedItem(item: $0, annualUsageValue: annualUsageValueByItem[$0.id] ?? 0)
+        }
+        return InventoryABC.classify(valued)
+    }
+
+    /// Convenience accessor for UI (falls back to C for unknown items).
+    func abcClass(for itemId: UUID) -> InventoryABCClass {
+        abcByUsage[itemId] ?? .c
+    }
+
+    var abcCounts: (a: Int, b: Int, c: Int) {
+        let classes = abcByUsage.values
+        return (
+            classes.filter { $0 == .a }.count,
+            classes.filter { $0 == .b }.count,
+            classes.filter { $0 == .c }.count
+        )
     }
 
     // ── Health Heatmap Grid ────────────────────────────────────────────────
@@ -701,9 +732,9 @@ struct InventoryAnalytics {
     var healthGrid: [String: [StockStatus: Int]] {
         var grid: [String: [StockStatus: Int]] = ["A": [:], "B": [:], "C": [:]]
         for item in activeItems {
-            let abc = abcMap[item.id] ?? "C"
+            let abc = abcByUsage[item.id] ?? .c
             let status = itemStatus(item)
-            grid[abc]![status, default: 0] += 1
+            grid[abc.rawValue]![status, default: 0] += 1
         }
         return grid
     }
@@ -723,18 +754,18 @@ struct InventoryAnalytics {
         let usageTxns = transactions.filter {
             !$0.isDeleted
             && ($0.transactionType == InventoryMovementType.sell.rawValue || $0.transactionType == InventoryMovementType.waste.rawValue)
-            && $0.updatedAt >= lookback
+            && $0.createdAt >= lookback
         }
 
         let cal = Calendar.current
         var byDayCategory: [String: Double] = [:]  // "2026-06-01|Meat" → total qty
 
         for txn in usageTxns {
-            let day = cal.startOfDay(for: txn.updatedAt)
+            let day = cal.startOfDay(for: txn.createdAt)
             let dayStr = ISO8601DateFormatter().string(from: day)
             let cat = txn.item?.category ?? "ไม่ระบุ"
             let key = "\(dayStr)|\(cat)"
-            byDayCategory[key, default: 0] += txn.quantity
+            byDayCategory[key, default: 0] += abs(txn.quantity)
         }
 
         let fmt = ISO8601DateFormatter()
@@ -816,10 +847,11 @@ struct InventoryAnalytics {
         var byItem: [UUID: WasteBreakdownPoint] = [:]
         for txn in periodTxns where txn.transactionType == InventoryMovementType.waste.rawValue {
             guard let item = txn.item else { continue }
-            let cost = txn.quantity * (txn.costPrice ?? item.costPrice)
+            let qty  = abs(txn.quantity)
+            let cost = qty * (txn.costPrice ?? item.costPrice)
             if let existing = byItem[item.id] {
                 let newCost = existing.cost + cost
-                let newQty  = existing.quantity + txn.quantity
+                let newQty  = existing.quantity + qty
                 byItem[item.id] = WasteBreakdownPoint(
                     id: item.id, itemName: item.name,
                     cost: newCost, quantity: newQty, unit: item.unit
@@ -827,7 +859,7 @@ struct InventoryAnalytics {
             } else {
                 byItem[item.id] = WasteBreakdownPoint(
                     id: item.id, itemName: item.name,
-                    cost: cost, quantity: txn.quantity, unit: item.unit
+                    cost: cost, quantity: qty, unit: item.unit
                 )
             }
         }

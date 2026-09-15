@@ -4,6 +4,7 @@ import AVFoundation
 struct BarcodeScannerView: View {
     @Environment(\.dismiss) private var dismiss
     var onScan: (String) -> Void
+    var continuous = false
     
     @State private var manualBarcode = ""
     @State private var cameraPermission: AVAuthorizationStatus = .notDetermined
@@ -29,8 +30,8 @@ struct BarcodeScannerView: View {
                     CameraScannerRepresentable(onScan: { code in
                         APHaptic.trigger()
                         onScan(code)
-                        dismiss()
-                    })
+                        if !continuous { dismiss() }
+                    }, continuous: continuous)
                     .ignoresSafeArea()
                     
                     // Scanning HUD Overlay
@@ -111,7 +112,8 @@ struct BarcodeScannerView: View {
                     Button(action: {
                         if !manualBarcode.isEmpty {
                             onScan(manualBarcode)
-                            dismiss()
+                            manualBarcode = ""
+                            if !continuous { dismiss() }
                         }
                     }) {
                         Text("btn_scan".t)
@@ -138,7 +140,7 @@ struct BarcodeScannerView: View {
                     ForEach(simulatorShortcuts, id: \.0) { shortcut in
                         Button(action: {
                             onScan(shortcut.0)
-                            dismiss()
+                            if !continuous { dismiss() }
                         }) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(shortcut.1)
@@ -198,7 +200,8 @@ struct BarcodeScannerView: View {
                     Button("submit_btn".t) {
                         if !manualBarcode.isEmpty {
                             onScan(manualBarcode)
-                            dismiss()
+                            manualBarcode = ""
+                            if !continuous { dismiss() }
                         }
                     }
                     .padding()
@@ -313,10 +316,12 @@ struct ScannerLaserLine: View {
 #if !targetEnvironment(simulator)
 struct CameraScannerRepresentable: UIViewControllerRepresentable {
     var onScan: (String) -> Void
+    var continuous = false
     
     func makeUIViewController(context: Context) -> CameraScannerViewController {
         let vc = CameraScannerViewController()
         vc.delegate = context.coordinator
+        vc.continuous = continuous
         return vc
     }
     
@@ -347,6 +352,8 @@ class CameraScannerViewController: UIViewController, AVCaptureMetadataOutputObje
     weak var delegate: CameraScannerDelegate?
     var captureSession: AVCaptureSession?
     var previewLayer: AVCaptureVideoPreviewLayer?
+    var continuous = false
+    private var lastScan: (code: String, date: Date)?
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -375,7 +382,7 @@ class CameraScannerViewController: UIViewController, AVCaptureMetadataOutputObje
             captureSession?.addOutput(metadataOutput)
             
             metadataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
-            metadataOutput.metadataObjectTypes = [.qr, .ean8, .ean13, .code128, .code39, .upce]
+            metadataOutput.metadataObjectTypes = [.qr, .dataMatrix, .ean8, .ean13, .code128, .code39, .upce]
         } else {
             return
         }
@@ -406,11 +413,14 @@ class CameraScannerViewController: UIViewController, AVCaptureMetadataOutputObje
         if let metadataObject = metadataObjects.first {
             guard let readableObject = metadataObject as? AVMetadataMachineReadableCodeObject else { return }
             guard let stringValue = readableObject.stringValue else { return }
+            if let lastScan, lastScan.code == stringValue,
+               Date().timeIntervalSince(lastScan.date) < 0.75 { return }
+            lastScan = (stringValue, Date())
             
             // Vibrate and return code
             AudioServicesPlaySystemSound(SystemSoundID(kSystemSoundID_Vibrate))
             delegate?.didFindBarcode(code: stringValue)
-            captureSession?.stopRunning()
+            if !continuous { captureSession?.stopRunning() }
         }
     }
     

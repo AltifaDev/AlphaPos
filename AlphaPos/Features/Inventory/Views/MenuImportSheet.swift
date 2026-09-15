@@ -16,7 +16,7 @@ struct MenuImportSheet: View {
     @State private var viewModel = InventoryViewModel()
     @State private var currentStep: MenuImportStep = .upload
 
-    @AppStorage("gemini_api_key") private var geminiApiKey = ""
+    @State private var openRouterApiKey = ""
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @State private var showApiSettings = false
 
@@ -80,7 +80,11 @@ struct MenuImportSheet: View {
                 }
             }
             .onAppear {
+                openRouterApiKey = KeychainManager.shared.openRouterAPIKey()
                 viewModel.modelContext = modelContext
+            }
+            .onChange(of: openRouterApiKey) { _, value in
+                _ = KeychainManager.shared.saveOpenRouterAPIKey(value)
             }
             .onChange(of: selectedPhotoItems) { _, newItems in
                 Task { await loadSelectedPhotos(from: newItems) }
@@ -183,7 +187,7 @@ struct MenuImportSheet: View {
                         HStack {
                             Image(systemName: "key.fill")
                                 .foregroundColor(.appAccent)
-                            Text("🔑 Gemini API Settings")
+                            Text("🔑 OpenRouter API Settings")
                                 .font(.subheadline)
                                 .fontWeight(.semibold)
                                 .foregroundColor(.textPrimary)
@@ -198,20 +202,20 @@ struct MenuImportSheet: View {
 
                     if showApiSettings {
                         VStack(alignment: .leading, spacing: APSpacing.sm) {
-                            Text("หากไม่มี GEMINI_API_KEY ใน Supabase Secrets คุณสามารถใส่ API Key เพื่อใช้งานผ่านแอปได้โดยตรง")
+                            Text("หากไม่มี OPENROUTER_API_KEY ใน Supabase Secrets คุณสามารถใส่ API Key เพื่อใช้งานผ่านแอปได้โดยตรง")
                                 .font(.caption)
                                 .foregroundColor(.textSecondary)
 
                             HStack(spacing: APSpacing.sm) {
-                                SecureField("AI Studio API Key", text: $geminiApiKey)
+                                SecureField("OpenRouter API Key (sk-or-v1-...)", text: $openRouterApiKey)
                                     .textFieldStyle(PlainTextFieldStyle())
                                     .padding(APSpacing.sm)
                                     .background(Color.appSurfaceHigh)
                                     .cornerRadius(APRadius.sm)
                                     .foregroundColor(.textPrimary)
 
-                                if !geminiApiKey.isEmpty {
-                                    Button(action: { geminiApiKey = "" }) {
+                                if !openRouterApiKey.isEmpty {
+                                    Button(action: { openRouterApiKey = "" }) {
                                         Image(systemName: "xmark.circle.fill")
                                             .foregroundColor(.textTertiary)
                                     }
@@ -862,8 +866,8 @@ struct MenuImportSheet: View {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(config.supabaseAnonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(config.supabaseAnonKey)", forHTTPHeaderField: "Authorization")
-        if !geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            request.setValue(geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines), forHTTPHeaderField: "x-gemini-api-key")
+        if !openRouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            request.setValue(openRouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines), forHTTPHeaderField: "x-openrouter-api-key")
         }
         request.timeoutInterval = 60
 
@@ -873,7 +877,7 @@ struct MenuImportSheet: View {
         let payload: [String: Any] = ["images": base64Images]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await AppNetworkTransport.data(for: request, purpose: .cloudData)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw MenuImportError.invalidResponse

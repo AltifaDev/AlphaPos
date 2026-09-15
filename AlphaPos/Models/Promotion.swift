@@ -16,10 +16,24 @@ final class Promotion {
     @Attribute(.unique) var id: UUID
     var title: String
     var promoDescription: String?
-    var imageData: String? // Base64 representation of selected promotion image/video banner
+    /// Banner media: public Supabase Storage URL after sync, or local base64 before upload.
+    var imageData: String?
+    /// Local-only scopes never upload their definition or media to customer infrastructure.
+    var audience: String = "public" // public, pos, staff (legacy rows remain public)
+    var pendingWebRemoval: Bool = false
+    var isPublicPromotion: Bool { audience == "public" }
+    var isStaffDiscount: Bool { audience == "staff" }
+    var allowsAutomaticApplication: Bool { !isStaffDiscount }
+    var audienceLabel: String {
+        switch audience {
+        case "staff": return "ส่วนลดพนักงาน · เลือกใช้เอง"
+        case "pos": return "เฉพาะ POS · ไม่เผยแพร่บนเว็บ"
+        default: return "เผยแพร่บนเว็บ"
+        }
+    }
     var mediaType: String = "image" // "image" or "video"
     var isActive: Bool
-    var discountType: String = "none" // "none", "percentage", "fixed", "bundle_price", "buy_x_get_y", "buy_x_pay_y"
+    var discountType: String = "none" // "none", "percentage", "fixed", "fixed_per_item", "bundle_price", "buy_x_get_y", "buy_x_pay_y"
     var discountValue: Double = 0.0
     var minimumSpend: Double = 0.0
     var appliesToMenuItemId: String? // The item that triggers the promotion
@@ -101,6 +115,16 @@ final class Promotion {
         if let endsAt, date > endsAt { return false }
         // Check global redemption cap
         if let max = maxRedemptions, currentRedemptions >= max { return false }
+        return true
+    }
+
+    /// Coupon-only gates (expiry + per-code cap). Auto-apply promos have `couponCode == nil`.
+    func isCouponRedemptionAllowed(at date: Date = Date()) -> Bool {
+        guard let code = couponCode, !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return true
+        }
+        if let expires = couponExpiresAt, date > expires { return false }
+        if let max = couponMaxRedemptions, currentRedemptions >= max { return false }
         return true
     }
 

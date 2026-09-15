@@ -616,13 +616,11 @@ struct APHaptic {
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct AuroraBackground: View {
-    @State private var t1: Float = 0
-    @State private var t2: Float = 0
-    @State private var t3: Float = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            let date = timeline.date.timeIntervalSinceReferenceDate
+            let date = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
             Canvas { ctx, size in
                 let w = size.width
                 let h = size.height
@@ -726,43 +724,11 @@ struct ShimmerEffect: ViewModifier {
 
 struct GlassCard<Content: View>: View {
     var cornerRadius: CGFloat = 28
-    var opacity: Double = 0.65
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         content()
-            .background(
-                ZStack {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .opacity(opacity)
-
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.08),
-                                    Color.white.opacity(0.02)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.18),
-                                    Color.white.opacity(0.05)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 0.8
-                        )
-                }
-            )
+            .apLiquidGlass(interactive: true, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
 
@@ -935,13 +901,14 @@ struct PremiumEmployeeAvatar: View {
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct FloatingStarField: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let count: Int = 18
     @State private var stars: [(x: CGFloat, y: CGFloat, size: CGFloat, opacity: Double, speed: Double)] = []
     @State private var animTick = false
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
+            let t = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
             Canvas { ctx, size in
                 for i in 0..<stars.count {
                     let s = stars[i]
@@ -1048,13 +1015,48 @@ struct GlassPillBadge: View {
         .foregroundColor(.secondary)
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
-        .background(
-            Capsule(style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    Capsule(style: .continuous)
-                        .stroke(Color.white.opacity(0.15), lineWidth: 0.8)
-                )
-        )
+        .apLiquidGlass(in: Capsule(style: .continuous))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - iOS 26 Liquid Glass (shared helper)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Native Liquid Glass surface for iOS 26+ using `.glassEffect`, with a graceful
+// `.ultraThinMaterial` fallback for earlier OS versions. Use this everywhere a
+// floating/translucent surface is needed so the whole app stays consistent
+// with the master (iPad) device styling.
+extension View {
+    @ViewBuilder
+    func apLiquidGlass<S: Shape>(
+        tint: Color? = nil,
+        interactive: Bool = false,
+        in shape: S
+    ) -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(.regular.tint(tint).interactive(interactive), in: shape)
+        } else {
+            self
+                .background(.ultraThinMaterial, in: shape)
+                .overlay(shape.stroke(Color.white.opacity(0.22), lineWidth: 1))
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Pressable Button Style (tactile press feedback)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Gentle scale-down + slight dim on press, matching the master device's
+// PaymentButtonStyle. Use for all primary/secondary action buttons so touch
+// feedback feels consistent and native across iPhone and iPad.
+struct PressableButtonStyle: ButtonStyle {
+    var scale: CGFloat = 0.97
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? scale : 1.0)
+            .brightness(configuration.isPressed ? -0.04 : 0)
+            .animation(.spring(response: 0.22, dampingFraction: 0.65), value: configuration.isPressed)
     }
 }

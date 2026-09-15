@@ -55,6 +55,7 @@ BEGIN
     -- ── 3. Upsert order (idempotent — safe to retry) ──────────────────────────
     INSERT INTO public.orders (
         id, order_number, table_number, total, status,
+        order_type, cashier_name, queue_number,
         session_token, guest_count, merchant_id, created_at, updated_at,
         delivery_brand, delivery_gp, delivery_ad_fee,
         delivery_ad_fee_is_pct, delivery_other_fee,
@@ -65,6 +66,9 @@ BEGIN
         p_order->>'table_number',
         COALESCE((p_order->>'total')::NUMERIC, 0),
         COALESCE(p_order->>'status', 'preparing'),
+        COALESCE(p_order->>'order_type', 'dine_in'),
+        COALESCE(NULLIF(p_order->>'cashier_name', ''), 'Staff'),
+        NULLIF(p_order->>'queue_number', ''),
         v_session_token,
         COALESCE((p_order->>'guest_count')::INTEGER, 1),
         v_merchant_id,
@@ -80,6 +84,9 @@ BEGIN
     ON CONFLICT (id) DO UPDATE SET
         status                 = EXCLUDED.status,
         total                  = EXCLUDED.total,
+        order_type             = EXCLUDED.order_type,
+        cashier_name           = EXCLUDED.cashier_name,
+        queue_number           = EXCLUDED.queue_number,
         updated_at             = EXCLUDED.updated_at,
         delivery_brand         = EXCLUDED.delivery_brand,
         delivery_gp            = EXCLUDED.delivery_gp,

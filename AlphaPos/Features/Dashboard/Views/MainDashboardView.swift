@@ -14,23 +14,45 @@ struct MainDashboardView: View {
     @EnvironmentObject private var lm: LocalizationManager
     @EnvironmentObject private var sessionManager: AppSessionManager
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @AppStorage("app_theme") private var appTheme = AppTheme.dark.rawValue
-    @AppStorage("active_branch_id") private var activeBranchId = ""
+    @AppStorage(BranchContext.storageKey) private var activeBranchId = ""
     @AppStorage("enable_table_system") private var enableTableSystem = true
     @AppStorage("developer_mode_enabled") private var developerModeEnabled = false
     @AppStorage("staff_session_timeout_minutes") private var staffSessionTimeoutMinutes = 15
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @State private var selectedTab: DashboardTab = .dashboard
     @State private var navigationPath = NavigationPath()
+    @State private var restoreOffer: CloudBackupManifest?
+    @State private var showRestoreOffer = false
+    @State private var restoreOfferMessage: String?
     @State private var posTableSession: TableSession? = nil
+    @State private var focusedPOSOrderNumber: String? = nil
+    @State private var posQuickOrderMode = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    @Query(sort: \InventoryItem.name) private var inventoryItems: [InventoryItem]
+    @State private var brandGlow = false
+    @State private var showSetupChecklist = false
+    @State private var setupChecklistItems: [StoreSetupChecklist.Item] = []
+    @State private var showDeferredOwnerPinSetup = false
+    @State private var showSubscriptionPaywall = false
+    @State private var showAttendanceModal = false
+    // The sidebar only renders low-stock warnings. Materializing the complete
+    // inventory catalogue here made every tab pay that cost.
+    @Query(
+        filter: #Predicate<InventoryItem> {
+            !$0.isDeleted && $0.currentQuantity <= $0.reorderLevel
+        },
+        sort: \InventoryItem.name
+    ) private var lowStockInventoryItems: [InventoryItem]
     @ObservedObject private var syncEngine = SyncEngine.shared
 
     // Manual connect/cancel prevents timer leak when view leaves hierarchy
-    private let timer = Timer.publish(every: 5.0, on: .main, in: .common)
-    @State private var timerCancellable: Cancellable? = nil
+    private let syncTimer = Timer.publish(every: 30.0, on: .main, in: .common)
+    private let timeoutTimer = Timer.publish(every: 15.0, on: .main, in: .common)
+    @State private var syncTimerCancellable: Cancellable? = nil
+    @State private var timeoutTimerCancellable: Cancellable? = nil
+    @State private var deferredPOSSyncTask: Task<Void, Never>? = nil
 
 
     private var visibleTabs: [DashboardTab] {
@@ -40,9 +62,6 @@ struct MainDashboardView: View {
             }
             if tab == .tables {
                 return enableTableSystem && canAccess(tab)
-            }
-            if tab == .pos {
-                return !enableTableSystem && canAccess(tab)
             }
             return canAccess(tab)
         }
@@ -62,6 +81,8 @@ struct MainDashboardView: View {
         // ── Group 3: Management ───────────────────────────────────────────
         case cashDrawer     = "Hot Actions"
         case payments       = "Payments"             // NEW: Payment Gateway
+        case billHistory    = "Bill History"
+        case expenses       = "Expenses"             // NEW: Expense & Asset Register
         case reports        = "Reports"
         case sales          = "Accounting"
         case promotions     = "Marketing"
@@ -69,8 +90,9 @@ struct MainDashboardView: View {
         case giftCards      = "Gift Cards"
         // ── Group 4: People ───────────────────────────────────────────────
         case customers      = "Customers"            // NEW: Customer CRM
-        case payroll        = "Payroll"
-        case timecard       = "Timecard"
+        case employees      = "Employees"            // Unified HR workspace
+        case payroll        = "Payroll"              // Legacy deep link → Employee hub
+        case timecard       = "Timecard"             // Legacy deep link → Employee hub
         // ── Group 5: Enterprise ───────────────────────────────────────────
         case store          = "Stores"
         case devices        = "Devices"              // NEW: Device Management
@@ -79,13 +101,13 @@ struct MainDashboardView: View {
         case syncHealth     = "Integrations"
         case settings       = "Settings"
 
-        // Gift cards live inside unified Customer Value workspace.
-        // Keep legacy case so previously persisted navigation remains valid.
+        // Customer profiles, loyalty and gift cards live in one workspace.
+        // Payroll + Timecard live under Employees. Keep legacy cases for deep links.
         static var allCases: [DashboardTab] {
             [.dashboard, .notifications,
              .tables, .pos, .kitchen, .inventory,
-             .cashDrawer, .payments, .reports, .sales, .promotions, .loyalty,
-             .customers, .payroll, .timecard,
+             .cashDrawer, .payments, .billHistory, .expenses, .reports, .sales, .promotions,
+             .customers, .employees,
              .store, .devices, .organization,
              .syncHealth, .settings]
         }
@@ -108,9 +130,9 @@ struct MainDashboardView: View {
                 return .overview
             case .tables, .pos, .kitchen, .inventory:
                 return .operations
-            case .cashDrawer, .payments, .reports, .sales, .promotions, .loyalty, .giftCards:
+            case .cashDrawer, .payments, .billHistory, .expenses, .reports, .sales, .promotions, .loyalty, .giftCards:
                 return .management
-            case .customers, .payroll, .timecard:
+            case .customers, .employees, .payroll, .timecard:
                 return .people
             case .store, .devices, .organization:
                 return .enterprise
@@ -123,13 +145,15 @@ struct MainDashboardView: View {
         enum Badge { case beta, new, none }
         var badge: Badge {
             switch self {
-            case .kitchen:       return .beta
+            case .kitchen:       return .none
             case .dashboard:     return .new
             case .notifications: return .new
             case .customers:     return .new
+            case .employees:     return .new
             case .devices:       return .new
             case .organization:  return .new
             case .payments:      return .new
+            case .expenses:      return .new
             default:             return .none
             }
         }
@@ -145,12 +169,15 @@ struct MainDashboardView: View {
             case .inventory:     return L.Nav.tabInventory.t
             case .cashDrawer:    return L.Nav.tabCashDrawer.t
             case .payments:      return "payments_nav".t
+            case .billHistory:   return LocalizationManager.shared.currentLanguage == .thai ? "ประวัติบิล" : "Bill History"
+            case .expenses:      return LocalizationManager.shared.currentLanguage == .thai ? "ค่าใช้จ่ายและสินทรัพย์" : "Expenses & Assets"
             case .reports:       return L.Nav.tabReports.t
             case .sales:         return L.Nav.tabSales.t
             case .promotions:    return L.Nav.tabPromotions.t
             case .loyalty:       return "customer_value_title".t
             case .giftCards:     return L.Nav.tabGiftCards.t
             case .customers:     return "customers_nav".t
+            case .employees:     return "employees_nav".t
             case .payroll:       return L.Nav.tabPayroll.t
             case .timecard:      return L.Nav.tabTimecard.t
             case .store:         return L.Nav.tabStore.t
@@ -171,14 +198,17 @@ struct MainDashboardView: View {
             case .inventory:     return "fork.knife"
             case .cashDrawer:    return "bolt.circle.fill"
             case .payments:      return "creditcard.and.123"
+            case .billHistory:   return "doc.text.magnifyingglass"
+            case .expenses:      return "banknote.fill"
             case .reports:       return "chart.bar.fill"
             case .sales:         return "chart.line.uptrend.xyaxis"
             case .promotions:    return "megaphone.fill"
             case .loyalty:       return "person.crop.circle.badge.checkmark"
             case .giftCards:     return "giftcard.fill"
             case .customers:     return "person.2.fill"                  // Customer CRM
-            case .payroll:       return "dollarsign.circle.fill"
-            case .timecard:      return "faceid"
+            case .employees:     return "person.badge.shield.checkmark.fill"
+            case .payroll:       return "banknote"
+            case .timecard:      return "clock.badge.checkmark"
             case .store:         return "building.2.fill"
             case .devices:       return "ipad.and.iphone"               // Device Management
             case .organization:  return "building.columns.fill"          // Organization
@@ -198,15 +228,18 @@ struct MainDashboardView: View {
             case .inventory:     return LinearGradient(colors: [Color(hex: "0EA5E9"), Color(hex: "6366F1")], startPoint: .leading, endPoint: .trailing)
             case .cashDrawer:    return LinearGradient(colors: [Color(hex: "F97316"), Color(hex: "EF4444")], startPoint: .leading, endPoint: .trailing)
             case .payments:      return LinearGradient(colors: [Color(hex: "10B981"), Color(hex: "059669")], startPoint: .leading, endPoint: .trailing)
+            case .billHistory:   return LinearGradient(colors: [Color(hex: "F97316"), Color(hex: "EF4444")], startPoint: .leading, endPoint: .trailing)
+            case .expenses:      return LinearGradient(colors: [Color(hex: "F59E0B"), Color(hex: "D97706")], startPoint: .leading, endPoint: .trailing)
             case .reports:       return LinearGradient(colors: [Color(hex: "06B6D4"), Color(hex: "3B82F6")], startPoint: .leading, endPoint: .trailing)
             case .sales:         return LinearGradient(colors: [Color(hex: "8B5CF6"), Color(hex: "D946EF")], startPoint: .leading, endPoint: .trailing)
             case .promotions:    return LinearGradient(colors: [Color(hex: "10B981"), Color(hex: "34D399")], startPoint: .leading, endPoint: .trailing)
             case .loyalty:       return LinearGradient(colors: [Color(hex: "A78BFA"), Color(hex: "F59E0B")], startPoint: .leading, endPoint: .trailing)
             case .giftCards:     return LinearGradient(colors: [Color(hex: "F59E0B"), Color(hex: "F97316")], startPoint: .leading, endPoint: .trailing)
             case .customers:     return LinearGradient(colors: [Color(hex: "EC4899"), Color(hex: "F43F5E")], startPoint: .leading, endPoint: .trailing)
-            case .payroll:       return LinearGradient(colors: [Color(hex: "A855F7"), Color(hex: "EC4899")], startPoint: .leading, endPoint: .trailing)
-            case .timecard:      return APGradient.positive
-            case .store:         return LinearGradient(colors: [Color(hex: "F43F5E"), Color(hex: "FDA4AF")], startPoint: .leading, endPoint: .trailing)
+            case .employees:     return LinearGradient(colors: [Color(hex: "0F766E"), Color(hex: "334155")], startPoint: .leading, endPoint: .trailing)
+            case .payroll:       return LinearGradient(colors: [Color(hex: "0F766E"), Color(hex: "334155")], startPoint: .leading, endPoint: .trailing)
+            case .timecard:      return LinearGradient(colors: [Color(hex: "0F766E"), Color(hex: "334155")], startPoint: .leading, endPoint: .trailing)
+            case .store:         return LinearGradient(colors: [Color(hex: "0F766E"), Color(hex: "14B8A6")], startPoint: .leading, endPoint: .trailing)
             case .devices:       return LinearGradient(colors: [Color(hex: "14B8A6"), Color(hex: "0EA5E9")], startPoint: .leading, endPoint: .trailing)
             case .organization:  return LinearGradient(colors: [Color(hex: "6366F1"), Color(hex: "3B82F6")], startPoint: .leading, endPoint: .trailing)
             case .syncHealth:    return LinearGradient(colors: [Color(hex: "22C55E"), Color(hex: "0EA5E9")], startPoint: .leading, endPoint: .trailing)
@@ -224,15 +257,18 @@ struct MainDashboardView: View {
             case .inventory:     return Color(hex: "0EA5E9")
             case .cashDrawer:    return Color(hex: "F97316")
             case .payments:      return Color(hex: "10B981")
+            case .billHistory:   return Color(hex: "F97316")
+            case .expenses:      return Color(hex: "F59E0B")
             case .reports:       return Color(hex: "06B6D4")
             case .sales:         return Color(hex: "8B5CF6")
             case .promotions:    return Color(hex: "10B981")
             case .loyalty:       return Color(hex: "A78BFA")
             case .giftCards:     return Color(hex: "F59E0B")
             case .customers:     return Color(hex: "EC4899")
-            case .payroll:       return Color(hex: "A855F7")
-            case .timecard:      return Color(hex: "34D399")
-            case .store:         return Color(hex: "F43F5E")
+            case .employees:     return Color(hex: "0F766E")
+            case .payroll:       return Color(hex: "0F766E")
+            case .timecard:      return Color(hex: "334155")
+            case .store:         return Color(hex: "0F766E")
             case .devices:       return Color(hex: "14B8A6")
             case .organization:  return Color(hex: "6366F1")
             case .syncHealth:    return Color(hex: "22C55E")
@@ -243,26 +279,29 @@ struct MainDashboardView: View {
         var requiredPermission: AppPermission {
             switch self {
             case .dashboard:     return .dashboardView
-            case .notifications: return .notificationsManage
+            case .notifications: return .notificationsView
             case .tables:        return .tablesManage
             case .pos:           return .posSell
             case .kitchen:       return .kitchenView
             case .inventory:     return .inventoryView
             case .cashDrawer:    return .cashDrawerManage
             case .payments:      return .paymentsManage
+            case .billHistory:   return .accountingView
+            case .expenses:      return .expensesManage
             case .reports:       return .reportsView
-            case .sales:         return .reportsView
-            case .promotions:    return .posSell
-            case .loyalty:       return .posSell
+            case .sales:         return .accountingView
+            case .promotions:    return .promotionsManage
+            case .loyalty:       return .customersManage
 
-            case .giftCards:     return .posSell
-            case .customers:     return .customersView
+            case .giftCards:     return .customersManage
+            case .customers:     return .customersManage
+            case .employees:     return .staffManage
             case .payroll:       return .payrollManage
             case .timecard:      return .posSell
             case .store:         return .settingsManage
             case .devices:       return .devicesView
             case .organization:  return .organizationView
-            case .syncHealth:    return .devicesView
+            case .syncHealth:    return .deviceManage
             case .settings:      return .settingsManage
             }
         }
@@ -279,22 +318,123 @@ struct MainDashboardView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebarContent
-                .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 260)
-        } detail: {
-            NavigationStack(path: $navigationPath) {
-                detailContent
-                    .navigationTitle(" ")
-                    .navigationBarTitleDisplayMode(.inline)
+        ZStack(alignment: .bottomTrailing) {
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                sidebarContent
+                    .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 260)
+            } detail: {
+                NavigationStack(path: $navigationPath) {
+                    detailContent
+                }
+                .toolbar(.visible, for: .navigationBar)
+                .toolbar {
+                    if canAccess(.timecard) {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            attendanceToolbarButton
+                        }
+                    }
+                }
+            }
+
+            // Setup assistance belongs on the overview. It must never cover
+            // operational tables such as inventory, counts, or purchasing.
+            if selectedTab == .dashboard && showSetupChecklist && !setupChecklistItems.isEmpty {
+                StoreSetupChecklistView(
+                    items: setupChecklistItems,
+                    onSelect: handleSetupChecklistSelect,
+                    onDismiss: dismissSetupChecklist,
+                    onSkipProfile: skipSetupProfile
+                )
+                .frame(maxWidth: 420)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(20)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .zIndex(50)
+                // Card only — do not let an invisible ZStack layer eat taps across the detail pane.
+                .allowsHitTesting(true)
+            }
+
+        }
+        .overlay {
+            ActivityTouchForwarder {
+                sessionManager.touchActivity()
             }
         }
-        .apColorScheme()
-        .onReceive(timer) { _ in
-            Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
+        .sheet(isPresented: $showAttendanceModal) {
+            NavigationStack {
+                StaffAttendanceKioskView()
+                    .navigationTitle("ลงเวลาพนักงาน")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("เสร็จสิ้น") { showAttendanceModal = false }
+                        }
+                    }
             }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .modelContext(modelContext)
+        }
+        .task(id: activeMerchantIdForBackupOffer) {
+            await checkForCloudRestoreOffer()
+        }
+        .confirmationDialog("พบข้อมูลสำรองของร้าน", isPresented: $showRestoreOffer) {
+            Button("กู้คืนข้อมูล") {
+                if let restoreOffer {
+                    Task { await stageCloudRestore(restoreOffer) }
+                }
+            }
+            Button("ใช้ข้อมูลในเครื่องต่อ") {
+                markRestoreOfferHandled()
+            }
+            Button("ยกเลิก", role: .cancel) {}
+        } message: {
+            if let restoreOffer {
+                Text("Backup วันที่ \(restoreOffer.createdAt.formatted(date: .abbreviated, time: .shortened)) • App \(restoreOffer.appVersion) • \(restoreOffer.recordCounts.values.reduce(0, +)) รายการ")
+            }
+        }
+        .alert("Cloud Restore", isPresented: Binding(
+            get: { restoreOfferMessage != nil },
+            set: { if !$0 { restoreOfferMessage = nil } }
+        )) {
+            Button("ตกลง", role: .cancel) {}
+        } message: {
+            Text(restoreOfferMessage ?? "")
+        }
+        .apColorScheme()
+        .fullScreenCover(isPresented: $showDeferredOwnerPinSetup) {
+            OwnerSetupView(
+                initialDisplayName: UserDefaults.standard.string(forKey: "logged_in_name") ?? "",
+                showMfaSoftPrompt: false,
+                onFinished: { displayName, _ in
+                    if !displayName.isEmpty {
+                        UserDefaults.standard.set(displayName, forKey: "logged_in_name")
+                    }
+                    let mid = MerchantAuthManager.shared.merchantId
+                        ?? UserDefaults.standard.string(forKey: "active_merchant_id")
+                        ?? ""
+                    if !mid.isEmpty {
+                        MerchantOnboardingGate.markCompleted(.ownerPin, for: mid)
+                    }
+                    showDeferredOwnerPinSetup = false
+                    refreshSetupChecklist()
+                }
+            )
+        }
+        .sheet(isPresented: $showSubscriptionPaywall) {
+            NavigationStack {
+                SubscriptionSettingsView()
+            }
+        }
+        .onReceive(timeoutTimer) { _ in
             enforceStaffSessionTimeout()
+        }
+        .onReceive(syncTimer) { _ in
+            // Offline Quick Service is local-first. Do not run the full sync
+            // orchestration (and its maintenance scans) from a main-run-loop
+            // timer while the operator is navigating or taking an order.
+            guard !offlineSyncMode else { return }
+            requestPeriodicSync()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openTableNotification)) { notification in
             guard let tableNumber = notification.userInfo?["table_number"] as? String else { return }
@@ -304,41 +444,249 @@ struct MainDashboardView: View {
             if let tables = try? modelContext.fetch(descriptor), let table = tables.first {
                 if let activeSession = table.sessions.first(where: { $0.isActive }) {
                     self.posTableSession = activeSession
+                    self.posQuickOrderMode = false
                     self.selectedTab = .pos
                 } else {
                     self.selectedTab = .tables
                 }
             }
         }
-        .onAppear {
-            if !enableTableSystem && selectedTab == .tables {
+        .onReceive(NotificationCenter.default.publisher(for: .openOrderNotification)) { notification in
+            let orderNumber = notification.userInfo?["order_number"] as? String
+            let tableNumber = notification.userInfo?["table_number"] as? String
+
+            var matchedOrder: Order?
+            if let orderNumber {
+                var descriptor = FetchDescriptor<Order>(
+                    predicate: #Predicate<Order> {
+                        $0.orderNumber == orderNumber && !$0.isDeleted
+                    }
+                )
+                descriptor.fetchLimit = 1
+                matchedOrder = try? modelContext.fetch(descriptor).first
+            }
+
+            // Remote Quick Orders are queued independently. Do not navigate
+            // away from a table that is currently being edited.
+            let isQuickOrder = (matchedOrder?.isQuickServiceOrder ?? false)
+                || tableNumber?.uppercased() == "QUICK"
+            if isQuickOrder && posTableSession != nil {
+                return
+            }
+
+            if let activeSession = matchedOrder?.tableSession,
+               activeSession.isActive,
+               !activeSession.isDeleted {
+                posTableSession = activeSession
+                posQuickOrderMode = false
+                focusedPOSOrderNumber = orderNumber
+                selectedTab = .pos
+                columnVisibility = .detailOnly
+                return
+            }
+
+            if let tableNumber {
+                let descriptor = FetchDescriptor<RestaurantTable>(
+                    predicate: #Predicate<RestaurantTable> {
+                        $0.tableNumber == tableNumber
+                    }
+                )
+                if let table = try? modelContext.fetch(descriptor).first,
+                   let activeSession = table.sessions.first(where: {
+                       $0.isActive && !$0.isDeleted
+                   }) {
+                   posTableSession = activeSession
+                    posQuickOrderMode = false
+                   focusedPOSOrderNumber = orderNumber
+                    selectedTab = .pos
+                    columnVisibility = .detailOnly
+                    return
+                }
+            }
+
+            // Counter/quick/orphaned web orders legitimately may not have an
+            // active table. Open POS and present the exact persisted order.
+            posTableSession = nil
+            posQuickOrderMode = (matchedOrder.map { $0.orderType != "dine_in" } ?? false)
+                || tableNumber?.uppercased() == "QUICK"
+            focusedPOSOrderNumber = orderNumber
+            selectedTab = .pos
+            columnVisibility = .detailOnly
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openInventoryItemNotification)) { notification in
+            guard canAccess(.inventory) else { return }
+            if let itemId = notification.userInfo?["inventory_item_id"] as? String {
+                UserDefaults.standard.set(itemId, forKey: "pending_inventory_focus_id")
+            }
+            withAnimation {
+                selectedTab = .inventory
+                columnVisibility = .detailOnly
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openPaymentsNotification)) { _ in
+            guard canAccess(.payments) else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                selectedTab = .payments
+                columnVisibility = .detailOnly
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openFirstProductGuideNotification)) { _ in
+            guard canAccess(.inventory) else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                selectedTab = .inventory
+                columnVisibility = .detailOnly
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openAddFirstTableNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                selectedTab = .tables
+                columnVisibility = .detailOnly
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openPOSTabNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                selectedTab = .pos
+                columnVisibility = .detailOnly
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .reopenStoreSetupChecklistNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
                 selectedTab = .dashboard
             }
+            refreshSetupChecklist()
+        }
+        .onAppear {
             ensureSelectedTabIsAllowed()
-            if developerModeEnabled {
-                SampleDataSeeder.autoSeedIfOutdated(modelContext: modelContext)
-            } else {
-                SampleDataSeeder.seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
+            syncTimerCancellable = syncTimer.connect()
+            timeoutTimerCancellable = timeoutTimer.connect()
+            refreshSetupChecklist()
+            if StoreSetupChecklist.isTrialExpired {
+                showSubscriptionPaywall = true
             }
-            timerCancellable = timer.connect()
         }
         .onDisappear {
-            timerCancellable?.cancel()
-            timerCancellable = nil
+            syncTimerCancellable?.cancel()
+            syncTimerCancellable = nil
+            timeoutTimerCancellable?.cancel()
+            timeoutTimerCancellable = nil
+            deferredPOSSyncTask?.cancel()
+            deferredPOSSyncTask = nil
         }
         .onChange(of: enableTableSystem) { _, enabled in
-            if enabled && selectedTab == .pos {
-                selectedTab = .tables
-            } else if !enabled && selectedTab == .tables {
-                selectedTab = .pos
-            }
+            // Feature visibility changes must not eject the operator from POS.
+            // POS supports Quick Order with no table session; Table Management
+            // is simply removed when table service is disabled.
             ensureSelectedTabIsAllowed()
         }
         .onChange(of: sessionManager.currentStaffSession) { _, _ in
             ensureSelectedTabIsAllowed()
         }
         .onChange(of: selectedTab) { _, _ in
+            // Programmatic navigation (alerts, notifications, sheets, etc.) must
+            // obey the same feature flags and staff permissions as the sidebar.
+            // Without this guard a hidden destination could still be opened by
+            // assigning `selectedTab` directly.
+            ensureSelectedTabIsAllowed()
             navigationPath = NavigationPath()
+            refreshSetupChecklist()
+        }
+    }
+
+    private var attendanceToolbarButton: some View {
+        Button {
+            APHaptic.trigger()
+            showAttendanceModal = true
+        } label: {
+            Image(systemName: "faceid")
+                .font(.system(size: 17, weight: .semibold))
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel("ลงเวลาพนักงาน")
+        .accessibilityHint("เปิดหน้าต่างสแกนใบหน้าเพื่อเข้างานหรือออกงาน")
+    }
+
+    private var activeMerchantIdForBackupOffer: String {
+        UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+    }
+
+    private func checkForCloudRestoreOffer() async {
+        await Task.yield()
+        let merchantId = activeMerchantIdForBackupOffer.lowercased()
+        guard !merchantId.isEmpty,
+              UserDefaults.standard.string(forKey: "cloud_restore_offer_handled_merchant") != merchantId else { return }
+        do {
+            if let manifest = try await CloudBackupManager.shared.fetchLatestBackup() {
+                restoreOffer = manifest
+                showRestoreOffer = true
+            } else {
+                markRestoreOfferHandled()
+            }
+        } catch {
+            // Login must never be blocked merely because Backup discovery is
+            // unavailable. The user can retry from Settings.
+        }
+    }
+
+    private func stageCloudRestore(_ manifest: CloudBackupManifest) async {
+        do {
+            try await CloudBackupManager.shared.stageRestore(manifest)
+            markRestoreOfferHandled()
+            restoreOfferMessage = "ตรวจสอบ Backup สำเร็จแล้ว กรุณาปิด AlphaPos จาก App Switcher และเปิดใหม่เพื่อใช้ข้อมูลที่กู้คืน"
+        } catch {
+            restoreOfferMessage = error.localizedDescription
+        }
+    }
+
+    private func markRestoreOfferHandled() {
+        UserDefaults.standard.set(activeMerchantIdForBackupOffer.lowercased(), forKey: "cloud_restore_offer_handled_merchant")
+    }
+
+    // MARK: - Store setup checklist (Phase 4)
+
+    private func refreshSetupChecklist() {
+        let items = StoreSetupChecklist.incompleteItems(modelContext: modelContext)
+        setupChecklistItems = items
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+            showSetupChecklist = StoreSetupChecklist.shouldShowBanner(items: items)
+        }
+    }
+
+    private func dismissSetupChecklist() {
+        let mid = MerchantAuthManager.shared.merchantId
+            ?? UserDefaults.standard.string(forKey: "active_merchant_id")
+            ?? ""
+        StoreSetupChecklist.dismiss(for: mid)
+        withAnimation {
+            showSetupChecklist = StoreSetupChecklist.shouldShowBanner(modelContext: modelContext)
+            setupChecklistItems = StoreSetupChecklist.incompleteItems(modelContext: modelContext)
+        }
+    }
+
+    private func skipSetupProfile() {
+        let mid = MerchantAuthManager.shared.merchantId
+            ?? UserDefaults.standard.string(forKey: "active_merchant_id")
+            ?? ""
+        StoreSetupChecklist.skipProfile(for: mid)
+        refreshSetupChecklist()
+    }
+
+    private func handleSetupChecklistSelect(_ item: StoreSetupChecklist.Item) {
+        switch item {
+        case .firstMenuItem:
+            StoreSetupChecklist.requestFirstProductGuide()
+            withAnimation { selectedTab = .inventory }
+        case .firstTable:
+            StoreSetupChecklist.requestAddFirstTable()
+            withAnimation { selectedTab = .tables }
+        case .ownerPin:
+            showDeferredOwnerPinSetup = true
+        case .openShift:
+            withAnimation { selectedTab = enableTableSystem ? .tables : .pos }
+        case .shopProfile:
+            withAnimation { selectedTab = .organization }
+        case .activatePlan:
+            showSubscriptionPaywall = true
         }
     }
 
@@ -347,8 +695,17 @@ struct MainDashboardView: View {
     @ViewBuilder
     private var sidebarContent: some View {
         ZStack {
-            // Background
-            APGradient.sidebar.ignoresSafeArea()
+            // Keep navigation chrome visually separate from the content layer.
+            // Xcode 27 automatically renders this material with the refreshed
+            // Liquid Glass diffusion and edge treatment on iPadOS 27.
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .overlay(alignment: .trailing) {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(width: 0.5)
+                }
+                .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 // ── Brand header ────────────────────────────────────────────
@@ -374,7 +731,7 @@ struct MainDashboardView: View {
                         }
                     }
                     .padding(.horizontal, APSpacing.sm)
-                    .padding(.top, APSpacing.md)
+                    .padding(.top, APSpacing.xs)
                 }
 
                 Spacer()
@@ -402,67 +759,191 @@ struct MainDashboardView: View {
             Spacer()
         }
         .padding(.horizontal, 4)
-        .padding(.top, 10)
+        .padding(.top, 6)
         .padding(.bottom, 2)
     }
 
     private func canAccess(_ tab: DashboardTab) -> Bool {
-        sessionManager.currentStaffSession == nil || sessionManager.can(tab.requiredPermission)
+        guard sessionManager.currentStaffSession != nil else { return false }
+        if tab == .employees {
+            return sessionManager.can(.staffManage) || sessionManager.can(.payrollManage)
+        }
+        return sessionManager.can(tab.requiredPermission)
     }
 
     private func ensureSelectedTabIsAllowed() {
-        guard !visibleTabs.contains(selectedTab), let first = visibleTabs.first else { return }
-        selectedTab = first
+        // When table system is enabled, .pos serves as the order-taking screen for tables.
+        // It is hidden from the sidebar list but allowed for programmatic navigation.
+        if selectedTab == .pos && canAccess(.pos) {
+            return
+        }
+
+        guard !visibleTabs.contains(selectedTab) else { return }
+
+        // POS is available independently from Table Management. Table Service
+        // and Quick Order are modes inside POS, so a table-enabled merchant can
+        // still take counter orders without opening a table session.
+        if visibleTabs.contains(.pos) {
+            selectedTab = .pos
+        } else if visibleTabs.contains(.tables) {
+            selectedTab = .tables
+        } else if let first = visibleTabs.first {
+            selectedTab = first
+        }
     }
 
     private func enforceStaffSessionTimeout() {
-        guard let staff = sessionManager.currentStaffSession else { return }
+        guard let session = sessionManager.currentStaffSession else { return }
+        // PIN unlock remains local-first. Once background sync applies a remote
+        // revocation/deactivation, end the local session on the next guard tick.
+        let ownerId = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+        if session.employeeId != ownerId {
+            let employeeId = session.employeeId
+            let descriptor = FetchDescriptor<Employee>(
+                predicate: #Predicate<Employee> { employee in
+                    employee.id == employeeId
+                }
+            )
+            let employee = (try? modelContext.fetch(descriptor))?.first
+            if employee == nil || employee?.isDeleted == true || employee?.resignedAt != nil ||
+                employee?.user?.isActive == false || employee?.user?.isDeleted == true {
+                sessionManager.lockStaffSession(modelContext: modelContext, reason: "credential_revoked")
+                return
+            }
+            if PermissionService.permissions(for: employee?.user?.role) != session.permissions {
+                sessionManager.lockStaffSession(modelContext: modelContext, reason: "permissions_changed")
+                return
+            }
+        }
         let timeout = TimeInterval(max(1, staffSessionTimeoutMinutes) * 60)
-        if Date().timeIntervalSince(staff.startedAt) >= timeout {
+        // Idle-based timeout: inactivity, not wall-clock since unlock.
+        if Date().timeIntervalSince(sessionManager.lastActivityAt) >= timeout {
             sessionManager.lockStaffSession(modelContext: modelContext, reason: "session_timeout")
+        }
+    }
+
+    /// Full SyncEngine reconciliation is MainActor-isolated because it mutates
+    /// the live SwiftData context. Starting it from a run-loop timer while the
+    /// cashier is touching the Order screen can consume several frame budgets
+    /// and surface as "System gesture gate timed out". Keep realtime delivery
+    /// active, but defer the periodic full scan until the operator has paused.
+    private func requestPeriodicSync() {
+        let interactionGrace: TimeInterval = 1.5
+        let isTakingOrder = selectedTab == .pos
+
+        // Realtime delivery already keeps the live dashboard current. A full
+        // reconciliation changes many observed SwiftData collections and can
+        // repeatedly restart KPI aggregation on the main actor. Run that scan
+        // from operational/management screens instead of underneath Dashboard.
+        guard selectedTab != .dashboard else { return }
+
+        guard isTakingOrder,
+              Date().timeIntervalSince(sessionManager.lastActivityAt) < interactionGrace else {
+            Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+            return
+        }
+
+        guard deferredPOSSyncTask == nil else { return }
+        deferredPOSSyncTask = Task { @MainActor in
+            defer { deferredPOSSyncTask = nil }
+            while !Task.isCancelled {
+                let remaining = interactionGrace - Date().timeIntervalSince(sessionManager.lastActivityAt)
+                if selectedTab != .pos || remaining <= 0 {
+                    await SyncEngine.shared.syncAll(modelContext: modelContext)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(max(100, Int(remaining * 1_000))))
+            }
         }
     }
 
     private var brandHeader: some View {
         HStack(spacing: 10) {
-            // Logo mark — compact to align with sidebar toggle button
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(APGradient.accent)
-                    .frame(width: 32, height: 32)
-                    .shadow(color: Color.appAccent.opacity(0.5), radius: 6, x: 0, y: 2)
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 15, weight: .black))
-                    .foregroundColor(.white)
-            }
+            Image("AppLogoMark")
+                .resizable()
+                .scaledToFill()
+                .frame(width: 40, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    LinearGradient(
+                        colors: [.clear, .white.opacity(0.55), .clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .offset(x: brandGlow ? 26 : -26)
+                    .blendMode(.screen)
+                    .mask(Image("AppLogoMark").resizable().scaledToFill())
+                }
+                .shadow(
+                    color: Color.appAccent.opacity(brandGlow ? 0.55 : 0.25),
+                    radius: brandGlow ? 8 : 4,
+                    x: brandGlow ? 2 : -1,
+                    y: 2
+                )
 
             VStack(alignment: .leading, spacing: 1) {
                 Text("AlphaPos")
                     .font(.system(size: 15, weight: .black))
                     .foregroundColor(.textPrimary)
+                    .overlay {
+                        LinearGradient(
+                            colors: [.clear, Color.appAccent.opacity(0.75), .clear],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                        .offset(x: brandGlow ? 42 : -42)
+                        .mask(Text("AlphaPos").font(.system(size: 15, weight: .black)))
+                    }
+                    .shadow(
+                        color: Color.appAccent.opacity(brandGlow ? 0.28 : 0.08),
+                        radius: brandGlow ? 4 : 1,
+                        x: brandGlow ? 1 : -1,
+                        y: 1
+                    )
                 Text(L.Dashboard.restaurantManagement.t)
-                    .font(.system(size: 9))
+                    .font(.system(size: 8.5))
                     .foregroundColor(.textSecondary)
             }
             Spacer()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, APSpacing.sm)
-        .padding(.top, 6)
-        .padding(.bottom, 4)
+        .padding(.top, -6)
+        .padding(.bottom, 2)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 4).repeatForever(autoreverses: true)) {
+                brandGlow = true
+            }
+        }
     }
 
     // MARK: - Sidebar Row Helper
     private func sidebarRow(_ tab: DashboardTab) -> some View {
         SidebarTabRow(tab: tab, isSelected: selectedTab == tab)
             .onTapGesture {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                sessionManager.touchActivity()
+                let selectTab = {
                     if selectedTab == tab {
                         navigationPath = NavigationPath()
                     } else {
                         navigationPath = NavigationPath()
                         selectedTab = tab
                     }
-                    if horizontalSizeClass == .compact {
+                }
+
+                if UIDevice.current.userInterfaceIdiom == .pad {
+                    // Resizing a NavigationSplitView while a Charts canvas is
+                    // leaving the hierarchy can make Charts interpolate an
+                    // invalid path and trap inside CanvasDisplayList. Keep the
+                    // stable two-column iPad layout and switch content without
+                    // an animated geometry transition.
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { selectTab() }
+                } else {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        selectTab()
                         columnVisibility = .detailOnly
                     }
                 }
@@ -486,7 +967,17 @@ struct MainDashboardView: View {
                 Image(systemName: syncIcon)
                     .font(.system(size: 8))
                     .foregroundColor(syncColor)
-                if let lastSynced = syncEngine.lastSyncedAt {
+                if syncEngine.syncStatus == .error {
+                    Text(syncStatusText)
+                        .font(.system(size: 8))
+                        .foregroundColor(.textTertiary)
+                        .lineLimit(1)
+                } else if syncEngine.hadSoftSyncFailures {
+                    Text("sync_partial_short".t)
+                        .font(.system(size: 8))
+                        .foregroundColor(.textTertiary)
+                        .lineLimit(1)
+                } else if let lastSynced = syncEngine.lastSyncedAt {
                     Text(formatTime(lastSynced))
                         .font(.system(size: 8))
                         .foregroundColor(.textTertiary)
@@ -532,22 +1023,22 @@ struct MainDashboardView: View {
                 // Name + role
                 VStack(alignment: .leading, spacing: 1) {
                     Text(staff.displayName)
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 10.5, weight: .bold))
                         .foregroundColor(.textPrimary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                     Text(staff.roleName == "Store Owner" ? "store_owner".t : staff.roleName)
-                        .font(.system(size: 9))
+                        .font(.system(size: 8.5))
                         .foregroundColor(.textSecondary)
                         .lineLimit(1)
                 }
 
                 Spacer()
 
-                // Lock button — compact icon
+                // Lock button — compact icon (manual staff lock)
                 Button {
                     APHaptic.trigger()
-                    sessionManager.lockStaffSession(modelContext: modelContext)
+                    sessionManager.lockStaffSession(modelContext: modelContext, reason: "manual_lock")
                 } label: {
                     Image(systemName: "lock.fill")
                         .font(.system(size: 12, weight: .semibold))
@@ -557,6 +1048,7 @@ struct MainDashboardView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("staff_lock_now".t)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
@@ -573,11 +1065,11 @@ struct MainDashboardView: View {
     private var syncIcon: String {
         switch syncEngine.syncStatus {
         case .idle:
-            return "checkmark.circle.fill"
+            return syncEngine.hadSoftSyncFailures ? "exclamationmark.circle.fill" : "checkmark.circle.fill"
         case .syncing:
             return "arrow.triangle.2.circlepath"
         case .error:
-            return "exclamationmark.circle.fill"
+            return "clock.arrow.circlepath"
         case .offline:
             return "wifi.slash"
         }
@@ -586,11 +1078,11 @@ struct MainDashboardView: View {
     private var syncColor: Color {
         switch syncEngine.syncStatus {
         case .idle:
-            return .appTeal
+            return syncEngine.hadSoftSyncFailures ? Color(hex: "F59E0B") : .appTeal
         case .syncing:
             return Color.appAccent
         case .error:
-            return .red
+            return Color(hex: "F59E0B")
         case .offline:
             return Color(hex: "9CA3AF")
         }
@@ -603,7 +1095,7 @@ struct MainDashboardView: View {
         case .syncing:
             return L.Dashboard.syncing.t
         case .error:
-            return L.Dashboard.syncFailed.t
+            return "sync_retry_pending".t
         case .offline:
             return L.Dashboard.offlineMode.t
         }
@@ -624,37 +1116,17 @@ struct MainDashboardView: View {
 
     private var inventoryHealthWidget: some View {
         let activeBranchUUID = UUID(uuidString: activeBranchId)
-        let branchItems = inventoryItems.filter { item in
+        let branchItems = lowStockInventoryItems.filter { item in
             if let activeId = activeBranchUUID { return item.branch?.id == activeId }
             return true
         }
-        let lowStockItems = branchItems.filter { $0.currentQuantity <= $0.reorderLevel }
-        let totalValue    = branchItems.reduce(0.0) { $0 + ($1.currentQuantity * $1.costPrice) }
+        let lowStockItems = branchItems
 
         return HStack(spacing: 6) {
-            // Stock value chip
-            HStack(spacing: 4) {
-                Image(systemName: "banknote.fill")
-                    .font(.system(size: 9))
-                    .foregroundColor(.appTeal)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(L.Dashboard.stockValue.t)
-                        .font(.system(size: 7))
-                        .foregroundColor(.textTertiary)
-                    Text("฿\(totalValue.formatted(.number.precision(.fractionLength(0))))")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.textPrimary)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(Color.appSurfaceHigh)
-            .cornerRadius(8)
-
             Spacer()
 
             // Low-stock badge (only when needed)
-            if !lowStockItems.isEmpty {
+            if !lowStockItems.isEmpty && canAccess(.inventory) {
                 HStack(spacing: 3) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9))
@@ -671,9 +1143,7 @@ struct MainDashboardView: View {
                 .onTapGesture {
                     withAnimation {
                         selectedTab = .inventory
-                        if horizontalSizeClass == .compact {
-                            columnVisibility = .detailOnly
-                        }
+                        columnVisibility = .detailOnly
                     }
                 }
             }
@@ -688,34 +1158,52 @@ struct MainDashboardView: View {
     private var detailContent: some View {
         ZStack {
             Color.appBackground.ignoresSafeArea()
+            if !canAccess(selectedTab) {
+                ContentUnavailableView("ไม่มีสิทธิ์เข้าถึง", systemImage: "lock.shield", description: Text("กรุณาติดต่อผู้ดูแลเพื่อขอสิทธิ์สำหรับงานนี้"))
+            } else {
             switch selectedTab {
             // Overview
-            case .dashboard:     LiveDashboardView()
+            case .dashboard:     LiveDashboardView(columnVisibility: $columnVisibility)
             case .notifications: NotificationCenterView()
             // Operations
             case .tables:        TableView(selectedTab: $selectedTab, activeSession: $posTableSession, columnVisibility: $columnVisibility)
-            case .pos:           POSView(activeSession: $posTableSession, selectedTab: $selectedTab, columnVisibility: $columnVisibility)
-            case .kitchen:       KitchenDisplayView()
-            case .inventory:     InventoryView()
+            case .pos:           POSView(
+                activeSession: $posTableSession,
+                selectedTab: $selectedTab,
+                columnVisibility: $columnVisibility,
+                focusedOrderNumber: $focusedPOSOrderNumber,
+                quickOrderMode: $posQuickOrderMode
+            )
+            case .kitchen:       KitchenDisplayView(columnVisibility: $columnVisibility)
+            case .inventory:
+                if sessionManager.can(.inventoryManage) && sessionManager.can(.productCostsView) {
+                    InventoryView()
+                } else {
+                    OperationalStockView()
+                }
             // Management
             case .cashDrawer:    CashDrawerManagementView()
-            case .payments:      PaymentGatewayView()
-            case .reports:       ReportsView()
-            case .sales:         SalesDashboardView()
+            case .payments:      PaymentGatewayView(columnVisibility: $columnVisibility)
+            case .billHistory:   BillHistoryView()
+            case .expenses:      ExpenseTrackerView()
+            case .reports:       ReportsView(columnVisibility: $columnVisibility)
+            case .sales:         SalesDashboardView(columnVisibility: $columnVisibility)
             case .promotions:    PromotionsManagementView(columnVisibility: $columnVisibility)
             case .loyalty:       CustomerValueManagementView(initialSection: .loyalty)
             case .giftCards:     CustomerValueManagementView(initialSection: .giftCards)
             // People
-            case .customers:     CustomerCRMView()
-            case .payroll:       PayrollDashboardView()
+            case .customers:     CustomerValueManagementView(initialSection: .customers)
+            case .employees:     EmployeeManagementView(initialSection: .staff, columnVisibility: $columnVisibility)
+            case .payroll:       EmployeeManagementView(initialSection: .payroll, columnVisibility: $columnVisibility)
             case .timecard:      EmployeeTimecardView()
             // Enterprise
-            case .store:         StoreManagementView()
+            case .store:         StoreManagementView(columnVisibility: $columnVisibility)
             case .devices:       DeviceManagementView()
-            case .organization:  OrganizationManagementView()
+            case .organization:  OrganizationManagementView(columnVisibility: $columnVisibility)
             // System
             case .syncHealth:    SyncHealthView()
-            case .settings:      SettingsView()
+            case .settings:      SettingsView(columnVisibility: $columnVisibility)
+            }
             }
         }
     }
@@ -727,6 +1215,14 @@ private struct SidebarTabRow: View {
     let tab:        MainDashboardView.DashboardTab
     let isSelected: Bool
     @State private var isHovered = false
+    // LINE-style unread badge + animated bell for the Notifications tab
+    @ObservedObject private var notificationStore = NotificationStore.shared
+    @State private var bellWiggle = false
+
+    /// Unread count driving the badge (only meaningful for the notifications tab)
+    private var unreadCount: Int {
+        tab == .notifications ? notificationStore.unreadCount : 0
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -738,16 +1234,38 @@ private struct SidebarTabRow: View {
                     .shadow(color: isSelected ? tab.iconColor.opacity(0.5) : .clear, radius: 8, x: 0, y: 2)
 
                 Image(systemName: tab.icon)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(isSelected ? .white : tab.iconColor.opacity(0.7))
+                    // Gentle bell shake when there are unread notifications
+                    .rotationEffect(.degrees(bellWiggle && unreadCount > 0 ? 10 : 0), anchor: .top)
+                    .animation(
+                        unreadCount > 0
+                            ? .easeInOut(duration: 0.15).repeatCount(4, autoreverses: true)
+                            : .default,
+                        value: bellWiggle
+                    )
             }
 
             HStack(spacing: 6) {
                 Text(tab.localizedName)
-                    .font(.subheadline)
+                    .font(.system(size: 13))
                     .fontWeight(isSelected ? .semibold : .regular)
                     .foregroundColor(isSelected ? .textPrimary : .textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
 
+                // Notifications tab: show a LINE-style numeric unread badge
+                // (overrides the "New" badge) when there are unread alerts.
+                if tab == .notifications && unreadCount > 0 {
+                    Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, unreadCount > 9 ? 5 : 0)
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(Color(hex: "EF4444"))
+                        .clipShape(Capsule())
+                        .shadow(color: Color(hex: "EF4444").opacity(0.45), radius: 3, x: 0, y: 1)
+                } else {
                 // Badge: Beta / New
                 switch tab.badge {
                 case .beta:
@@ -770,6 +1288,7 @@ private struct SidebarTabRow: View {
                 case .none:
                     EmptyView()
                 }
+                }
             }
 
             Spacer()
@@ -784,20 +1303,46 @@ private struct SidebarTabRow: View {
             lowStockBadge,
             alignment: .topTrailing
         )
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .padding(.horizontal, 10)
-        .background(
-            RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
-                .fill(isSelected ? Color.appSurfaceHigh : Color.clear)
-                .overlay(
-                    RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
-                        .stroke(isSelected ? Color.appBorderSubtle : Color.clear, lineWidth: 1)
-                )
-        )
+        .background {
+            let shape = RoundedRectangle(
+                cornerRadius: APChrome.controlCornerRadius,
+                style: .continuous
+            )
+            if isSelected {
+                Color.clear
+                    .apSelectedChrome(tint: tab.iconColor, in: shape)
+            } else if isHovered {
+                shape.fill(tab.iconColor.opacity(APChrome.hoverTintOpacity))
+            }
+        }
         .contentShape(Rectangle())
         .scaleEffect(isHovered && !isSelected ? 0.98 : 1.0)
         .animation(.easeOut(duration: 0.15), value: isHovered)
         .onHover { isHovered = $0 }
+        // Gentle, recurring wiggle while unread alerts remain. The task is
+        // keyed on unreadCount so it restarts when the count changes and is
+        // automatically cancelled by SwiftUI when the row leaves the view.
+        .task(id: unreadCount) {
+            guard tab == .notifications, unreadCount > 0 else { return }
+            // Wiggle once immediately, then repeat every 3s as a soft reminder.
+            triggerBellWiggle()
+            while unreadCount > 0 {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { break }
+                triggerBellWiggle()
+            }
+        }
+    }
+
+    /// Plays one gentle wiggle burst (~0.7s) then settles.
+    private func triggerBellWiggle() {
+        bellWiggle = false
+        DispatchQueue.main.async {
+            bellWiggle = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { bellWiggle = false }
+        }
     }
 
     @ViewBuilder

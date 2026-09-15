@@ -63,6 +63,8 @@ struct SplitBillView: View {
     let orderId: String
     let orderItems: [OrderItem]
     let totalAmount: Double
+    /// Table number for closing the session after split payment (nil for quick orders).
+    var tableNumber: String? = nil
 
     @AppStorage("app_language") private var appLanguage = "en"
     @Environment(\.dismiss) private var dismiss
@@ -710,10 +712,13 @@ struct SplitBillView: View {
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
-                    .background(Color.appTeal)
-                    .cornerRadius(14)
+                    .background(
+                        Color.clear
+                            .apLiquidGlass(tint: Color.appTeal, interactive: true,
+                                           in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
             .padding(.horizontal, 32)
             .padding(.bottom, 40)
         }
@@ -822,10 +827,25 @@ struct SplitBillView: View {
         }
 
         do {
-            _ = try await NetworkService.shared.uploadSplitPayment(
+            let isQuick = tableNumber == nil
+                || tableNumber?.isEmpty == true
+                || tableNumber?.uppercased() == "QUICK"
+            let checkoutId = UUID().uuidString.lowercased()
+            let atomicPayments: [[String: Any]] = splitPayloads.map { split in
+                [
+                    "id": UUID().uuidString.lowercased(),
+                    "amount": split["amount"] as? Double ?? 0,
+                    "payment_method": split["payment_method"] as? String ?? "split"
+                ]
+            }
+            _ = try await NetworkService.shared.completeCheckoutAtomic(
                 orderId: orderId,
-                splits: splitPayloads
+                payments: atomicPayments,
+                tableNumber: isQuick ? "QUICK" : (tableNumber ?? "QUICK"),
+                breakdown: ["grand_total": totalAmount, "subtotal": totalAmount],
+                idempotencyKey: "split:\(orderId):\(checkoutId)"
             )
+
             withAnimation(.spring(response: 0.4)) {
                 showSuccess = true
             }

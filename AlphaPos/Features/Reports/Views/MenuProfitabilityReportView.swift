@@ -6,7 +6,6 @@
 
 import SwiftUI
 import SwiftData
-import Charts
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Menu Profitability Report View
@@ -14,10 +13,24 @@ import Charts
 
 struct MenuProfitabilityReportView: View {
     @Bindable var viewModel: ReportsViewModel
+    let onScopeChange: () -> Void
     @EnvironmentObject private var lm: LocalizationManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: APSpacing.lg) {
+            HStack {
+                Text("ขอบเขตรายงาน: \(viewModel.menuProfitabilityScope.displayName)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("ขอบเขต", selection: $viewModel.menuProfitabilityScope) {
+                    ForEach(ReportItemScope.allCases) { scope in
+                        Text(scope.displayName).tag(scope)
+                    }
+                }
+                .onChange(of: viewModel.menuProfitabilityScope) { _, _ in onScopeChange() }
+            }
+
             // Summary KPIs
             profitSummaryCards
 
@@ -36,8 +49,8 @@ struct MenuProfitabilityReportView: View {
     private var profitSummaryCards: some View {
         HStack(spacing: APSpacing.md) {
             summaryCard(
-                title: L.Reports.totalItems.t,
-                value: "\(viewModel.menuProfitItems.count)",
+                title: viewModel.menuProfitabilityScope.quantityLabel,
+                value: "\(viewModel.menuProfitItems.reduce(0) { $0 + $1.quantitySold })",
                 icon: "fork.knife",
                 color: .appAccent
             )
@@ -209,7 +222,12 @@ struct MenuProfitabilityReportView: View {
 
     private func tableRow(_ item: MenuProfitPoint) -> some View {
         HStack {
-            Text(item.name)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name)
+                Text("\(item.channel) • \(item.itemType)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
                 .font(.subheadline)
                 .lineLimit(1)
                 .frame(width: 160, alignment: .leading)

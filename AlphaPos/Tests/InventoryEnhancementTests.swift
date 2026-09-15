@@ -17,6 +17,8 @@ enum InventoryEnhancementTests {
     
     static func runAll() -> [TestResult] {
         [
+            test_inventoryUnitNormalization(),
+            test_crossUnitRecipeCosting(),
             test_recipeCosting_calculation(),
             test_foodCostPercent_calculation(),
             test_grossMargin_calculation(),
@@ -36,6 +38,27 @@ enum InventoryEnhancementTests {
     }
     
     // MARK: - Recipe Costing & Margin
+
+    private static func test_inventoryUnitNormalization() -> TestResult {
+        let name = #function
+        let normalized = InventoryUnitNormalization.normalize(quantity: 2, unit: "kg", unitCost: 650)
+        return normalized.unit == "g"
+            && approxEqual(normalized.quantity, 2000)
+            && approxEqual(normalized.unitCost, 0.65)
+            ? .success(name)
+            : .failure(name, "Expected 2 kg at ฿650/kg to become 2,000 g at ฿0.65/g")
+    }
+
+    private static func test_crossUnitRecipeCosting() -> TestResult {
+        let name = #function
+        guard let requiredKg = UnitOfMeasure.convert(40, from: .g, to: .kg) else {
+            return .failure(name, "Could not convert grams to kilograms")
+        }
+        let cost = requiredKg * 650
+        return approxEqual(cost, 26)
+            ? .success(name)
+            : .failure(name, "Expected 40 g at ฿650/kg to cost ฿26, got \(cost)")
+    }
     
     private static func test_recipeCosting_calculation() -> TestResult {
         let name = #function

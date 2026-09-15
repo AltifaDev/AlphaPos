@@ -115,9 +115,34 @@ struct OrderTimelineView: View {
                     Text(order.orderNumber)
                         .font(.system(size: 18, weight: .black, design: .monospaced))
                         .foregroundColor(.textPrimary)
-                    Text(order.tableNumber == "QUICK" ? "quick_order".localized(for: appLanguage) : "Table \(order.tableNumber)")
+                    Text(order.isQuickOrder ? "quick_order".localized(for: appLanguage) : "Table \(order.tableNumber)")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.textSecondary)
+                    if let queue = order.queueNumber, !queue.isEmpty {
+                        HStack(spacing: 4) {
+                            Text("\("queue_number".localized(for: appLanguage))")
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundColor(Color(hex: "4B5563"))
+                            Text(queue.replacingOccurrences(of: "#", with: ""))
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundColor(.textPrimary)
+                        }
+                    }
+                    if let receipt = order.receiptNumber, !receipt.isEmpty {
+                        Text(receipt)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.textTertiary)
+                    }
+                    if let brand = order.deliveryBrand, !brand.isEmpty {
+                        Text(brand)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.appTeal)
+                    }
+                    if let platform = order.platformOrderNumber, !platform.isEmpty {
+                        Text("\("platform_order_label".localized(for: appLanguage)): \(platform)")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.textSecondary)
+                    }
                 }
                 
                 Spacer()
@@ -291,21 +316,30 @@ struct OrderTimelineView: View {
                 .foregroundColor(.textSecondary)
             
             ForEach(order.items) { item in
-                HStack(spacing: 10) {
-                    Text("\(item.quantity)×")
-                        .font(.system(size: 13, weight: .bold, design: .monospaced))
-                        .foregroundColor(.appAccent)
-                        .frame(width: 28, alignment: .trailing)
-                    
-                    Text(item.name)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.textPrimary)
-                        .lineLimit(1)
-                    
-                    Spacer()
-                    
-                    // Item status
-                    OrderStatusBadge(status: item.status, size: .small)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 10) {
+                        Text("\(item.quantity)×")
+                            .font(.system(size: 13, weight: .bold, design: .monospaced))
+                            .foregroundColor(.appAccent)
+                            .frame(width: 28, alignment: .trailing)
+                        
+                        Text(item.name)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.textPrimary)
+                            .lineLimit(1)
+                        
+                        Spacer()
+                        
+                        // Item status
+                        OrderStatusBadge(status: item.status, size: .small)
+                    }
+                    // Options + note (unified, parity with master device)
+                    ItemOptionsView(
+                        modifiers: item.modifiers.map { ($0.name, $0.price) },
+                        notes: item.notes,
+                        tint: .appAccent
+                    )
+                    .padding(.leading, 38)
                 }
                 .padding(.vertical, 6)
                 

@@ -23,9 +23,11 @@ struct CustomerPickerView: View {
         let active = customers.filter { !$0.isDeleted }
         if searchText.isEmpty { return active }
         let query = searchText.lowercased()
+        let phoneQuery = Customer.normalizedPhone(searchText)
         return active.filter {
             $0.name.lowercased().contains(query) ||
             ($0.phone ?? "").contains(query) ||
+            (phoneQuery != nil && Customer.normalizedPhone($0.phone ?? "") == phoneQuery) ||
             ($0.email ?? "").lowercased().contains(query)
         }
     }
@@ -559,18 +561,36 @@ struct CustomerPickerView: View {
 
 struct AddCustomerSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Query(filter: #Predicate<Customer> { !$0.isDeleted }) private var customers: [Customer]
     
     let onSave: (Customer) -> Void
     
     @State private var name = ""
     @State private var phone = ""
     @State private var email = ""
+    @State private var hasDateOfBirth = false
+    @State private var dateOfBirth = Date()
+    @State private var address = ""
+    @State private var taxId = ""
     @State private var notes = ""
     @State private var allergies = ""
+    @State private var preferences = ""
     @State private var isTaxExempt = false
     
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        (phone.isEmpty || (normalizedPhone != nil && !phoneExists)) &&
+        (email.isEmpty || isEmailValid)
+    }
+
+    private var normalizedPhone: String? { Customer.normalizedPhone(phone) }
+    private var phoneExists: Bool {
+        guard let normalizedPhone else { return false }
+        return customers.contains { Customer.normalizedPhone($0.phone ?? "") == normalizedPhone }
+    }
+    private var isEmailValid: Bool {
+        let parts = email.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "@")
+        return parts.count == 2 && parts[1].contains(".")
     }
     
     var body: some View {
@@ -596,8 +616,18 @@ struct AddCustomerSheet: View {
                             formField(title: "Name *", placeholder: "Customer name", text: $name, icon: "person.fill")
                             formField(title: "Phone", placeholder: "+66 xxx xxx xxxx", text: $phone, icon: "phone.fill")
                             formField(title: "Email", placeholder: "email@example.com", text: $email, icon: "envelope.fill")
+                            Toggle("Date of birth", isOn: $hasDateOfBirth)
+                                .font(.subheadline.weight(.medium))
+                                .tint(.appAccent)
+                            if hasDateOfBirth {
+                                DatePicker("Date of birth", selection: $dateOfBirth, in: ...Date(), displayedComponents: .date)
+                                    .datePickerStyle(.compact)
+                            }
+                            formField(title: "Address", placeholder: "Street, city, country", text: $address, icon: "mappin.and.ellipse")
+                            formField(title: "Tax ID", placeholder: "Tax identification number", text: $taxId, icon: "doc.text.fill")
                             formField(title: "Notes", placeholder: "Any special notes...", text: $notes, icon: "note.text")
                             formField(title: "Allergies", placeholder: "Nuts, Shellfish, etc.", text: $allergies, icon: "allergens")
+                            formField(title: "Preferences", placeholder: "Favorite products, contact preferences...", text: $preferences, icon: "heart.text.square")
                             Toggle("Tax Exempt", isOn: $isTaxExempt)
                                 .font(.subheadline.weight(.medium))
                                 .padding(.horizontal, APSpacing.sm)
@@ -625,10 +655,14 @@ struct AddCustomerSheet: View {
                     Button(L.Common.save.t) {
                         let customer = Customer(
                             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-                            email: email.isEmpty ? nil : email,
-                            phone: phone.isEmpty ? nil : phone,
+                            email: email.isEmpty ? nil : email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                            phone: normalizedPhone,
+                            taxId: taxId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : taxId.trimmingCharacters(in: .whitespacesAndNewlines),
+                            address: address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : address.trimmingCharacters(in: .whitespacesAndNewlines),
                             notes: notes.isEmpty ? nil : notes,
+                            dateOfBirth: hasDateOfBirth ? dateOfBirth : nil,
                             allergies: allergies.isEmpty ? nil : allergies,
+                            preferences: preferences.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : preferences.trimmingCharacters(in: .whitespacesAndNewlines),
                             isTaxExempt: isTaxExempt
                         )
                         onSave(customer)

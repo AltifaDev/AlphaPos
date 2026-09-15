@@ -15,7 +15,7 @@ extension SyncEngine {
 
     func syncExpenses(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<Expense>(
-            predicate: #Predicate<Expense> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<Expense> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let expenses = try? modelContext.fetch(descriptor), !expenses.isEmpty else { return }
@@ -68,7 +68,8 @@ extension SyncEngine {
                 if let bid = remote["branch_id"] as? String { branch = branchMap[bid.lowercased()] }
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.title = title
                     local.invoiceNo = remote["invoice_no"] as? String
@@ -82,6 +83,20 @@ extension SyncEngine {
                     local.paymentMethod = remote["payment_method"] as? String ?? local.paymentMethod
                     local.status = remote["status"] as? String ?? local.status
                     local.isCapEx = remoteBool(remote["is_capex"])
+                    local.recognitionType = remote["recognition_type"] as? String ?? (local.isCapEx ? "fixed_asset" : "operating_expense")
+                    local.expenseNature = remote["expense_nature"] as? String ?? "other"
+                    local.isVATRecoverable = remote["is_vat_recoverable"] == nil ? true : remoteBool(remote["is_vat_recoverable"])
+                    local.isRecurring = remoteBool(remote["is_recurring"])
+                    local.recurrenceFrequency = remote["recurrence_frequency"] as? String ?? "none"
+                    local.serviceStartDate = remote["service_start_date"].map { remoteDate($0) }
+                    local.serviceEndDate = remote["service_end_date"].map { remoteDate($0) }
+                    local.assetClass = remote["asset_class"] as? String
+                    local.availableForUseDate = remote["available_for_use_date"].map { remoteDate($0) }
+                    local.usefulLifeMonths = Int(remoteDouble(remote["useful_life_months"]))
+                    local.residualValue = remoteDouble(remote["residual_value"])
+                    local.investmentProject = remote["investment_project"] as? String
+                    local.expectedMonthlyCashBenefit = remoteDouble(remote["expected_monthly_cash_benefit"])
+                    local.expectedMonthlyIncrementalCost = remoteDouble(remote["expected_monthly_incremental_cost"])
                     local.date = remoteDate(remote["date"])
                     local.notes = remote["notes"] as? String
                     local.supplier = supplier
@@ -100,9 +115,23 @@ extension SyncEngine {
                         amount: remoteDouble(remote["amount"]),
                         vatRate: remoteDouble(remote["vat_rate"]),
                         vatAmount: remoteDouble(remote["vat_amount"]),
+                        isVATRecoverable: remote["is_vat_recoverable"] == nil ? true : remoteBool(remote["is_vat_recoverable"]),
                         paymentMethod: remote["payment_method"] as? String ?? "Cash",
                         status: remote["status"] as? String ?? "Paid",
                         isCapEx: remoteBool(remote["is_capex"]),
+                        recognitionType: remote["recognition_type"] as? String,
+                        expenseNature: remote["expense_nature"] as? String ?? "other",
+                        isRecurring: remoteBool(remote["is_recurring"]),
+                        recurrenceFrequency: remote["recurrence_frequency"] as? String ?? "none",
+                        serviceStartDate: remote["service_start_date"].map { remoteDate($0) },
+                        serviceEndDate: remote["service_end_date"].map { remoteDate($0) },
+                        assetClass: remote["asset_class"] as? String,
+                        availableForUseDate: remote["available_for_use_date"].map { remoteDate($0) },
+                        usefulLifeMonths: Int(remoteDouble(remote["useful_life_months"])),
+                        residualValue: remoteDouble(remote["residual_value"]),
+                        investmentProject: remote["investment_project"] as? String,
+                        expectedMonthlyCashBenefit: remoteDouble(remote["expected_monthly_cash_benefit"]),
+                        expectedMonthlyIncrementalCost: remoteDouble(remote["expected_monthly_incremental_cost"]),
                         date: remoteDate(remote["date"]),
                         notes: remote["notes"] as? String,
                         supplier: supplier,
@@ -128,7 +157,7 @@ extension SyncEngine {
 
     func syncRefundTransactions(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<RefundTransaction>(
-            predicate: #Predicate<RefundTransaction> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<RefundTransaction> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let refunds = try? modelContext.fetch(descriptor), !refunds.isEmpty else { return }
@@ -165,6 +194,9 @@ extension SyncEngine {
                 guard let idStr = remote["id"] as? String,
                       let id = UUID(uuidString: idStr) else { continue }
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
+                let createdAt = remoteDate(remote["created_at"], fallback: updatedAt)
+                let businessDateKey = remote["business_date"] as? String ?? ""
+                let registerSessionId = (remote["register_session_id"] as? String).flatMap(UUID.init(uuidString:))
                 let isDeletedRemote = remoteBool(remote["is_deleted"])
                 if isDeletedRemote { continue }
 
@@ -180,8 +212,10 @@ extension SyncEngine {
                 let refundedBy = (remote["refunded_by_employee_id"] as? String).flatMap { UUID(uuidString: $0) }
                 let approvedBy = (remote["approved_by_employee_id"] as? String).flatMap { UUID(uuidString: $0) }
 
+                let ledgerRefund: RefundTransaction
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.order = order
                     local.originalPayment = payment
@@ -192,8 +226,12 @@ extension SyncEngine {
                     local.refundedByEmployeeId = refundedBy
                     local.approvedByEmployeeId = approvedBy
                     local.status = remote["status"] as? String ?? local.status
+                    local.createdAt = createdAt == .distantPast ? local.financialEventAt : createdAt
+                    local.businessDateKey = businessDateKey
+                    local.registerSessionId = registerSessionId
                     local.updatedAt = updatedAt
                     local.isSynced = true
+                    ledgerRefund = local
                 } else {
                     let refund = RefundTransaction(
                         id: id,
@@ -206,13 +244,18 @@ extension SyncEngine {
                         refundedByEmployeeId: refundedBy,
                         approvedByEmployeeId: approvedBy,
                         status: remote["status"] as? String ?? "completed",
+                        createdAt: createdAt == .distantPast ? Date() : createdAt,
+                        businessDateKey: businessDateKey,
+                        registerSessionId: registerSessionId,
                         isSynced: true,
                         isDeleted: false,
                         updatedAt: updatedAt == .distantPast ? Date() : updatedAt
                     )
                     modelContext.insert(refund)
                     localById[idStr.lowercased()] = refund
+                    ledgerRefund = refund
                 }
+                if let order { AccountingLedgerService.recordCompletedRefund(ledgerRefund, order: order, in: modelContext) }
             }
             modelContext.saveWithLogging(label: #function)
         } catch {
@@ -227,7 +270,7 @@ extension SyncEngine {
 
     func syncOrderTaxLines(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<OrderTaxLine>(
-            predicate: #Predicate<OrderTaxLine> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<OrderTaxLine> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let taxLines = try? modelContext.fetch(descriptor), !taxLines.isEmpty else { return }
@@ -271,7 +314,8 @@ extension SyncEngine {
                 }
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.order = order
                     local.taxName = remote["tax_name"] as? String ?? local.taxName
@@ -313,7 +357,7 @@ extension SyncEngine {
 
     func syncTips(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<Tip>(
-            predicate: #Predicate<Tip> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<Tip> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let tips = try? modelContext.fetch(descriptor), !tips.isEmpty else { return }
@@ -362,7 +406,8 @@ extension SyncEngine {
                 let employeeId = (remote["employee_id"] as? String).flatMap { UUID(uuidString: $0) }
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.order = order
                     local.payment = payment

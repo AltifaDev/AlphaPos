@@ -49,3 +49,24 @@ final class Customer {
 }
 
 extension Customer: RemoteCustomerUploadable {}
+
+extension Customer {
+    /// E.164-compatible normalization; local Thai numbers use +66 by default.
+    static func normalizedPhone(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let digits = trimmed.filter(\.isNumber)
+        let normalized: String
+        if trimmed.hasPrefix("+") {
+            normalized = "+" + digits
+        } else if trimmed.hasPrefix("00") {
+            normalized = "+" + String(digits.dropFirst(2))
+        } else if digits.hasPrefix("0") {
+            normalized = "+66" + String(digits.dropFirst())
+        } else {
+            normalized = "+" + digits
+        }
+        let count = normalized.dropFirst().count
+        return (8...15).contains(count) ? normalized : nil
+    }
+}

@@ -1,6 +1,9 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
+import PDFKit
+import UniformTypeIdentifiers
+import CryptoKit
 
 enum StockScanStep: Int, CaseIterable {
     case upload = 0
@@ -26,24 +29,59 @@ struct ParsedReceiptItem: Identifiable, Equatable {
     var matchedItemId: UUID? // ID of matched InventoryItem
     var expiryDate: Date?
     var lotNumber: String?
+    var lineNumber: String?
+    var sellerItemId: String?
+    var barcode: String?
+    var unitCode: String?
+    var priceBaseQuantity: Double = 1
+    var lineNetAmount: Double?
+    var vatRate: Double?
+    var vatCode: String?
+    var taxAmount: Double?
+    var lineTotal: Double?
+    var confidence: Double = 0.8
 }
 
 struct ReceiptExtractedItem: Codable {
+    let line_number: String?
+    let seller_item_id: String?
+    let barcode: String?
     let name: String
     let quantity: Double
     let unit: String?
+    let unit_code: String?
+    let price_base_quantity: Double
     let unit_cost: Double
+    let line_net_amount: Double?
+    let vat_rate: Double?
+    let vat_code: String?
+    let tax_amount: Double?
+    let line_total: Double?
     let expiry_date: String? // YYYY-MM-DD
     let lot_number: String?
+    let confidence: Double
 }
 
 struct ReceiptParseResult: Codable {
+    let document_type: String
+    let invoice_number: String?
+    let tax_invoice_number: String?
     let po_number: String?
     let supplier_name: String?
+    let supplier_tax_id: String?
+    let supplier_branch_code: String?
+    let customer_reference: String?
     let invoice_date: String? // YYYY-MM-DD
+    let order_date: String?
+    let delivery_date: String?
+    let currency_code: String
+    let subtotal: Double?
+    let tax_amount: Double?
+    let grand_total: Double?
     let items: [ReceiptExtractedItem]
     let total_items_found: Int
     let confidence: Double
+    let validation_warnings: [String]
 }
 
 struct StockDocumentScanSheet: View {
@@ -59,9 +97,14 @@ struct StockDocumentScanSheet: View {
     @Query(sort: \InventoryItem.name) private var inventoryItems: [InventoryItem]
     @Query(sort: \Branch.name) private var branches: [Branch]
     @Query(sort: \Supplier.name) private var suppliers: [Supplier]
+    @Query private var purchaseOrders: [PurchaseOrder]
 
-    @AppStorage("active_branch_id") private var activeBranchId = ""
-    @AppStorage("gemini_api_key") private var geminiApiKey = ""
+    @AppStorage(BranchContext.storageKey) private var activeBranchId = ""
+    @State private var openRouterApiKey = ""
+    @AppStorage("gemini_api_key")     private var geminiApiKey = ""
+    @AppStorage("openai_api_key")     private var openAIApiKey = ""
+    /// "openrouter" | "gemini" | "openai" | "auto"
+    @AppStorage("ai_provider")        private var aiProvider = "auto"
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
 
     @State private var viewModel = InventoryViewModel()
@@ -72,13 +115,55 @@ struct StockDocumentScanSheet: View {
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var selectedImages: [Data] = []
     @State private var selectedImagePreviews: [UIImage] = []
+    @State private var showPDFPicker = false       // PDF file importer
+    @State private var pdfFileName: String? = nil  // display name of loaded PDF
     @State private var isAnalyzing = false
+    @State private var scanIconPulse = false     // bouncing scan icon animation
+    @State private var showApiKeySheet = false  // dedicated API key setup sheet
+    @State private var processingPhase = 0      // 0=uploading 1=analyzing 2=parsing
+
+    // Computed labels for processing overlay (avoids Swift compiler ternary overload)
+    private var processingTitle: String {
+        switch processingPhase {
+        case 0: return "กำลังอัปโหลดรูปภาพ..."
+        case 1: return "AI กำลังวิเคราะห์เอกสาร..."
+        default: return "กำลังประมวลผลรายการสินค้า..."
+        }
+    }
+    private var processingSubtitle: String {
+        switch processingPhase {
+        case 0: return "โปรดรอสักครู่"
+        case 1: return "OpenRouter Vision กำลังอ่านเอกสาร"
+        default: return "จัดเรียงรายการและจับคู่สินค้า"
+        }
+    }
+    private let processingSteps: [(phase: Int, icon: String, label: String)] = [
+        (0, "arrow.up.circle", "Upload"),
+        (1, "brain", "Analyze"),
+        (2, "checklist", "Parse")
+    ]
+    @State private var processingDots = 0       // animated dots counter
     @State private var analyzeError: String? = nil
 
     // Step 2: Review (Invoice Metadata & Item lists)
     @State private var scannedInvoiceNumber = ""
+    @State private var scannedTaxInvoiceNumber = ""
+    @State private var scannedPurchaseOrderNumber = ""
     @State private var selectedSupplierId: UUID? = nil
-    @State private var scannedInvoiceDate = Date()
+    @State private var scannedInvoiceDate: Date? = nil
+    @State private var scannedOrderDate: Date? = nil
+    @State private var scannedDeliveryDate: Date? = nil
+    @State private var extractedSupplierName = ""
+    @State private var supplierTaxId = ""
+    @State private var supplierBranchCode = ""
+    @State private var customerReference = ""
+    @State private var documentType = "unknown"
+    @State private var currencyCode = "THB"
+    @State private var documentSubtotal: Double? = nil
+    @State private var documentTaxAmount: Double? = nil
+    @State private var documentGrandTotal: Double? = nil
+    @State private var validationWarnings: [String] = []
+    @State private var sourceDocumentHash: String? = nil
 
     @State private var parsedItems: [ParsedReceiptItem] = []
     @State private var parseConfidence: Double = 0.0
@@ -86,17 +171,18 @@ struct StockDocumentScanSheet: View {
 
     // Step 3: Complete
     @State private var importedCount = 0
+    @State private var savedLineCount = 0
+    @State private var importError: String? = nil
 
     private var activeBranch: Branch? {
-        branches.first(where: { $0.id.uuidString == activeBranchId })
+        guard let selectedID = UUID(uuidString: activeBranchId) else { return nil }
+        return branches.first(where: { $0.id == selectedID && !$0.isDeleted })
     }
 
     private var branchInventory: [InventoryItem] {
         let activeItems = inventoryItems.filter { !$0.isDeleted }
-        if let branch = activeBranch {
-            return activeItems.filter { $0.branch?.id == branch.id }
-        }
-        return activeItems
+        guard let branch = activeBranch else { return [] }
+        return activeItems.filter { $0.branch?.id == branch.id }
     }
 
     var body: some View {
@@ -129,6 +215,53 @@ struct StockDocumentScanSheet: View {
                         removal: .move(edge: .leading).combined(with: .opacity)
                     ))
                 }
+
+                // ── Processing overlay (shown while isAnalyzing == true) ─────────
+                if isAnalyzing {
+                    ZStack {
+                        Color.black.opacity(0.45).ignoresSafeArea()
+                        VStack(spacing: 28) {
+                            // Animated concentric rings
+                            ZStack {
+                                processingRing(ring: 0)
+                                processingRing(ring: 1)
+                                processingRing(ring: 2)
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 28, weight: .medium))
+                                    .foregroundColor(.appAccent)
+                                    .symbolEffect(.variableColor.iterative, options: .repeating)
+                            }
+                            // Phase label
+                            VStack(spacing: 8) {
+                                Text(processingTitle)
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .id(processingPhase) // force re-render on phase change
+                                    .transition(.opacity)
+                                Text(processingSubtitle)
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.65))
+                                    .id("sub\(processingPhase)")
+                                    .transition(.opacity)
+                            }
+                            .animation(.easeInOut(duration: 0.3), value: processingPhase)
+                            // Step pill progress bar
+                            HStack(spacing: 10) {
+                                ForEach(processingSteps, id: \.phase) { step in
+                                    processingPill(step: step)
+                                }
+                            }
+                        }
+                        .padding(32)
+                        .background(
+                            RoundedRectangle(cornerRadius: 20)
+                                .fill(.ultraThinMaterial)
+                                .shadow(color: .black.opacity(0.25), radius: 24, x: 0, y: 8)
+                        )
+                        .padding(.horizontal, 24)
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                }
             }
             .navigationTitle("stock_scan_title".t)
             .navigationBarTitleDisplayMode(.inline)
@@ -142,15 +275,204 @@ struct StockDocumentScanSheet: View {
                         }
                     }
                 }
+                // ⚙️ API Key setup — standard trailing settings icon (like Claude, Linear, Notion)
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    if currentStep == .upload && !offlineSyncMode {
+                        Button(action: { showApiKeySheet = true }) {
+                            HStack(spacing: 5) {
+                                Image(systemName: openRouterApiKey.isEmpty ? "key" : "key.fill")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text(openRouterApiKey.isEmpty ? "ตั้งค่า API Key" : "API Key ✓")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(
+                                Capsule().fill(openRouterApiKey.isEmpty
+                                    ? Color.appAmber.opacity(0.15)
+                                    : Color.appTeal.opacity(0.12))
+                            )
+                            .foregroundColor(openRouterApiKey.isEmpty ? .appAmber : .appTeal)
+                            .overlay(
+                                Capsule().stroke(
+                                    openRouterApiKey.isEmpty ? Color.appAmber.opacity(0.4) : Color.appTeal.opacity(0.3),
+                                    lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            // Dedicated API Key Sheet (standard pattern — not inline with buttons)
+            .sheet(isPresented: $showApiKeySheet) {
+                NavigationStack {
+                    ScrollView {
+                        aiSettingsContent
+                    }
+                    .navigationTitle("AI API Settings")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showApiKeySheet = false }
+                                .fontWeight(.semibold)
+                        }
+                    }
+                }
+                .apColorScheme()
+                .presentationDetents([.fraction(0.75), .large])
+                .presentationDragIndicator(.visible)
+                .scrollDismissesKeyboard(.interactively)
             }
             .onAppear {
+                openRouterApiKey = KeychainManager.shared.openRouterAPIKey()
                 viewModel.modelContext = modelContext
+            }
+            .onChange(of: openRouterApiKey) { _, value in
+                _ = KeychainManager.shared.saveOpenRouterAPIKey(value)
             }
             .onChange(of: selectedPhotoItems) { _, newItems in
                 Task { await loadSelectedPhotos(from: newItems) }
             }
         }
         .apColorScheme()
+    }
+
+    // MARK: - AI Settings Sheet Content
+    private var aiSettingsContent: some View {
+        VStack(spacing: APSpacing.lg) {
+
+            // ── Header ──
+            VStack(spacing: APSpacing.sm) {
+                ZStack {
+                    Circle().fill(Color.appAccent.opacity(0.1)).frame(width: 72, height: 72)
+                    Image(systemName: "cpu").font(.system(size: 32)).foregroundColor(.appAccent)
+                }
+                Text("AI Provider Settings")
+                    .font(.title2).fontWeight(.bold).foregroundColor(.textPrimary)
+                Text("เลือก provider และกรอก API Key ที่ต้องการใช้งาน")
+                    .font(.subheadline).foregroundColor(.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.top, APSpacing.lg)
+
+            // ── Provider Picker ──
+            VStack(alignment: .leading, spacing: APSpacing.sm) {
+                Text("Provider").font(.subheadline.weight(.semibold)).foregroundColor(.textPrimary)
+                Picker("AI Provider", selection: $aiProvider) {
+                    Label("Auto (ใช้ Key ที่ตั้งไว้อัตโนมัติ)", systemImage: "wand.and.stars").tag("auto")
+                    Label("OpenRouter (ฟรี มีหลายโมเดล)", systemImage: "network").tag("openrouter")
+                    Label("Google Gemini Flash (ฟรี 1,500/วัน)", systemImage: "sparkles").tag("gemini")
+                    Label("OpenAI GPT-4o (ต้องเติมเงิน)", systemImage: "brain").tag("openai")
+                }
+                .pickerStyle(.menu)
+                .padding(12)
+                .background(Color.appBackground)
+                .cornerRadius(APRadius.md)
+                .overlay(RoundedRectangle(cornerRadius: APRadius.md).stroke(Color.appBorderSubtle, lineWidth: 1))
+            }
+            .padding(APSpacing.md).background(Color.appSurface).cornerRadius(APRadius.lg)
+            .padding(.horizontal, APSpacing.lg)
+
+            // ── OpenRouter Key ──
+            aiKeyCard(
+                title: "OpenRouter API Key",
+                subtitle: "ฟรี — สร้าง Key ที่ openrouter.ai/settings/keys",
+                placeholder: "sk-or-v1-...",
+                linkURL: "https://openrouter.ai/settings/keys",
+                key: $openRouterApiKey,
+                isActive: aiProvider == "auto" || aiProvider == "openrouter",
+                accentColor: .appAccent
+            )
+
+            // ── Gemini Key ──
+            aiKeyCard(
+                title: "Google Gemini API Key",
+                subtitle: "ฟรี 1,500 req/วัน — สร้าง Key ที่ aistudio.google.com",
+                placeholder: "AIzaSy...",
+                linkURL: "https://aistudio.google.com/app/apikey",
+                key: $geminiApiKey,
+                isActive: aiProvider == "auto" || aiProvider == "gemini",
+                accentColor: .appTeal
+            )
+
+            // ── OpenAI Key ──
+            aiKeyCard(
+                title: "OpenAI API Key",
+                subtitle: "GPT-4o Mini — ต้องเติม Credit ที่ platform.openai.com",
+                placeholder: "sk-...",
+                linkURL: "https://platform.openai.com/api-keys",
+                key: $openAIApiKey,
+                isActive: aiProvider == "auto" || aiProvider == "openai",
+                accentColor: .purple
+            )
+
+            // ── Info box ──
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "info.circle.fill").foregroundColor(.appAccent).font(.subheadline)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Auto mode").font(.caption.weight(.semibold)).foregroundColor(.textPrimary)
+                    Text("ระบบจะลอง OpenRouter ก่อน ถ้าโควตาหมดจะ fallback ไป Gemini → OpenAI อัตโนมัติ")
+                        .font(.caption).foregroundColor(.textSecondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(APSpacing.md)
+            .background(Color.appAccent.opacity(0.06))
+            .cornerRadius(APRadius.md)
+            .overlay(RoundedRectangle(cornerRadius: APRadius.md).stroke(Color.appAccent.opacity(0.2), lineWidth: 1))
+            .padding(.horizontal, APSpacing.lg)
+            .padding(.bottom, APSpacing.xl)
+        }
+    }
+
+    /// Reusable API key input card for each provider
+    private func aiKeyCard(
+        title: String, subtitle: String, placeholder: String,
+        linkURL: String, key: Binding<String>,
+        isActive: Bool, accentColor: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: APSpacing.sm) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.subheadline.weight(.semibold)).foregroundColor(.textPrimary)
+                    Text(subtitle).font(.caption).foregroundColor(.textSecondary)
+                }
+                Spacer()
+                if isActive {
+                    Image(systemName: key.wrappedValue.isEmpty ? "exclamationmark.circle" : "checkmark.seal.fill")
+                        .foregroundColor(key.wrappedValue.isEmpty ? .appAmber : accentColor)
+                        .font(.subheadline)
+                }
+            }
+            SecureField(placeholder, text: key)
+                .textFieldStyle(.plain)
+                .padding(10)
+                .background(Color.appBackground)
+                .cornerRadius(APRadius.md)
+                .overlay(
+                    RoundedRectangle(cornerRadius: APRadius.md)
+                        .stroke(key.wrappedValue.isEmpty ? Color.appBorderSubtle : accentColor.opacity(0.4), lineWidth: 1.5)
+                )
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            HStack {
+                if !key.wrappedValue.isEmpty {
+                    Button(role: .destructive, action: { key.wrappedValue = "" }) {
+                        Label("ล้าง Key", systemImage: "trash").font(.caption).foregroundColor(.appRose.opacity(0.8))
+                    }.buttonStyle(.plain)
+                }
+                Spacer()
+                Link("รับ API Key →", destination: URL(string: linkURL)!)
+                    .font(.caption.weight(.medium)).foregroundColor(accentColor)
+            }
+        }
+        .padding(APSpacing.md)
+        .background(Color.appSurface)
+        .cornerRadius(APRadius.lg)
+        .overlay(RoundedRectangle(cornerRadius: APRadius.lg).stroke(isActive ? accentColor.opacity(0.2) : Color.appDivider, lineWidth: 1))
+        .padding(.horizontal, APSpacing.lg)
+        .opacity(isActive ? 1.0 : 0.55)
+        .animation(.easeInOut(duration: 0.2), value: isActive)
     }
 
     // MARK: - Step Indicator
@@ -203,7 +525,10 @@ struct StockDocumentScanSheet: View {
 
     // MARK: - Step 1: Upload Content
     private var uploadStepContent: some View {
-        VStack(spacing: APSpacing.lg) {
+        VStack(spacing: 0) {
+            // Scrollable area
+            ScrollView {
+            VStack(spacing: APSpacing.lg) {
             Spacer().frame(height: 20)
 
             if offlineSyncMode {
@@ -231,107 +556,157 @@ struct StockDocumentScanSheet: View {
                 .cornerRadius(APRadius.lg)
                 .padding(.horizontal, APSpacing.md)
             } else {
-                // Photo Picker Dropzone
-                PhotosPicker(
-                    selection: $selectedPhotoItems,
-                    maxSelectionCount: 1,
-                    matching: .images,
-                    photoLibrary: .shared()
-                ) {
-                    VStack(spacing: APSpacing.md) {
-                        Image(systemName: "doc.text.viewfinder")
-                            .font(.system(size: 64))
-                            .foregroundColor(.textSecondary.opacity(0.6))
-                            .padding(APSpacing.lg)
-                            .background(Color.appSurfaceHigh)
-                            .clipShape(Circle())
-
-                        Text("stock_scan_select_photo".t)
-                            .font(.headline)
+                VStack(spacing: APSpacing.lg) {
+                    VStack(spacing: APSpacing.sm) {
+                        ZStack {
+                            Circle()
+                                .fill(APGradient.accent)
+                                .frame(width: 64, height: 64)
+                                .shadow(color: Color.appAccent.opacity(0.22), radius: 14, y: 6)
+                            Image(systemName: "doc.viewfinder.fill")
+                                .font(.system(size: 28, weight: .semibold))
+                                .foregroundColor(.white)
+                        }
+                        Text("อัปโหลดเอกสารรับสินค้า")
+                            .font(.title3.weight(.bold))
                             .foregroundColor(.textPrimary)
-
-                        Text("Upload delivery receipt, supplier invoice, or purchase order to automatically increment stock levels.")
-                            .font(.caption)
+                        Text("เลือกภาพหรือ PDF ระบบจะอ่านรายการสินค้าและข้อมูลใบแจ้งหนี้ด้วย OpenRouter AI")
+                            .font(.subheadline)
                             .foregroundColor(.textSecondary)
                             .multilineTextAlignment(.center)
-                            .frame(maxWidth: 320)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 40)
-                    .background(Color.appSurface)
-                    .cornerRadius(APRadius.lg)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: APRadius.lg)
-                            .stroke(Color.appDivider, style: StrokeStyle(lineWidth: 2, dash: [6]))
-                    )
+
+                    HStack(spacing: APSpacing.sm) {
+                        PhotosPicker(
+                            selection: $selectedPhotoItems,
+                            maxSelectionCount: 3,
+                            matching: .images,
+                            photoLibrary: .shared()
+                        ) {
+                            uploadSourceButton(
+                                icon: "photo.on.rectangle.angled",
+                                title: "เลือกรูปภาพ",
+                                subtitle: "สูงสุด 3 รูป",
+                                color: .appAccent
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        Button(action: { showPDFPicker = true }) {
+                            uploadSourceButton(
+                                icon: "doc.fill",
+                                title: "เลือก PDF",
+                                subtitle: "สูงสุด 3 หน้า",
+                                color: .appRose
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    if selectedImagePreviews.isEmpty {
+                        HStack(spacing: 6) {
+                            Image(systemName: "lock.shield.fill")
+                            Text("รองรับ JPG, PNG และ PDF • ข้อมูลส่งผ่านการเชื่อมต่อแบบเข้ารหัส")
+                        }
+                        .font(.caption2)
+                        .foregroundColor(.textTertiary)
+                    }
                 }
-                .buttonStyle(.plain)
+                .padding(APSpacing.lg)
+                .background(Color.appSurface)
+                .clipShape(RoundedRectangle(cornerRadius: APRadius.lg, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: APRadius.lg, style: .continuous)
+                        .stroke(Color.appBorderSubtle, lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.04), radius: 18, y: 8)
                 .padding(.horizontal, APSpacing.md)
+                .fileImporter(
+                    isPresented: $showPDFPicker,
+                    allowedContentTypes: [UTType.pdf],
+                    allowsMultipleSelection: false
+                ) { result in
+                    Task {
+                        await handlePDFImport(result: result)
+                    }
+                }
             }
 
-            // Image Preview List
             if !selectedImagePreviews.isEmpty && !offlineSyncMode {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: APSpacing.sm) {
-                        ForEach(0..<selectedImagePreviews.count, id: \.self) { idx in
-                            ZStack(alignment: .topTrailing) {
-                                Image(uiImage: selectedImagePreviews[idx])
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 100, height: 100)
-                                    .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
-
-                                Button(action: { removeImage(at: idx) }) {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .foregroundColor(.appRose)
-                                        .font(.title3)
-                                        .background(Color.appSurface.clipShape(Circle()))
+                VStack(alignment: .leading, spacing: APSpacing.sm) {
+                    HStack {
+                        Label(pdfFileName ?? "เอกสารที่เลือก", systemImage: "checkmark.circle.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.appTeal)
+                            .lineLimit(1)
+                        Spacer()
+                        Text("\(selectedImagePreviews.count) หน้า")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.textSecondary)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(Color.appSurfaceHigh)
+                            .clipShape(Capsule())
+                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: APSpacing.sm) {
+                            ForEach(0..<selectedImagePreviews.count, id: \.self) { idx in
+                                ZStack(alignment: .topTrailing) {
+                                    Image(uiImage: selectedImagePreviews[idx])
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 86, height: 104)
+                                        .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
+                                    Button(action: { removeImage(at: idx) }) {
+                                        Image(systemName: "xmark")
+                                            .font(.caption.bold())
+                                            .foregroundColor(.white)
+                                            .frame(width: 24, height: 24)
+                                            .background(Color.black.opacity(0.65))
+                                            .clipShape(Circle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(6)
                                 }
-                                .buttonStyle(.plain)
-                                .offset(x: 6, y: -6)
                             }
                         }
                     }
-                    .padding(.horizontal, APSpacing.md)
                 }
-                .frame(height: 110)
+                .padding(APSpacing.md)
+                .background(Color.appSurface)
+                .clipShape(RoundedRectangle(cornerRadius: APRadius.lg, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: APRadius.lg).stroke(Color.appTeal.opacity(0.2)))
+                .padding(.horizontal, APSpacing.md)
             }
 
-            Spacer()
+            } // end inner VStack
+            .padding(.bottom, APSpacing.md)
+            } // end ScrollView
 
             // Bottom Action Bar
-            VStack(spacing: APSpacing.sm) {
-                // API Key Settings Toggle
-                if !offlineSyncMode {
-                    Button(action: {
-                        withAnimation { showApiSettings.toggle() }
-                    }) {
-                        HStack {
-                            Image(systemName: "key.fill")
-                            Text(geminiApiKey.isEmpty ? "Configure Gemini API Key" : "Gemini API Configured")
-                                .underline()
-                        }
-                        .font(.caption)
-                        .foregroundColor(.textSecondary)
-                    }
-                    .buttonStyle(.plain)
+            Divider().background(Color.appDivider)
 
-                    if showApiSettings {
-                        VStack(alignment: .leading, spacing: 6) {
-                            SecureField("Enter Gemini API Key", text: $geminiApiKey)
-                                .textFieldStyle(.roundedBorder)
-                                .autocorrectionDisabled()
-                            Text("Required if Supabase secrets are not configured.")
-                                .font(.system(size: 10))
-                                .foregroundColor(.textSecondary)
-                        }
-                        .padding()
-                        .background(Color.appSurface)
-                        .cornerRadius(APRadius.md)
-                        .padding(.horizontal, APSpacing.md)
+            VStack(spacing: 0) {
+                if let error = analyzeError, !offlineSyncMode {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.appRose)
+                            .font(.subheadline)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.textPrimary)
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(3)
+                        Spacer()
                     }
+                    .padding(APSpacing.sm)
+                    .background(Color.appRose.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
+                    .padding(.horizontal, APSpacing.md)
+                    .padding(.bottom, APSpacing.xs)
                 }
-
+                // ── Analyze Document — ALWAYS visible ────────────────────────────
                 Button(action: analyzeReceiptImages) {
                     HStack {
                         if isAnalyzing {
@@ -362,253 +737,738 @@ struct StockDocumentScanSheet: View {
                 .disabled(selectedImages.isEmpty || isAnalyzing || offlineSyncMode)
                 .buttonStyle(.plain)
                 .padding(.horizontal, APSpacing.md)
+                .padding(.top, APSpacing.xs)
                 .padding(.bottom, 20)
             }
         }
     }
 
+    private func uploadSourceButton(icon: String, title: String, subtitle: String, color: Color) -> some View {
+        VStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(color)
+                .frame(width: 42, height: 42)
+                .background(color.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.textPrimary)
+            Text(subtitle)
+                .font(.caption2)
+                .foregroundColor(.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .background(Color.appBackground)
+        .clipShape(RoundedRectangle(cornerRadius: APRadius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                .stroke(color.opacity(0.22), lineWidth: 1)
+        )
+    }
+
+    private func documentIdentifier(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(.textSecondary)
+            Text(value.isEmpty ? "—" : value)
+                .font(.caption.weight(.medium))
+                .foregroundColor(value.isEmpty ? .textTertiary : .textPrimary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func optionalDateRow(label: String, date: Binding<Date?>) -> some View {
+        HStack {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundColor(.textSecondary)
+            Spacer()
+            if date.wrappedValue != nil {
+                DatePicker(
+                    "",
+                    selection: Binding(
+                        get: { date.wrappedValue ?? Date() },
+                        set: { date.wrappedValue = $0 }
+                    ),
+                    displayedComponents: .date
+                )
+                .labelsHidden()
+                .controlSize(.small)
+                Button(action: { date.wrappedValue = nil }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundColor(.textTertiary)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button("ไม่พบวันที่ • เพิ่ม") { date.wrappedValue = Date() }
+                    .font(.caption2)
+                    .foregroundColor(.appAmber)
+                    .buttonStyle(.plain)
+            }
+        }
+        .frame(height: 24)
+    }
+
+    private func amountSummary(label: String, value: Double?, emphasized: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(.textSecondary)
+            Text(value.map { String(format: "%@ %.2f", currencyCode, $0) } ?? "—")
+                .font(.caption.weight(emphasized ? .bold : .semibold))
+                .foregroundColor(emphasized ? .appTeal : .textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(5)
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
+    }
+
     // MARK: - Step 2: Review Content
+    // MARK: - Step 2: Review Step (Redesigned — 2-column split, animations)
     private var reviewStepContent: some View {
-        VStack(spacing: 0) {
-            // Confidence Badge & Header
-            HStack {
-                Image(systemName: "sparkles")
-                    .foregroundColor(.appAccent)
-                Text(String(format: "menu_import_confidence".t, Int(parseConfidence * 100)))
-                    .font(.caption).fontWeight(.semibold)
-                    .foregroundColor(.textSecondary)
+        HStack(spacing: 0) {
 
-                Spacer()
+            // ── LEFT PANEL: Document Metadata (independent scroll) ──────────────
+            VStack(spacing: 0) {
 
-                Text(String(format: "menu_import_found_items".t, parsedItems.count))
-                    .font(.caption).fontWeight(.semibold)
-                    .foregroundColor(.textSecondary)
-            }
-            .padding(.horizontal, APSpacing.md)
-            .padding(.vertical, 10)
-            .background(Color.appSurface)
-
-            Divider().background(Color.appDivider)
-
-            // Invoice Level Fields
-            VStack(spacing: APSpacing.md) {
-                HStack(spacing: APSpacing.md) {
-                    VStack(alignment: .leading, spacing: APSpacing.xs) {
-                        Text("Invoice / PO Number")
-                            .font(.caption).fontWeight(.semibold)
-                            .foregroundColor(.textSecondary)
-                        TextField("e.g. INV-10293", text: $scannedInvoiceNumber)
-                            .padding(APSpacing.sm)
-                            .background(Color.appBackground)
-                            .cornerRadius(APRadius.sm)
-                    }
-
-                    VStack(alignment: .leading, spacing: APSpacing.xs) {
-                        Text("Supplier")
-                            .font(.caption).fontWeight(.semibold)
-                            .foregroundColor(.textSecondary)
-                        Picker("Select Supplier", selection: $selectedSupplierId) {
-                            Text("No Supplier").tag(nil as UUID?)
-                            ForEach(suppliers) { sup in
-                                Text(sup.name).tag(sup.id as UUID?)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .padding(.vertical, 4)
-                        .frame(maxWidth: .infinity)
-                        .background(Color.appBackground)
-                        .cornerRadius(APRadius.sm)
-                    }
-                }
-
-                HStack {
-                    Text("Invoice Date")
-                        .font(.caption).fontWeight(.semibold)
-                        .foregroundColor(.textSecondary)
+                // Panel header
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(.appAccent)
+                    Text("ข้อมูลเอกสาร")
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(.textPrimary)
                     Spacer()
-                    DatePicker("", selection: $scannedInvoiceDate, displayedComponents: .date)
-                        .labelsHidden()
+                    Text(currencyCode)
+                        .font(.caption2.weight(.bold))
+                        .foregroundColor(.appAccent)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.appAccent.opacity(0.1))
+                        .clipShape(Capsule())
                 }
-            }
-            .padding(APSpacing.md)
-            .background(Color.appSurfaceHigh)
-            .cornerRadius(APRadius.md)
-            .padding(.horizontal, APSpacing.md)
-            .padding(.vertical, APSpacing.sm)
+                .padding(.horizontal, APSpacing.md)
+                .padding(.vertical, 10)
+                .background(Color.appSurface)
 
-            Divider().background(Color.appDivider)
+                Divider().background(Color.appDivider)
 
-            // Editable List of parsed items mapped to Local Inventory
-            ScrollView {
-                LazyVStack(spacing: 1) {
-                    ForEach(parsedItems.indices, id: \.self) { idx in
-                        VStack(spacing: APSpacing.sm) {
-                            HStack(alignment: .top, spacing: APSpacing.sm) {
-                                // Toggle Select
-                                Toggle(isOn: $parsedItems[idx].isSelected) {
-                                    EmptyView()
+                ScrollView {
+                    VStack(spacing: 0) {
+
+                        // ── Supplier Section ──
+                        reviewPanelSection(icon: "building.2", title: "ผู้ขาย") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(extractedSupplierName.isEmpty ? "ไม่พบชื่อผู้ขายในเอกสาร" : extractedSupplierName)
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundColor(extractedSupplierName.isEmpty ? .appAmber : .textPrimary)
+                                    .lineLimit(2)
+
+                                Picker("Match local supplier", selection: $selectedSupplierId) {
+                                    Label("ยังไม่จับคู่ผู้ขาย", systemImage: "link.badge.plus")
+                                        .tag(nil as UUID?)
+                                    ForEach(suppliers) { supplier in
+                                        Text(supplier.name).tag(supplier.id as UUID?)
+                                    }
                                 }
-                                .toggleStyle(CheckboxToggleStyle())
-                                .padding(.top, 4)
+                                .pickerStyle(.menu)
+                                .font(.caption)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(Color.appBackground)
+                                .cornerRadius(APRadius.sm)
 
-                                VStack(alignment: .leading, spacing: 4) {
-                                    // Found Item Text
-                                    Text("Scanned: " + parsedItems[idx].name)
-                                        .font(.subheadline).fontWeight(.bold)
-                                        .foregroundColor(.textPrimary)
-
-                                    // Local Stock Item Matching Picker
-                                    HStack {
-                                        Text("Match:")
-                                            .font(.caption2)
-                                            .foregroundColor(.textSecondary)
-
-                                        Picker("Match Item", selection: $parsedItems[idx].matchedItemId) {
-                                            Text("stock_scan_no_match".t).tag(nil as UUID?)
-                                            ForEach(branchInventory) { item in
-                                                Text(item.name).tag(item.id as UUID?)
-                                            }
-                                        }
-                                        .pickerStyle(.menu)
-                                        .labelsHidden()
-
-                                        Spacer()
-                                    }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.appSurfaceHigh)
-                                    .cornerRadius(APRadius.sm)
-
-                                    // Lot & Expiry Batch Fields
-                                    HStack(spacing: APSpacing.md) {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text("Lot #")
-                                                .font(.system(size: 10)).fontWeight(.medium)
-                                                .foregroundColor(.textSecondary)
-                                            TextField("None", text: Binding(
-                                                get: { parsedItems[idx].lotNumber ?? "" },
-                                                set: { parsedItems[idx].lotNumber = $0.isEmpty ? nil : $0 }
-                                            ))
-                                            .font(.footnote)
-                                            .textFieldStyle(.plain)
-                                            .padding(4)
-                                            .background(Color.appSurfaceHigh)
-                                            .cornerRadius(APRadius.sm)
-                                        }
-
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text("Expiry Date")
-                                                .font(.system(size: 10)).fontWeight(.medium)
-                                                .foregroundColor(.textSecondary)
-                                            DatePicker("", selection: Binding(
-                                                get: { parsedItems[idx].expiryDate ?? Date() },
-                                                set: { parsedItems[idx].expiryDate = $0 }
-                                            ), displayedComponents: .date)
-                                            .labelsHidden()
-                                            .scaleEffect(0.85)
-                                            .frame(height: 24)
-                                        }
-                                    }
-                                    .padding(.top, 4)
+                                HStack(spacing: APSpacing.sm) {
+                                    documentIdentifier(label: "Tax ID", value: supplierTaxId)
+                                    documentIdentifier(label: "Branch", value: supplierBranchCode)
                                 }
+                                documentIdentifier(label: "Customer Ref.", value: customerReference)
+                            }
+                        }
 
-                                Spacer()
+                        // ── Document Numbers Section ──
+                        reviewPanelSection(icon: "number", title: "เลขที่เอกสาร") {
+                            VStack(spacing: 8) {
+                                reviewTextField(label: "Invoice / Tax No.", placeholder: "e.g. INV-10293", text: $scannedInvoiceNumber)
+                                reviewTextField(label: "Purchase Order No.", placeholder: "Optional", text: $scannedPurchaseOrderNumber)
+                            }
+                        }
 
-                                // Quantities & Cost entries
-                                VStack(spacing: APSpacing.xs) {
-                                    HStack {
-                                        Text("Qty:")
-                                            .font(.caption2)
-                                            .foregroundColor(.textSecondary)
-                                        TextField("0.0", value: $parsedItems[idx].quantity, formatter: NumberFormatter.doubleFormatter)
-                                            .font(.system(.footnote, design: .rounded)).fontWeight(.bold)
-                                            .textFieldStyle(.plain)
-                                            .multilineTextAlignment(.trailing)
-                                            .frame(width: 60)
-                                            .padding(4)
-                                            .background(Color.appSurfaceHigh)
-                                            .cornerRadius(APRadius.sm)
-                                        Text(parsedItems[idx].unit ?? "")
-                                            .font(.caption2)
-                                            .foregroundColor(.textSecondary)
-                                    }
+                        // ── Dates Section ──
+                        reviewPanelSection(icon: "calendar", title: "วันที่") {
+                            VStack(spacing: 6) {
+                                reviewDateCard(label: "Invoice Date", date: $scannedInvoiceDate)
+                                reviewDateCard(label: "Order Date", date: $scannedOrderDate)
+                                reviewDateCard(label: "Delivery Date", date: $scannedDeliveryDate, isMissing: scannedDeliveryDate == nil)
+                            }
+                        }
 
-                                    HStack {
-                                        Text("Cost:")
-                                            .font(.caption2)
-                                            .foregroundColor(.textSecondary)
-                                        TextField("0.00", value: $parsedItems[idx].unitCost, formatter: NumberFormatter.currencyFormatter)
-                                            .font(.system(.footnote, design: .rounded)).fontWeight(.bold)
-                                            .textFieldStyle(.plain)
-                                            .multilineTextAlignment(.trailing)
-                                            .frame(width: 60)
-                                            .padding(4)
-                                            .background(Color.appSurfaceHigh)
-                                            .cornerRadius(APRadius.sm)
+                        // ── Totals Section ──
+                        reviewPanelSection(icon: "sum", title: "ยอดรวม") {
+                            VStack(spacing: 6) {
+                                HStack(spacing: 8) {
+                                    amountSummary(label: "Subtotal", value: documentSubtotal)
+                                    amountSummary(label: "Tax", value: documentTaxAmount)
+                                }
+                                amountSummary(label: "Grand Total", value: documentGrandTotal, emphasized: true)
+                            }
+                        }
+
+                        // ── Validation Warnings ──
+                        if !validationWarnings.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Label("ควรตรวจสอบ", systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundColor(.appAmber)
+                                ForEach(validationWarnings.prefix(3), id: \.self) { warning in
+                                    HStack(alignment: .top, spacing: 4) {
+                                        Text("•").font(.caption2).foregroundColor(.appAmber)
+                                        Text(warning).font(.caption2).foregroundColor(.textSecondary)
                                     }
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(APSpacing.sm)
+                            .background(Color.appAmber.opacity(0.08))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: APRadius.md)
+                                    .stroke(Color.appAmber.opacity(0.25), lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
+                            .padding(.horizontal, APSpacing.md)
+                            .padding(.bottom, APSpacing.md)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                         }
-                        .padding(APSpacing.md)
-                        .background(Color.appSurface)
-                        .overlay(
-                            Rectangle().fill(Color.appDivider).frame(height: 1), alignment: .bottom
-                        )
+
+                        Spacer(minLength: 20)
                     }
                 }
+                .scrollIndicators(.hidden)
             }
-
-            Divider().background(Color.appDivider)
-
-            // Bottom Action Bar
-            HStack(spacing: APSpacing.md) {
-                Button(action: {
-                    withAnimation { currentStep = .upload }
-                }) {
-                    Text("menu_import_retry".t)
-                        .font(.headline)
-                        .foregroundColor(.textSecondary)
-                        .padding(.vertical, 14)
-                        .frame(maxWidth: .infinity)
-                        .background(Color.appSurfaceHigh)
-                        .cornerRadius(APRadius.md)
-                }
-                .buttonStyle(.plain)
-                .frame(width: 140)
-
-                Button(action: confirmAndImportStock) {
-                    HStack {
-                        if isImporting {
-                            ProgressView()
-                                .tint(.white)
-                                .padding(.trailing, 8)
-                        }
-                        Text("stock_scan_confirm_btn".t)
-                    }
-                    .font(.headline).fontWeight(.bold)
-                    .foregroundColor(.white)
-                    .padding(.vertical, 14)
-                    .frame(maxWidth: .infinity)
-                    .background(
-                        Group {
-                            if isImporting {
-                                Color.appSurfaceHigh
-                            } else {
-                                APGradient.positive
-                            }
-                        }
-                    )
-                    .cornerRadius(APRadius.md)
-                }
-                .disabled(isImporting || !parsedItems.contains(where: { $0.isSelected && $0.matchedItemId != nil }))
-                .buttonStyle(.plain)
-            }
-            .padding(APSpacing.md)
+            .frame(width: 300)
             .background(Color.appSurface)
+
+            Divider().background(Color.appDivider)
+
+            // ── RIGHT PANEL: Items List (independent scroll, full height) ───────
+            VStack(spacing: 0) {
+
+                // Items header with status chips
+                HStack(spacing: 8) {
+                    // Confidence chip
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkles")
+                            .font(.caption2.weight(.bold))
+                        Text(String(format: "menu_import_confidence".t, Int(parseConfidence * 100)))
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundColor(.appAccent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.appAccent.opacity(0.08))
+                    .clipShape(Capsule())
+
+                    // Found items chip
+                    HStack(spacing: 5) {
+                        Image(systemName: "shippingbox")
+                            .font(.caption2.weight(.bold))
+                        Text(String(format: "menu_import_found_items".t, parsedItems.count))
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundColor(.appTeal)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.appTeal.opacity(0.08))
+                    .clipShape(Capsule())
+
+                    Spacer()
+
+                    // Unmatched warning chip (animated pulse)
+                    let unmatchedCount = parsedItems.filter { $0.matchedItemId == nil }.count
+                    if unmatchedCount > 0 {
+                        HStack(spacing: 5) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2.weight(.bold))
+                            Text("\(unmatchedCount) ยังไม่ match")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .foregroundColor(.appAmber)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.appAmber.opacity(0.1))
+                        .clipShape(Capsule())
+                        .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .padding(.horizontal, APSpacing.md)
+                .padding(.vertical, 10)
+                .background(Color.appBackground)
+                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: parsedItems.filter { $0.matchedItemId == nil }.count)
+
+                Divider().background(Color.appDivider)
+
+                // Items scroll — full independent scroll
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(parsedItems.indices, id: \.self) { idx in
+                            reviewItemCard(idx: idx)
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                                    removal: .opacity
+                                ))
+                        }
+                        Spacer(minLength: 20)
+                    }
+                    .padding(.horizontal, APSpacing.md)
+                    .padding(.top, APSpacing.sm)
+                    .padding(.bottom, APSpacing.lg)
+                }
+                .layoutPriority(1)
+                .scrollIndicators(.automatic)
+
+                Divider().background(Color.appDivider)
+
+                // ── Bottom Action Bar ──
+                VStack(spacing: 0) {
+                    if let importError {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundColor(.appRose)
+                            Text(importError)
+                                .font(.caption)
+                                .foregroundColor(.appRose)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, APSpacing.md)
+                        .padding(.vertical, APSpacing.sm)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
+                    HStack(spacing: APSpacing.md) {
+                        Button(action: { withAnimation(.spring(response: 0.4)) { currentStep = .upload } }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.counterclockwise")
+                                    .font(.headline)
+                                Text("menu_import_retry".t)
+                                    .font(.headline)
+                            }
+                            .foregroundColor(.textSecondary)
+                            .padding(.vertical, 14)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.appSurfaceHigh)
+                            .cornerRadius(APRadius.md)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: 150)
+
+                        let hasWarnings = !validationWarnings.isEmpty
+                        Button(action: confirmAndImportStock) {
+                            HStack(spacing: 8) {
+                                if isImporting {
+                                    ProgressView().tint(.white).scaleEffect(0.85)
+                                } else if hasWarnings {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.headline)
+                                }
+                                Text("บันทึกเอกสารและรับสต็อก")
+                                    .font(.headline.weight(.bold))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.vertical, 14)
+                            .frame(maxWidth: .infinity)
+                            .background(
+                                Group {
+                                    if isImporting {
+                                        Color.appSurfaceHigh
+                                    } else if hasWarnings {
+                                        LinearGradient(
+                                            colors: [Color.appAmber, Color.appAmber.opacity(0.8)],
+                                            startPoint: .topLeading, endPoint: .bottomTrailing
+                                        )
+                                    } else {
+                                        APGradient.positive
+                                    }
+                                }
+                            )
+                            .cornerRadius(APRadius.md)
+                            .shadow(
+                                color: hasWarnings ? Color.appAmber.opacity(0.35) : Color.appTeal.opacity(0.3),
+                                radius: 8, x: 0, y: 4
+                            )
+                            .animation(.easeInOut(duration: 0.25), value: hasWarnings)
+                        }
+                        .disabled(isImporting || !parsedItems.contains(where: { $0.isSelected && $0.quantity > 0 }))
+                        .buttonStyle(.plain)
+                    }
+                    .padding(APSpacing.md)
+                    .background(Color.appSurface)
+                }
+            }
+            .background(Color.appBackground)
         }
     }
 
-    // MARK: - Step 3: Complete Content
+    // MARK: - Review Helper Views
+
+    /// Reusable section container for left panel
+    private func reviewPanelSection<Content: View>(
+        icon: String,
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.appAccent)
+                Text(title)
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(.textSecondary)
+                    .textCase(.uppercase)
+                    .kerning(0.5)
+            }
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(APSpacing.md)
+        .background(Color.appSurface)
+        .overlay(Rectangle().fill(Color.appDivider).frame(height: 1), alignment: .bottom)
+    }
+
+    /// Compact labeled text field for left panel
+    private func reviewTextField(label: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.system(size: 10).weight(.semibold))
+                .foregroundColor(.textSecondary)
+            TextField(placeholder, text: text)
+                .font(.footnote.weight(.medium))
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.appBackground)
+                .cornerRadius(APRadius.sm)
+                .overlay(
+                    RoundedRectangle(cornerRadius: APRadius.sm)
+                        .stroke(Color.appBorderSubtle, lineWidth: 1)
+                )
+        }
+    }
+
+    /// Date card for left panel — shows missing state prominently
+    private func reviewDateCard(label: String, date: Binding<Date?>, isMissing: Bool = false) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.system(size: 10).weight(.semibold))
+                    .foregroundColor(.textSecondary)
+                if let d = date.wrappedValue {
+                    Text(d, style: .date)
+                        .font(.footnote.weight(.bold))
+                        .foregroundColor(.textPrimary)
+                } else {
+                    Button(action: { date.wrappedValue = Date() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus.circle")
+                                .font(.system(size: 10))
+                            Text("ไม่พบในเอกสาร — เพิ่ม")
+                                .font(.system(size: 11))
+                        }
+                        .foregroundColor(isMissing ? .appAmber : .appAccent)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Spacer()
+            if date.wrappedValue != nil {
+                DatePicker("", selection: Binding(
+                    get: { date.wrappedValue ?? Date() },
+                    set: { date.wrappedValue = $0 }
+                ), displayedComponents: .date)
+                .labelsHidden()
+                .scaleEffect(0.82)
+                .frame(width: 100)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(isMissing && date.wrappedValue == nil
+            ? Color.appAmber.opacity(0.06)
+            : Color.appBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: APRadius.sm)
+                .stroke(
+                    isMissing && date.wrappedValue == nil
+                        ? Color.appAmber.opacity(0.3)
+                        : Color.appBorderSubtle,
+                    lineWidth: 1
+                )
+        )
+        .cornerRadius(APRadius.sm)
+        .animation(.easeInOut(duration: 0.2), value: date.wrappedValue == nil)
+    }
+
+    /// Full item card for right panel — clean card style with independent match/lot/expiry
+    @ViewBuilder
+    private func reviewItemCard(idx: Int) -> some View {
+        let item = parsedItems[idx]
+        let isUnmatched = item.matchedItemId == nil
+
+        VStack(spacing: 0) {
+            // ── Card Top: checkbox + name + quantities ──
+            HStack(alignment: .top, spacing: 12) {
+                // Checkbox
+                Toggle(isOn: $parsedItems[idx].isSelected) { EmptyView() }
+                    .toggleStyle(CheckboxToggleStyle())
+                    .padding(.top, 3)
+
+                // Name + meta
+                VStack(alignment: .leading, spacing: 5) {
+                    TextField("Scanned item name", text: $parsedItems[idx].name)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundColor(.textPrimary)
+                        .textFieldStyle(.plain)
+
+                    HStack(spacing: 8) {
+                        if let line = item.lineNumber {
+                            Label("Line \(line)", systemImage: "number")
+                                .font(.caption2)
+                                .foregroundColor(.textSecondary)
+                        }
+                        if let article = item.sellerItemId {
+                            Label(article, systemImage: "barcode")
+                                .font(.caption2)
+                                .foregroundColor(.textSecondary)
+                        }
+                        // Confidence badge
+                        Text("\(Int(item.confidence * 100))%")
+                            .font(.caption2.weight(.bold))
+                            .foregroundColor(item.confidence >= 0.9 ? .appTeal : .appAmber)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                (item.confidence >= 0.9 ? Color.appTeal : Color.appAmber).opacity(0.1)
+                            )
+                            .clipShape(Capsule())
+                    }
+                }
+
+                Spacer()
+
+                // Quantities & cost (right aligned)
+                VStack(alignment: .trailing, spacing: 6) {
+                    // Cost
+                    HStack(spacing: 4) {
+                        Text("Cost:")
+                            .font(.caption2)
+                            .foregroundColor(.textSecondary)
+                        TextField("0.00",
+                            value: $parsedItems[idx].unitCost,
+                            formatter: NumberFormatter.currencyFormatter
+                        )
+                        .font(.system(.footnote, design: .rounded).weight(.bold))
+                        .textFieldStyle(.plain)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 65)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .background(Color.appSurfaceHigh)
+                        .cornerRadius(APRadius.sm)
+                    }
+
+                    // Qty
+                    HStack(spacing: 4) {
+                        Text("Qty:")
+                            .font(.caption2)
+                            .foregroundColor(.textSecondary)
+                        TextField("0.0",
+                            value: $parsedItems[idx].quantity,
+                            formatter: NumberFormatter.doubleFormatter
+                        )
+                        .font(.system(.footnote, design: .rounded).weight(.bold))
+                        .textFieldStyle(.plain)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 50)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .background(Color.appSurfaceHigh)
+                        .cornerRadius(APRadius.sm)
+                        Text(item.unit ?? "")
+                            .font(.caption2)
+                            .foregroundColor(.textSecondary)
+                    }
+
+                    // Line total
+                    if let lineTotal = item.lineTotal {
+                        HStack(spacing: 3) {
+                            Text(String(format: "%.2f", lineTotal))
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.textPrimary)
+                            if let vatRate = item.vatRate {
+                                Text("VAT \(String(format: "%.0f", vatRate))%")
+                                    .font(.caption2)
+                                    .foregroundColor(.textSecondary)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, APSpacing.md)
+            .padding(.top, APSpacing.md)
+            .padding(.bottom, APSpacing.sm)
+
+            // ── Card Bottom: match + lot + expiry ──
+            VStack(spacing: 8) {
+                Divider().background(Color.appDivider).padding(.horizontal, APSpacing.sm)
+
+                HStack(spacing: 8) {
+                    // Match picker — styled as actionable row
+                    Menu {
+                        Button(action: { parsedItems[idx].matchedItemId = nil }) {
+                            Label("stock_scan_no_match".t, systemImage: "xmark.circle")
+                        }
+                        Divider()
+                        ForEach(branchInventory) { invItem in
+                            Button(invItem.name) {
+                                parsedItems[idx].matchedItemId = invItem.id
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: isUnmatched ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(isUnmatched ? .appAmber : .appTeal)
+                                .symbolEffect(.pulse, options: isUnmatched ? .repeating : .nonRepeating)
+
+                            Text(isUnmatched
+                                ? "ไม่พบสินค้า — เลือก match"
+                                : (branchInventory.first(where: { $0.id == item.matchedItemId })?.name ?? "Matched"))
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(isUnmatched ? .appAmber : .appTeal)
+                                .lineLimit(1)
+
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                                .foregroundColor(.textTertiary)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            isUnmatched
+                            ? Color.appAmber.opacity(0.06)
+                            : Color.appTeal.opacity(0.06)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: APRadius.sm)
+                                .stroke(
+                                    isUnmatched
+                                    ? Color.appAmber.opacity(0.35)
+                                    : Color.appTeal.opacity(0.3),
+                                    lineWidth: 1.5
+                                )
+                        )
+                        .cornerRadius(APRadius.sm)
+                        .animation(.easeInOut(duration: 0.2), value: isUnmatched)
+                    }
+                    .frame(maxWidth: .infinity)
+
+                    // Lot field
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Lot #")
+                            .font(.system(size: 10).weight(.semibold))
+                            .foregroundColor(.textSecondary)
+                        TextField("None", text: Binding(
+                            get: { parsedItems[idx].lotNumber ?? "" },
+                            set: { parsedItems[idx].lotNumber = $0.isEmpty ? nil : $0 }
+                        ))
+                        .font(.footnote)
+                        .textFieldStyle(.plain)
+                        .frame(width: 70)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 6)
+                        .background(Color.appBackground)
+                        .cornerRadius(APRadius.sm)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: APRadius.sm)
+                                .stroke(Color.appBorderSubtle, lineWidth: 1)
+                        )
+                    }
+
+                    // Expiry field
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Expiry Date")
+                            .font(.system(size: 10).weight(.semibold))
+                            .foregroundColor(.textSecondary)
+                        if parsedItems[idx].expiryDate != nil {
+                            HStack(spacing: 4) {
+                                DatePicker("", selection: Binding(
+                                    get: { parsedItems[idx].expiryDate ?? Date() },
+                                    set: { parsedItems[idx].expiryDate = $0 }
+                                ), displayedComponents: .date)
+                                .labelsHidden()
+                                .scaleEffect(0.8)
+                                .frame(width: 90, height: 28)
+                                Button(action: { parsedItems[idx].expiryDate = nil }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.caption)
+                                        .foregroundColor(.textTertiary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        } else {
+                            Button(action: { parsedItems[idx].expiryDate = Date() }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "plus.circle")
+                                        .font(.system(size: 10))
+                                    Text("เพิ่ม")
+                                        .font(.system(size: 11).weight(.medium))
+                                }
+                                .foregroundColor(.appAccent)
+                            }
+                            .buttonStyle(.plain)
+                            .frame(height: 28)
+                        }
+                    }
+                }
+                .padding(.horizontal, APSpacing.md)
+                .padding(.bottom, APSpacing.md)
+            }
+        }
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: APRadius.lg))
+        .overlay(
+            RoundedRectangle(cornerRadius: APRadius.lg)
+                .stroke(
+                    isUnmatched
+                    ? Color.appAmber.opacity(0.4)
+                    : Color.appDivider,
+                    lineWidth: 1.2
+                )
+        )
+        .shadow(
+            color: isUnmatched ? Color.appAmber.opacity(0.08) : Color.black.opacity(0.03),
+            radius: 4, x: 0, y: 2
+        )
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isUnmatched)
+        .opacity(item.isSelected ? 1.0 : 0.5)
+        .animation(.easeInOut(duration: 0.2), value: item.isSelected)
+    }
+
+
+        // MARK: - Step 3: Complete Content
     private var completeStepContent: some View {
         VStack(spacing: APSpacing.lg) {
             Spacer()
@@ -629,6 +1489,11 @@ struct StockDocumentScanSheet: View {
                 .foregroundColor(.textSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
+
+            Text("บันทึกข้อมูลเอกสารครบ \(savedLineCount) รายการ • รับเข้าสต็อกที่จับคู่แล้ว \(importedCount) รายการ")
+                .font(.caption)
+                .foregroundColor(.textSecondary)
+                .multilineTextAlignment(.center)
 
             Spacer()
 
@@ -672,27 +1537,47 @@ struct StockDocumentScanSheet: View {
         selectedImages.remove(at: index)
         selectedImagePreviews.remove(at: index)
         selectedPhotoItems.removeAll()
+        if selectedImages.isEmpty { pdfFileName = nil }  // clear PDF label if all removed
     }
 
     private func analyzeReceiptImages() {
         guard !selectedImages.isEmpty else { return }
         isAnalyzing = true
         analyzeError = nil
+        processingPhase = 0   // uploading
+        sourceDocumentHash = documentFingerprint(for: selectedImages)
 
         Task {
             do {
-                let result = try await callParseReceiptEdgeFunction(images: selectedImages)
+                // Phase 0 → uploading (show briefly, then advance when request fires)
+                await MainActor.run { processingPhase = 0 }
+                try await Task.sleep(nanoseconds: 400_000_000) // 0.4s so user sees upload phase
+                await MainActor.run { processingPhase = 1 }    // analyzing
+                let result = try await analyzeWithRetry(images: selectedImages)
+                await MainActor.run { processingPhase = 2 }    // parsing
 
                 await MainActor.run {
                     let dateFormatter = DateFormatter()
+                    dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+                    dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
                     dateFormatter.dateFormat = "yyyy-MM-dd"
 
-                    self.scannedInvoiceNumber = result.po_number ?? ""
-                    if let dateStr = result.invoice_date, let date = dateFormatter.date(from: dateStr) {
-                        self.scannedInvoiceDate = date
-                    } else {
-                        self.scannedInvoiceDate = Date()
-                    }
+                    scannedInvoiceNumber = result.invoice_number ?? result.tax_invoice_number ?? ""
+                    scannedTaxInvoiceNumber = result.tax_invoice_number ?? ""
+                    scannedPurchaseOrderNumber = result.po_number ?? ""
+                    scannedInvoiceDate = result.invoice_date.flatMap { dateFormatter.date(from: $0) }
+                    scannedOrderDate = result.order_date.flatMap { dateFormatter.date(from: $0) }
+                    scannedDeliveryDate = result.delivery_date.flatMap { dateFormatter.date(from: $0) }
+                    extractedSupplierName = result.supplier_name ?? ""
+                    supplierTaxId = result.supplier_tax_id ?? ""
+                    supplierBranchCode = result.supplier_branch_code ?? ""
+                    customerReference = result.customer_reference ?? ""
+                    documentType = result.document_type
+                    currencyCode = result.currency_code
+                    documentSubtotal = result.subtotal
+                    documentTaxAmount = result.tax_amount
+                    documentGrandTotal = result.grand_total
+                    validationWarnings = result.validation_warnings
 
                     if let supplierName = result.supplier_name?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) {
                         let matchedSup = suppliers.first { sup in
@@ -705,7 +1590,12 @@ struct StockDocumentScanSheet: View {
                     }
 
                     parsedItems = result.items.map { item in
-                        let matchedId = findBestMatch(for: item.name, in: branchInventory)
+                        let matchedId = findBestMatch(
+                            for: item.name,
+                            sellerItemId: item.seller_item_id,
+                            barcode: item.barcode,
+                            in: branchInventory
+                        )
                         let parsedExpiry = item.expiry_date.flatMap { dateFormatter.date(from: $0) }
                         return ParsedReceiptItem(
                             name: item.name,
@@ -714,7 +1604,18 @@ struct StockDocumentScanSheet: View {
                             unitCost: item.unit_cost,
                             matchedItemId: matchedId,
                             expiryDate: parsedExpiry,
-                            lotNumber: item.lot_number
+                            lotNumber: item.lot_number,
+                            lineNumber: item.line_number,
+                            sellerItemId: item.seller_item_id,
+                            barcode: item.barcode,
+                            unitCode: item.unit_code,
+                            priceBaseQuantity: item.price_base_quantity,
+                            lineNetAmount: item.line_net_amount,
+                            vatRate: item.vat_rate,
+                            vatCode: item.vat_code,
+                            taxAmount: item.tax_amount,
+                            lineTotal: item.line_total,
+                            confidence: item.confidence
                         )
                     }
 
@@ -722,7 +1623,7 @@ struct StockDocumentScanSheet: View {
                     isAnalyzing = false
 
                     if parsedItems.isEmpty {
-                        analyzeError = "No receipt items parsed. Ensure receipt is clear."
+                        analyzeError = "ไม่พบรายการสินค้า — ลองถ่ายรูปให้ชัดขึ้นหรือใช้แสงสว่างพอ"
                     } else {
                         withAnimation(.spring(response: 0.35)) {
                             currentStep = .review
@@ -732,9 +1633,41 @@ struct StockDocumentScanSheet: View {
             } catch {
                 await MainActor.run {
                     isAnalyzing = false
-                    analyzeError = "Error parsing receipt: " + error.localizedDescription
+                    analyzeError = { () -> String in
+                    let msg = error.localizedDescription
+                    if msg.contains("NO_API_KEY") || msg.contains("OPENROUTER_API_KEY_MISSING") || msg.contains("key not found") || msg.contains("API key") {
+                        return "ยังไม่ได้ตั้งค่า API Key — กดปุ่ม 'API Key' ด้านบนเพื่อเลือก provider และกรอก Key"
+                    } else if msg.contains("timeout") || msg.contains("timed out") {
+                        return "⏱ หมดเวลา — รูปภาพอาจใหญ่เกินไป ลองใช้รูปที่ชัดกว่าหรือขนาดเล็กกว่า"
+                    } else if msg.contains("offline") || msg.contains("network") || msg.contains("connection") {
+                        return "📡 ไม่มีการเชื่อมต่ออินเทอร์เน็ต — ตรวจสอบ WiFi แล้วลองใหม่"
+                    } else if msg.contains("401") || msg.contains("403") {
+                        return "API Key ไม่ถูกต้องหรือไม่มีสิทธิ์ใช้งาน กรุณาตรวจสอบ Key แล้วลองใหม่"
+                    } else if msg.contains("429") {
+                        return "โควตาถูกใช้ครบแล้ว — ระบบกำลัง fallback ไป provider อื่น หรือลอง provider อื่นใน AI Settings"
+                    } else {
+                        return "ไม่สามารถวิเคราะห์เอกสารได้: \(msg)"
+                    }
+                }()
                 }
             }
+        }
+    }
+
+    private func analyzeWithRetry(images: [Data], attempt: Int = 1) async throws -> ReceiptParseResult {
+        do {
+            return try await callParseReceiptEdgeFunction(images: images)
+        } catch {
+            let msg = error.localizedDescription
+            // Retry once on timeout or transient upstream errors.
+            let isRetryable = msg.contains("timeout") || msg.contains("timed out")
+                           || msg.contains("503") || msg.contains("502") || msg.contains("500")
+            if isRetryable && attempt < 2 {
+                await MainActor.run { processingPhase = 1 } // reset to analyzing phase
+                try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5s back-off
+                return try await analyzeWithRetry(images: images, attempt: attempt + 1)
+            }
+            throw error
         }
     }
 
@@ -744,26 +1677,63 @@ struct StockDocumentScanSheet: View {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(config.supabaseAnonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(config.supabaseAnonKey)", forHTTPHeaderField: "Authorization")
-        if !geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            request.setValue(geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines), forHTTPHeaderField: "x-gemini-api-key")
+
+        // ── Resolve provider & API key ──────────────────────────────────────
+        let trimmedOR  = openRouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedGEM = geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedOAI = openAIApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch aiProvider {
+        case "openrouter":
+            if !trimmedOR.isEmpty {
+                request.setValue("openrouter", forHTTPHeaderField: "x-ai-provider")
+                request.setValue(trimmedOR, forHTTPHeaderField: "x-ai-api-key")
+            }
+        case "gemini":
+            if !trimmedGEM.isEmpty {
+                request.setValue("gemini", forHTTPHeaderField: "x-ai-provider")
+                request.setValue(trimmedGEM, forHTTPHeaderField: "x-ai-api-key")
+            }
+        case "openai":
+            if !trimmedOAI.isEmpty {
+                request.setValue("openai", forHTTPHeaderField: "x-ai-provider")
+                request.setValue(trimmedOAI, forHTTPHeaderField: "x-ai-api-key")
+            }
+        default: // "auto" — send whichever keys are available; server picks
+            if !trimmedOR.isEmpty {
+                request.setValue(trimmedOR, forHTTPHeaderField: "x-openrouter-api-key")
+            }
+            if !trimmedGEM.isEmpty {
+                request.setValue(trimmedGEM, forHTTPHeaderField: "x-gemini-api-key")
+            }
+            if !trimmedOAI.isEmpty {
+                request.setValue(trimmedOAI, forHTTPHeaderField: "x-openai-api-key")
+            }
         }
-        request.timeoutInterval = 60
 
-        let base64Images = images.map { $0.base64EncodedString() }
-        let payload: [String: Any] = ["images": base64Images]
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        request.timeoutInterval = 120
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let compressedImages = images.map { optimizedImageData(from: $0) }
+        let totalPayloadSize = compressedImages.reduce(0) { $0 + $1.count }
+        let maxUploadSize = 10 * 1024 * 1024 // 10 MB raw image bytes
+        if totalPayloadSize > maxUploadSize {
+            throw MenuImportError.serverError(413, "Payload too large. Try using fewer photos, smaller PDF pages, or lower-resolution images.")
+        }
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = createMultipartBody(images: compressedImages, boundary: boundary)
+
+        let (data, response) = try await AppNetworkTransport.data(for: request, purpose: .cloudData)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw MenuImportError.invalidResponse
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
-            let errorMsg = String(data: data, encoding: .utf8) ?? "Unknown error"
+            let errorMsg = readableServerError(from: data)
             throw MenuImportError.serverError(httpResponse.statusCode, errorMsg)
         }
 
@@ -771,47 +1741,157 @@ struct StockDocumentScanSheet: View {
         return try decoder.decode(ReceiptParseResult.self, from: data)
     }
 
+    private func readableServerError(from data: Data) -> String {
+        if let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let message = (payload["message"] as? String) ?? (payload["error"] as? String)
+            if let message, !message.isEmpty {
+                return String(message.prefix(220))
+            }
+        }
+        return String((String(data: data, encoding: .utf8) ?? "Unknown error").prefix(220))
+    }
+
+    private func optimizedImageData(from data: Data) -> Data {
+        guard var uiImage = UIImage(data: data) else {
+            return data
+        }
+
+        let maxDimension: CGFloat = 2400
+        if let resized = resizedImage(uiImage, maxDimension: maxDimension) {
+            uiImage = resized
+        }
+
+        let quality: CGFloat = uiImage.jpegData(compressionQuality: 0.78)?.count ?? 0 > 1_500_000 ? 0.65 : 0.78
+        return uiImage.jpegData(compressionQuality: quality) ?? data
+    }
+
+    private func documentFingerprint(for images: [Data]) -> String {
+        var hasher = SHA256()
+        for image in images {
+            hasher.update(data: image)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func createMultipartBody(images: [Data], boundary: String) -> Data {
+        var body = Data()
+        for (index, imageData) in images.enumerated() {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"images\"; filename=\"receipt-\(index + 1).jpg\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+            body.append(imageData)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        return body
+    }
+
+    private func resizedImage(_ image: UIImage, maxDimension: CGFloat) -> UIImage? {
+        let aspectRatio = image.size.width / image.size.height
+        let newSize: CGSize
+        if image.size.width > image.size.height {
+            newSize = CGSize(width: maxDimension, height: maxDimension / aspectRatio)
+        } else {
+            newSize = CGSize(width: maxDimension * aspectRatio, height: maxDimension)
+        }
+
+        UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
+        image.draw(in: CGRect(origin: .zero, size: newSize))
+        let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return resizedImage
+    }
+
     @MainActor
     private func confirmAndImportStock() {
         isImporting = true
+        importError = nil
+
+        if let sourceDocumentHash,
+           purchaseOrders.contains(where: { !$0.isDeleted && $0.sourceDocumentHash == sourceDocumentHash }) {
+            importError = "เอกสารนี้ถูกบันทึกแล้ว ระบบป้องกันการรับสต็อกซ้ำ"
+            isImporting = false
+            return
+        }
 
         let supplier = suppliers.first { $0.id == selectedSupplierId }
-        let poNumber = scannedInvoiceNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "INV-\(Int.random(in: 100000...999999))"
-            : scannedInvoiceNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanPO = scannedPurchaseOrderNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanInvoice = scannedInvoiceNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanTaxInvoice = scannedTaxInvoiceNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        let poNumber = !cleanPO.isEmpty ? cleanPO : (!cleanInvoice.isEmpty ? cleanInvoice : "INV-\(Int.random(in: 100000...999999))")
+        let warningsJSON: String? = {
+            guard let data = try? JSONSerialization.data(withJSONObject: validationWarnings),
+                  let string = String(data: data, encoding: .utf8) else { return nil }
+            return string
+        }()
 
         let newPO = PurchaseOrder(
             poNumber: poNumber,
             supplier: supplier,
             branch: activeBranch,
             status: "received",
-            orderDate: scannedInvoiceDate,
-            deliveryDate: Date(),
-            notes: "AI Scanned Invoice"
+            orderDate: scannedOrderDate ?? scannedInvoiceDate ?? Date(),
+            deliveryDate: scannedDeliveryDate,
+            notes: "AI Scanned Invoice",
+            documentType: documentType,
+            invoiceNumber: cleanInvoice.isEmpty ? nil : cleanInvoice,
+            taxInvoiceNumber: cleanTaxInvoice.isEmpty ? nil : cleanTaxInvoice,
+            supplierNameRaw: extractedSupplierName.isEmpty ? nil : extractedSupplierName,
+            supplierTaxId: supplierTaxId.isEmpty ? nil : supplierTaxId,
+            supplierBranchCode: supplierBranchCode.isEmpty ? nil : supplierBranchCode,
+            customerReference: customerReference.isEmpty ? nil : customerReference,
+            invoiceDate: scannedInvoiceDate,
+            currencyCode: currencyCode,
+            subtotal: documentSubtotal,
+            taxAmount: documentTaxAmount,
+            grandTotal: documentGrandTotal,
+            extractionConfidence: parseConfidence,
+            validationWarningsJSON: warningsJSON,
+            sourceDocumentHash: sourceDocumentHash
         )
         modelContext.insert(newPO)
 
         var importCount = 0
+        var documentLineCount = 0
         for item in parsedItems {
-            guard item.isSelected, let matchedId = item.matchedItemId else { continue }
+            guard item.isSelected else { continue }
+            let targetItem = item.matchedItemId.flatMap { matchedId in
+                branchInventory.first(where: { $0.id == matchedId })
+            }
+            let poItem = PurchaseOrderItem(
+                purchaseOrder: newPO,
+                inventoryItem: targetItem,
+                quantityOrdered: item.quantity,
+                quantityReceived: targetItem == nil ? 0 : item.quantity,
+                unitCost: item.unitCost,
+                lineNumber: item.lineNumber,
+                sourceItemName: item.name,
+                sellerItemId: item.sellerItemId,
+                barcode: item.barcode,
+                sourceUnit: item.unit,
+                unitCode: item.unitCode,
+                priceBaseQuantity: item.priceBaseQuantity,
+                lineNetAmount: item.lineNetAmount,
+                vatRate: item.vatRate,
+                vatCode: item.vatCode,
+                taxAmount: item.taxAmount,
+                lineTotal: item.lineTotal,
+                lineConfidence: item.confidence,
+                expiryDate: item.expiryDate,
+                lotNumber: item.lotNumber
+            )
+            modelContext.insert(poItem)
+            documentLineCount += 1
 
-            if let targetItem = branchInventory.first(where: { $0.id == matchedId }) {
-                let poItem = PurchaseOrderItem(
-                    purchaseOrder: newPO,
-                    inventoryItem: targetItem,
-                    quantityOrdered: item.quantity,
-                    quantityReceived: item.quantity,
-                    unitCost: item.unitCost
-                )
-                modelContext.insert(poItem)
-
+            if let targetItem {
                 viewModel.processReceiveWithExpiry(
                     item: targetItem,
                     amountString: String(format: "%.4f", item.quantity),
                     costString: String(format: "%.2f", item.unitCost),
                     notes: "Received via Invoice #\(poNumber)",
                     expiryDate: item.expiryDate,
-                    lotNumber: item.lotNumber
+                    lotNumber: item.lotNumber,
+                    saveImmediately: false
                 )
                 importCount += 1
             }
@@ -820,10 +1900,18 @@ struct StockDocumentScanSheet: View {
         do {
             try modelContext.save()
         } catch {
-            print("StockDocumentScanSheet [Save PO Error]: \(error.localizedDescription)")
+            modelContext.rollback()
+            importError = "บันทึกเอกสารไม่สำเร็จ: \(error.localizedDescription)"
+            isImporting = false
+            return
+        }
+
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
 
         importedCount = importCount
+        savedLineCount = documentLineCount
         isImporting = false
         withAnimation(.spring(response: 0.35)) {
             currentStep = .complete
@@ -831,20 +1919,193 @@ struct StockDocumentScanSheet: View {
     }
 
     // MARK: - Matching Logic
-    private func findBestMatch(for name: String, in items: [InventoryItem]) -> UUID? {
-        let normalized = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // 1. Exact Match
-        if let exact = items.first(where: { $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) == normalized }) {
-            return exact.id
+    private func findBestMatch(
+        for name: String,
+        sellerItemId: String? = nil,
+        barcode: String? = nil,
+        in items: [InventoryItem]
+    ) -> UUID? {
+        let sourceCodes = [sellerItemId, barcode]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        if let codeMatch = items.first(where: { item in
+            sourceCodes.contains(item.sku?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "") ||
+            sourceCodes.contains(item.barcode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "")
+        }) {
+            return codeMatch.id
         }
 
-        // 2. Substring Match
-        if let sub = items.first(where: { normalized.contains($0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)) || $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines).contains(normalized) }) {
-            return sub.id
+        let normalized = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+
+        // 1. Exact match
+        if let exact = items.first(where: {
+            $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) == normalized
+        }) { return exact.id }
+
+        // 2. Substring (either direction)
+        if let sub = items.first(where: {
+            let n = $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            return normalized.contains(n) || n.contains(normalized)
+        }) { return sub.id }
+
+        // 3. Word-level overlap — "นมสด Meiji 1L" matches "นมสด เมจิ" if ≥2 words match
+        let queryWords = Set(normalized.components(separatedBy: .whitespaces).filter { $0.count > 1 })
+        var bestScore = 0; var bestId: UUID? = nil
+        for item in items {
+            let itemWords = Set(item.name.lowercased().components(separatedBy: .whitespaces).filter { $0.count > 1 })
+            let overlap = queryWords.intersection(itemWords).count
+            if overlap >= 2 && overlap > bestScore { bestScore = overlap; bestId = item.id }
+        }
+        if let id = bestId { return id }
+
+        // 4. Fuzzy Levenshtein (accept distance ≤ 3 for names ≥ 6 chars)
+        if normalized.count >= 6 {
+            var fuzzyBest: (id: UUID, dist: Int)? = nil
+            for item in items {
+                let itemNorm = item.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                let dist = levenshtein(normalized, itemNorm)
+                let maxDist = min(3, normalized.count / 4)
+                if dist <= maxDist {
+                    if fuzzyBest == nil || dist < fuzzyBest!.dist {
+                        fuzzyBest = (item.id, dist)
+                    }
+                }
+            }
+            if let match = fuzzyBest { return match.id }
         }
 
         return nil
+    }
+
+    /// Levenshtein edit distance (DP, O(n²) — acceptable for inventory sizes < 1000 items)
+    private func levenshtein(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        let m = a.count, n = b.count
+        if m == 0 { return n }; if n == 0 { return m }
+        var prev = Array(0...n)
+        var curr = [Int](repeating: 0, count: n + 1)
+        for i in 1...m {
+            curr[0] = i
+            for j in 1...n {
+                curr[j] = a[i-1] == b[j-1] ? prev[j-1] : min(prev[j-1], prev[j], curr[j-1]) + 1
+            }
+            prev = curr
+        }
+        return prev[n]
+    }
+
+    // MARK: - PDF Import
+
+    /// Import a PDF file, render its pages as JPEG images (up to 3 pages),
+    /// and store them in selectedImages/selectedImagePreviews ready for OpenRouter.
+    private func handlePDFImport(result: Result<[URL], Error>) async {
+        do {
+            let urls = try result.get()
+            guard let url = urls.first else { return }
+
+            // Request sandbox access
+            guard url.startAccessingSecurityScopedResource() else {
+                await MainActor.run {
+                    analyzeError = "ไม่สามารถเข้าถึงไฟล์ได้ — โปรดลองเลือกใหม่"
+                }
+                return
+            }
+            defer { url.stopAccessingSecurityScopedResource() }
+
+            guard let pdf = PDFDocument(url: url) else {
+                await MainActor.run {
+                    analyzeError = "เปิดไฟล์ PDF ไม่ได้ — ตรวจสอบว่าไฟล์ไม่เสียหาย"
+                }
+                return
+            }
+
+            let pageCount = min(pdf.pageCount, 3)  // max 3 pages for a responsive upload
+            var images: [Data] = []
+            var previews: [UIImage] = []
+
+            for pageIndex in 0..<pageCount {
+                guard let page = pdf.page(at: pageIndex) else { continue }
+
+                // Render small Thai item text sharply enough for OCR.
+                let bounds = page.bounds(for: .mediaBox)
+                let scale: CGFloat = 3.0
+                let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+
+                let renderer = UIGraphicsImageRenderer(size: size)
+                let uiImage = renderer.image { ctx in
+                    UIColor.white.setFill()
+                    ctx.fill(CGRect(origin: .zero, size: size))
+                    ctx.cgContext.translateBy(x: 0, y: size.height)
+                    ctx.cgContext.scaleBy(x: scale, y: -scale)
+                    page.draw(with: .mediaBox, to: ctx.cgContext)
+                }
+
+                if let jpegData = uiImage.jpegData(compressionQuality: 0.82) {
+                    images.append(jpegData)
+                    previews.append(uiImage)
+                }
+            }
+
+            guard !images.isEmpty else {
+                await MainActor.run {
+                    analyzeError = "ไม่พบหน้าใน PDF — โปรดตรวจสอบไฟล์"
+                }
+                return
+            }
+
+            await MainActor.run {
+                selectedImages = images
+                selectedImagePreviews = previews
+                selectedPhotoItems = []     // clear photo selection
+                pdfFileName = url.lastPathComponent
+                analyzeError = nil
+            }
+        } catch {
+            await MainActor.run {
+                analyzeError = "นำเข้า PDF ไม่สำเร็จ: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    // MARK: - Processing Overlay Helpers
+
+    @ViewBuilder
+    private func processingRing(ring: Int) -> some View {
+        let opacity = 0.15 + Double(ring) * 0.12
+        let size = CGFloat(56 + ring * 24)
+        let duration = 1.0 + Double(ring) * 0.3
+        let delay = Double(ring) * 0.2
+        Circle()
+            .stroke(Color.appAccent.opacity(opacity), lineWidth: 2)
+            .frame(width: size, height: size)
+            .scaleEffect(scanIconPulse ? 1.0 : 0.85)
+            .animation(
+                .easeInOut(duration: duration)
+                    .repeatForever(autoreverses: true)
+                    .delay(delay),
+                value: scanIconPulse
+            )
+    }
+
+    @ViewBuilder
+    private func processingPill(step: (phase: Int, icon: String, label: String)) -> some View {
+        let isActive = processingPhase >= step.phase
+        let isDone = processingPhase > step.phase
+        HStack(spacing: 4) {
+            Image(systemName: isDone ? "checkmark.circle.fill" : step.icon)
+                .font(.system(size: 11))
+            Text(step.label)
+                .font(.system(size: 11, weight: .medium))
+        }
+        .foregroundColor(isActive ? .white : .white.opacity(0.35))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            Capsule().fill(isActive
+                ? Color.appAccent.opacity(0.7)
+                : Color.white.opacity(0.08))
+        )
     }
 }
 

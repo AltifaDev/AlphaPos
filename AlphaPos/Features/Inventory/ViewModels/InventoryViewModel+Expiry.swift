@@ -30,6 +30,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import Foundation
+import os
 import SwiftData
 
 extension InventoryViewModel {
@@ -58,9 +59,10 @@ extension InventoryViewModel {
         costString: String,
         notes: String,
         expiryDate: Date?,
-        lotNumber: String?
+        lotNumber: String?,
+        saveImmediately: Bool = true
     ) {
-        guard let modelContext = modelContext,
+        guard let modelContext = modelContext, let branch = item.branch,
               let amount = Double(amountString), amount > 0 else { return }
 
         let newUnitCost = Double(costString) ?? item.costPrice
@@ -85,33 +87,32 @@ extension InventoryViewModel {
             quantity: amount,
             costPrice: newUnitCost,
             notes: notes.isEmpty ? "Supplier delivery receive" : notes,
-            branch: item.branch
+            branch: branch,
+            reasonCode: "receive"
         )
         modelContext.insert(txn)
 
         // ── Lot registration (new) ─────────────────────────────────────────────
-        let lot = InventoryLot(
-            inventoryItem: item,
-            branch: item.branch,
-            lotNumber: lotNumber?.isEmpty == true ? nil : lotNumber,
-            receivedDate: Date(),
+        expiryManager.registerLot(
+            for: item,
+            quantity: amount,
+            costPrice: newUnitCost,
             expiryDate: expiryDate,
-            initialQuantity: amount,
-            remainingQuantity: amount,
-            lotCostPrice: newUnitCost,
-            sourceTransactionId: txn.id
+            lotNumber: lotNumber?.isEmpty == true ? nil : lotNumber,
+            sourceTransactionId: txn.id,
+            saveImmediately: saveImmediately
         )
-        modelContext.insert(lot)
 
         // ── Save ───────────────────────────────────────────────────────────────
-        do {
-            try modelContext.save()
-        } catch {
-            print("InventoryViewModel+Expiry: save failed — \(error.localizedDescription)")
-        }
-
-        Task {
-            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        if saveImmediately {
+            do {
+                try modelContext.save()
+                Task {
+                    await SyncEngine.shared.syncAll(modelContext: modelContext)
+                }
+            } catch {
+                AppLogger.inventory.error("InventoryViewModel+Expiry: processReceiveWithExpiry save failed — \(error.localizedDescription)")
+            }
         }
     }
 
@@ -126,7 +127,7 @@ extension InventoryViewModel {
         quantity: Double,
         orderId: UUID? = nil
     ) -> FEFOConsumptionResult {
-        guard let modelContext = modelContext else {
+        guard let modelContext = modelContext, let branch = item.branch else {
             return FEFOConsumptionResult(consumed: [], unfulfilled: quantity)
         }
 
@@ -140,15 +141,18 @@ extension InventoryViewModel {
 
         // Write one consolidated "sell" transaction
         if consumed > 0 {
+            // Outbound movement: quantity is stored negative (enforced centrally
+            // in InventoryTransaction.init, passed negative here for clarity).
             let txn = InventoryTransaction(
                 item: item,
                 transactionType: InventoryMovementType.sell.rawValue,
-                quantity: consumed,
+                quantity: -consumed,
                 costPrice: result.consumed.isEmpty ? item.costPrice
                     : result.totalCOGS / consumed,
                 referenceId: orderId,
                 notes: result.includedExpiredStock ? "⚠️ Consumed expired stock" : nil,
-                branch: item.branch
+                branch: branch,
+                reasonCode: "sale"
             )
             modelContext.insert(txn)
         }
@@ -156,7 +160,7 @@ extension InventoryViewModel {
         do {
             try modelContext.save()
         } catch {
-            print("InventoryViewModel+Expiry: consumeStockFEFO save failed — \(error.localizedDescription)")
+            AppLogger.inventory.error("InventoryViewModel+Expiry: consumeStockFEFO save failed — \(error.localizedDescription)")
         }
 
         return result

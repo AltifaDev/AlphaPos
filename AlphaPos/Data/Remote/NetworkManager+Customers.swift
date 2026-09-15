@@ -5,7 +5,7 @@ import SwiftData
 extension NetworkManager {
     // MARK: - Customers Sync
     func fetchCustomersFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "customers",
@@ -22,7 +22,7 @@ extension NetworkManager {
     }
 
     func uploadCustomer(customer: RemoteCustomerUploadable) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
 
         var payload: [String: Any] = [
             "id": customer.id.uuidString.lowercased(),
@@ -86,13 +86,15 @@ extension NetworkManager {
 
     // MARK: - Refund Transactions Sync
     func fetchRefundTransactionsFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "refund_transactions",
             queryItems: [
                 URLQueryItem(name: "select", value: "*"),
                 URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
                 URLQueryItem(name: "is_deleted", value: "eq.false")
             ]
         )
@@ -103,7 +105,8 @@ extension NetworkManager {
     }
 
     func uploadRefundTransaction(refund: RemoteRefundTransactionUploadable) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
 
         let orderId = refund.order?.id.uuidString.lowercased() ?? ""
         let originalPaymentId = refund.originalPayment?.id.uuidString.lowercased() ?? ""
@@ -111,11 +114,15 @@ extension NetworkManager {
         var payload: [String: Any] = [
             "id": refund.id.uuidString.lowercased(),
             "merchant_id": merchantId,
+            "branch_id": branchId,
             "order_id": orderId,
             "refund_amount": refund.refundAmount,
             "refund_method": refund.refundMethod,
             "reason_code": refund.reasonCode,
             "status": refund.status,
+            "created_at": NetworkManager.iso8601.string(from: refund.financialEventAt),
+            "business_date": refund.businessDateKey,
+            "register_session_id": refund.registerSessionId?.uuidString.lowercased() ?? NSNull(),
             "is_deleted": refund.isDeleted,
             "updated_at": NetworkManager.iso8601.string(from: refund.updatedAt)
         ]

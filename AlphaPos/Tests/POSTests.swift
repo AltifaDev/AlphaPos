@@ -50,6 +50,19 @@ private enum POSCalculator {
         min(fixed, subtotal)
     }
 
+    static func bundleDiscount(unitPrice: Double, quantity: Int, required: Int, bundlePrice: Double) -> Double {
+        let groups = quantity / required
+        return max(0, unitPrice * Double(required * groups) - bundlePrice * Double(groups))
+    }
+
+    static func buyXGetYDiscount(unitPrice: Double, quantity: Int, buy: Int, free: Int) -> Double {
+        unitPrice * Double((quantity / (buy + free)) * free)
+    }
+
+    static func buyXPayYDiscount(unitPrice: Double, quantity: Int, buy: Int, pay: Int) -> Double {
+        unitPrice * Double((quantity / buy) * (buy - pay))
+    }
+
     /// Final order total.
     static func orderTotal(
         subtotal: Double,
@@ -58,6 +71,25 @@ private enum POSCalculator {
         discount: Double
     ) -> Double {
         subtotal + tax + serviceCharge - discount
+    }
+
+    static func deliveryFinancials(
+        total: Double, refunded: Double, gp: Double,
+        adFee: Double, adFeeIsPct: Bool, otherFee: Double
+    ) -> (cost: Double, net: Double) {
+        let revenue = max(0, total - refunded)
+        let gpCost = revenue * min(max(gp, 0), 100) / 100
+        let adCost = adFeeIsPct ? revenue * min(max(adFee, 0), 100) / 100 : max(adFee, 0)
+        let cost = gpCost + adCost + max(otherFee, 0)
+        return (cost, revenue - cost)
+    }
+
+    static func resolvePostDeliveryOrderType(configured: String?, enableTableSystem: Bool) -> String {
+        let preferred = configured ?? "take_out"
+        if preferred == "dine_in" {
+            return enableTableSystem ? "dine_in" : "walk_in"
+        }
+        return "take_out"
     }
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -85,12 +117,56 @@ enum POSTests {
             test_percentageDiscount(),
             test_fixedDiscount_belowSubtotal(),
             test_fixedDiscount_cappedAtSubtotal(),
+            test_bundleDiscount(),
+            test_buyXGetYDiscount(),
+            test_buyXPayYDiscount(),
             test_orderTotal_fullCombo(),
             test_orderTotal_noDiscountNoExtras(),
             test_orderTotal_neverNegative(),
+            test_deliveryFees_standardOrder(),
+            test_deliveryFees_percentageFeesFollowRefund(),
+            test_deliveryFees_clampInvalidPercentages(),
+            test_governmentSupport_splitAndRounding(),
             test_split_payment_allocation(),
-            test_void_item_inventory_reversal()
+            test_void_item_inventory_reversal(),
+            test_postDeliveryOrderType_defaultsToTakeaway(),
+            test_postDeliveryOrderType_configuredTakeaway(),
+            test_postDeliveryOrderType_configuredDineInWithTableSystem(),
+            test_postDeliveryOrderType_configuredDineInWithoutTableSystem()
         ]
+    }
+
+    private static func test_deliveryFees_standardOrder() -> TestResult {
+        let name = #function
+        let result = POSCalculator.deliveryFinancials(total: 1_000, refunded: 0, gp: 30, adFee: 5, adFeeIsPct: true, otherFee: 20)
+        return approxEqual(result.cost, 370) && approxEqual(result.net, 630)
+            ? .success(name)
+            : .failure(name, "Expected cost 370/net 630, got \(result)")
+    }
+
+    private static func test_deliveryFees_percentageFeesFollowRefund() -> TestResult {
+        let name = #function
+        let result = POSCalculator.deliveryFinancials(total: 1_000, refunded: 500, gp: 30, adFee: 5, adFeeIsPct: true, otherFee: 20)
+        return approxEqual(result.cost, 195) && approxEqual(result.net, 305)
+            ? .success(name)
+            : .failure(name, "Expected refund-adjusted cost 195/net 305, got \(result)")
+    }
+
+    private static func test_deliveryFees_clampInvalidPercentages() -> TestResult {
+        let name = #function
+        let result = POSCalculator.deliveryFinancials(total: 100, refunded: 0, gp: 120, adFee: -5, adFeeIsPct: true, otherFee: -10)
+        return approxEqual(result.cost, 100) && approxEqual(result.net, 0)
+            ? .success(name)
+            : .failure(name, "Invalid percentages must be safely bounded, got \(result)")
+    }
+
+    private static func test_governmentSupport_splitAndRounding() -> TestResult {
+        let split = GovernmentSupportProgram.split(total: 89)
+        let exactTotal = abs((split.citizen + split.government) - 89) < 0.001
+        let correctShares = abs(split.citizen - 35.60) < 0.001 && abs(split.government - 53.40) < 0.001
+        return exactTotal && correctShares
+            ? .success(#function)
+            : .failure(#function, "Expected citizen 35.60 + government 53.40 = 89.00")
     }
 
     // MARK: - Line-item subtotal
@@ -201,6 +277,24 @@ enum POSTests {
             : .failure(name, "Fixed discount must be capped at subtotal (200.0), got \(actual)")
     }
 
+    private static func test_bundleDiscount() -> TestResult {
+        let name = #function
+        let actual = POSCalculator.bundleDiscount(unitPrice: 120, quantity: 6, required: 3, bundlePrice: 299)
+        return approxEqual(actual, 122) ? .success(name) : .failure(name, "Expected 122, got \(actual)")
+    }
+
+    private static func test_buyXGetYDiscount() -> TestResult {
+        let name = #function
+        let actual = POSCalculator.buyXGetYDiscount(unitPrice: 100, quantity: 4, buy: 1, free: 1)
+        return approxEqual(actual, 200) ? .success(name) : .failure(name, "Expected 200, got \(actual)")
+    }
+
+    private static func test_buyXPayYDiscount() -> TestResult {
+        let name = #function
+        let actual = POSCalculator.buyXPayYDiscount(unitPrice: 90, quantity: 6, buy: 3, pay: 2)
+        return approxEqual(actual, 180) ? .success(name) : .failure(name, "Expected 180, got \(actual)")
+    }
+
     // MARK: - Order total
 
     private static func test_orderTotal_fullCombo() -> TestResult {
@@ -293,5 +387,37 @@ enum POSTests {
             return .failure(name, "Void reversal failed to restore stock levels mathematically")
         }
         return .success(name)
+    }
+
+    private static func test_postDeliveryOrderType_defaultsToTakeaway() -> TestResult {
+        let name = #function
+        let resolved = POSCalculator.resolvePostDeliveryOrderType(configured: nil, enableTableSystem: true)
+        return resolved == "take_out"
+            ? .success(name)
+            : .failure(name, "Expected take_out by default, got \(resolved)")
+    }
+
+    private static func test_postDeliveryOrderType_configuredTakeaway() -> TestResult {
+        let name = #function
+        let resolved = POSCalculator.resolvePostDeliveryOrderType(configured: "take_out", enableTableSystem: true)
+        return resolved == "take_out"
+            ? .success(name)
+            : .failure(name, "Expected take_out, got \(resolved)")
+    }
+
+    private static func test_postDeliveryOrderType_configuredDineInWithTableSystem() -> TestResult {
+        let name = #function
+        let resolved = POSCalculator.resolvePostDeliveryOrderType(configured: "dine_in", enableTableSystem: true)
+        return resolved == "dine_in"
+            ? .success(name)
+            : .failure(name, "Expected dine_in when table system enabled, got \(resolved)")
+    }
+
+    private static func test_postDeliveryOrderType_configuredDineInWithoutTableSystem() -> TestResult {
+        let name = #function
+        let resolved = POSCalculator.resolvePostDeliveryOrderType(configured: "dine_in", enableTableSystem: false)
+        return resolved == "walk_in"
+            ? .success(name)
+            : .failure(name, "Expected walk_in when table system disabled, got \(resolved)")
     }
 }

@@ -9,7 +9,33 @@
 
 import Foundation
 
+#if TEST_RUNNER
+enum InventoryTransactionIdentityPolicy {
+    static func canMatchByReference(
+        remoteReferenceId: UUID?,
+        localReferenceId: UUID?,
+        remoteItemId: UUID?,
+        localItemId: UUID?,
+        remoteType: String,
+        localType: String
+    ) -> Bool {
+        guard let remoteReferenceId else { return false }
+        return localReferenceId == remoteReferenceId
+            && localItemId == remoteItemId
+            && localType == remoteType
+    }
+}
+
+enum InventorySyncScope {
+    static func includes(activeBranchId: UUID?, entityBranchId: UUID?) -> Bool {
+        guard let activeBranchId else { return false }
+        return entityBranchId == activeBranchId
+    }
+}
+#endif
+
 // ─── Pure functions to simulate Enterprise Business Logic ────────────────────
+
 private enum EnterpriseCalculator {
     
     /// Calculate the Weighted Average Cost (WAC)
@@ -81,7 +107,12 @@ enum InventoryEnterpriseTests {
             test_PO_partialReceiveAndCancel(),
             test_PO_WACIncrementalCalculations(),
             test_rawMaterialCreationPropagation(),
-            test_supplierReturnStockDeduction()
+            test_supplierReturnStockDeduction(),
+            test_PO_overReceiptIsClamped(),
+            test_PO_invalidReceiptIsRejected(),
+            test_manualMovementsWithoutReferenceRemainDistinct(),
+            test_transactionReferenceFallbackRequiresStableReference(),
+            test_pendingSyncIsScopedToActiveBranch()
         ]
     }
     
@@ -223,5 +254,79 @@ enum InventoryEnterpriseTests {
         return approxEqual(qty, 7.0)
             ? .success(name)
             : .failure(name, "Expected stock qty after return to be 7.0, got \(qty)")
+    }
+
+    private static func test_PO_overReceiptIsClamped() -> TestResult {
+        let name = #function
+        let accepted = InventoryReceivingPolicy.acceptedQuantity(
+            requested: 10, ordered: 12, alreadyReceived: 7
+        )
+        return approxEqual(accepted, 5)
+            ? .success(name)
+            : .failure(name, "Expected remaining quantity 5, got \(accepted)")
+    }
+
+    private static func test_PO_invalidReceiptIsRejected() -> TestResult {
+        let name = #function
+        let negative = InventoryReceivingPolicy.acceptedQuantity(
+            requested: -1, ordered: 12, alreadyReceived: 0
+        )
+        let nonFinite = InventoryReceivingPolicy.acceptedQuantity(
+            requested: .infinity, ordered: 12, alreadyReceived: 0
+        )
+        return negative == 0 && nonFinite == 0
+            ? .success(name)
+            : .failure(name, "Invalid receipt quantities must be rejected")
+    }
+
+    private static func test_manualMovementsWithoutReferenceRemainDistinct() -> TestResult {
+        let name = #function
+        struct Movement { let id: UUID; let referenceId: UUID?; let type: String }
+        let rows = [
+            Movement(id: UUID(), referenceId: nil, type: "receive"),
+            Movement(id: UUID(), referenceId: nil, type: "receive")
+        ]
+        let distinct = Set(rows.map(\.id)).count == 2
+        let cannotFallback = !InventoryTransactionIdentityPolicy.canMatchByReference(
+            remoteReferenceId: rows[1].referenceId,
+            localReferenceId: rows[0].referenceId,
+            remoteItemId: UUID(), localItemId: UUID(),
+            remoteType: rows[1].type, localType: rows[0].type
+        )
+        return distinct && cannotFallback
+            ? .success(name)
+            : .failure(name, "Manual movements with nil references must remain separate ledger rows")
+    }
+
+    private static func test_transactionReferenceFallbackRequiresStableReference() -> TestResult {
+        let name = #function
+        let reference = UUID()
+        let item = UUID()
+        let matches = InventoryTransactionIdentityPolicy.canMatchByReference(
+            remoteReferenceId: reference, localReferenceId: reference,
+            remoteItemId: item, localItemId: item,
+            remoteType: "sell", localType: "sell"
+        )
+        let rejectsNil = !InventoryTransactionIdentityPolicy.canMatchByReference(
+            remoteReferenceId: nil, localReferenceId: nil,
+            remoteItemId: item, localItemId: item,
+            remoteType: "receive", localType: "receive"
+        )
+        return matches && rejectsNil
+            ? .success(name)
+            : .failure(name, "Reference fallback accepted an unstable or rejected a stable identity")
+    }
+
+    private static func test_pendingSyncIsScopedToActiveBranch() -> TestResult {
+        let name = #function
+        let active = UUID()
+        let other = UUID()
+        let scoped: [UUID?] = [active, active, other, nil]
+        let filtered = scoped.filter {
+            InventorySyncScope.includes(activeBranchId: active, entityBranchId: $0)
+        }
+        return filtered.count == 2
+            ? .success(name)
+            : .failure(name, "Expected 2 pending entities in the active branch, got \(scoped.count)")
     }
 }

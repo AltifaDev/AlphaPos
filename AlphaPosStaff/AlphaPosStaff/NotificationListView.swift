@@ -64,6 +64,7 @@ struct NotificationListView: View {
         
         // Map service requests
         for req in networkService.serviceRequests {
+            guard StaffNotificationPolicy.isCurrentBusinessDay(timestamp: req.createdAt) else { continue }
             let isActive = req.status == "pending"
             
             let table = networkService.tables.first(where: { $0.tableNumber == req.tableNumber })
@@ -71,8 +72,8 @@ struct NotificationListView: View {
             
             let belongsToSession: Bool
             if isTableOccupied, let sessionStartedAtStr = table?.sessionStartedAt,
-               let sessionDate = isoStringToDate(sessionStartedAtStr),
-               let reqDate = isoStringToDate(req.createdAt) {
+               let sessionDate = ISO8601DateParser.date(from: sessionStartedAtStr),
+               let reqDate = ISO8601DateParser.date(from: req.createdAt) {
                 belongsToSession = reqDate >= sessionDate
             } else {
                 belongsToSession = false
@@ -82,7 +83,7 @@ struct NotificationListView: View {
             
             let isBill = req.requestType.lowercased().contains("bill") || req.requestType.lowercased().contains("check")
             let priority: AlertPriority = isBill ? .high : .medium
-            let date = isoStringToDate(req.createdAt) ?? Date()
+            let date = ISO8601DateParser.date(from: req.createdAt) ?? .distantPast
             
             list.append(StaffAlert(
                 type: .serviceRequest(req),
@@ -100,8 +101,9 @@ struct NotificationListView: View {
             // 1. Filter out empty orders
             guard !order.items.isEmpty else { continue }
             
-            // 2. Filter out orders older than 24 hours unless they belong to an active session
-            let date = isoStringToDate(order.createdAt) ?? Date()
+            // 2. Operational work never crosses the local end-of-day boundary.
+            let date = ISO8601DateParser.date(from: order.createdAt)
+            guard StaffNotificationPolicy.isCurrentBusinessDay(date) else { continue }
             let activeSessionTokens = Set(networkService.tables.compactMap { $0.sessionToken })
             let isSessionActive = order.sessionToken.map { activeSessionTokens.contains($0) } ?? false
             
@@ -110,24 +112,42 @@ struct NotificationListView: View {
             // Only cancelled orders are filtered out.
             guard statusLower != "cancelled" else { continue }
             
-            let isActive = statusLower == "ready" || statusLower == "preparing" || statusLower == "cooking"
+            let isActive = order.isAwaitingStaffApproval || statusLower == "ready" || statusLower == "preparing" || statusLower == "cooking"
             
             guard isActive || isSessionActive else { continue }
             
-            let priority: AlertPriority = statusLower == "ready" ? .high : .medium
-            
+            // Prefer real order-received time; never invent "now" when parse fails.
+            let eventTime = date ?? .distantPast
             let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
-            let statusLabel = statusLower == "ready" ? "order_ready".localized(for: appLanguage) :
-                              (statusLower == "preparing" || statusLower == "cooking") ? "order_preparing".localized(for: appLanguage) :
-                              statusLower == "served" ? "order_served".localized(for: appLanguage) :
-                              "order_completed".localized(for: appLanguage)
+            let minutesWaiting = date.map { Int(Date().timeIntervalSince($0) / 60) } ?? 0
+            let statusLabel: String
+            let priority: AlertPriority
+            if order.isAwaitingStaffApproval {
+                statusLabel = "status_pending".localized(for: appLanguage)
+                priority = .high
+            } else if statusLower == "ready" {
+                statusLabel = "order_ready".localized(for: appLanguage)
+                priority = .high
+            } else if (statusLower == "preparing" || statusLower == "cooking") && minutesWaiting >= 10 {
+                statusLabel = String(format: "kitchen_delay_minutes".localized(for: appLanguage), minutesWaiting)
+                priority = .high
+            } else if statusLower == "preparing" || statusLower == "cooking" {
+                statusLabel = "order_preparing".localized(for: appLanguage)
+                priority = .medium
+            } else if statusLower == "served" {
+                statusLabel = "order_served".localized(for: appLanguage)
+                priority = .low
+            } else {
+                statusLabel = "order_completed".localized(for: appLanguage)
+                priority = .low
+            }
             
             list.append(StaffAlert(
                 type: .order(order),
                 tableNumber: order.tableNumber,
                 title: "\(statusLabel) — \(order.orderNumber)",
                 subtitle: itemsSummary,
-                timestamp: date,
+                timestamp: eventTime,
                 priority: priority,
                 isActive: isActive
             ))
@@ -444,38 +464,48 @@ struct NotificationListView: View {
         }
         
         return HStack(spacing: APSpacing.sm) {
-            ZStack {
-                Circle()
-                    .fill(iconBgColor)
-                    .frame(width: 32, height: 32)
-                
-                Image(systemName: iconName)
-                    .font(.system(size: 13))
-                    .foregroundColor(iconColor)
-            }
-            
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text(alert.title)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.textPrimary)
-                    
-                    if alert.isActive {
-                        APBadge(text: alert.priority.labelKey.localized(for: appLanguage), color: alert.priority.color)
+            Button {
+                openAlert(alert)
+            } label: {
+                HStack(spacing: APSpacing.sm) {
+                    ZStack {
+                        Circle()
+                            .fill(iconBgColor)
+                            .frame(width: 32, height: 32)
+                        
+                        Image(systemName: iconName)
+                            .font(.system(size: 13))
+                            .foregroundColor(iconColor)
                     }
+                    
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 6) {
+                            Text(alert.title)
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.textPrimary)
+                            
+                            if alert.isActive {
+                                APBadge(text: alert.priority.labelKey.localized(for: appLanguage), color: alert.priority.color)
+                            }
+                        }
+                        
+                        Text(alert.subtitle)
+                            .font(.system(size: 11))
+                            .foregroundColor(.textSecondary)
+                            .lineLimit(2)
+                        
+                        Text(alert.timestamp == .distantPast
+                             ? "—"
+                             : ISO8601DateParser.notificationTimestampLabel(alert.timestamp, language: appLanguage))
+                            .font(.system(size: 9))
+                            .foregroundColor(.textTertiary)
+                    }
+                    
+                    Spacer(minLength: 0)
                 }
-                
-                Text(alert.subtitle)
-                    .font(.system(size: 11))
-                    .foregroundColor(.textSecondary)
-                    .lineLimit(2)
-                
-                Text(alert.timestamp, style: .time)
-                    .font(.system(size: 9))
-                    .foregroundColor(.textTertiary)
+                .contentShape(Rectangle())
             }
-            
-            Spacer()
+            .buttonStyle(.plain)
             
             if alert.isActive {
                 let alertId = alert.id
@@ -554,6 +584,11 @@ struct NotificationListView: View {
         .padding(.vertical, 4)
         .padding(.horizontal, APSpacing.md)
     }
+
+    private func openAlert(_ alert: StaffAlert) {
+        APHaptic.trigger()
+        deepLinkRouter.navigate(to: .table(tableNumber: alert.tableNumber))
+    }
     
     private func resolvedLabel(for alert: StaffAlert) -> String {
         switch alert.type {
@@ -623,10 +658,5 @@ struct NotificationListView: View {
                 processingAlertIds.remove(alert.id)
             }
         }
-    }
-    
-    private func isoStringToDate(_ str: String) -> Date? {
-        let df = ISO8601DateFormatter()
-        return df.date(from: str)
     }
 }

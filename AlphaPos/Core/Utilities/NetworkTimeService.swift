@@ -24,7 +24,7 @@ public final class NetworkTimeService: ObservableObject {
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
 
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await AppNetworkTransport.data(for: request, purpose: .networkTime)
             if let httpResponse = response as? HTTPURLResponse,
                let dateString = httpResponse.value(forHTTPHeaderField: "Date") {
 

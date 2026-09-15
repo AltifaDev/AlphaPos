@@ -7,13 +7,14 @@ final class AlphaPosStaffAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        application.registerForRemoteNotifications()
+        // APNs registration starts only after pairing and explicit permission.
         return true
     }
 
+    // ── APNs token received ────────────────────────────────────────────────────
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
-        Task { try? await NetworkService.shared.registerPushDevice(token: token) }
+        // Use the enhanced registrar that also stores employee_id
+        NetworkService.shared.registerPushToken(deviceToken)
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
@@ -21,16 +22,67 @@ final class AlphaPosStaffAppDelegate: NSObject, UIApplicationDelegate {
         print("APNs registration failed: \(error.localizedDescription)")
         #endif
     }
+
+    // ── Remote notification received in background/foreground ─────────────────
+    // This fires when a push arrives while the app is in the foreground OR
+    // when the app is woken in the background with content-available: 1.
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        handleIncomingPush(userInfo: userInfo)
+        completionHandler(.newData)
+    }
+
+    // ── Shared push handler ───────────────────────────────────────────────────
+    private func handleIncomingPush(userInfo: [AnyHashable: Any]) {
+        let pushType = userInfo["type"] as? String ?? ""
+        let prefs = NetworkService.PushNotificationPreferences.current
+
+        // Respect per-category user preference
+        guard prefs.shouldShow(for: pushType) else {
+            #if DEBUG
+            print("AppDelegate: Push suppressed by user preference: \(pushType)")
+            #endif
+            return
+        }
+
+        // When app is active → in-app banner (handled by NotificationManager via UNDelegate)
+        // When app is background → system banner (already shown by iOS)
+        // Here we only need to trigger a data refresh
+        Task {
+            await NetworkService.shared.refreshAll()
+        }
+    }
 }
 
 @main
 struct AlphaPosStaffApp: App {
     @UIApplicationDelegateAdaptor(AlphaPosStaffAppDelegate.self) private var appDelegate
     @State private var loggedInEmployee: Employee? = nil
+    @State private var isShowingSplash = true
+
+    private static func migrateRetiredSupabaseURLIfNeeded() {
+        let key = "dynamic_supabase_url"
+        guard let stored = UserDefaults.standard.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !stored.isEmpty,
+              AppConfig.isInvalidSupabaseURL(stored) else {
+            return
+        }
+        if let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
+           let dict = NSDictionary(contentsOfFile: path) as? [String: Any],
+           let plistURL = (dict["SUPABASE_URL"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !plistURL.isEmpty {
+            UserDefaults.standard.set(plistURL, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
     
     init() {
+        Self.migrateRetiredSupabaseURLIfNeeded()
         UNUserNotificationCenter.current().delegate = NotificationManager.shared
-        NotificationManager.shared.requestAuthorization()
         
         // Native URLCache setup for image caching (RAM 50MB, Disk 200MB)
         let imageCache = URLCache(
@@ -51,27 +103,21 @@ struct AlphaPosStaffApp: App {
                     LoginView(loggedInEmployee: $loggedInEmployee)
                         .transition(.opacity)
                 }
+
+                if isShowingSplash {
+                    StaffSplashScreenView()
+                        .transition(.opacity)
+                        .zIndex(10_000)
+                }
             }
             .onAppear {
-                #if DEBUG
-                if loggedInEmployee == nil {
-                    let somchai = Employee(
-                        id: "11111111-1111-1111-1111-111111111111",
-                        firstName: "Somchai",
-                        lastName: "Suksabai",
-                        phone: "081-234-5678",
-                        nationalId: "1234567890123",
-                        employmentType: "monthly",
-                        payRate: 25000.0,
-                        username: "somchai",
-                        role: "Manager",
-                        faceRegisteredAt: nil
-                    )
-                    loggedInEmployee = somchai
-                    UserDefaults.standard.set(somchai.id, forKey: "logged_in_employee_id")
-                }
-                #endif
-                
+                // NOTE: DEBUG auto-login was removed. It created a fake Employee with a
+                // random UUID that did not exist in Supabase, so server-side PIN
+                // verification (verifyPin) in TimecardView always failed with
+                // "PIN incorrect" even though the login screen was bypassed.
+                // The app now always shows the real LoginView, so the logged-in
+                // employee carries a real DB id and PIN verification works.
+
                 if let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
                     let testURL = docsURL.appendingPathComponent("app_onappear.log")
                     let text = "App onAppear: loggedInEmployee = \(String(describing: loggedInEmployee))\n"
@@ -80,16 +126,23 @@ struct AlphaPosStaffApp: App {
             }
             .onChange(of: loggedInEmployee) { newEmp in
                 if let emp = newEmp {
-                    UserDefaults.standard.set(emp.id, forKey: "logged_in_employee_id")
+                    StaffSessionContext.setEmployee(id: emp.id, name: "\(emp.firstName) \(emp.lastName)")
                 } else {
-                    UserDefaults.standard.set("", forKey: "logged_in_employee_id")
+                    StaffSessionContext.clearEmployee()
                 }
             }
             .overlay(alignment: .top) {
                 EnhancedNotificationContainer()
             }
             .animation(.easeInOut(duration: 0.35), value: loggedInEmployee != nil)
+            .animation(.easeOut(duration: 0.35), value: isShowingSplash)
             .apColorScheme()
+            .task {
+                guard isShowingSplash else { return }
+                try? await Task.sleep(nanoseconds: 1_650_000_000)
+                guard !Task.isCancelled else { return }
+                isShowingSplash = false
+            }
         }
     }
 }

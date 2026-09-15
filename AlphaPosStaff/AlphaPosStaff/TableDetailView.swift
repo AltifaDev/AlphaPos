@@ -35,11 +35,12 @@ struct TableDetailView: View {
     @State private var orders: [Order] = []
     @State private var isLoading = false
     @State private var showingAddItemsSheet = false
+    @State private var showingBilling = false
     @State private var emptyItemsPolling = false   // true while periodic refresh is running
-    @State private var selectedCategory = "all"
     @State private var cartItems: [MenuItem: Int] = [:]
     @State private var showShiftGuard = false
     @State private var servingItemIds = Set<String>()
+    @State private var showGuestBillPreview = false
 
     // ── Item action states ────────────────────────────────────────────────────
     @State private var editTarget:   EditTarget? = nil
@@ -49,17 +50,28 @@ struct TableDetailView: View {
     @State private var postPaymentStatus: PostPaymentDiningStatus? = nil
     @State private var showStillDiningConfirm = false
     @State private var showClearTableConfirm  = false
+    @State private var isClearingTable = false
+    @State private var clearTableError: String? = nil
     @State private var stillDiningTimer: Timer? = nil
     @State private var stillDiningReminderCount = 0
     @State private var lastDiningCheckAt: Date? = nil
 
     // ── "Serve all" progress ──────────────────────────────────────────────────
     @State private var isServingAll = false
-    // H-4: Track partial serve failures
+    // Drives the "paper-plane sends the order away" animation on the serve-all
+    // button: it slides right + fades, then resets once serving completes.
+    @State private var serveAllLaunched = false
+    @State private var didAppearAnimate = false
+
     @State private var serveFailedCount: Int = 0
     @State private var showServePartialFailAlert = false
 
-    // ── Order Timeline ────────────────────────────────────────────────────────
+    // ── Approve web order state ─────────────────────────────────────────────
+    @State private var approvingOrderIds = Set<String>()   // loading per-order
+    @State private var showApproveErrorAlert = false
+    @State private var approveErrorMessage = ""
+
+    // ── Order Timeline ──────────────────────────────────────────────────────
     @State private var selectedOrderForTimeline: Order? = nil
 
     // ── Split Bill ────────────────────────────────────────────────────────────
@@ -70,9 +82,12 @@ struct TableDetailView: View {
 
     // Design tokens
     private let royalBlue = Color.appAccent
-    private let elfGreen  = Color.appTeal
+    // Liquid-Glass blue theme (iOS 26): serve / positive actions now use blue
+    // instead of the legacy green so the whole screen shares one accent family.
+    private let elfGreen  = Color.appAccent
     private let coralRed  = Color.appRose
     private let amber     = Color.appAmber
+    private let serveBlue = Color.appAccent
 
     // MARK: - Computed
 
@@ -80,24 +95,49 @@ struct TableDetailView: View {
         networkService.tables.first(where: { $0.tableNumber == table.tableNumber }) ?? table
     }
 
+    private func belongsToCurrentSession(_ order: Order) -> Bool {
+        if let sessionId = currentTable.activeSessionId, !sessionId.isEmpty,
+           let orderSessionId = order.tableSessionId, !orderSessionId.isEmpty {
+            return orderSessionId == sessionId
+        }
+        if let token = currentTable.sessionToken, !token.isEmpty,
+           let orderToken = order.sessionToken, !orderToken.isEmpty {
+            return orderToken == token
+        }
+        guard let startedAt = currentTable.sessionStartedAt,
+              let sessionDate = ElapsedTimeBadge.parseDate(startedAt),
+              let orderDate = ElapsedTimeBadge.parseDate(order.createdAt) else { return false }
+        return orderDate >= sessionDate
+    }
+
     /// Orders that are still active (not completed / not cancelled)
     private var activeOrders: [Order] {
-        orders.filter { $0.status != "completed" && $0.status != "cancelled" }
+        orders.filter { !$0.isPaid && $0.status != "cancelled" }
+    }
+
+    private var paidOrders: [Order] {
+        orders.filter { $0.isPaid }
     }
 
     /// Orders from the web ordering channel
     private var webOrders: [Order] {
-        activeOrders.filter { $0.sessionToken != nil }
+        activeOrders.filter { $0.orderSource == "web" }
             .sorted { $0.createdAt < $1.createdAt }
     }
 
-    /// Orders from staff (no sessionToken or created by staff)
+    /// Orders created by the POS or staff app.
     private var staffOrders: [Order] {
-        activeOrders.filter { $0.sessionToken == nil }
+        activeOrders.filter { $0.orderSource != "web" }
             .sorted { $0.createdAt < $1.createdAt }
     }
 
     private var hasAnyActiveOrders: Bool { !activeOrders.isEmpty }
+
+    private var hasPaidOrders: Bool { !paidOrders.isEmpty }
+
+    private var isPaidAwaitingClear: Bool {
+        hasPaidOrders && !hasAnyActiveOrders && postPaymentStatus != .left
+    }
 
     private var shouldShowEmptyState: Bool {
         !hasAnyActiveOrders && postPaymentStatus == nil
@@ -126,6 +166,7 @@ struct TableDetailView: View {
         // Cross-check with live NetworkService orders for this table
         let liveOrders = networkService.orders.filter {
             $0.tableNumber == table.tableNumber &&
+            belongsToCurrentSession($0) &&
             $0.status != "completed" &&
             $0.status != "cancelled"
         }
@@ -140,19 +181,30 @@ struct TableDetailView: View {
 
     /// True when there are unserved items
     private var pendingServeCount: Int {
-        activeOrders.flatMap { $0.items }
+        activeOrders.filter { !$0.isAwaitingStaffApproval }.flatMap { $0.items }
             .filter { $0.status != "served" && $0.status != "cancelled" }
             .count
+    }
+
+    private var lastVisibleItemId: String? {
+        (staffOrders.last ?? webOrders.last)?.items.last?.id
     }
 
     private var isPaidButDining: Bool {
         postPaymentStatus == .stillDining
     }
 
+    /// True while any customer order awaits explicit staff approval.
+    private var hasPendingWebItems: Bool {
+        webOrders.contains { $0.isAwaitingStaffApproval }
+    }
+
     /// Stable key array สำหรับ track item-level changes ใน onChange
     /// แยกออกจาก inline expression เพื่อหลีกเลี่ยง compiler type-check timeout
     private var tableOrderItemKeys: [String] {
-        let tableOrders = networkService.orders.filter { $0.tableNumber == table.tableNumber }
+        let tableOrders = networkService.orders.filter {
+            $0.tableNumber == table.tableNumber && belongsToCurrentSession($0)
+        }
         return tableOrders.flatMap { $0.items }.map { $0.id + $0.status }
     }
 
@@ -214,6 +266,12 @@ struct TableDetailView: View {
                     postPaymentBanner(status)
                 }
 
+                // ── Approval banner for pending web orders ──────────────────
+                if hasPendingWebItems {
+                    approvalBanner
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
                 if isLoading {
                     ProgressView().tint(royalBlue).frame(maxHeight: .infinity)
                 } else if shouldShowEmptyState {
@@ -227,6 +285,9 @@ struct TableDetailView: View {
         }
         .navigationTitle("table_details".localized(for: appLanguage))
         .navigationBarTitleDisplayMode(.inline)
+        .fullScreenCover(isPresented: $showingBilling) {
+            BillingView(table: currentTable, orders: activeOrders)
+        }
         // ── Sheets & dialogs ─────────────────────────────────────────────────
         .sheet(item: $editTarget) { target in
             EditOrderItemSheet(
@@ -256,9 +317,13 @@ struct TableDetailView: View {
                 SplitBillView(
                     orderId: firstOrder.id,
                     orderItems: activeOrders.flatMap { $0.items },
-                    totalAmount: activeOrders.reduce(0) { $0 + $1.total }
+                    totalAmount: activeOrders.reduce(0) { $0 + $1.total },
+                    tableNumber: table.tableNumber
                 )
             }
+        }
+        .sheet(isPresented: $showGuestBillPreview) {
+            GuestBillPreviewSheet(table: currentTable, orders: activeOrders)
         }
         .fullScreenCover(isPresented: $showShiftGuard) {
             ShiftGuardOverlay()
@@ -288,15 +353,21 @@ struct TableDetailView: View {
             Text("เฉพาะผู้จัดการหรือเจ้าของร้านเท่านั้นที่มีสิทธิ์เคลียร์โต๊ะและเซสชันการกิน")
         }
         // ── Clear table confirm ───────────────────────────────────────────────
-        .confirmationDialog("เคลียร์โต๊ะ \(currentTable.tableNumber)?",
-                            isPresented: $showClearTableConfirm,
-                            titleVisibility: .visible) {
+        .alert("เคลียร์โต๊ะ \(currentTable.tableNumber)?", isPresented: $showClearTableConfirm) {
+            Button("ยกเลิก", role: .cancel) {}
             Button("ยืนยันเคลียร์โต๊ะ", role: .destructive) {
                 clearTableAfterDining()
             }
-            Button("ยกเลิก", role: .cancel) {}
         } message: {
             Text("โต๊ะจะถูก reset เป็น Vacant และ session จะถูกปิด")
+        }
+        .alert("เคลียร์โต๊ะไม่สำเร็จ", isPresented: Binding(
+            get: { clearTableError != nil },
+            set: { if !$0 { clearTableError = nil } }
+        )) {
+            Button("ตกลง", role: .cancel) {}
+        } message: {
+            Text(clearTableError ?? "")
         }
         // H-4: Partial serve failure alert
         .alert("เสิร์ฟไม่ครบ", isPresented: $showServePartialFailAlert) {
@@ -308,8 +379,20 @@ struct TableDetailView: View {
         } message: {
             Text("\(serveFailedCount) รายการเสิร์ฟไม่สำเร็จ\nกรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่")
         }
+        // Approve error alert
+        .alert("อนุมัติไม่สำเร็จ", isPresented: $showApproveErrorAlert) {
+            Button("ตกลง", role: .cancel) { approveErrorMessage = "" }
+        } message: {
+            Text(approveErrorMessage.isEmpty
+                 ? "เกิดข้อผิดพลาด กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่"
+                 : approveErrorMessage)
+        }
         .onAppear {
             Task { await loadOrders() }
+            // Trigger the one-time entry animation for the order list.
+            if !didAppearAnimate {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { didAppearAnimate = true }
+            }
             // Self-healing: if any active order still has empty items after the initial
             // load (race between orders POST and order_items POST from the iPad app),
             // retry loading once after 2 seconds.  This covers the case where the user
@@ -380,13 +463,27 @@ struct TableDetailView: View {
             stillDiningTimer?.invalidate()
             stillDiningTimer = nil
         }
+        // When new pending items arrive (food added / new web order), bring the
+        // serve button back and shrink Add Food to its compact size again.
+        .onChange(of: pendingServeCount) { oldValue, newValue in
+            if newValue > oldValue && serveAllLaunched && !isServingAll {
+                // New items arrived → serve button slides back, Add Food shrinks.
+                APHaptic.trigger()
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) {
+                    serveAllLaunched = false
+                }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .checkoutCompleted)) { note in
             // BillingView posted this after successful payment
             guard let tableNumber = note.object as? String,
                   tableNumber == table.tableNumber else { return }
             Task {
                 await loadOrders()
-                await MainActor.run { enterPostPaymentMode() }
+                await MainActor.run {
+                    serveAllLaunched = false   // clear any stuck expanded state
+                    enterPostPaymentMode()
+                }
             }
         }
         .onChange(of: networkService.tables) { _, newTables in
@@ -409,25 +506,27 @@ struct TableDetailView: View {
     // MARK: - Info Banner
     // ─────────────────────────────────────────────────────────────────────────
     private var infoBanner: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill((isPaidButDining ? amber : royalBlue).opacity(0.10))
-                    .frame(width: 44, height: 44)
-                Image(systemName: isPaidButDining ? "fork.knife.circle.fill" : "fork.knife")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(isPaidButDining ? amber : royalBlue)
+                RoundedRectangle(cornerRadius: 10)
+                    .fill((isPaidAwaitingClear ? elfGreen : isPaidButDining ? amber : royalBlue).opacity(0.10))
+                    .frame(width: 34, height: 34)
+                Image(systemName: isPaidAwaitingClear ? "checkmark.seal.fill" : isPaidButDining ? "fork.knife.circle.fill" : "fork.knife")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(isPaidAwaitingClear ? elfGreen : isPaidButDining ? amber : royalBlue)
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(isPaidButDining
+                Text(isPaidAwaitingClear
+                     ? "ชำระเงินแล้ว · รอเคลียร์โต๊ะ"
+                     : isPaidButDining
                      ? "ชำระเงินแล้ว · ยังนั่งอยู่"
                      : "session_orders".localized(for: appLanguage))
-                    .font(.caption2)
-                    .foregroundColor(isPaidButDining ? amber : Color.textSecondary)
+                    .font(.system(size: 10))
+                    .foregroundColor(isPaidAwaitingClear ? elfGreen : isPaidButDining ? amber : Color.textSecondary)
                 Text(String(format: "table_guests_count_format".localized(for: appLanguage),
                             currentTable.tableNumber, currentTable.guestCount))
-                    .font(.system(size: 16, weight: .bold)).foregroundColor(Color.textPrimary)
+                    .font(.system(size: 14, weight: .bold)).foregroundColor(Color.textPrimary)
             }
 
             Spacer()
@@ -436,12 +535,12 @@ struct TableDetailView: View {
                 if currentTable.status == "occupied" {
                     ElapsedTimeBadge(startedAt: currentTable.sessionStartedAt)
                 }
-                statusBadge(isPaidButDining ? "dining" : currentTable.status)
+                statusBadge(isPaidAwaitingClear ? "paid" : isPaidButDining ? "dining" : currentTable.status)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(Color.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color.appSurface)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -513,8 +612,9 @@ struct TableDetailView: View {
     // MARK: - Order Scroll Content
     // ─────────────────────────────────────────────────────────────────────────
     private var orderScrollContent: some View {
-        ScrollView {
-            LazyVStack(spacing: 14) {
+        ScrollViewReader { proxy in
+            ScrollView {
+            LazyVStack(spacing: 8) {
 
                 // ── Web orders section ──────────────────────────────────────
                 if !webOrders.isEmpty {
@@ -552,7 +652,7 @@ struct TableDetailView: View {
 
                 // ── Post-payment: show completed orders as history ──────────
                 if isPaidButDining {
-                    let completedOrders = orders.filter { $0.status == "completed" }
+                    let completedOrders = paidOrders
                     if !completedOrders.isEmpty {
                         sectionHeader(
                             icon: "checkmark.seal.fill",
@@ -565,13 +665,116 @@ struct TableDetailView: View {
                     }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .animation(.spring(response: 0.4, dampingFraction: 0.78), value: activeOrders.count)
+            // Subtle entry animation when the screen opens: content rises & fades in.
+            .opacity(didAppearAnimate ? 1 : 0)
+            .offset(y: didAppearAnimate ? 0 : 14)
+            .animation(.spring(response: 0.5, dampingFraction: 0.85), value: didAppearAnimate)
+            }
+            .onChange(of: lastVisibleItemId) { oldValue, newValue in
+                guard oldValue != nil, let newValue else { return }
+                withAnimation(.easeOut(duration: 0.3)) {
+                    proxy.scrollTo(newValue, anchor: .bottom)
+                }
+            }
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // MARK: - Approval Banner (Web Orders)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private var approvalBanner: some View {
+        Button {
+            approveAllPendingWebOrders()
+        } label: {
+            let isApprovingAny = webOrders.contains { approvingOrderIds.contains($0.id) }
+            HStack(spacing: 10) {
+                if isApprovingAny {
+                    ProgressView()
+                        .tint(.white)
+                        .scaleEffect(0.9)
+                        .frame(width: 20, height: 20)
+                } else {
+                    Image(systemName: "bell.badge.fill")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.white)
+                        .symbolEffect(.bounce, options: .repeating)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("มีออเดอร์ใหม่จากลูกค้า")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("แตะเพื่อส่งออเดอร์เข้าครัว")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.85))
+                }
+
+                Spacer()
+
+                if isApprovingAny {
+                    Text("approve".localized(for: appLanguage))
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white.opacity(0.5))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.white.opacity(0.12))
+                        .clipShape(Capsule())
+                } else {
+                    Text("approve".localized(for: appLanguage))
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.white.opacity(0.22))
+                        .clipShape(Capsule())
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(
+                LinearGradient(
+                    colors: [Color.appAmber, Color.appAmber.opacity(0.8)],
+                    startPoint: .leading, endPoint: .trailing
+                )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Approve all web orders that have items still in "pending" status (banner tap)
+    private func approveAllPendingWebOrders() {
+        let ordersToApprove = webOrders.filter(\.isAwaitingStaffApproval)
+        guard !ordersToApprove.isEmpty else { return }
+        // ถ้ากำลัง approve อยู่แล้วไม่ต้องทำซ้ำ
+        guard !ordersToApprove.allSatisfy({ approvingOrderIds.contains($0.id) }) else { return }
+        APHaptic.trigger()
+        for order in ordersToApprove {
+            approvingOrderIds.insert(order.id)
+        }
+        Task {
+            var failCount = 0
+            for order in ordersToApprove {
+                do {
+                    _ = try await NetworkService.shared.approveOrder(order: order)
+                } catch {
+                    failCount += 1
+                    print("TableDetailView [approveAll]: order \(order.id) failed — \(error)")
+                }
+                approvingOrderIds.remove(order.id)
+            }
+            await loadOrders()
+            if failCount > 0 {
+                approveErrorMessage = "อนุมัติสำเร็จ \(ordersToApprove.count - failCount)/\(ordersToApprove.count) ออเดอร์ กรุณาลองใหม่อีกครั้ง"
+                showApproveErrorAlert = true
+            }
+        }
+    }
+
     // MARK: - Section Header
     // ─────────────────────────────────────────────────────────────────────────
     private func sectionHeader(icon: String, title: String, color: Color) -> some View {
@@ -595,71 +798,89 @@ struct TableDetailView: View {
 
     private func orderCard(_ order: Order, source: OrderSource) -> some View {
         VStack(spacing: 0) {
-            // Card header
-            HStack(spacing: 8) {
-                // Source icon
-                Image(systemName: source == .web ? "network" : "person.fill")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(source == .web ? royalBlue : elfGreen)
-                    .frame(width: 18)
+            // Card header — clean 2-line layout so the order number, time, status
+            // and action never crowd or wrap awkwardly.
+            let allServed = !order.items.isEmpty &&
+                order.items.allSatisfy { $0.status == "served" || $0.status == "cancelled" }
+            let needsApproval = order.isAwaitingStaffApproval
+            VStack(alignment: .leading, spacing: 4) {
+                // Row 1: source icon + order number (one line) + time on the right
+                HStack(spacing: 7) {
+                    Image(systemName: source == .web ? "network" : "person.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(source == .web ? royalBlue : elfGreen)
 
-                Text(order.orderNumber)
-                    .font(.system(size: 13, weight: .black, design: .monospaced))
-                    .foregroundColor(source == .web ? royalBlue : elfGreen)
+                    Text(order.orderNumber)
+                        .font(.system(size: 12, weight: .black, design: .monospaced))
+                        .foregroundColor(source == .web ? royalBlue : elfGreen)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
 
-                // Time
-                Text(formatOrderTime(order.createdAt))
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    Spacer(minLength: 6)
 
-                Spacer()
+                    Image(systemName: "clock")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                    Text(formatOrderTime(order.createdAt))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                }
 
-                let allServed = !order.items.isEmpty &&
-                    order.items.allSatisfy { $0.status == "served" || $0.status == "cancelled" }
-                orderStatusBadge(allServed ? "served" : order.status)
-                    .onTapGesture {
-                        selectedOrderForTimeline = order
-                    }
+                // Row 2: status badge + action button, aligned on one line
+                HStack(spacing: 8) {
+                    orderStatusBadge(allServed ? "served" : order.status)
+                        .onTapGesture { selectedOrderForTimeline = order }
 
-                // Serve-all or Approve button
-                if order.status.lowercased() == "pending" {
-                    Button {
-                        approveOrder(order)
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 10))
-                            Text("อนุมัติ")
-                                .font(.system(size: 10, weight: .bold))
+                    Spacer(minLength: 0)
+
+                    if needsApproval {
+                        let isThisApproving = approvingOrderIds.contains(order.id)
+                        Button {
+                            approveOrder(order)
+                        } label: {
+                            HStack(spacing: 4) {
+                                if isThisApproving {
+                                    ProgressView()
+                                        .tint(.white).scaleEffect(0.7)
+                                        .frame(width: 12, height: 12)
+                                } else {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 10, weight: .bold))
+                                }
+                                Text(isThisApproving ? "..." : "approve".localized(for: appLanguage))
+                                    .font(.system(size: 11, weight: .bold))
+                            }
+                            .foregroundColor(isThisApproving ? .white.opacity(0.6) : .white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(amber)
+                            .clipShape(Capsule())
                         }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(amber)
-                        .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                } else if !allServed && !isServingAll {
-                    Button {
-                        serveAllItems(in: order)
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "tray.full.fill")
-                                .font(.system(size: 10))
-                            Text("เสิร์ฟทั้งหมด")
-                                .font(.system(size: 10, weight: .bold))
+                        .buttonStyle(.plain)
+                        .disabled(isThisApproving)
+                    } else if !allServed && !isServingAll {
+                        Button {
+                            serveAllItems(in: order)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "paperplane.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                                Text("ยืนยันเสิร์ฟทั้งหมด")
+                                    .font(.system(size: 11, weight: .bold))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(serveBlue)
+                            .clipShape(Capsule())
                         }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(elfGreen)
-                        .clipShape(Capsule())
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
             .background(
                 (source == .web ? royalBlue : elfGreen).opacity(0.05)
             )
@@ -683,6 +904,7 @@ struct TableDetailView: View {
                         onRecall: { recallItem(item, from: order) },
                         isServing: servingItemIds.contains(item.id)
                     )
+                    .id(item.id)
                     .disabled(servingItemIds.contains(item.id))
                     .opacity(servingItemIds.contains(item.id) ? 0.65 : 1)
                     .transition(.asymmetric(
@@ -697,16 +919,25 @@ struct TableDetailView: View {
             }
             .animation(.spring(response: 0.35, dampingFraction: 0.75), value: order.items.count)
         }
-        .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 3)
+        .apLiquidGlass(
+            tint: (source == .web ? royalBlue : elfGreen).opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(
-                    source == .web ? royalBlue.opacity(0.12) : Color.clear,
-                    lineWidth: source == .web ? 1 : 0
+                    LinearGradient(
+                        colors: [
+                            (source == .web ? royalBlue : elfGreen).opacity(0.25),
+                            Color.white.opacity(0.05)
+                        ],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
                 )
         )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 3)
     }
 
     // Completed order (history card — shown when still dining)
@@ -726,7 +957,7 @@ struct TableDetailView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
         }
-        .background(Color.white)
+        .background(Color.appSurface)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .opacity(0.6)
     }
@@ -738,126 +969,313 @@ struct TableDetailView: View {
         VStack(spacing: 0) {
             Divider().background(Color.appDivider)
 
-            VStack(spacing: 8) {
-                HStack(spacing: 12) {
-                    // ── Add Food ─────────────────────────────────────────────
+            VStack(spacing: 10) {
+                // Pending (unserved) items only — once everything is served, fall
+                // through to the checkout row. Do NOT gate on `serveAllLaunched`:
+                // keeping that flag true after Serve All previously hid Payment.
+                if hasAnyActiveOrders && !isAllServed {
+                    // ── Pending items → Serve-All (paper-plane) + Add Food, side by side.
+                    // When the serve button flies away, it collapses to zero width and
+                    // Add Food smoothly expands to (almost) full width to take its place.
+                    GeometryReader { geometry in
+                        let spacing: CGFloat = serveAllLaunched ? 0 : 10
+                        let available = geometry.size.width - spacing
+                        HStack(spacing: spacing) {
+                        Button {
+                            cartItems.removeAll()
+                            verifyShiftAndAddFood()
+                        } label: {
+                            addFoodCompactLabel(expanded: serveAllLaunched)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: serveAllLaunched ? geometry.size.width : available * 0.3)
+
+                        Button {
+                            launchServeAll()
+                        } label: {
+                            serveAllLabel
+                                .offset(x: serveAllLaunched ? 500 : 0)
+                                .opacity(serveAllLaunched ? 0 : 1)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isServingAll)
+                        .frame(width: serveAllLaunched ? 0 : available * 0.7)
+                        .clipped()
+                        }
+                    }
+                    .frame(height: 56)
+                    .animation(.spring(response: 0.5, dampingFraction: 0.82), value: serveAllLaunched)
+
+                } else if isPaidAwaitingClear {
+                    Button {
+                        guard !isClearingTable else { return }
+                        if isAuthorizedToClearTable {
+                            showClearTableConfirm = true
+                        } else {
+                            showAccessDeniedAlert = true
+                        }
+                    } label: {
+                        primaryCTALabel(
+                            icon: "checkmark.seal.fill",
+                            title: isClearingTable ? "กำลังเคลียร์โต๊ะ..." : "ชำระเงินแล้ว",
+                            subtitle: "รอเคลียร์โต๊ะ ไม่สามารถชำระซ้ำได้",
+                            showSpinner: isClearingTable,
+                            showChevron: true
+                        )
+                        .apLiquidGlass(tint: elfGreen,
+                                       in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isClearingTable)
+
+                } else if hasAnyActiveOrders {
+                    // ── All served → primary "Checkout", secondary "Add Food" + "Split" ──
+                    Button {
+                        APHaptic.trigger()
+                        showingBilling = true
+                    } label: {
+                        primaryCTALabel(
+                            icon: "creditcard.fill",
+                            title: "bill_payment".localized(for: appLanguage),
+                            subtitle: "bill_payment_hint".localized(for: appLanguage),
+                            showChevron: true
+                        )
+                        .apLiquidGlass(tint: coralRed,
+                                       in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.scale.combined(with: .opacity))
+
+                    secondaryActionRow(showSplit: true)
+
+                } else {
+                    // ── No active orders → just Add Food (full width) ──
                     Button {
                         cartItems.removeAll()
                         verifyShiftAndAddFood()
                     } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.system(size: 16, weight: .bold))
-                            Text("add_food".localized(for: appLanguage))
-                                .font(.system(size: 14, weight: .bold))
-                        }
-                        .foregroundColor(royalBlue)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 13)
-                        .background(royalBlue.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12)
-                            .stroke(royalBlue.opacity(0.25), lineWidth: 1))
+                        primaryCTALabel(
+                            icon: "plus.circle.fill",
+                            title: "add_food".localized(for: appLanguage),
+                            subtitle: nil,
+                            showChevron: true
+                        )
+                        .apLiquidGlass(tint: royalBlue,
+                                       in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
-
-                    // ── Serve All / Checkout ──────────────────────────────────
-                    if hasAnyActiveOrders {
-                        if !isAllServed {
-                            // Show "เสิร์ฟทั้งหมด" button when there are pending items
-                            Button {
-                                serveAllActiveOrders()
-                            } label: {
-                                HStack(spacing: 6) {
-                                    if isServingAll {
-                                        ProgressView()
-                                            .scaleEffect(0.75)
-                                            .tint(.white)
-                                    } else {
-                                        Image(systemName: "tray.full.fill")
-                                            .font(.system(size: 14, weight: .bold))
-                                    }
-                                    Text(isServingAll
-                                         ? "กำลังเสิร์ฟ..."
-                                         : "เสิร์ฟทั้งหมด (\(pendingServeCount))")
-                                        .font(.system(size: 14, weight: .bold))
-                                }
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 13)
-                                .background(
-                                    LinearGradient(
-                                        colors: [elfGreen, Color.appTeal],
-                                        startPoint: .leading, endPoint: .trailing
-                                    )
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                            }
-                            .disabled(isServingAll)
-
-                        } else {
-                            // All served → show checkout button
-                            NavigationLink(destination: BillingView(
-                                table: currentTable, orders: activeOrders
-                            )) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "creditcard.fill")
-                                        .font(.system(size: 14, weight: .bold))
-                                    Text("bill_payment".localized(for: appLanguage))
-                                        .font(.system(size: 14, weight: .bold))
-                                }
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 13)
-                                .background(
-                                    LinearGradient(
-                                        colors: [coralRed, Color.appRose],
-                                        startPoint: .leading, endPoint: .trailing
-                                    )
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                            }
-                            .transition(.scale.combined(with: .opacity))
-
-                            // ── Split Bill ────────────────────────────────────
-                            Button {
-                                showSplitBill = true
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "rectangle.split.3x1.fill")
-                                        .font(.system(size: 14, weight: .bold))
-                                    Text("split_bill".localized(for: appLanguage))
-                                        .font(.system(size: 14, weight: .bold))
-                                }
-                                .foregroundColor(Color(hex: "6366F1"))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 13)
-                                .background(Color(hex: "6366F1").opacity(0.08))
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                                .overlay(RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color(hex: "6366F1").opacity(0.25), lineWidth: 1))
-                            }
-                        }
-                    }
-                }
-
-                // ── Hint text ─────────────────────────────────────────────────
-                if hasAnyActiveOrders && !isAllServed {
-                    HStack(spacing: 4) {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 11))
-                        Text("กรุณาเสิร์ฟออเดอร์ทั้งหมดก่อนชำระเงิน")
-                            .font(.caption2)
-                    }
-                    .foregroundColor(coralRed)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(Color.white)
+            .background(Color.appSurface)
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isAllServed)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hasAnyActiveOrders)
+    }
+
+    // MARK: - Bottom Bar Helpers
+
+    /// Prominent full-width primary CTA label (icon chip + title + optional subtitle).
+    @ViewBuilder
+    private func primaryCTALabel(
+        icon: String?,
+        title: String,
+        subtitle: String?,
+        showSpinner: Bool = false,
+        showChevron: Bool = false
+    ) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(0.22))
+                    .frame(width: 38, height: 38)
+                if showSpinner {
+                    ProgressView().scaleEffect(0.8).tint(.white)
+                } else if let icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 17, weight: .bold))
+                }
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 16, weight: .bold))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.85))
+                }
+            }
+            Spacer()
+            if showChevron {
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+            }
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Secondary action row: Add Food + Print Bill (+ optional Split Bill).
+    @ViewBuilder
+    private func secondaryActionRow(showSplit: Bool) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                cartItems.removeAll()
+                verifyShiftAndAddFood()
+            } label: {
+                secondaryTileLabel(icon: "plus", title: "add_food".localized(for: appLanguage), tint: royalBlue)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                APHaptic.trigger()
+                showGuestBillPreview = true
+            } label: {
+                secondaryTileLabel(icon: "printer.fill", title: "print_guest_bill".localized(for: appLanguage), tint: royalBlue)
+            }
+            .buttonStyle(.plain)
+
+            if showSplit {
+                Button {
+                    showSplitBill = true
+                } label: {
+                    secondaryTileLabel(icon: "rectangle.split.3x1.fill", title: "split_bill".localized(for: appLanguage), tint: royalBlue)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func secondaryTileLabel(icon: String, title: String, tint: Color) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .bold))
+            Text(title)
+                .font(.system(size: 14, weight: .bold))
+        }
+        .foregroundColor(tint)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .apLiquidGlass(tint: tint.opacity(0.12),
+                       in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+
+    // ── Serve-all button label (paper-plane "send order" style) ─────────────
+    @ViewBuilder
+    private var serveAllLabel: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(0.22))
+                    .frame(width: 34, height: 34)
+                if isServingAll {
+                    ProgressView().scaleEffect(0.75).tint(.white)
+                } else {
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .rotationEffect(.degrees(serveAllLaunched ? -25 : 0))
+                }
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(isServingAll ? "กำลังบันทึก..." : "ยืนยันเสิร์ฟทั้งหมด (\(pendingServeCount))")
+                    .font(.system(size: 14, weight: .bold))
+                Text("แตะเมื่อนำอาหารให้ลูกค้าแล้ว")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.85))
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .apLiquidGlass(tint: serveBlue,
+                       in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+    }
+
+    // ── Compact "Add Food" order-entry button (modern glass, with icon) ─────
+    // `expanded` = true renders a prominent full-width primary style (used once
+    // the serve button has flown away); false renders the compact side tile.
+    @ViewBuilder
+    private func addFoodCompactLabel(expanded: Bool) -> some View {
+        Group {
+            if expanded {
+                // Prominent full-width primary style (fills the serve button's spot).
+                HStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.white.opacity(0.22))
+                            .frame(width: 34, height: 34)
+                        Image(systemName: "cart.badge.plus")
+                            .font(.system(size: 16, weight: .bold))
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("add_food".localized(for: appLanguage))
+                            .font(.system(size: 15, weight: .bold))
+                        Text("แตะเพื่อเพิ่มรายการอาหาร")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.white.opacity(0.85))
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .apLiquidGlass(tint: royalBlue,
+                               in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            } else {
+                // Compact side tile beside the serve button.
+                VStack(spacing: 3) {
+                    Image(systemName: "cart.badge.plus")
+                        .font(.system(size: 17, weight: .bold))
+                    Text("add_food".localized(for: appLanguage))
+                        .font(.system(size: 11, weight: .bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .foregroundColor(royalBlue)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9)
+                .apLiquidGlass(tint: royalBlue.opacity(0.14),
+                               in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .stroke(royalBlue.opacity(0.25), lineWidth: 1)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            }
+        }
+    }
+
+    /// Serve-all with a "launch" animation: the button flies off to the right
+    /// (as if the order was sent), then the actual serve request runs. The
+    /// button reappears automatically when new pending items arrive.
+    private func launchServeAll() {
+        guard !isServingAll, !serveAllLaunched else { return }
+        APHaptic.trigger()
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+            serveAllLaunched = true
+        }
+        // Fire the real serve request after the fly-away starts.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+            serveAllActiveOrders()
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -898,6 +1316,7 @@ struct TableDetailView: View {
             case "occupied": return ("Active",  coralRed)
             case "vacant":   return ("Vacant",  elfGreen)
             case "dining":   return ("Dining 🍽", amber)
+            case "paid":     return ("Paid", elfGreen)
             default:         return (status.capitalized, Color.textSecondary)
             }
         }()
@@ -937,7 +1356,8 @@ struct TableDetailView: View {
     }
 
     private func serveItem(_ item: OrderItem, from order: Order) {
-        guard item.status != "served", !servingItemIds.contains(item.id) else { return }
+        guard !order.isAwaitingStaffApproval,
+              item.status != "served", !servingItemIds.contains(item.id) else { return }
         servingItemIds.insert(item.id)
         APHaptic.trigger()
         Task {
@@ -968,6 +1388,7 @@ struct TableDetailView: View {
 
     /// Serve all items in a specific order
     private func serveAllItems(in order: Order) {
+        guard !order.isAwaitingStaffApproval else { return }
         let pending = order.items.filter { $0.status != "served" && $0.status != "cancelled" }
         guard !pending.isEmpty else { return }
         APHaptic.trigger()
@@ -985,24 +1406,32 @@ struct TableDetailView: View {
         }
     }
 
-    /// Approve pending self-service order
+    /// Approve pending self-service order (single order, per-row button)
     private func approveOrder(_ order: Order) {
+        guard !approvingOrderIds.contains(order.id) else { return }
         APHaptic.trigger()
+        approvingOrderIds.insert(order.id)
         Task {
-            _ = try? await NetworkService.shared.approveOrder(order: order)
-            await loadOrders()
+            do {
+                _ = try await NetworkService.shared.approveOrder(order: order)
+                await loadOrders()
+            } catch {
+                approveErrorMessage = error.localizedDescription
+                showApproveErrorAlert = true
+                await loadOrders()
+            }
+            approvingOrderIds.remove(order.id)
         }
     }
 
     /// Serve all pending items across ALL active orders
     private func serveAllActiveOrders() {
-        let pending = activeOrders.flatMap { order in
+        let pending = activeOrders.filter { !$0.isAwaitingStaffApproval }.flatMap { order in
             order.items
                 .filter { $0.status != "served" && $0.status != "cancelled" }
                 .map { (item: $0, order: order) }
         }
         guard !pending.isEmpty else { return }
-        APHaptic.trigger()
         isServingAll = true
         serveFailedCount = 0
         for p in pending { servingItemIds.insert(p.item.id) }
@@ -1022,6 +1451,16 @@ struct TableDetailView: View {
             await MainActor.run {
                 for p in pending { servingItemIds.remove(p.item.id) }
                 isServingAll = false
+                // Reset launch flag so the checkout (Payment) row can appear once
+                // all items are served. New pending items restore Serve All via
+                // .onChange(of: pendingServeCount).
+                if failCount == pending.count {
+                    serveAllLaunched = false   // total failure → bring serve button back
+                    APHaptic.error()
+                } else {
+                    serveAllLaunched = false
+                    APHaptic.success()
+                }
                 // Show alert only if partial failure (not total — total is obvious from UI)
                 if failCount > 0 && failCount < pending.count {
                     serveFailedCount = failCount
@@ -1033,10 +1472,9 @@ struct TableDetailView: View {
 
     private func verifyShiftAndAddFood() {
         Task {
-            let timecards = (try? await NetworkService.shared.fetchTimecards(for: loggedInEmployeeId)) ?? []
-            let hasActiveShift = timecards.contains { $0.clockOut == nil || $0.clockOut == 0.0 }
+            let hasActiveWorkSession = (try? await NetworkService.shared.hasActiveTimecard(for: loggedInEmployeeId)) ?? false
             await MainActor.run {
-                if hasActiveShift { showingAddItemsSheet = true } else { showShiftGuard = true }
+                if hasActiveWorkSession { showingAddItemsSheet = true } else { showShiftGuard = true }
             }
         }
     }
@@ -1064,23 +1502,37 @@ struct TableDetailView: View {
     }
 
     private func clearTableAfterDining() {
+        guard !isClearingTable else { return }
         stillDiningTimer?.invalidate()
         stillDiningTimer = nil
-        postPaymentStatus = .left
+        isClearingTable = true
         APHaptic.trigger()
         
         let tableNumber = table.tableNumber
         Task {
             do {
+                _ = try await NetworkService.shared.closeSession(tableNumber: tableNumber)
                 _ = try await NetworkService.shared.updateTableStatus(tableNumber: tableNumber, status: "vacant")
+                await MainActor.run {
+                    postPaymentStatus = .left
+                    if let idx = networkService.tables.firstIndex(where: { $0.tableNumber == tableNumber }) {
+                        networkService.tables[idx].status = "vacant"
+                        networkService.tables[idx].guestCount = 0
+                        networkService.tables[idx].activeSessionId = nil
+                        networkService.tables[idx].sessionToken = nil
+                        networkService.tables[idx].currentTotal = 0
+                        networkService.tables[idx].sessionStartedAt = nil
+                    }
+                    isClearingTable = false
+                    dismiss()
+                }
             } catch {
-                print("Failed to update table status to vacant on server: \(error.localizedDescription)")
+                await MainActor.run {
+                    isClearingTable = false
+                    clearTableError = error.localizedDescription
+                    print("Failed to clear table on server: \(error.localizedDescription)")
+                }
             }
-        }
-        
-        // Dismiss the view — table is clear
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            dismiss()
         }
     }
 
@@ -1093,15 +1545,19 @@ struct TableDetailView: View {
         defer { isLoading = false }
         do {
             let fetched = try await NetworkService.shared.fetchTableOrders(
-                tableNumber: table.tableNumber
+                tableNumber: table.tableNumber,
+                activeSessionId: currentTable.activeSessionId,
+                sessionToken: currentTable.sessionToken,
+                sessionStartedAt: currentTable.sessionStartedAt
             )
             await MainActor.run {
+                loadOrdersError = nil
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.78)) {
                     orders = fetched
                 }
                 // If all active orders are now completed → enter post-payment mode
                 let active = fetched.filter { $0.status != "cancelled" }
-                let allCompleted = !active.isEmpty && active.allSatisfy { $0.status == "completed" }
+                let allCompleted = !active.isEmpty && active.allSatisfy { $0.isPaid }
                 if allCompleted && postPaymentStatus == nil {
                     enterPostPaymentMode()
                 }
@@ -1162,10 +1618,11 @@ struct EnterpriseOrderItemRow: View {
             rowContent
                 .offset(x: offset)
                 .animation(.spring(response: 0.38, dampingFraction: 0.78), value: offset)
-                .gesture(
+                .simultaneousGesture(
                     DragGesture(minimumDistance: 12)
                         .onChanged { val in
                             if item.status == "served" { return }
+                            guard abs(val.translation.width) > abs(val.translation.height) else { return }
                             let dx = val.translation.width
                             if dx < 0 {
                                 offset = max(-actionWidth, dx)
@@ -1198,7 +1655,7 @@ struct EnterpriseOrderItemRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text("\(item.quantity)× \(item.name)")
-                        .font(.system(size: 14, weight: item.status == "served" ? .regular : .semibold))
+                        .font(.system(size: 12, weight: item.status == "served" ? .regular : .semibold))
                         .foregroundColor(item.status == "served"
                             ? Color.textSecondary
                             : Color.textPrimary)
@@ -1211,26 +1668,26 @@ struct EnterpriseOrderItemRow: View {
                         
                         if let servedBy = item.servedBy, !servedBy.isEmpty {
                             Text("(เสิร์ฟโดย: \(servedBy))")
-                                .font(.system(size: 10, weight: .medium))
+                                .font(.system(size: 9, weight: .medium))
                                 .foregroundColor(elfGreen)
                         }
                     }
                 }
 
-                if let notes = item.notes, !notes.isEmpty {
-                    if isExpanded {
-                        Text("📝 \(notes)")
-                            .font(.caption2)
-                            .foregroundColor(royalBlue)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                }
+                // ── Options + note (unified, parity with master device) ──────
+                ItemOptionsView(
+                    modifiers: item.modifiers.map { ($0.name, $0.price) },
+                    notes: item.notes,
+                    tint: royalBlue,
+                    muted: item.status == "served",
+                    showNote: isExpanded
+                )
             }
 
             Spacer()
 
             Text("฿\(Int(item.price * Double(item.quantity)))")
-                .font(.system(size: 14, weight: .bold))
+                .font(.system(size: 12, weight: .bold))
                 .foregroundColor(item.status == "served" ? Color.textSecondary : Color.textPrimary)
 
             // Serve / Recall button
@@ -1292,11 +1749,13 @@ struct EnterpriseOrderItemRow: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(Color.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Color.appSurface)
         .contentShape(Rectangle())
     }
+
+
 
     // MARK: Status Dot
     private var statusDot: some View {
@@ -1519,17 +1978,29 @@ struct AddItemsToOrderSheet: View {
     @State private var isLoading    = false
     @State private var isSubmitting = false
     @State private var searchText   = ""
+    @State private var selectedCategory = "all"
     @State private var errorMsg:    String? = nil
 
     private let royalBlue = Color.appAccent
     private let elfGreen  = Color.appTeal
 
+    private var categories: [String] {
+        let cats = Set(menuItems.map { $0.category }.filter { !$0.isEmpty })
+        return ["all"] + cats.sorted()
+    }
+
     private var filteredItems: [MenuItem] {
-        if searchText.isEmpty { return menuItems }
-        return menuItems.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText) ||
-            ($0.category.localizedCaseInsensitiveContains(searchText))
+        var items = menuItems
+        if selectedCategory != "all" {
+            items = items.filter { $0.category == selectedCategory }
         }
+        if !searchText.isEmpty {
+            items = items.filter {
+                $0.name.localizedCaseInsensitiveContains(searchText) ||
+                $0.category.localizedCaseInsensitiveContains(searchText)
+            }
+        }
+        return items
     }
 
     private var cartTotal: Double {
@@ -1547,7 +2018,7 @@ struct AddItemsToOrderSheet: View {
                     HStack(spacing: 8) {
                         Image(systemName: "magnifyingglass")
                             .foregroundColor(.textSecondary).font(.system(size: 14))
-                        TextField("ค้นหาเมนู...", text: $searchText)
+                        TextField("search_menu".localized(for: appLanguage), text: $searchText)
                             .foregroundColor(.textPrimary)
                     }
                     .padding(10)
@@ -1555,8 +2026,56 @@ struct AddItemsToOrderSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .padding(.horizontal).padding(.top, 8).padding(.bottom, 4)
 
+                    // Category pills (Quick Service style)
+                    if !menuItems.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(categories, id: \.self) { cat in
+                                    Button {
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                            selectedCategory = cat
+                                        }
+                                    } label: {
+                                        Text(cat == "all"
+                                             ? "all_categories".localized(for: appLanguage)
+                                             : cat.capitalized)
+                                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 8)
+                                            .background(selectedCategory == cat ? Color.brandGreenDark : Color.appSurface)
+                                            .foregroundColor(selectedCategory == cat ? .white : .textSecondary)
+                                            .cornerRadius(20)
+                                            .shadow(
+                                                color: selectedCategory == cat
+                                                    ? Color.brandGreenDark.opacity(0.2)
+                                                    : Color.black.opacity(0.02),
+                                                radius: 4, x: 0, y: 2
+                                            )
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 20)
+                                                    .stroke(selectedCategory == cat ? Color.clear : Color.appDivider, lineWidth: 1)
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal)
+                            .padding(.vertical, 8)
+                        }
+                    }
+
                     if isLoading {
                         ProgressView().tint(royalBlue).frame(maxHeight: .infinity)
+                    } else if filteredItems.isEmpty {
+                        VStack(spacing: 10) {
+                            Image(systemName: "fork.knife.circle")
+                                .font(.system(size: 36))
+                                .foregroundColor(.textSecondary.opacity(0.5))
+                            Text("no_menu_match".localized(for: appLanguage))
+                                .font(.subheadline.weight(.medium))
+                                .foregroundColor(.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         List {
                             ForEach(filteredItems) { item in
@@ -1726,5 +2245,288 @@ struct AddItemsToOrderSheet: View {
                 }
             }
         }
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - GuestBillPreviewSheet
+// Pre-payment guest bill preview. Print is relayed to the receipt-station
+// iPad (cable/thermal printer) via sync_outbox — not AirPrint on the phone.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct GuestBillPreviewSheet: View {
+    let table: RestaurantTable
+    let orders: [Order]
+
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("app_language") private var appLanguage = "en"
+
+    @State private var isSendingPrint = false
+    @State private var printStatusMessage: String? = nil
+    @State private var printSucceeded = false
+
+    private var billableItems: [(qty: Int, name: String, price: Double, modifiers: [OrderItemModifier])] {
+        orders.flatMap { order in
+            order.items
+                .filter { $0.status != "cancelled" }
+                .map { (qty: $0.quantity, name: $0.name, price: $0.price, modifiers: $0.modifiers) }
+        }
+    }
+
+    private var subtotal: Double {
+        orders.map(\.total).reduce(0, +)
+    }
+    private var tax: Double { subtotal * 0.07 }
+    private var serviceCharge: Double { subtotal * 0.10 }
+    private var grandTotal: Double { subtotal + tax + serviceCharge }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(spacing: 4) {
+                        Text("AlphaPos")
+                            .font(.title3.weight(.black))
+                        Text(String(format: "table_guests_count_format".localized(for: appLanguage),
+                                    table.tableNumber, table.guestCount))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Text("guest_bill_preview_title".localized(for: appLanguage))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text("print_via_ipad_hint".localized(for: appLanguage))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 4)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+
+                    Divider()
+
+                    ForEach(Array(billableItems.enumerated()), id: \.offset) { _, item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text("\(item.qty)x \(item.name)")
+                                    .font(.subheadline.weight(.medium))
+                                Spacer()
+                                Text("฿\(String(format: "%.2f", item.price * Double(item.qty)))")
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                            if !item.modifiers.isEmpty {
+                                Text("+ " + item.modifiers.map(\.name).joined(separator: ", "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                    }
+
+                    Group {
+                        Divider()
+                        billRow(label: "ยอดก่อนภาษี/บริการ", value: subtotal)
+                        billRow(label: "ภาษีมูลค่าเพิ่ม (7%)", value: tax)
+                        billRow(label: "ค่าบริการ (10%)", value: serviceCharge)
+                        Divider()
+                        HStack {
+                            Text("ยอดรวมทั้งสิ้น")
+                                .font(.headline).fontWeight(.black)
+                            Spacer()
+                            Text("฿\(String(format: "%.2f", grandTotal))")
+                                .font(.headline).fontWeight(.black)
+                                .foregroundColor(.appRose)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                    }
+
+                    Text("ขอบคุณที่ใช้บริการ")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                }
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .padding()
+
+                if let printStatusMessage {
+                    Label(
+                        printStatusMessage,
+                        systemImage: printSucceeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(printSucceeded ? .appTeal : .appRose)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+                }
+            }
+            .background(Color.appBackground.ignoresSafeArea())
+            .navigationTitle("print_guest_bill".localized(for: appLanguage))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("close".localized(for: appLanguage)) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        sendPreBillToIPad()
+                    } label: {
+                        if isSendingPrint {
+                            ProgressView().scaleEffect(0.85)
+                        } else {
+                            Label("พิมพ์", systemImage: "printer.fill")
+                        }
+                    }
+                    .disabled(isSendingPrint || orders.isEmpty)
+                }
+            }
+        }
+    }
+
+    private func billRow(label: String, value: Double) -> some View {
+        HStack {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("฿\(String(format: "%.2f", value))")
+                .font(.subheadline)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+    }
+
+    private func sendPreBillToIPad() {
+        let orderIds = orders.map(\.id)
+        guard !orderIds.isEmpty else { return }
+        isSendingPrint = true
+        printStatusMessage = nil
+        Task {
+            do {
+                try await NetworkService.shared.requestPreBillPrint(
+                    orderIds: orderIds,
+                    tableNumber: table.tableNumber
+                )
+                await MainActor.run {
+                    isSendingPrint = false
+                    printSucceeded = true
+                    printStatusMessage = "print_sent_to_ipad".localized(for: appLanguage)
+                    APHaptic.success()
+                }
+            } catch {
+                await MainActor.run {
+                    isSendingPrint = false
+                    printSucceeded = false
+                    printStatusMessage = "print_send_failed".localized(for: appLanguage)
+                        + ": \(error.localizedDescription)"
+                    APHaptic.error()
+                }
+            }
+        }
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - FlowChips (option / modifier chips with wrapping layout)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Renders a set of option chips that wrap to new lines as needed. Each chip is
+// a Liquid-Glass pill showing the option name and, when > 0, its extra price.
+// Mirrors the master (iPad) device styling so both apps feel consistent.
+struct FlowChips: View {
+    let chips: [(String, Double)]
+    var tint: Color = .appAccent
+    var muted: Bool = false
+
+    var body: some View {
+        FlowLayout(spacing: 5) {
+            ForEach(Array(chips.enumerated()), id: \.offset) { _, chip in
+                HStack(spacing: 3) {
+                    Text(chip.0)
+                        .font(.system(size: 10.5, weight: .semibold))
+                    if chip.1 > 0 {
+                        Text("+฿\(Int(chip.1))")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(muted ? Color.textSecondary : tint)
+                    }
+                }
+                .foregroundColor(muted ? Color.textSecondary : Color.textPrimary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .apLiquidGlass(
+                    tint: (muted ? Color.gray : tint).opacity(0.12),
+                    in: Capsule(style: .continuous)
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke((muted ? Color.gray : tint).opacity(0.22), lineWidth: 0.8)
+                )
+            }
+        }
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - ItemOptionsView (unified chips + note, shared across screens)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Single source of truth for rendering an order item's options and note so
+// every screen (Table Detail, Order Timeline, Billing) looks identical:
+//   • structured modifiers  → glass chips with +฿ price
+//   • no modifiers, but notes that look like an option list (comma / • separated)
+//                            → chips as a graceful fallback
+//   • a remaining free-text note → a 📝 line beneath the chips
+struct ItemOptionsView: View {
+    let modifiers: [(String, Double)]
+    let notes: String?
+    var tint: Color = .appAccent
+    var muted: Bool = false
+    /// When false the free-text note is hidden (e.g. collapsed rows).
+    var showNote: Bool = true
+
+    var body: some View {
+        let noteText = (notes ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasNote = !noteText.isEmpty
+
+        // Chips: real modifiers, or a fallback parse of the note when there are none.
+        let fallback: [(String, Double)] = modifiers.isEmpty ? ItemOptionsView.parseNotes(notes) : []
+        let chips = modifiers + fallback
+        // Only show the 📝 note line when we did NOT consume the note as fallback chips.
+        let showNoteLine = showNote && hasNote && !modifiers.isEmpty ? true : (showNote && hasNote && fallback.isEmpty)
+
+        if !chips.isEmpty || showNoteLine {
+            VStack(alignment: .leading, spacing: 4) {
+                if !chips.isEmpty {
+                    FlowChips(chips: chips, tint: tint, muted: muted)
+                }
+                if showNoteLine {
+                    HStack(alignment: .top, spacing: 4) {
+                        Text("📝")
+                            .font(.system(size: 10))
+                        Text(noteText)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(muted ? Color.textSecondary : tint)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(.top, 1)
+        }
+    }
+
+    /// Parse legacy free-text notes into pseudo-modifiers (comma / newline / • separated).
+    static func parseNotes(_ notes: String?) -> [(String, Double)] {
+        guard let notes, !notes.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
+        return notes
+            .components(separatedBy: CharacterSet(charactersIn: ",\n•"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .map { ($0, 0.0) }
     }
 }

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+real=/usr/bin/supabase
+[[ -x "$real" ]] || real=/usr/local/lib/alphapos/supabase-real
+
+case "${1:-}" in
+  stop|db)
+    if [[ "${1:-}" == stop || "${2:-}" == reset ]]; then
+      logger -p authpriv.crit -t alphapos-supabase-guard "blocked destructive command: supabase $* user=$(id -un) cwd=$PWD"
+      echo "BLOCKED: destructive Supabase CLI lifecycle commands are disabled on AlphaPos production." >&2
+      echo "Use service-specific docker restart, or the documented backup-and-restore procedure." >&2
+      exit 77
+    fi
+    ;;
+esac
+
+exec "$real" "$@"
+

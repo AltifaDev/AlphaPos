@@ -12,13 +12,17 @@ import Network
 @MainActor
 final class OfflineCache {
     static let shared = OfflineCache()
+    nonisolated private static let cacheWriteQueue = DispatchQueue(
+        label: "com.alphapos.staff.offline-cache-write",
+        qos: .utility
+    )
     
     // MARK: - State
     
     /// True when device cannot reach Supabase
     var isOffline: Bool = false
 
-    /// Maximum retry attempts per queued order before it is moved to dead-letter
+    /// Retries become manual after this threshold. The order is never deleted.
     private let maxRetryAttempts = 5
 
     // MARK: - NWPathMonitor (real-time connectivity)
@@ -50,6 +54,7 @@ final class OfflineCache {
     
     /// Number of orders waiting to be submitted
     var queuedOrderCount: Int { pendingOrders.count }
+    var failedOrderCount: Int { pendingOrders.filter(\.requiresManualRetry).count }
     
     /// Queued orders (created offline, waiting for connectivity)
     private(set) var pendingOrders: [QueuedOrder] = []
@@ -58,12 +63,15 @@ final class OfflineCache {
     
     private var cacheDir: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        // MERCHANT-NAMESPACED: each merchant gets its own cache directory
-        // so data from merchant A never bleeds into merchant B on the same device.
+        // MERCHANT + BRANCH NAMESPACED: a paired device must never display or
+        // replay another branch's cached tickets after re-pairing.
         let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? "default"
-        let safeId = merchantId.trimmingCharacters(in: .whitespacesAndNewlines)
-                               .replacingOccurrences(of: "/", with: "_")
-        let dir = docs.appendingPathComponent("OfflineCache/\(safeId)", isDirectory: true)
+        let branchId = UserDefaults.standard.string(forKey: "active_branch_id") ?? "unpaired"
+        let safeMerchantId = merchantId.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "_")
+        let safeBranchId = branchId.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "_")
+        let dir = docs.appendingPathComponent("OfflineCache/\(safeMerchantId)/\(safeBranchId)", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -83,16 +91,19 @@ final class OfflineCache {
     // MARK: - Menu Cache
     
     func cacheMenu(_ items: [MenuItem]) {
-        do {
-            let data = try JSONEncoder().encode(items)
-            try data.write(to: menuCacheURL)
+        let url = menuCacheURL
+        Self.cacheWriteQueue.async {
+            do {
+                let data = try JSONEncoder().encode(items)
+                try data.write(to: url, options: .atomic)
             #if DEBUG
-            print("[OfflineCache] Cached \(items.count) menu items")
+                print("[OfflineCache] Cached \(items.count) menu items")
             #endif
-        } catch {
+            } catch {
             #if DEBUG
-            print("[OfflineCache] Failed to cache menu: \(error)")
+                print("[OfflineCache] Failed to cache menu: \(error)")
             #endif
+            }
         }
     }
     
@@ -110,16 +121,19 @@ final class OfflineCache {
     // MARK: - Tables Cache
     
     func cacheTables(_ tables: [RestaurantTable]) {
-        do {
-            let data = try JSONEncoder().encode(tables)
-            try data.write(to: tablesCacheURL)
+        let url = tablesCacheURL
+        Self.cacheWriteQueue.async {
+            do {
+                let data = try JSONEncoder().encode(tables)
+                try data.write(to: url, options: .atomic)
             #if DEBUG
-            print("[OfflineCache] Cached \(tables.count) tables")
+                print("[OfflineCache] Cached \(tables.count) tables")
             #endif
-        } catch {
+            } catch {
             #if DEBUG
-            print("[OfflineCache] Failed to cache tables: \(error)")
+                print("[OfflineCache] Failed to cache tables: \(error)")
             #endif
+            }
         }
     }
     
@@ -137,13 +151,16 @@ final class OfflineCache {
     // MARK: - Active Orders Cache
     
     func cacheOrders(_ orders: [Order]) {
-        do {
-            let data = try JSONEncoder().encode(orders)
-            try data.write(to: ordersCacheURL)
-        } catch {
+        let url = ordersCacheURL
+        Self.cacheWriteQueue.async {
+            do {
+                let data = try JSONEncoder().encode(orders)
+                try data.write(to: url, options: .atomic)
+            } catch {
             #if DEBUG
-            print("[OfflineCache] Failed to cache orders: \(error)")
+                print("[OfflineCache] Failed to cache orders: \(error)")
             #endif
+            }
         }
     }
     
@@ -174,6 +191,10 @@ final class OfflineCache {
         var failedOrders: [QueuedOrder] = []
         
         for order in pendingOrders {
+            if order.requiresManualRetry {
+                failedOrders.append(order)
+                continue
+            }
             do {
                 let success = try await NetworkService.shared.uploadOrder(
                     orderId: order.id,
@@ -194,24 +215,16 @@ final class OfflineCache {
                     // Server rejected (non-throw) — increment retry counter
                     var bumped = order
                     bumped.retryCount += 1
-                    if bumped.retryCount < maxRetryAttempts {
-                        failedOrders.append(bumped)
-                    } else {
-                        #if DEBUG
-                        print("[OfflineCache] Dead-lettering order #\(order.orderNumber) after \(bumped.retryCount) retries")
-                        #endif
-                    }
+                    bumped.lastError = "The server rejected the order without a response body."
+                    bumped.requiresManualRetry = bumped.retryCount >= maxRetryAttempts
+                    failedOrders.append(bumped)
                 }
             } catch {
                 var bumped = order
                 bumped.retryCount += 1
-                if bumped.retryCount < maxRetryAttempts {
-                    failedOrders.append(bumped)
-                } else {
-                    #if DEBUG
-                    print("[OfflineCache] Dead-lettering order #\(order.orderNumber) after \(bumped.retryCount) retries: \(error.localizedDescription)")
-                    #endif
-                }
+                bumped.lastError = error.localizedDescription
+                bumped.requiresManualRetry = bumped.retryCount >= maxRetryAttempts
+                failedOrders.append(bumped)
                 #if DEBUG
                 print("[OfflineCache] Retry \(order.retryCount+1)/\(maxRetryAttempts) for order #\(order.orderNumber): \(error.localizedDescription)")
                 #endif
@@ -228,6 +241,16 @@ final class OfflineCache {
         #endif
         
         return successCount
+    }
+
+    /// Re-enable a failed order after the user has reviewed the error.
+    func retryFailedOrder(orderId: String) async -> Int {
+        guard let index = pendingOrders.firstIndex(where: { $0.id == orderId }) else { return 0 }
+        pendingOrders[index].retryCount = 0
+        pendingOrders[index].lastError = nil
+        pendingOrders[index].requiresManualRetry = false
+        savePendingOrders()
+        return await syncOfflineQueue()
     }
     
     /// Remove a specific order from queue (e.g. user cancels)
@@ -307,13 +330,15 @@ struct QueuedOrder: Codable, Identifiable {
     let orderType: String  // "takeaway", "delivery", "walk_in", "dine_in"
     let createdAt: Date
     var retryCount: Int
+    var lastError: String?
+    var requiresManualRetry: Bool
 
     // Custom Codable for [[String: Any]]
     enum CodingKeys: String, CodingKey {
-        case id, orderNumber, tableNumber, total, itemsData, sessionToken, guestCount, orderType, createdAt, retryCount
+        case id, orderNumber, tableNumber, total, itemsData, sessionToken, guestCount, orderType, createdAt, retryCount, lastError, requiresManualRetry
     }
 
-    init(id: String = UUID().uuidString, orderNumber: String, tableNumber: String, total: Double, itemsPayload: [[String: Any]], sessionToken: String? = nil, guestCount: Int = 1, orderType: String = "takeaway", createdAt: Date = Date(), retryCount: Int = 0) {
+    init(id: String = UUID().uuidString, orderNumber: String, tableNumber: String, total: Double, itemsPayload: [[String: Any]], sessionToken: String? = nil, guestCount: Int = 1, orderType: String = "takeaway", createdAt: Date = Date(), retryCount: Int = 0, lastError: String? = nil, requiresManualRetry: Bool = false) {
         self.id = id
         self.orderNumber = orderNumber
         self.tableNumber = tableNumber
@@ -324,6 +349,8 @@ struct QueuedOrder: Codable, Identifiable {
         self.orderType = orderType
         self.createdAt = createdAt
         self.retryCount = retryCount
+        self.lastError = lastError
+        self.requiresManualRetry = requiresManualRetry
     }
     
     init(from decoder: Decoder) throws {
@@ -337,6 +364,8 @@ struct QueuedOrder: Codable, Identifiable {
         orderType = try container.decode(String.self, forKey: .orderType)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         retryCount = (try? container.decode(Int.self, forKey: .retryCount)) ?? 0
+        lastError = try? container.decodeIfPresent(String.self, forKey: .lastError)
+        requiresManualRetry = (try? container.decode(Bool.self, forKey: .requiresManualRetry)) ?? false
         
         let itemsData = try container.decode(Data.self, forKey: .itemsData)
         itemsPayload = (try? JSONSerialization.jsonObject(with: itemsData) as? [[String: Any]]) ?? []
@@ -353,6 +382,8 @@ struct QueuedOrder: Codable, Identifiable {
         try container.encode(orderType, forKey: .orderType)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(retryCount, forKey: .retryCount)
+        try container.encodeIfPresent(lastError, forKey: .lastError)
+        try container.encode(requiresManualRetry, forKey: .requiresManualRetry)
         
         let itemsData = (try? JSONSerialization.data(withJSONObject: itemsPayload)) ?? Data()
         try container.encode(itemsData, forKey: .itemsData)

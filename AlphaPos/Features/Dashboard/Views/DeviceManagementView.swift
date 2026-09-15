@@ -5,6 +5,8 @@
 import SwiftUI
 import SwiftData
 import Combine
+import UIKit
+import CoreImage
 
 /// Device Management Dashboard for monitoring all connected devices.
 /// Critical for multi-device enterprise POS operations.
@@ -21,7 +23,12 @@ import Combine
 struct DeviceManagementView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
-    @AppStorage("active_branch_id") private var activeBranchId = ""
+    @AppStorage(BranchContext.storageKey) private var activeBranchId = ""
+    // READ-ONLY MIRROR — the owner/writer of this flag is PrinterSettingsView.
+    // Kept as @AppStorage (not UserDefaults) so the "Receipt Station" indicator
+    // below stays reactive and updates instantly when the value is toggled on
+    // the Printer settings page. Do NOT bind a Toggle to this flag here.
+    @AppStorage("remote_receipt_print_enabled") private var remoteReceiptPrintEnabled = false
 
     @Query(sort: \MerchantDevice.deviceName) private var devices: [MerchantDevice]
     @State private var selectedDevice: MerchantDevice? = nil
@@ -30,11 +37,6 @@ struct DeviceManagementView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            headerSection
-
-            Divider().background(Color.appDivider)
-
             // Content
             HStack(spacing: 0) {
                 // Device grid
@@ -50,26 +52,23 @@ struct DeviceManagementView: View {
             }
         }
         .background(Color.appBackground)
+        .navigationTitle("devices_title".t)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                headerSection
+            }
+        }
         .sheet(isPresented: $showAddDevice) {
-            AddDevicePlaceholder()
+            AddDevicePairingView()
         }
     }
 
     // MARK: - Header
 
     private var headerSection: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("devices_title".t)
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundColor(.textPrimary)
-                Text("\(devices.count) " + "devices_connected".t)
-                    .font(.subheadline)
-                    .foregroundColor(.textSecondary)
-            }
-
-            Spacer()
-
+        HStack(spacing: 12) {
             // Status summary
             HStack(spacing: 16) {
                 statusChip(count: onlineCount, label: "Online", color: .green)
@@ -77,15 +76,31 @@ struct DeviceManagementView: View {
                 statusChip(count: syncingCount, label: "Syncing", color: .orange)
             }
 
-            Spacer()
+            // Receipt station indicator — shows whether THIS iPad prints
+            // receipts for payments taken on staff phones.
+            if remoteReceiptPrintEnabled {
+                HStack(spacing: 6) {
+                    Image(systemName: "printer.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.appAmber)
+                    Text("Receipt Station")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.appAmber)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.appAmber.opacity(0.12))
+                .clipShape(Capsule())
+                .padding(.leading, 12)
+            }
 
             // Add device
             Button {
                 showAddDevice = true
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "plus")
-                    Text("add_device".t)
+                    Image(systemName: "ipad.and.iphone")
+                    Text("connect_device".t)
                 }
                 .font(.system(size: 13, weight: .semibold))
                 .padding(.horizontal, 14)
@@ -96,7 +111,6 @@ struct DeviceManagementView: View {
             }
             .buttonStyle(.plain)
         }
-        .padding()
     }
 
     private func statusChip(count: Int, label: String, color: Color) -> some View {
@@ -118,11 +132,26 @@ struct DeviceManagementView: View {
     private var deviceGridSection: some View {
         ScrollView {
             if devices.filter({ !$0.isDeleted }).isEmpty {
-                ContentUnavailableView(
-                    "No Paired Devices",
-                    systemImage: "ipad.and.iphone.slash",
-                    description: Text("Pair a device to monitor its real sync status here.")
-                )
+                VStack(spacing: 18) {
+                    ContentUnavailableView(
+                        "devices_empty_title".t,
+                        systemImage: "ipad.and.iphone.slash",
+                        description: Text("devices_empty_message".t)
+                    )
+
+                    Button {
+                        showAddDevice = true
+                    } label: {
+                        Label("connect_first_iphone".t, systemImage: "ipad.and.iphone")
+                            .font(.system(size: 15, weight: .semibold))
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
+                            .background(Color.appAccent)
+                            .foregroundColor(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
                 .padding(.top, 80)
             } else {
                 LazyVGrid(columns: [
@@ -392,34 +421,78 @@ struct DeviceManagementView: View {
 
 // MARK: - Add Device Placeholder
 
-private struct AddDevicePlaceholder: View {
+struct AddDevicePairingView: View {
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("active_branch_id") private var activeBranchId = ""
+    @AppStorage(BranchContext.storageKey) private var activeBranchId = ""
+    @Query(sort: \Branch.name) private var allBranches: [Branch]
+    var embedded = false
 
     @State private var pairingToken: String = ""
     @State private var pairingCode: String = ""
     @State private var timeLeft: Int = 0
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
-    // H-5: Polling for pairing completion
     @State private var isPaired: Bool = false
     @State private var pairedDeviceName: String = ""
+    @State private var pendingDevice: NetworkManager.PairedDeviceInfo? = nil
+    @State private var isApproving = false
     @Environment(\.modelContext) private var modelContext
 
     let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-    private var merchantId: UUID {
-        let mStr = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.shared.defaultMerchantId
-        return UUID(uuidString: mStr) ?? UUID(uuidString: "163350b0-056d-4d5e-b5d4-24e7aac5ab6d")!
+    private var merchantId: UUID? {
+        let mStr = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        return UUID(uuidString: mStr)
     }
-    private var branchId: UUID {
-        return UUID(uuidString: activeBranchId) ?? UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+
+    /// Pairing must use the explicitly selected operational branch.
+    private func resolveBranch() -> Branch? {
+        try? BranchContext.shared.requireActiveBranch(in: modelContext)
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 24) {
-                // H-5: Paired success state
+        Group {
+            if embedded {
+                pairingContent
+            } else {
+                NavigationStack {
+                    pairingContent
+                        .navigationTitle("Add Device")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Close") { dismiss() }
+                            }
+                        }
+                }
+            }
+        }
+        .onAppear {
+            generateToken()
+        }
+        .onReceive(timer) { _ in
+            if pendingDevice != nil {
+                // Keep polling approval result; do not expire/regenerate while waiting.
+                if timeLeft > 0 { timeLeft -= 1 }
+                if !isPaired && !pairingToken.isEmpty && timeLeft % 2 == 0 {
+                    Task { await pollPairingStatus() }
+                }
+                return
+            }
+            if timeLeft > 0 {
+                timeLeft -= 1
+                if timeLeft == 0 {
+                    generateToken()
+                }
+                if !isPaired && !pairingToken.isEmpty && timeLeft % 3 == 0 {
+                    Task { await pollPairingStatus() }
+                }
+            }
+        }
+    }
+
+    private var pairingContent: some View {
+        VStack(spacing: 24) {
                 if isPaired {
                     VStack(spacing: 16) {
                         Image(systemName: "checkmark.circle.fill")
@@ -435,10 +508,20 @@ private struct AddDevicePlaceholder: View {
                             .font(.subheadline)
                             .foregroundColor(.textSecondary)
                             .multilineTextAlignment(.center)
-                        Button("done_btn".t) { dismiss() }
+                        Button(embedded ? "เชื่อมต่ออุปกรณ์อีกเครื่อง" : "done_btn".t) {
+                            if embedded {
+                                isPaired = false
+                                pendingDevice = nil
+                                generateToken()
+                            } else {
+                                dismiss()
+                            }
+                        }
                             .buttonStyle(.borderedProminent)
                     }
                     .padding()
+                } else if let pending = pendingDevice {
+                    pendingApprovalCard(pending)
                 } else if isLoading {
                     ProgressView("Generating pairing code...")
                         .padding()
@@ -447,14 +530,14 @@ private struct AddDevicePlaceholder: View {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 40))
                             .foregroundColor(.orange)
-                        Text("Connection Failed")
+                        Text("pairing_connection_failed".t)
                             .font(.headline)
                         Text(error)
                             .font(.caption)
                             .foregroundColor(.textSecondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
-                        Button("Try Again") {
+                        Button("retry".t) {
                             generateToken()
                         }
                         .buttonStyle(.borderedProminent)
@@ -471,7 +554,6 @@ private struct AddDevicePlaceholder: View {
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
 
-                        // QR Code image
                         if let qrImage = generateQRCodeImage(from: "alphapos://pair?token=\(pairingToken)") {
                             Image(uiImage: qrImage)
                                 .interpolation(.none)
@@ -493,10 +575,12 @@ private struct AddDevicePlaceholder: View {
                                 )
                         }
 
-                        // Passcode display (large, e.g. 123 456)
                         VStack(spacing: 4) {
                             Text("หรือป้อนรหัสจับคู่นี้ที่อุปกรณ์พนักงาน")
                                 .font(.caption)
+                                .foregroundColor(.textTertiary)
+                            Text("รหัส 6 หลักต้องกด Approve บน iPad นี้")
+                                .font(.caption2)
                                 .foregroundColor(.textTertiary)
                             Text(formatPasscode(pairingCode))
                                 .font(.system(size: 36, weight: .black, design: .monospaced))
@@ -505,7 +589,6 @@ private struct AddDevicePlaceholder: View {
                         }
                         .padding(.vertical, 8)
 
-                        // Timer countdown
                         HStack(spacing: 6) {
                             Image(systemName: "timer")
                             Text("รหัสหมดอายุใน: \(formatTime(timeLeft))")
@@ -527,43 +610,90 @@ private struct AddDevicePlaceholder: View {
                         .buttonStyle(.plain)
                     }
                 }
-            }
-            .padding()
-            .navigationTitle("Add Device")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-            }
-            .onAppear {
-                generateToken()
-            }
-            .onReceive(timer) { _ in
-                if timeLeft > 0 {
-                    timeLeft -= 1
-                    if timeLeft == 0 {
-                        generateToken()
-                    }
-                    // H-5: Poll every 3 seconds to check if Staff app completed pairing
-                    if !isPaired && !pairingToken.isEmpty && timeLeft % 3 == 0 {
-                        Task { await pollPairingStatus() }
-                    }
-                }
-            }
         }
+        .padding()
+    }
+
+    @ViewBuilder
+    private func pendingApprovalCard(_ pending: NetworkManager.PairedDeviceInfo) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "iphone.badge.checkmark")
+                .font(.system(size: 52))
+                .foregroundColor(.orange)
+            Text("รออนุมัติอุปกรณ์")
+                .font(.title2.weight(.bold))
+                .foregroundColor(.textPrimary)
+            Text("\"\(pending.deviceName)\"")
+                .font(.headline)
+                .foregroundColor(.appAccent)
+            Text("มีอุปกรณ์ขอเชื่อมต่อด้วยรหัส 6 หลัก กรุณายืนยันบนเครื่องนี้ก่อนจึงจะเข้าใช้งานร้านได้")
+                .font(.subheadline)
+                .foregroundColor(.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+
+            if let error = errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    rejectPending(pending)
+                } label: {
+                    Text("ปฏิเสธ")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isApproving)
+
+                Button {
+                    approvePending(pending)
+                } label: {
+                    if isApproving {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Text("Approve")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isApproving)
+            }
+            .padding(.top, 8)
+        }
+        .padding()
     }
 
     private func generateToken() {
+        guard let merchantId else {
+            errorMessage = "pairing_error_no_merchant".t
+            return
+        }
+        guard let branch = resolveBranch() else {
+            errorMessage = "pairing_error_no_branch".t
+            return
+        }
         isLoading = true
         errorMessage = nil
+        pendingDevice = nil
         Task {
             do {
-                let pairing = try await NetworkManager.shared.createPairingToken(merchantId: merchantId, branchId: branchId)
+                // The pairing RPC rejects branches the server doesn't know about,
+                // so push a branch created offline before requesting a token.
+                if !branch.isSynced, try await NetworkManager.shared.uploadBranch(branch) {
+                    await MainActor.run {
+                        branch.isSynced = true
+                        modelContext.saveWithLogging(label: "AddDevicePairingView.pushBranch")
+                    }
+                }
+                let pairing = try await NetworkManager.shared.createPairingToken(merchantId: merchantId, branchId: branch.id)
                 await MainActor.run {
                     self.pairingToken = pairing.token
                     self.pairingCode = pairing.pairingCode
-                    self.timeLeft = Int(pairing.expiresAt.timeIntervalSinceNow)
+                    self.timeLeft = max(1, Int(pairing.expiresAt.timeIntervalSinceNow))
                     self.isLoading = false
                 }
             } catch {
@@ -575,37 +705,105 @@ private struct AddDevicePlaceholder: View {
         }
     }
 
-    // H-5: Poll Supabase to detect if Staff app has completed pairing
     @MainActor
     private func pollPairingStatus() async {
         guard !pairingToken.isEmpty, !isPaired else { return }
         do {
             guard let info = try await NetworkManager.shared.checkPairingStatus(token: pairingToken)
-            else { return }
+            else {
+                // Pending request rejected → device row removed.
+                if pendingDevice != nil {
+                    pendingDevice = nil
+                    errorMessage = "คำขอเชื่อมต่อถูกปฏิเสธ หรือหมดอายุแล้ว"
+                    generateToken()
+                }
+                return
+            }
 
-            // Save new MerchantDevice to SwiftData
-            let newDevice = MerchantDevice(
-                id: info.id,
-                deviceName: info.deviceName,
-                deviceType: info.deviceType,
-                branchId: info.branchId,
-                deviceFingerprintHash: info.fingerprint,
-                isTrusted: info.isTrusted,
-                lastSeenAt: Date(),
-                createdAt: info.createdAt,
-                isSynced: true,
-                isDeleted: false,
-                updatedAt: Date()
-            )
-            modelContext.insert(newDevice)
-            modelContext.saveWithLogging(label: "AddDevicePlaceholder.pollPairingStatus")
+            if !info.isTrusted {
+                pendingDevice = info
+                errorMessage = nil
+                return
+            }
 
+            persistPairedDevice(info)
             pairedDeviceName = info.deviceName
+            pendingDevice = nil
             isPaired = true
             APHaptic.trigger()
         } catch {
             // Silently ignore poll errors — will retry next tick
         }
+    }
+
+    private func approvePending(_ pending: NetworkManager.PairedDeviceInfo) {
+        isApproving = true
+        errorMessage = nil
+        Task {
+            do {
+                try await NetworkManager.shared.approvePendingDevice(id: pending.id)
+                await MainActor.run {
+                    let approved = NetworkManager.PairedDeviceInfo(
+                        id: pending.id,
+                        deviceName: pending.deviceName,
+                        deviceType: pending.deviceType,
+                        branchId: pending.branchId,
+                        isTrusted: true,
+                        fingerprint: pending.fingerprint,
+                        createdAt: pending.createdAt
+                    )
+                    persistPairedDevice(approved)
+                    pairedDeviceName = approved.deviceName
+                    pendingDevice = nil
+                    isPaired = true
+                    isApproving = false
+                    APHaptic.trigger()
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    isApproving = false
+                }
+            }
+        }
+    }
+
+    private func rejectPending(_ pending: NetworkManager.PairedDeviceInfo) {
+        isApproving = true
+        errorMessage = nil
+        Task {
+            do {
+                try await NetworkManager.shared.rejectPendingDevice(id: pending.id)
+                await MainActor.run {
+                    pendingDevice = nil
+                    isApproving = false
+                    generateToken()
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    isApproving = false
+                }
+            }
+        }
+    }
+
+    private func persistPairedDevice(_ info: NetworkManager.PairedDeviceInfo) {
+        let newDevice = MerchantDevice(
+            id: info.id,
+            deviceName: info.deviceName,
+            deviceType: info.deviceType,
+            branchId: info.branchId,
+            deviceFingerprintHash: info.fingerprint,
+            isTrusted: info.isTrusted,
+            lastSeenAt: Date(),
+            createdAt: info.createdAt,
+            isSynced: true,
+            isDeleted: false,
+            updatedAt: Date()
+        )
+        modelContext.insert(newDevice)
+        modelContext.saveWithLogging(label: "AddDevicePlaceholder.pollPairingStatus")
     }
 
     private func generateQRCodeImage(from string: String) -> UIImage? {

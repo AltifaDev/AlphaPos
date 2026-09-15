@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+severity=${1:-warning}
+subject=${2:-"AlphaPos infrastructure alert"}
+body=${3:-"No alert details supplied."}
+config=${ALPHAPOS_CONFIG_FILE:-/opt/alphapos/.env}
+
+if [[ ! -r "$config" ]]; then
+  logger -p daemon.err -t alphapos-alert "Alert configuration is unavailable at $config"
+  exit 1
+fi
+
+set -a
+# The production Supabase environment is root-owned operational configuration.
+# shellcheck disable=SC1090
+. "$config"
+set +a
+
+host_name=$(hostname -f 2>/dev/null || hostname)
+current_time=$(date -Is 2>/dev/null || date +"%Y-%m-%dT%H:%M:%S%z")
+
+has_webhook=0
+has_smtp=0
+delivered_channels=0
+
+# ── 1. Webhook Adapter ────────────────────────────────────────────────────────
+if [[ -n "${ALERT_WEBHOOK_URL:-}" ]]; then
+  has_webhook=1
+  payload=$(python3 -c '
+import json, sys
+data = {
+    "severity": sys.argv[1],
+    "subject": sys.argv[2],
+    "body": sys.argv[3],
+    "host": sys.argv[4],
+    "time": sys.argv[5]
+}
+print(json.dumps(data))
+' "$severity" "$subject" "$body" "$host_name" "$current_time")
+
+  webhook_headers=(-H "Content-Type: application/json")
+  if [[ -n "${ALERT_WEBHOOK_SECRET:-}" ]]; then
+    webhook_headers+=(-H "Authorization: Bearer ${ALERT_WEBHOOK_SECRET}")
+  fi
+
+  if curl --fail --silent --show-error --max-time 10 \
+       -X POST "${ALERT_WEBHOOK_URL}" \
+       "${webhook_headers[@]}" \
+       -d "$payload" >/dev/null; then
+    logger -t alphapos-alert "sent webhook severity=${severity} subject=${subject}"
+    delivered_channels=$((delivered_channels + 1))
+  else
+    logger -p daemon.err -t alphapos-alert "webhook alert delivery failed"
+    exit 1
+  fi
+fi
+
+# ── 2. SMTP Adapter ───────────────────────────────────────────────────────────
+if [[ -n "${SUPABASE_AUTH_SMTP_HOST:-}" && -n "${SUPABASE_AUTH_SMTP_USER:-}" && -n "${SUPABASE_AUTH_SMTP_ADMIN_EMAIL:-}" ]]; then
+  # Only attempt SMTP if SMTP host and user are non-empty
+  smtp_port="${SUPABASE_AUTH_SMTP_PORT:-587}"
+  smtp_pass="${SUPABASE_AUTH_SMTP_PASS:-}"
+
+  # If explicit channel preference is set to webhook-only, skip SMTP
+  if [[ "${ALERT_CHANNEL:-all}" != "webhook" ]]; then
+    has_smtp=1
+    message=$(mktemp)
+    trap 'rm -f "$message"' EXIT
+    {
+      printf 'From: AlphaPos Monitor <%s>\r\n' "$SUPABASE_AUTH_SMTP_ADMIN_EMAIL"
+      printf 'To: %s\r\n' "$SUPABASE_AUTH_SMTP_ADMIN_EMAIL"
+      printf 'Subject: [%s] %s\r\n' "${severity^^}" "$subject"
+      printf 'Content-Type: text/plain; charset=UTF-8\r\n\r\n'
+      printf 'Host: %s\nSeverity: %s\nTime: %s\n\n%s\n' \
+        "$host_name" "$severity" "$current_time" "$body"
+    } > "$message"
+
+    curl_args=(
+      --fail --silent --show-error --max-time 20
+      --url "smtp://${SUPABASE_AUTH_SMTP_HOST}:${smtp_port}"
+      --mail-from "$SUPABASE_AUTH_SMTP_ADMIN_EMAIL"
+      --mail-rcpt "$SUPABASE_AUTH_SMTP_ADMIN_EMAIL"
+      --upload-file "$message"
+    )
+
+    if [[ -n "$smtp_pass" ]]; then
+      curl_args+=(--ssl-reqd --user "${SUPABASE_AUTH_SMTP_USER}:${smtp_pass}")
+    fi
+
+    if curl "${curl_args[@]}"; then
+      logger -t alphapos-alert "sent smtp severity=${severity} subject=${subject}"
+      delivered_channels=$((delivered_channels + 1))
+    else
+      logger -p daemon.err -t alphapos-alert "smtp alert delivery failed"
+      exit 1
+    fi
+  fi
+fi
+
+# ── Fail-Closed Check ────────────────────────────────────────────────────────
+if (( has_webhook == 0 && has_smtp == 0 )); then
+  logger -p daemon.err -t alphapos-alert "no alert delivery channel configured (fail-closed)"
+  echo "ERROR: No valid alert channel (ALERT_WEBHOOK_URL or SUPABASE_AUTH_SMTP_*) configured." >&2
+  exit 1
+fi
+
+if (( delivered_channels == 0 )); then
+  logger -p daemon.err -t alphapos-alert "alert delivery failed across all channels (fail-closed)"
+  exit 1
+fi
+
+exit 0

@@ -1,312 +1,390 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
+/// Enterprise weekly roster: rows = employees, columns = days, cells = shift chips.
+/// Shift templates (morning / afternoon / evening) prefill times; Custom allows free pickers.
 struct ShiftSchedulerCalendarView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    
+
     @Query(sort: \Employee.firstName) private var employees: [Employee]
     @Query private var allShifts: [EmployeeShift]
-    
+    @Query(filter: #Predicate<EmployeeLeave> { !$0.isDeleted && $0.status == "approved" })
+    private var approvedLeaves: [EmployeeLeave]
+
     @AppStorage("app_language") private var appLanguage = "en"
-    
-    // Calendar Navigation State
+
     @State private var currentWeekStart = Date()
-    
-    // Form and Editing States
+    @State private var searchText = ""
+
     @State private var showingFormSheet = false
-    @State private var editingShift: EmployeeShift? = nil
-    
-    @State private var shiftEmployeeId: UUID? = nil
+    @State private var editingShift: EmployeeShift?
+    @State private var shiftEmployeeId: UUID?
     @State private var selectedEmployeeIds: Set<UUID> = []
-    @State private var animateIn = false
     @State private var shiftStart = Date()
     @State private var shiftEnd = Date().addingTimeInterval(28800)
     @State private var shiftRole = "Cashier"
     @State private var shiftNotes = ""
-    
+    @State private var selectedTemplate: ShiftTimeTemplate = .morning
+    @State private var formAnchorDay: Date?
+    @State private var validationMessage: String?
+
+    private let nameColWidth: CGFloat = 128
+    private let hoursColWidth: CGFloat = 56
+    private let rowHeight: CGFloat = 44
+
     private var weekDays: [Date] {
         daysInWeek(for: currentWeekStart)
     }
 
+    private var activeEmployees: [Employee] {
+        employees.filter { $0.resignedAt == nil }
+    }
+
+    private var filteredEmployees: [Employee] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return activeEmployees }
+        return activeEmployees.filter {
+            "\($0.firstName) \($0.lastName)".lowercased().contains(q)
+                || ($0.phone?.lowercased().contains(q) ?? false)
+        }
+    }
+
+    private var weekShiftCount: Int {
+        weekDays.reduce(0) { $0 + shifts(for: nil, on: $1).count }
+    }
+
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.appBackground.ignoresSafeArea()
-                
-                VStack(spacing: 0) {
-                    // 1. Calendar Header (Week navigation)
-                    weekNavigationHeader
-                        .padding()
-                        .background(Color.appSurface)
-                    
-                    Divider().background(Color.appDivider)
-                    
-                    // 2. Day-of-week Date Header Row
-                    GeometryReader { geo in
-                        VStack(spacing: 0) {
-                            dayDateHeaderRow(width: geo.size.width)
-                                .padding(.vertical, 8)
-                                .background(Color.appSurface)
-                            
-                            Divider().background(Color.appDivider)
-                            
-                            // 3. Immersive Hour Timeline & Shift Card Grid
-                            calendarGrid(size: geo.size)
-                        }
-                    }
+            VStack(spacing: 0) {
+                weekNavigationHeader
+                Divider().background(Color.appDivider)
+                toolbarRow
+                Divider().background(Color.appDivider)
+                dayHeaderRow
+                Divider().background(Color.appDivider)
+
+                if filteredEmployees.isEmpty {
+                    emptyEmployees
+                } else {
+                    rosterScroll
                 }
-                .opacity(animateIn ? 1.0 : 0.0)
-                .offset(y: animateIn ? 0 : 30)
             }
-            .navigationTitle("shift_planner".localized(for: appLanguage))
+            .background(Color.appBackground.ignoresSafeArea())
+            .navigationTitle("shift_planner".t)
             .apNavBar()
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button(action: { dismiss() }) {
+                    Button { dismiss() } label: {
                         Text("close_btn_label".t)
                             .fontWeight(.bold)
                             .foregroundColor(.appRose)
                     }
                 }
-                
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    HStack(spacing: 16) {
+                    HStack(spacing: 14) {
                         Button(action: exportReportPDF) {
-                            Label("share_btn_label".t, systemImage: "square.and.arrow.up")
+                            Image(systemName: "square.and.arrow.up")
                         }
-                        .disabled(allShifts.isEmpty)
-                        
+                        .disabled(allShifts.filter { !$0.isDeleted }.isEmpty)
+
                         Button(action: addShiftAction) {
-                            Label("schedule_shift".localized(for: appLanguage), systemImage: "plus")
+                            Image(systemName: "plus")
                         }
-                        .disabled(employees.isEmpty)
+                        .disabled(activeEmployees.isEmpty)
                     }
                 }
             }
             .sheet(isPresented: $showingFormSheet) {
                 shiftFormSheet
             }
+            .alert("Unable to save shift", isPresented: Binding(
+                get: { validationMessage != nil },
+                set: { if !$0 { validationMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) { validationMessage = nil }
+            } message: {
+                Text(validationMessage ?? "")
+            }
         }
         .apColorScheme()
         .onAppear {
             currentWeekStart = startOfWeek(for: Date())
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.8, blendDuration: 0)) {
-                animateIn = true
-            }
         }
     }
-    
-    // MARK: - Header & Navigation Subviews
-    
+
+    // MARK: - Headers
+
     private var weekNavigationHeader: some View {
         HStack {
-            Button(action: {
+            Button {
                 APHaptic.trigger()
                 currentWeekStart = Calendar.current.date(byAdding: .day, value: -7, to: currentWeekStart) ?? currentWeekStart
-            }) {
-                HStack {
-                    Image(systemName: "chevron.left")
-                    Text("prev_week_btn".t)
-                }
-                .font(.subheadline)
-                .fontWeight(.bold)
-                .foregroundColor(.appAccent)
+            } label: {
+                Label("prev_week_btn".t, systemImage: "chevron.left")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(hex: "0F766E"))
             }
-            
+            .buttonStyle(.plain)
+
             Spacer()
-            
-            Text(weekRangeString(for: weekDays))
-                .font(.title3)
-                .fontWeight(.black)
-                .foregroundColor(.textPrimary)
-            
+
+            VStack(spacing: 2) {
+                Text(weekRangeString(for: weekDays))
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.textPrimary)
+                Text("\(weekShiftCount) " + "roster_shifts_this_week".t)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.textTertiary)
+            }
+
             Spacer()
-            
-            Button(action: {
+
+            Button {
                 APHaptic.trigger()
                 currentWeekStart = Calendar.current.date(byAdding: .day, value: 7, to: currentWeekStart) ?? currentWeekStart
-            }) {
-                HStack {
+            } label: {
+                HStack(spacing: 4) {
                     Text("next_week_btn".t)
                     Image(systemName: "chevron.right")
                 }
-                .font(.subheadline)
-                .fontWeight(.bold)
-                .foregroundColor(.appAccent)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color(hex: "0F766E"))
             }
+            .buttonStyle(.plain)
         }
+        .padding(.horizontal, APSpacing.md)
+        .padding(.vertical, 10)
+        .background(Color.appSurface)
     }
-    
-    private func dayDateHeaderRow(width: CGFloat) -> some View {
+
+    private var toolbarRow: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.textTertiary)
+                TextField("employee_search_placeholder".t, text: $searchText)
+                    .font(.system(size: 12))
+                    .textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Color.appSurfaceHigh, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            Spacer()
+
+            Text("\(filteredEmployees.count) " + "timecard_stat_staff".t)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.textTertiary)
+        }
+        .padding(.horizontal, APSpacing.md)
+        .padding(.vertical, 8)
+        .background(Color.appSurface)
+    }
+
+    private var dayHeaderRow: some View {
         HStack(spacing: 0) {
-            let totalWidth = width
-            let colWidth = totalWidth / 7
-            
-            ForEach(0..<7, id: \.self) { dayIndex in
-                let dayDate = weekDays[dayIndex]
-                let isToday = Calendar.current.isDateInToday(dayDate)
-                
-                VStack(spacing: 4) {
-                    Text(dayOfWeekAbbreviation(for: dayDate))
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.textSecondary)
-                    
-                    Text(dayOfMonthString(for: dayDate))
-                        .font(.headline)
-                        .fontWeight(.bold)
-                        .foregroundColor(isToday ? .white : .textPrimary)
-                        .padding(8)
-                        .background(
-                            Circle()
-                                .fill(isToday ? Color.appAccent : Color.clear)
-                                .frame(width: 32, height: 32)
-                        )
-                }
-                .frame(width: colWidth)
-            }
-        }
-    }
-    
-    // MARK: - Core Calendar Grid
-    
-    private func calendarGrid(size: CGSize) -> some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            ZStack(alignment: .topLeading) {
-                // Hour Grid Background Lines (Full Width)
-                VStack(spacing: 0) {
-                    ForEach(8..<22, id: \.self) { hour in
-                        VStack {
-                            Divider().background(Color.appDivider)
-                            Spacer()
-                        }
-                        .frame(height: 60)
-                    }
-                }
-                
-                // Shift Cards & Touch Overlay
-                let totalWidth = size.width
-                let colWidth = totalWidth / 7
-                
-                HStack(spacing: 0) {
-                    ForEach(0..<7, id: \.self) { dayIndex in
-                        let dayDate = weekDays[dayIndex]
-                        
-                        ZStack(alignment: .topLeading) {
-                            // Overlay hour tap zones for quick scheduling
-                            VStack(spacing: 0) {
-                                ForEach(8..<22, id: \.self) { hour in
-                                    Color.clear
-                                        .frame(height: 60)
-                                        .contentShape(Rectangle())
-                                        .onTapGesture {
-                                            addNewShiftAt(day: dayDate, hour: hour)
-                                        }
-                                }
-                            }
-                            
-                            // Shift cards rendered on this column
-                            let daySegments = shiftSegmentsForDay(dayDate)
-                            ForEach(daySegments) { segment in
-                                let yOffset = calculateYOffset(for: segment.displayStart)
-                                
-                                shiftCard(segment.shift, segmentStart: segment.displayStart, segmentEnd: segment.displayEnd)
-                                    .frame(width: colWidth - 6)
-                                    .offset(x: 3, y: yOffset)
-                                    .onTapGesture {
-                                        editShiftAction(segment.shift)
-                                    }
-                            }
-                        }
-                        .frame(width: colWidth)
-                        .overlay(
-                            Rectangle().fill(Color.appDivider).frame(width: 1), alignment: .leading
-                        )
-                    }
-                }
-            }
-            .frame(height: 14 * 60) // 14 hours total, 60 pt height each
-        }
-    }
-    
-    private func shiftCard(_ shift: EmployeeShift, segmentStart: Date, segmentEnd: Date) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(shift.role ?? "Staff")
+            Text("employee_header".t)
                 .font(.system(size: 10, weight: .bold))
-                .foregroundColor(.white)
-                .lineLimit(1)
-            
-            Text("\(shift.employee?.firstName ?? "Staff")")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.white.opacity(0.9))
-                .lineLimit(1)
-            
-            Text("\(segmentStart.formatted(date: .omitted, time: .shortened)) - \(segmentEnd.formatted(date: .omitted, time: .shortened))")
-                .font(.system(size: 8))
-                .foregroundColor(.white.opacity(0.8))
-                .lineLimit(1)
+                .foregroundStyle(Color.textTertiary)
+                .frame(width: nameColWidth, alignment: .leading)
+                .padding(.leading, 10)
+
+            ForEach(weekDays, id: \.self) { day in
+                let isToday = Calendar.current.isDateInToday(day)
+                VStack(spacing: 1) {
+                    Text(dayOfWeekAbbreviation(for: day))
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color.textTertiary)
+                    Text(dayOfMonthString(for: day))
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(isToday ? Color.white : Color.textPrimary)
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(isToday ? Color(hex: "0F766E") : Color.clear))
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            Text("roster_hrs_week".t)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(Color.textTertiary)
+                .frame(width: hoursColWidth)
+                .padding(.trailing, 6)
         }
-        .padding(6)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: APRadius.sm)
-                .fill(cardColorForRole(shift.role))
-        )
-        .shadow(color: Color.black.opacity(0.1), radius: 2, x: 0, y: 1)
+        .padding(.vertical, 8)
+        .background(Color.appSurfaceHigh.opacity(0.55))
     }
-    
-    // MARK: - Scheduling Forms popovers
-    
+
+    // MARK: - Roster grid
+
+    private var rosterScroll: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(filteredEmployees) { emp in
+                    employeeRow(emp)
+                }
+            }
+        }
+    }
+
+    private func employeeRow(_ emp: Employee) -> some View {
+        let weekHours = weeklyHours(for: emp)
+
+        return HStack(spacing: 0) {
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(Color(hex: "0F766E").opacity(0.14))
+                        .frame(width: 26, height: 26)
+                    Text(String(emp.firstName.prefix(1) + emp.lastName.prefix(1)))
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color(hex: "0F766E"))
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(emp.firstName) \(emp.lastName)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.textPrimary)
+                        .lineLimit(1)
+                    Text(emp.employmentType.capitalized)
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.textTertiary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(width: nameColWidth, alignment: .leading)
+            .padding(.leading, 8)
+
+            ForEach(weekDays, id: \.self) { day in
+                dayCell(employee: emp, day: day)
+                    .frame(maxWidth: .infinity)
+            }
+
+            Text(String(format: "%.1f", weekHours))
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .foregroundStyle(weekHours > 48 ? Color.appRose : Color.textPrimary)
+                .frame(width: hoursColWidth)
+                .padding(.trailing, 6)
+        }
+        .frame(height: rowHeight)
+        .background(Color.appBackground)
+        .overlay(alignment: .bottom) {
+            Divider().background(Color.appDivider)
+        }
+    }
+
+    private func dayCell(employee: Employee, day: Date) -> some View {
+        let dayShifts = shifts(for: employee, on: day)
+
+        return Button {
+            if let first = dayShifts.first {
+                editShiftAction(first)
+            } else {
+                addShiftFor(employee: employee, day: day)
+            }
+        } label: {
+            Group {
+                if let shift = dayShifts.first {
+                    VStack(spacing: 1) {
+                        Text(timeRangeLabel(shift))
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        if let role = shift.role, !role.isEmpty {
+                            Text(role)
+                                .font(.system(size: 8, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.9))
+                                .lineLimit(1)
+                        }
+                        if dayShifts.count > 1 {
+                            Text("+\(dayShifts.count - 1)")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.85))
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, minHeight: 34)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(chipColor(for: shift.role))
+                    )
+                } else {
+                    Text("roster_off".t)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Color.textTertiary)
+                        .frame(maxWidth: .infinity, minHeight: 34)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(Color.appBorderSubtle, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                        )
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var emptyEmployees: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "person.text.rectangle")
+                .font(.system(size: 28))
+                .foregroundStyle(Color.textTertiary)
+            Text("no_employees_registered".t)
+                .font(.caption)
+                .foregroundStyle(Color.textSecondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Form
+
     private var roleSuggestions: [String] {
         if appLanguage == "th" {
             return ["แคชเชียร์", "กุ๊ก/คนครัว", "พนักงานเสิร์ฟ", "ผู้จัดการ", "บาริสต้า", "พนักงานทำความสะอาด"]
-        } else {
-            return ["Cashier", "Cook", "Waiter", "Manager", "Barista", "Cleaner"]
         }
+        return ["Cashier", "Cook", "Waiter", "Manager", "Barista", "Cleaner"]
     }
 
     private var shiftFormSheet: some View {
         NavigationStack {
             Form {
-                if editingShift == nil {
-                    Section(header: Text("select_employees_batch".localized(for: appLanguage))) {
-                        HStack {
-                            Button(action: {
-                                selectedEmployeeIds = Set(employees.map { $0.id })
-                            }) {
-                                Text("select_all".localized(for: appLanguage))
-                                    .font(.caption)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.appAccent)
-                            }
-                            .buttonStyle(.borderless)
-                            
-                            Spacer()
-                            
-                            Button(action: {
-                                selectedEmployeeIds.removeAll()
-                            }) {
-                                Text("clear_all".localized(for: appLanguage))
-                                    .font(.caption)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.appRose)
-                            }
-                            .buttonStyle(.borderless)
+                Section(header: Text("roster_shift_template".t)) {
+                    Picker("roster_shift_template".t, selection: $selectedTemplate) {
+                        ForEach(ShiftTimeTemplate.allCases) { template in
+                            Text(template.title).tag(template)
                         }
-                        .padding(.vertical, 4)
-                        
-                        ForEach(employees) { emp in
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: selectedTemplate) { _, newValue in
+                        applyTemplate(newValue)
+                    }
+
+                    if selectedTemplate != .custom {
+                        Text(templateSummary)
+                            .font(.caption)
+                            .foregroundStyle(Color.textSecondary)
+                    }
+                }
+
+                if editingShift == nil && formAnchorDay == nil {
+                    Section(header: Text("select_employees_batch".t)) {
+                        ForEach(activeEmployees) { emp in
                             HStack {
                                 Text("\(emp.firstName) \(emp.lastName)")
-                                    .foregroundColor(.textPrimary)
                                 Spacer()
-                                if selectedEmployeeIds.contains(emp.id) {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundColor(.appAccent)
-                                } else {
-                                    Image(systemName: "circle")
-                                        .foregroundColor(.textTertiary)
-                                }
+                                Image(systemName: selectedEmployeeIds.contains(emp.id) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedEmployeeIds.contains(emp.id) ? Color(hex: "0F766E") : Color.textTertiary)
                             }
                             .contentShape(Rectangle())
                             .onTapGesture {
@@ -318,178 +396,167 @@ struct ShiftSchedulerCalendarView: View {
                             }
                         }
                     }
-                } else {
-                    Section(header: Text("employee_header".localized(for: appLanguage))) {
+                } else if editingShift != nil || formAnchorDay != nil {
+                    Section(header: Text("employee_header".t)) {
                         Picker("Select Employee", selection: $shiftEmployeeId) {
-                            Text("Choose...").tag(nil as UUID?)
-                            ForEach(employees) { emp in
+                            Text("choose_dropdown_placeholder".t).tag(nil as UUID?)
+                            ForEach(activeEmployees) { emp in
                                 Text("\(emp.firstName) \(emp.lastName)").tag(emp.id as UUID?)
                             }
                         }
                     }
                 }
-                
-                Section(header: Text("time_date_header".localized(for: appLanguage))) {
-                    DatePicker("starts_field".localized(for: appLanguage), selection: $shiftStart)
-                    DatePicker("ends_field".localized(for: appLanguage), selection: $shiftEnd)
+
+                Section(header: Text("time_date_header".t)) {
+                    if selectedTemplate == .custom {
+                        DatePicker("starts_field".t, selection: $shiftStart)
+                        DatePicker("ends_field".t, selection: $shiftEnd)
+                    } else {
+                        DatePicker("starts_field".t, selection: $shiftStart, displayedComponents: .date)
+                            .onChange(of: shiftStart) { _, newDay in
+                                applyTemplate(selectedTemplate, anchoring: newDay)
+                            }
+                        HStack {
+                            Text(timeLabel(shiftStart) + " – " + timeLabel(shiftEnd))
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            Spacer()
+                            Text(selectedTemplate.title)
+                                .font(.caption)
+                                .foregroundStyle(Color.textSecondary)
+                        }
+                    }
                 }
-                
-                Section(header: Text("role_notes_header".localized(for: appLanguage))) {
+
+                Section(header: Text("role_notes_header".t)) {
                     HStack {
-                        TextField("role_field_placeholder".localized(for: appLanguage), text: $shiftRole)
+                        TextField("role_field_placeholder".t, text: $shiftRole)
                         Menu {
                             ForEach(roleSuggestions, id: \.self) { role in
-                                Button(role) {
-                                    shiftRole = role
-                                }
+                                Button(role) { shiftRole = role }
                             }
                         } label: {
                             Image(systemName: "tag.circle.fill")
-                                .foregroundColor(.appAccent)
-                                .font(.title3)
+                                .foregroundStyle(Color(hex: "0F766E"))
                         }
                     }
-                    TextField("notes_field".localized(for: appLanguage), text: $shiftNotes)
+                    TextField("notes_field".t, text: $shiftNotes)
                 }
-                
+
                 if editingShift != nil {
                     Section {
                         Button(role: .destructive, action: deleteShift) {
-                            Text("delete_shift_btn".localized(for: appLanguage))
+                            Text("delete_shift_btn".t)
                                 .frame(maxWidth: .infinity)
-                                .alignmentGuide(.leading) { _ in 0 }
                         }
                     }
                 }
             }
-            .navigationTitle(editingShift == nil ? "schedule_shift".localized(for: appLanguage) : "Edit Shift")
+            .navigationTitle(editingShift == nil ? "schedule_shift".t : "Edit Shift")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("cancel_btn".localized(for: appLanguage)) {
+                    Button("cancel_btn".t) {
                         showingFormSheet = false
                         editingShift = nil
+                        formAnchorDay = nil
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("save_btn".localized(for: appLanguage)) {
-                        saveShift()
-                    }
-                    .disabled(editingShift == nil ? (selectedEmployeeIds.isEmpty || shiftStart >= shiftEnd) : (shiftEmployeeId == nil || shiftStart >= shiftEnd))
+                    Button("save_btn".t, action: saveShift)
+                        .disabled(!canSave)
                 }
             }
         }
         .apColorScheme()
     }
-    
-    // MARK: - Helper Core Calculations
-    
-    private func startOfWeek(for date: Date) -> Date {
-        let calendar = Calendar.current
-        var components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
-        components.weekday = 2 // Monday start
-        return calendar.date(from: components) ?? date
+
+    private var templateSummary: String {
+        "\(selectedTemplate.title): \(timeLabel(shiftStart)) – \(timeLabel(shiftEnd))"
     }
-    
+
+    private var canSave: Bool {
+        guard shiftStart < shiftEnd else { return false }
+        if editingShift != nil || formAnchorDay != nil {
+            return shiftEmployeeId != nil
+        }
+        return !selectedEmployeeIds.isEmpty
+    }
+
+    // MARK: - Data helpers
+
+    private func shifts(for employee: Employee?, on day: Date) -> [EmployeeShift] {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: day)
+        guard let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
+
+        return allShifts.filter { shift in
+            guard !shift.isDeleted else { return false }
+            if let employee, shift.employee?.id != employee.id { return false }
+            return shift.scheduledStart < nextDay && shift.scheduledEnd > dayStart
+        }
+        .sorted { $0.scheduledStart < $1.scheduledStart }
+    }
+
+    private func weeklyHours(for employee: Employee) -> Double {
+        guard let start = weekDays.first,
+              let end = Calendar.current.date(byAdding: .day, value: 7, to: start) else { return 0 }
+        let intervals = allShifts.filter { !$0.isDeleted && $0.employee?.id == employee.id }.map {
+            ShiftSchedulingPolicy.Interval(id: $0.id, start: $0.scheduledStart, end: $0.scheduledEnd)
+        }
+        return ShiftSchedulingPolicy.hours(in: DateInterval(start: start, end: end), intervals: intervals)
+    }
+
+    private func timeRangeLabel(_ shift: EmployeeShift) -> String {
+        "\(timeLabel(shift.scheduledStart))–\(timeLabel(shift.scheduledEnd))"
+    }
+
+    private func timeLabel(_ date: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        return fmt.string(from: date)
+    }
+
+    private func chipColor(for role: String?) -> Color {
+        let r = (role ?? "").lowercased()
+        if r.contains("cashier") || r.contains("แคชเชียร์") { return Color(hex: "0F766E") }
+        if r.contains("cook") || r.contains("kitchen") || r.contains("กุ๊ก") || r.contains("ครัว") { return Color(hex: "D97706") }
+        if r.contains("manager") || r.contains("ผู้จัดการ") { return Color(hex: "BE123C") }
+        return Color(hex: "334155")
+    }
+
+    // MARK: - Calendar helpers
+
+    private func startOfWeek(for date: Date) -> Date {
+        var calendar = Calendar.current
+        calendar.firstWeekday = 2
+        let dayStart = calendar.startOfDay(for: date)
+        if let interval = calendar.dateInterval(of: .weekOfYear, for: dayStart) {
+            return interval.start
+        }
+        let weekday = calendar.component(.weekday, from: dayStart)
+        let daysFromMonday = (weekday + 5) % 7
+        return calendar.date(byAdding: .day, value: -daysFromMonday, to: dayStart) ?? dayStart
+    }
+
     private func daysInWeek(for date: Date) -> [Date] {
         let calendar = Calendar.current
         let start = startOfWeek(for: date)
-        return (0..<7).compactMap { day in
-            calendar.date(byAdding: .day, value: day, to: start)
-        }
+        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
     }
-    
-    struct ShiftSegment: Identifiable {
-        let id: String
-        let shift: EmployeeShift
-        let displayStart: Date
-        let displayEnd: Date
-    }
-    
-    private func shiftSegmentsForDay(_ date: Date) -> [ShiftSegment] {
-        let calendar = Calendar.current
-        let dayStart = calendar.startOfDay(for: date)
-        guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)?.addingTimeInterval(-1) else { return [] }
-        
-        var segments: [ShiftSegment] = []
-        
-        for shift in allShifts {
-            if shift.isDeleted { continue }
-            
-            // Check if shift overlaps with this day
-            if shift.scheduledStart <= dayEnd && shift.scheduledEnd >= dayStart {
-                // Calculate grid start & end on this day
-                let gridStart = calendar.date(bySettingHour: 8, minute: 0, second: 0, of: date) ?? date
-                let gridEnd = calendar.date(bySettingHour: 22, minute: 0, second: 0, of: date) ?? date
-                
-                // Display start: if it started today, use shift start (clamped to gridStart). Otherwise gridStart.
-                let displayStart: Date
-                if calendar.isDate(shift.scheduledStart, inSameDayAs: date) {
-                    displayStart = max(gridStart, shift.scheduledStart)
-                } else {
-                    displayStart = gridStart
-                }
-                
-                // Display end: if it ends today, use shift end (clamped to gridEnd). Otherwise gridEnd.
-                let displayEnd: Date
-                if calendar.isDate(shift.scheduledEnd, inSameDayAs: date) {
-                    displayEnd = min(gridEnd, shift.scheduledEnd)
-                } else {
-                    displayEnd = gridEnd
-                }
-                
-                if displayStart < displayEnd {
-                    let segmentId = "\(shift.id.uuidString)-\(calendar.component(.year, from: date))-\(calendar.component(.month, from: date))-\(calendar.component(.day, from: date))"
-                    segments.append(ShiftSegment(id: segmentId, shift: shift, displayStart: displayStart, displayEnd: displayEnd))
-                }
-            }
-        }
-        return segments
-    }
-    
-    private func calculateYOffset(for date: Date) -> CGFloat {
-        let calendar = Calendar.current
-        let hour = CGFloat(calendar.component(.hour, from: date))
-        let minute = CGFloat(calendar.component(.minute, from: date))
-        
-        let elapsedHours = (hour + minute / 60.0) - 8.0
-        return max(0.0, elapsedHours * 60.0)
-    }
-    
-    private func calculateHeight(for start: Date, end: Date) -> CGFloat {
-        let durationSeconds = end.timeIntervalSince(start)
-        let durationHours = CGFloat(durationSeconds / 3600.0)
-        return max(30.0, durationHours * 60.0)
-    }
-    
-    private func cardColorForRole(_ role: String?) -> LinearGradient {
-        let r = role?.lowercased() ?? ""
-        if r.contains("cashier") {
-            return APGradient.accent
-        } else if r.contains("cook") || r.contains("kitchen") {
-            return APGradient.warning
-        } else if r.contains("manager") {
-            return APGradient.destructive
-        } else {
-            return APGradient.positive
-        }
-    }
-    
-    // MARK: - Date Formatting Helpers
-    
+
     private func dayOfWeekAbbreviation(for date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: appLanguage)
         formatter.dateFormat = "EEE"
         return formatter.string(from: date).uppercased()
     }
-    
+
     private func dayOfMonthString(for date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: appLanguage)
         formatter.dateFormat = "d"
         return formatter.string(from: date)
     }
-    
+
     private func weekRangeString(for days: [Date]) -> String {
         guard let first = days.first, let last = days.last else { return "" }
         let formatter = DateFormatter()
@@ -498,37 +565,40 @@ struct ShiftSchedulerCalendarView: View {
         formatter.timeStyle = .none
         return "\(formatter.string(from: first)) – \(formatter.string(from: last))"
     }
-    
-    // MARK: - Action Actions
-    
-    private func addNewShiftAt(day: Date, hour: Int) {
+
+    // MARK: - Actions
+
+    private func applyTemplate(_ template: ShiftTimeTemplate, anchoring: Date? = nil) {
+        selectedTemplate = template
+        guard template != .custom else { return }
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: anchoring ?? formAnchorDay ?? shiftStart)
+        let start = calendar.date(bySettingHour: template.startHour, minute: template.startMinute, second: 0, of: day) ?? day
+        var end = calendar.date(bySettingHour: template.endHour, minute: template.endMinute, second: 0, of: day) ?? day
+        if template.crossesMidnight {
+            end = calendar.date(byAdding: .day, value: 1, to: end) ?? end
+        }
+        shiftStart = start
+        shiftEnd = end
+    }
+
+    private func addShiftFor(employee: Employee, day: Date) {
         APHaptic.trigger()
         editingShift = nil
-        shiftEmployeeId = employees.first?.id
-        
-        selectedEmployeeIds = []
-        if let firstEmpId = employees.first?.id {
-            selectedEmployeeIds.insert(firstEmpId)
-        }
-        
-        // Construct pre-filled dates
-        let calendar = Calendar.current
-        var comps = calendar.dateComponents([.year, .month, .day], from: day)
-        comps.hour = hour
-        comps.minute = 0
-        comps.second = 0
-        let start = calendar.date(from: comps) ?? Date()
-        
-        shiftStart = start
-        shiftEnd = calendar.date(byAdding: .hour, value: 8, to: start) ?? start.addingTimeInterval(28800)
+        formAnchorDay = day
+        shiftEmployeeId = employee.id
+        selectedEmployeeIds = [employee.id]
+        selectedTemplate = .morning
+        applyTemplate(.morning, anchoring: day)
         shiftRole = "Cashier"
         shiftNotes = ""
         showingFormSheet = true
     }
-    
+
     private func editShiftAction(_ shift: EmployeeShift) {
         APHaptic.trigger()
         editingShift = shift
+        formAnchorDay = shift.scheduledStart
         shiftEmployeeId = shift.employee?.id
         selectedEmployeeIds = []
         if let empId = shift.employee?.id {
@@ -538,29 +608,59 @@ struct ShiftSchedulerCalendarView: View {
         shiftEnd = shift.scheduledEnd
         shiftRole = shift.role ?? ""
         shiftNotes = shift.notes ?? ""
+        selectedTemplate = ShiftTimeTemplate.matching(start: shift.scheduledStart, end: shift.scheduledEnd) ?? .custom
         showingFormSheet = true
     }
-    
+
     private func addShiftAction() {
         editingShift = nil
-        shiftEmployeeId = employees.first?.id
-        
-        selectedEmployeeIds = []
-        if let firstEmpId = employees.first?.id {
-            selectedEmployeeIds.insert(firstEmpId)
-        }
-        
-        shiftStart = Date()
-        shiftEnd = Date().addingTimeInterval(28800)
+        formAnchorDay = nil
+        shiftEmployeeId = activeEmployees.first?.id
+        selectedEmployeeIds = Set(activeEmployees.prefix(1).map(\.id))
+        let anchor = weekDays.first(where: { Calendar.current.isDateInToday($0) }) ?? weekDays.first ?? Date()
+        selectedTemplate = .morning
+        applyTemplate(.morning, anchoring: anchor)
         shiftRole = "Cashier"
         shiftNotes = ""
         showingFormSheet = true
     }
-    
+
     private func saveShift() {
+        guard canSave else { return }
+
+        let employeeIds = editingShift != nil || formAnchorDay != nil
+            ? Set(shiftEmployeeId.map { [$0] } ?? [])
+            : selectedEmployeeIds
+        for employeeId in employeeIds {
+            let intervals = allShifts.filter { !$0.isDeleted && $0.employee?.id == employeeId }.map {
+                ShiftSchedulingPolicy.Interval(id: $0.id, start: $0.scheduledStart, end: $0.scheduledEnd)
+            }
+            if ShiftSchedulingPolicy.hasConflict(
+                start: shiftStart,
+                end: shiftEnd,
+                existing: intervals,
+                excluding: editingShift?.id
+            ) {
+                validationMessage = "This employee already has an overlapping shift."
+                return
+            }
+            if approvedLeaves.contains(where: {
+                $0.employee?.id == employeeId &&
+                ShiftSchedulingPolicy.overlaps(
+                    start: shiftStart,
+                    end: shiftEnd,
+                    otherStart: Calendar.current.startOfDay(for: $0.startDate),
+                    otherEnd: Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: $0.endDate)) ?? $0.endDate
+                )
+            }) {
+                validationMessage = "This employee has approved leave during the selected time."
+                return
+            }
+        }
+
         if let sh = editingShift {
             guard let empId = shiftEmployeeId,
-                  let emp = employees.first(where: { $0.id == empId }) else { return }
+                  let emp = activeEmployees.first(where: { $0.id == empId }) else { return }
             sh.employee = emp
             sh.scheduledStart = shiftStart
             sh.scheduledEnd = shiftEnd
@@ -568,48 +668,62 @@ struct ShiftSchedulerCalendarView: View {
             sh.notes = shiftNotes.isEmpty ? nil : shiftNotes
             sh.updatedAt = Date()
             sh.isSynced = false
+        } else if formAnchorDay != nil {
+            guard let empId = shiftEmployeeId,
+                  let emp = activeEmployees.first(where: { $0.id == empId }) else { return }
+            let newShift = EmployeeShift(
+                employee: emp,
+                scheduledStart: shiftStart,
+                scheduledEnd: shiftEnd,
+                role: shiftRole.isEmpty ? nil : shiftRole,
+                notes: shiftNotes.isEmpty ? nil : shiftNotes
+            )
+            modelContext.insert(newShift)
         } else {
             for empId in selectedEmployeeIds {
-                if let emp = employees.first(where: { $0.id == empId }) {
-                    let newShift = EmployeeShift(
-                        employee: emp,
-                        scheduledStart: shiftStart,
-                        scheduledEnd: shiftEnd,
-                        role: shiftRole.isEmpty ? nil : shiftRole,
-                        notes: shiftNotes.isEmpty ? nil : shiftNotes
-                    )
-                    modelContext.insert(newShift)
-                }
+                guard let emp = activeEmployees.first(where: { $0.id == empId }) else { continue }
+                let newShift = EmployeeShift(
+                    employee: emp,
+                    scheduledStart: shiftStart,
+                    scheduledEnd: shiftEnd,
+                    role: shiftRole.isEmpty ? nil : shiftRole,
+                    notes: shiftNotes.isEmpty ? nil : shiftNotes
+                )
+                modelContext.insert(newShift)
             }
         }
+
         modelContext.saveWithLogging(label: #function)
         showingFormSheet = false
         editingShift = nil
+        formAnchorDay = nil
+        APHaptic.trigger()
     }
-    
+
     private func deleteShift() {
         if let sh = editingShift {
-            modelContext.delete(sh)
+            sh.isDeleted = true
+            sh.isSynced = false
+            sh.updatedAt = Date()
             modelContext.saveWithLogging(label: #function)
         }
         showingFormSheet = false
         editingShift = nil
+        formAnchorDay = nil
     }
-    
+
     private func exportReportPDF() {
         let renderer = ImageRenderer(content: ShiftReportView(weekDays: weekDays, allShifts: allShifts, appLanguage: appLanguage))
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("Weekly_Shift_Schedule_\(Date().timeIntervalSince1970).pdf")
-        
+
         renderer.render { size, context in
             var box = CGRect(origin: .zero, size: size)
             guard let pdfContext = CGContext(url as CFURL, mediaBox: &box, nil) else { return }
-            
             pdfContext.beginPDFPage(nil)
             context(pdfContext)
             pdfContext.endPDFPage()
             pdfContext.closePDF()
-            
-            // Native Share sheet trigger
+
             DispatchQueue.main.async {
                 let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
                 if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
@@ -619,21 +733,77 @@ struct ShiftSchedulerCalendarView: View {
                         popover.sourceRect = CGRect(x: rootVC.view.bounds.midX, y: rootVC.view.bounds.midY, width: 0, height: 0)
                         popover.permittedArrowDirections = []
                     }
-                    rootVC.present(activityVC, animated: true, completion: nil)
+                    rootVC.present(activityVC, animated: true)
                 }
             }
         }
     }
 }
 
-// MARK: - Local translation helper extensions
+// MARK: - Shift time templates (day parts)
 
-fileprivate extension String {
-    func localized(for language: String) -> String {
-        return self.t
+enum ShiftTimeTemplate: String, CaseIterable, Identifiable {
+    case morning
+    case afternoon
+    case evening
+    case custom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .morning: return "roster_template_morning".t
+        case .afternoon: return "roster_template_afternoon".t
+        case .evening: return "roster_template_evening".t
+        case .custom: return "roster_template_custom".t
+        }
+    }
+
+    var startHour: Int {
+        switch self {
+        case .morning: return 9
+        case .afternoon: return 14
+        case .evening: return 17
+        case .custom: return 9
+        }
+    }
+
+    var startMinute: Int { 0 }
+
+    var endHour: Int {
+        switch self {
+        case .morning: return 17
+        case .afternoon: return 22
+        case .evening: return 1
+        case .custom: return 17
+        }
+    }
+
+    var endMinute: Int { 0 }
+
+    var crossesMidnight: Bool { self == .evening }
+
+    static func matching(start: Date, end: Date, calendar: Calendar = .current) -> ShiftTimeTemplate? {
+        let sh = calendar.component(.hour, from: start)
+        let sm = calendar.component(.minute, from: start)
+        let eh = calendar.component(.hour, from: end)
+        let em = calendar.component(.minute, from: end)
+        let crosses = !calendar.isDate(start, inSameDayAs: end)
+
+        for template in [ShiftTimeTemplate.morning, .afternoon, .evening] where sm == 0 && em == 0 {
+            if sh == template.startHour && eh == template.endHour && crosses == template.crossesMidnight {
+                return template
+            }
+        }
+        return nil
     }
 }
 
+// MARK: - Local translation helper
+
+fileprivate extension String {
+    func localized(for language: String) -> String { self.t }
+}
 
 // MARK: - ShiftReportView for PDF Generation
 
@@ -641,32 +811,28 @@ struct ShiftReportView: View {
     let weekDays: [Date]
     let allShifts: [EmployeeShift]
     let appLanguage: String
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            // Header
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("weekly_shift_report_title".t)
                         .font(.title)
                         .fontWeight(.black)
                         .foregroundColor(.primary)
-                    
                     Text("Generated on \(Date().formatted(date: .long, time: .shortened))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                
                 Image(systemName: "calendar.badge.clock")
                     .font(.system(size: 40))
                     .foregroundColor(.accentColor)
             }
             .padding(.bottom, 10)
-            
+
             Divider()
-            
-            // Loop through each day of the week
+
             ForEach(weekDays, id: \.self) { day in
                 let dayShifts = shiftsForDay(day)
                 if !dayShifts.isEmpty {
@@ -679,7 +845,7 @@ struct ShiftReportView: View {
                             .padding(.horizontal, 8)
                             .background(Color.accentColor.opacity(0.1))
                             .cornerRadius(4)
-                        
+
                         ForEach(dayShifts) { shift in
                             HStack(alignment: .top) {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -711,9 +877,9 @@ struct ShiftReportView: View {
             }
         }
         .padding(40)
-        .frame(width: 612) // Letter page width
+        .frame(width: 612)
     }
-    
+
     private func shiftsForDay(_ date: Date) -> [EmployeeShift] {
         let calendar = Calendar.current
         let dayStart = calendar.startOfDay(for: date)
@@ -722,7 +888,7 @@ struct ShiftReportView: View {
             !shift.isDeleted && shift.scheduledStart <= dayEnd && shift.scheduledEnd >= dayStart
         }
     }
-    
+
     private func dayHeaderString(for date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: appLanguage)

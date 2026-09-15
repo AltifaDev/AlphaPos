@@ -2,7 +2,6 @@ import Foundation
 import Combine
 import SwiftUI
 import AVFoundation
-import UserNotifications
 import UIKit
 
 // MARK: - In-App Notification Model
@@ -59,7 +58,22 @@ struct InAppNotification: Identifiable {
     let title: String
     let body: String
     let tableNumber: String?   // สำหรับ navigate ไปโต๊ะที่เกี่ยวข้อง
+    let dedupeKey: String?
     let createdAt: Date = Date()
+
+    init(
+        type: InAppNotificationType,
+        title: String,
+        body: String,
+        tableNumber: String?,
+        dedupeKey: String? = nil
+    ) {
+        self.type = type
+        self.title = title
+        self.body = body
+        self.tableNumber = tableNumber
+        self.dedupeKey = dedupeKey
+    }
 
     /// แสดงผลอยู่นานแค่ไหน (วินาที)
     var displayDuration: TimeInterval {
@@ -86,6 +100,7 @@ final class InAppNotificationManager: ObservableObject {
 
     /// แจ้งเตือนล่าสุด — สำหรับ views ที่ต้องการแค่ตัวล่าสุด
     @Published var latestNotification: InAppNotification? = nil
+    private var recentlyDelivered: [String: Date] = [:]
 
     private init() {}
 
@@ -93,15 +108,36 @@ final class InAppNotificationManager: ObservableObject {
 
     /// ส่งการแจ้งเตือนใหม่ — เรียกจาก SyncEngine (ไม่ต้องเป็น @MainActor ที่ call site)
     func post(_ notification: InAppNotification) {
-        activeNotifications.insert(notification, at: 0)
+        if let key = notification.dedupeKey {
+            let now = Date()
+            if let last = recentlyDelivered[key],
+               now.timeIntervalSince(last) < 10 {
+                return
+            }
+            recentlyDelivered[key] = now
+            recentlyDelivered = recentlyDelivered.filter {
+                now.timeIntervalSince($0.value) < 600
+            }
+        }
+        // Banner is a latest-event surface, not a replay queue. Durable/live
+        // events remain in NotificationStore; superseded banners must not
+        // reappear after a newer banner expires.
+        activeNotifications = [notification]
         latestNotification = notification
 
-        // ส่ง Local Notification เมื่อแอปอยู่ background / ไม่ active
-        // ไม่ต้องการ Push Notifications capability — เป็นแค่ local notification
-        postLocalNotificationIfNeeded(notification)
+        if UIApplication.shared.applicationState == .active,
+           UIAccessibility.isVoiceOverRunning {
+            UIAccessibility.post(
+                notification: .announcement,
+                argument: "\(notification.title). \(notification.body)"
+            )
+        }
 
         // เล่นเสียงถ้ามี (ใช้ AudioToolbox — ไม่ต้องการ capability)
-        if let soundID = notification.type.soundID {
+        let soundEnabled = UserDefaults.standard.object(
+            forKey: "enable_in_app_notification_sounds"
+        ) as? Bool ?? true
+        if soundEnabled, let soundID = notification.type.soundID {
             AudioServicesPlaySystemSound(soundID)
         }
 
@@ -119,51 +155,20 @@ final class InAppNotificationManager: ObservableObject {
         }
     }
 
-    // MARK: - Local Notification (Background Fallback)
-
-    /// ส่ง UNUserNotificationCenter local notification เมื่อแอปไม่ได้อยู่ foreground
-    /// ใช้สำหรับ order ใหม่และ service request เท่านั้น — ไม่ spam ประเภทอื่น
-    private func postLocalNotificationIfNeeded(_ item: InAppNotification) {
-        // เฉพาะ newOrder และ serviceRequest เท่านั้น
-        guard item.type == .newOrder || item.type == .serviceRequest else { return }
-
-        let appState = UIApplication.shared.applicationState
-        guard appState != .active else { return } // foreground: banner ทำงานอยู่แล้ว
-
-        let content = UNMutableNotificationContent()
-        content.title = item.title
-        content.body  = item.body
-        content.sound = item.type == .newOrder
-            ? UNNotificationSound(named: UNNotificationSoundName("order_chime.caf"))
-            : UNNotificationSound.default
-
-        // Badge count = จำนวน active notifications ปัจจุบัน + 1
-        content.badge = NSNumber(value: activeNotifications.count)
-
-        // userInfo สำหรับ deep-link เมื่อ user tap notification
-        var info: [String: String] = ["type": item.type == .newOrder ? "order" : "service_request"]
-        if let table = item.tableNumber { info["table_number"] = table }
-        content.userInfo = info
-
-        let request = UNNotificationRequest(
-            identifier: item.id.uuidString,
-            content: content,
-            trigger: nil // แสดงทันที
-        )
-
-        UNUserNotificationCenter.current().add(request) { error in
-            #if DEBUG
-            if let error = error {
-                print("InAppNotificationManager: Local notification failed — \(error.localizedDescription)")
-            }
-            #endif
-        }
-    }
-
     /// ลบทุกการแจ้งเตือน
     func clearAll() {
         activeNotifications.removeAll()
         latestNotification = nil
+        recentlyDelivered.removeAll()
+    }
+
+    /// Remove only the notification the user handled. Other queued banners
+    /// remain available instead of being discarded as a side effect.
+    func dismiss(_ id: UUID) {
+        activeNotifications.removeAll { $0.id == id }
+        if latestNotification?.id == id {
+            latestNotification = activeNotifications.first
+        }
     }
 
     // MARK: - Convenience Helpers (เรียกจาก SyncEngine)
@@ -171,27 +176,30 @@ final class InAppNotificationManager: ObservableObject {
     func postNewOrder(orderNumber: String, tableNumber: String) {
         post(InAppNotification(
             type: .newOrder,
-            title: "ออเดอร์ใหม่!",
-            body: "โต๊ะ \(tableNumber) สั่งออเดอร์ #\(orderNumber.suffix(4))",
-            tableNumber: tableNumber
+            title: "alert_new_order_title".t,
+            body: "\("table".t) \(tableNumber) \("notif_placed_order".t) #\(orderNumber.suffix(4))",
+            tableNumber: tableNumber,
+            dedupeKey: "order:\(orderNumber)"
         ))
     }
 
     func postServiceRequest(tableNumber: String, requestType: String) {
         let displayMap = [
-            "Bill (Cash)": "ชำระเงิน (เงินสด)",
-            "Bill (Card)": "ชำระเงิน (บัตร)",
-            "Bill (QR)":   "ชำระเงิน (QR)",
-            "Ice/Water":   "ขอน้ำแข็ง/น้ำ",
-            "Extra Utensils": "ขออุปกรณ์เพิ่ม",
-            "General Help": "เรียกพนักงาน",
+            "Bill (Cash)": "notif_request_bill_cash",
+            "Bill (Card)": "notif_request_bill_card",
+            "Bill (QR)":   "notif_request_bill_qr",
+            "Ice/Water":   "notif_request_ice_water",
+            "Extra Utensils": "notif_request_utensils",
+            "General Help": "notif_request_general_help",
         ]
-        let display = displayMap[requestType] ?? requestType
+        let display = displayMap[requestType]?.t ?? requestType
+        let locationLabel = OrderDisplayIdentity.label(forServiceReference: tableNumber)
         post(InAppNotification(
             type: .serviceRequest,
-            title: "🛎️ เรียกพนักงาน: โต๊ะ \(tableNumber)",
-            body: "โต๊ะ \(tableNumber) ต้องการ: \(display)",
-            tableNumber: tableNumber
+            title: "🛎️ \("alert_customer_call_title".t): \(locationLabel)",
+            body: "\(locationLabel) \("notif_requests".t): \(display)",
+            tableNumber: tableNumber.hasPrefix("Q-") || tableNumber.hasPrefix("ORDER-") ? nil : tableNumber,
+            dedupeKey: "request:\(tableNumber):\(requestType)"
         ))
     }
 
@@ -199,16 +207,18 @@ final class InAppNotificationManager: ObservableObject {
         if isReady {
             post(InAppNotification(
                 type: .deliveryAlert,
-                title: "อาหารพร้อมเสิร์ฟ!",
-                body: "โต๊ะ \(tableNumber) (#\(orderNumber)) พร้อมแต่ยังไม่เสิร์ฟ > 10 นาที",
-                tableNumber: tableNumber
+                title: "notif_food_ready_title".t,
+                body: "\("table".t) \(tableNumber) (#\(orderNumber)) \("notif_ready_not_served".t) > 10 \("notif_minutes".t)",
+                tableNumber: tableNumber,
+                dedupeKey: "delivery:\(orderNumber)"
             ))
         } else {
             post(InAppNotification(
                 type: .cookingAlert,
-                title: "แจ้งเตือน: ครัวล่าช้า",
-                body: "โต๊ะ \(tableNumber) (#\(orderNumber)) อยู่ในครัว > 10 นาที",
-                tableNumber: tableNumber
+                title: "alert_order_delayed_title".t,
+                body: "\("table".t) \(tableNumber) (#\(orderNumber)) \("notif_in_kitchen".t) > 10 \("notif_minutes".t)",
+                tableNumber: tableNumber,
+                dedupeKey: "cooking:\(orderNumber)"
             ))
         }
     }
@@ -216,9 +226,10 @@ final class InAppNotificationManager: ObservableObject {
     func postStaleShift(hoursOpen: Int) {
         post(InAppNotification(
             type: .staleShift,
-            title: "กะงานค้างเปิด \(hoursOpen) ชม.",
-            body: "กรุณาปิดกะงานก่อนสิ้นวัน",
-            tableNumber: nil
+            title: "\("notif_stale_shift_title".t) \(hoursOpen) \("notif_hours".t)",
+            body: "notif_stale_shift_body".t,
+            tableNumber: nil,
+            dedupeKey: "stale-shift"
         ))
     }
 }
@@ -240,7 +251,7 @@ struct InAppNotificationBanner: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .onTapGesture {
                         onTap?(notification.tableNumber)
-                        manager.clearAll()
+                        manager.dismiss(notification.id)
                     }
             }
         }
@@ -269,13 +280,7 @@ struct InAppNotificationBanner: View {
 
             Button {
                 withAnimation {
-                    InAppNotificationManager.shared.activeNotifications.removeAll {
-                        $0.id == notification.id
-                    }
-                    if InAppNotificationManager.shared.latestNotification?.id == notification.id {
-                        InAppNotificationManager.shared.latestNotification =
-                            InAppNotificationManager.shared.activeNotifications.first
-                    }
+                    InAppNotificationManager.shared.dismiss(notification.id)
                 }
             } label: {
                 Image(systemName: "xmark")
@@ -297,5 +302,9 @@ struct InAppNotificationBanner: View {
         )
         .padding(.horizontal, 16)
         .padding(.top, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(notification.title). \(notification.body)")
+        .accessibilityHint("notif_banner_open_hint".t)
+        .accessibilityAddTraits(.isButton)
     }
 }

@@ -49,9 +49,14 @@ enum PermissionCategory: String, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - Granular Permissions (24 total)
+// MARK: - Granular Permissions
 
 enum AppPermission: String, CaseIterable, Identifiable {
+    case promotionsManage = "promotions.manage"
+    case expensesManage = "expenses.manage"
+    case accountingView = "accounting.view"
+    case staffPermissionsManage = "staff_permissions.manage"
+    case notificationsView = "notifications.view"
     // ── Orders & Sales ────────────────────────────────────────
     case posSell            = "pos.sell"              // Take orders, process checkout
     case orderVoid          = "order.void"            // Void/cancel orders
@@ -63,10 +68,17 @@ enum AppPermission: String, CaseIterable, Identifiable {
     
     // ── Kitchen ───────────────────────────────────────────────
     case kitchenView        = "kitchen.view"          // View KDS display
+    case kitchenManage      = "kitchen.manage"        // Mark ready, cancel items, clear delivered, recall
     
     // ── Inventory & Menu ──────────────────────────────────────
     case inventoryView      = "inventory.view"        // View menu items & stock
     case inventoryManage    = "inventory.manage"      // Edit menu, manage stock, recipes
+    case inventoryReceive   = "inventory.receive"     // Receive and inspect supplier deliveries
+    case inventoryAdjust    = "inventory.adjust"      // Waste, return and physical adjustments
+    case inventoryTransfer  = "inventory.transfer"   // Transfer stock between branches
+    case inventoryCount     = "inventory.count"       // Perform blind counts
+    case inventoryApprove   = "inventory.approve"     // Approve variances/over-receipts
+    case inventoryRecall    = "inventory.recall"      // Quarantine/release lots and manage recalls
     
     // ── Finance & Payments ────────────────────────────────────
     case cashDrawerOpen     = "cash_drawer.open"      // Open cash drawer
@@ -82,6 +94,8 @@ enum AppPermission: String, CaseIterable, Identifiable {
     // ── Analytics & Reports ───────────────────────────────────
     case reportsView        = "reports.view"          // View reports & analytics
     case dashboardView      = "dashboard.view"        // View live KPI dashboard
+    case profitAnalyticsView = "profit_analytics.view" // View profit, margin, and COGS analytics
+    case productCostsView   = "product_costs.view"    // View product/recipe cost information
     
     // ── Enterprise ────────────────────────────────────────────
     case devicesView        = "devices.view"          // View device status
@@ -100,19 +114,24 @@ enum AppPermission: String, CaseIterable, Identifiable {
     
     var category: PermissionCategory {
         switch self {
+        case .promotionsManage: return .orders
+        case .expensesManage, .accountingView: return .finance
+        case .staffPermissionsManage: return .people
+        case .notificationsView: return .system
         case .posSell, .orderVoid, .refundCreate, .discountApply:
             return .orders
         case .tablesManage:
             return .tables
-        case .kitchenView:
+        case .kitchenView, .kitchenManage:
             return .kitchen
-        case .inventoryView, .inventoryManage:
+        case .inventoryView, .inventoryManage, .inventoryReceive, .inventoryAdjust,
+             .inventoryTransfer, .inventoryCount, .inventoryApprove, .inventoryRecall:
             return .inventory
         case .cashDrawerOpen, .cashDrawerManage, .paymentsManage:
             return .finance
         case .customersView, .customersManage, .payrollManage, .staffManage:
             return .people
-        case .reportsView, .dashboardView:
+        case .reportsView, .dashboardView, .profitAnalyticsView, .productCostsView:
             return .analytics
         case .devicesView, .deviceManage, .organizationView, .organizationManage:
             return .enterprise
@@ -125,14 +144,26 @@ enum AppPermission: String, CaseIterable, Identifiable {
     
     var title: String {
         switch self {
+        case .promotionsManage: return "จัดการโปรโมชั่น / Manage promotions"
+        case .expensesManage: return "จัดการค่าใช้จ่าย / Manage expenses"
+        case .accountingView: return "ดูบัญชี / View accounting"
+        case .staffPermissionsManage: return "กำหนดสิทธิ์พนักงาน / Manage staff permissions"
+        case .notificationsView: return "ดูการแจ้งเตือน / View notifications"
         case .posSell:              return "perm_pos_sell".t
         case .orderVoid:            return "perm_order_void".t
         case .refundCreate:         return "perm_refund_create".t
         case .discountApply:        return "perm_discount_apply".t
         case .tablesManage:         return "perm_tables_manage".t
         case .kitchenView:          return "perm_kitchen_view".t
+        case .kitchenManage:        return "perm_kitchen_manage".t
         case .inventoryView:        return "perm_inventory_view".t
         case .inventoryManage:      return "perm_inventory_manage".t
+        case .inventoryReceive:     return "Receive & Inspect Stock"
+        case .inventoryAdjust:      return "Adjust Stock"
+        case .inventoryTransfer:    return "Transfer Stock"
+        case .inventoryCount:       return "Perform Stock Count"
+        case .inventoryApprove:     return "Approve Inventory Changes"
+        case .inventoryRecall:      return "Recall & Quarantine"
         case .cashDrawerOpen:       return "perm_cash_drawer_open".t
         case .cashDrawerManage:     return "perm_cash_drawer_manage".t
         case .paymentsManage:       return "perm_payments_manage".t
@@ -142,6 +173,8 @@ enum AppPermission: String, CaseIterable, Identifiable {
         case .staffManage:          return "perm_staff_manage".t
         case .reportsView:          return "perm_reports_view".t
         case .dashboardView:        return "perm_dashboard_view".t
+        case .profitAnalyticsView:  return "perm_profit_analytics_view".t
+        case .productCostsView:     return "perm_product_costs_view".t
         case .devicesView:          return "perm_devices_view".t
         case .deviceManage:         return "perm_device_manage".t
         case .organizationView:     return "perm_org_view".t
@@ -154,14 +187,26 @@ enum AppPermission: String, CaseIterable, Identifiable {
     
     var description: String {
         switch self {
+        case .promotionsManage: return "สร้างและแก้ไขโปรโมชั่น ไม่ใช่สิทธิ์ใช้โปรโมชั่นขณะขาย"
+        case .expensesManage: return "เข้าถึงและจัดการค่าใช้จ่าย แยกจากรายงานการขาย"
+        case .accountingView: return "เข้าถึงหน้าบัญชี แยกจากรายงานการขายทั่วไป"
+        case .staffPermissionsManage: return "กำหนดบทบาทและสิทธิ์ โดยห้ามมอบสิทธิ์เกินกว่าที่ตนมี"
+        case .notificationsView: return "อ่านการแจ้งเตือน โดยไม่แก้ไขกฎการแจ้งเตือน"
         case .posSell:              return "perm_pos_sell_desc".t
         case .orderVoid:            return "perm_order_void_desc".t
         case .refundCreate:         return "perm_refund_create_desc".t
         case .discountApply:        return "perm_discount_apply_desc".t
         case .tablesManage:         return "perm_tables_manage_desc".t
         case .kitchenView:          return "perm_kitchen_view_desc".t
+        case .kitchenManage:        return "perm_kitchen_manage_desc".t
         case .inventoryView:        return "perm_inventory_view_desc".t
         case .inventoryManage:      return "perm_inventory_manage_desc".t
+        case .inventoryReceive:     return "Receive deliveries and record quality checks"
+        case .inventoryAdjust:      return "Record waste, returns and stock corrections"
+        case .inventoryTransfer:    return "Move inventory between branches"
+        case .inventoryCount:       return "Enter blind physical counts"
+        case .inventoryApprove:     return "Approve variances, recounts and exceptions"
+        case .inventoryRecall:      return "Quarantine lots and run product recalls"
         case .cashDrawerOpen:       return "perm_cash_drawer_open_desc".t
         case .cashDrawerManage:     return "perm_cash_drawer_manage_desc".t
         case .paymentsManage:       return "perm_payments_manage_desc".t
@@ -171,6 +216,8 @@ enum AppPermission: String, CaseIterable, Identifiable {
         case .staffManage:          return "perm_staff_manage_desc".t
         case .reportsView:          return "perm_reports_view_desc".t
         case .dashboardView:        return "perm_dashboard_view_desc".t
+        case .profitAnalyticsView:  return "perm_profit_analytics_view_desc".t
+        case .productCostsView:     return "perm_product_costs_view_desc".t
         case .devicesView:          return "perm_devices_view_desc".t
         case .deviceManage:         return "perm_device_manage_desc".t
         case .organizationView:     return "perm_org_view_desc".t
@@ -194,17 +241,12 @@ enum AppPermission: String, CaseIterable, Identifiable {
 struct PermissionService {
     static func permissions(for role: Role?) -> Set<AppPermission> {
         guard let role else { return [] }
-
-        let explicit = role.permissionKeys
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .compactMap(AppPermission.init(rawValue:))
-
-        if !explicit.isEmpty {
-            return Set(explicit)
-        }
-
-        return defaultPermissions(forRoleName: role.name)
+        let keys = PermissionPolicyCore.permissionKeys(
+            roleName: role.name,
+            explicitCSV: role.permissionKeys,
+            allKeys: Set(AppPermission.allCases.map(\.rawValue))
+        )
+        return Set(keys.compactMap(AppPermission.init(rawValue:)))
     }
 
     static func can(_ permission: AppPermission, role: Role?) -> Bool {
@@ -222,64 +264,11 @@ struct PermissionService {
     // MARK: - Default Permission Presets (Enterprise)
 
     private static func defaultPermissions(forRoleName name: String) -> Set<AppPermission> {
-        let normalized = name.lowercased()
-
-        // Store Owner / Admin — full access
-        if normalized.contains("owner") || normalized.contains("admin") {
-            return Set(AppPermission.allCases)
-        }
-
-        // Manager — everything except org management
-        if normalized.contains("manager") {
-            return Set(AppPermission.allCases).subtracting([
-                .organizationManage  // Only owner can manage billing/subscription
-            ])
-        }
-
-        // Supervisor / Team Lead — operational + some admin
-        if normalized.contains("supervisor") || normalized.contains("lead") {
-            return [
-                .posSell, .orderVoid, .refundCreate, .discountApply,
-                .tablesManage, .kitchenView,
-                .inventoryView, .inventoryManage,
-                .cashDrawerOpen, .cashDrawerManage,
-                .customersView, .customersManage,
-                .reportsView, .dashboardView,
-                .devicesView,
-                .staffManage, .payrollManage,
-                .managerOverride
-            ]
-        }
-
-        // Cashier — POS operations + limited views
-        if normalized.contains("cashier") {
-            return [
-                .posSell, .discountApply,
-                .cashDrawerOpen,
-                .tablesManage,
-                .kitchenView,
-                .customersView,
-                .dashboardView
-            ]
-        }
-
-        // Kitchen / Cook — kitchen only
-        if normalized.contains("kitchen") || normalized.contains("cook") || normalized.contains("chef") {
-            return [.kitchenView]
-        }
-
-        // Waiter / Server — tables + POS
-        if normalized.contains("wait") || normalized.contains("server") {
-            return [.posSell, .tablesManage, .kitchenView, .customersView]
-        }
-
-        // Host / Receptionist — tables + customers
-        if normalized.contains("host") || normalized.contains("reception") {
-            return [.tablesManage, .customersView]
-        }
-
-        // Default fallback — basic POS only
-        return [.posSell, .discountApply, .cashDrawerOpen]
+        let keys = PermissionPolicyCore.defaultPermissionKeys(
+            roleName: name,
+            allKeys: Set(AppPermission.allCases.map(\.rawValue))
+        )
+        return Set(keys.compactMap(AppPermission.init(rawValue:)))
     }
     
     // MARK: - Role Presets (for quick setup)
@@ -302,8 +291,8 @@ struct PermissionService {
         var description: String {
             switch self {
             case .owner: return "Full access to everything"
-            case .manager: return "All operations, limited org settings"
-            case .supervisor: return "Team operations + staff management"
+            case .manager: return "Branch operations; no payroll, role administration, costs or system settings by default"
+            case .supervisor: return "Shift operations and stock counts; no role administration or payroll"
             case .cashier: return "POS, cash drawer, basic views"
             case .waiter: return "Tables, orders, kitchen view"
             case .kitchen: return "Kitchen display only"

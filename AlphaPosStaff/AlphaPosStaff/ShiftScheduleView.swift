@@ -202,6 +202,7 @@ struct ShiftScheduleView: View {
                 
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: APSpacing.md) {
+                        readOnlyNotice
                         weekSelector
                         weekOverview
                         weeklyCalendar
@@ -237,6 +238,21 @@ struct ShiftScheduleView: View {
                 currentTime = Date()
             }
         }
+    }
+
+    private var readOnlyNotice: some View {
+        HStack(alignment: .top, spacing: APSpacing.sm) {
+            Image(systemName: "lock.fill")
+                .foregroundColor(.appTeal)
+            Text("ตารางงานนี้มาจาก AlphaPos และเปิดให้ดูได้อย่างเดียว การแก้ไขต้องดำเนินการโดยผู้จัดการร้าน")
+                .font(.caption)
+                .foregroundColor(.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(APSpacing.md)
+        .apCard(padding: 0)
+        .accessibilityElement(children: .combine)
     }
     
     // MARK: - Week overview

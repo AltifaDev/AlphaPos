@@ -5,37 +5,76 @@ import SwiftData
 extension NetworkManager {
     // MARK: - API Upload Endpoints
 
+    func approveCustomerOrder(orderId: UUID) async throws {
+        _ = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "rpc/approve_customer_order",
+            payload: ["p_order_id": orderId.uuidString.lowercased()]
+        )
+    }
+
     func uploadOrder(order: Order) async throws -> Bool {
         let activeItems = order.items.filter { !$0.isDeleted }
         guard !activeItems.isEmpty else {
             throw NetworkError.serverError("Refusing to upload order \(order.orderNumber) without order items")
         }
 
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
 
         // ── Build order payload ───────────────────────────────────────────────
+        // Counter / quick-sale orders (no table session) use sentinel "QUICK"
+        // so clients never treat an empty string as a real table number.
+        let resolvedTableNumber: String = {
+            if let table = order.tableSession?.table?.tableNumber, !table.isEmpty { return table }
+            return "QUICK"
+        }()
+        let resolvedBranchId = order.branch.id.uuidString.lowercased()
+
         var orderPayload: [String: Any] = [
             "id":                    order.id.uuidString.lowercased(),
             "order_number":          order.orderNumber,
-            "table_number":          order.tableSession?.table?.tableNumber ?? "",
+            "table_number":          resolvedTableNumber,
+            "order_type":            order.orderType,
             "total":                 order.total,
             "status":                order.status,
             "created_at":            NetworkManager.iso8601.string(from: order.createdAt),
+            "business_date":         order.businessDateKey.isEmpty ? NSNull() : order.businessDateKey,
+            "register_session_id":   order.registerSessionId?.uuidString.lowercased() ?? NSNull(),
             "updated_at":            NetworkManager.iso8601.string(from: order.updatedAt),
             "merchant_id":           merchantId,
+            "branch_id":             resolvedBranchId,
+            "cashier_name":          order.cashierName,
+            "queue_number":          order.queueNumber ?? "",
+            "receipt_number":        order.receiptNumber ?? "",
             "delivery_brand":        order.deliveryBrand ?? "",
             "delivery_gp":           order.deliveryGP,
             "delivery_ad_fee":       order.deliveryAdFee,
             "delivery_ad_fee_is_pct": order.deliveryAdFeeIsPct,
             "delivery_other_fee":    order.deliveryOtherFee,
-            "guest_count":           order.guestCount
+            "platform_order_number": order.platformOrderNumber ?? "",
+            "support_program_name": order.supportProgramName ?? "",
+            "support_government_rate": order.supportGovernmentRate,
+            "support_citizen_amount": order.supportCitizenAmount,
+            "support_government_amount": order.supportGovernmentAmount,
+            "support_settlement_status": order.supportSettlementStatus,
+            "guest_count":           order.guestCount,
+            // Origin channel + kitchen-print gate. Staff approving a web order
+            // on the iPad flips is_staff_confirmed → true; syncing it back lets
+            // other station iPads know the order is cleared to print.
+            "order_source":          order.orderSource,
+            "is_staff_confirmed":    order.isStaffConfirmed
         ]
+        if order.rowVersion > 0 { orderPayload["expected_row_version"] = order.rowVersion }
         if let sessionToken = order.tableSession?.sessionToken {
             orderPayload["session_token"] = sessionToken
         }
+        if let readyAt = order.readyAt {
+            orderPayload["ready_at"] = NetworkManager.iso8601.string(from: readyAt)
+        }
 
-        // ── Build items payload ──────────────────────────────────────────────
+        // ── Build items + modifiers payload ──────────────────────────────────
         var itemsPayload: [[String: Any]] = []
+        var modifiersPayload: [[String: Any]] = []
         for item in activeItems {
             var itemPayload: [String: Any] = [
                 "id":        item.id.uuidString.lowercased(),
@@ -43,17 +82,34 @@ extension NetworkManager {
                 "item_name": item.menuItem?.name ?? (item.itemName.isEmpty ? "Unknown Item" : item.itemName),
                 "quantity":  item.quantity,
                 "price":     item.unitPrice,
+                "line_type": item.resolvedLineType.rawValue,
                 "status":    item.status,
                 "merchant_id": merchantId,
-                "created_at":  NetworkManager.iso8601.string(from: Date()),
+                // Prefer order.createdAt — OrderItem has no createdAt field.
+                // ON CONFLICT in create_order_atomic does not overwrite created_at.
+                "created_at":  NetworkManager.iso8601.string(from: order.createdAt),
                 "notes":     NSNull(),
                 "served_by": NSNull()
             ]
             if let notes = item.notes, !notes.isEmpty { itemPayload["notes"] = notes }
             if let servedBy = item.servedBy            { itemPayload["served_by"] = servedBy }
             if let itemId = item.menuItem?.id           { itemPayload["item_id"] = itemId.lowercased() }
-            if let branchId = order.branch?.id          { itemPayload["branch_id"] = branchId.uuidString.lowercased() }
+            if !resolvedBranchId.isEmpty                { itemPayload["branch_id"] = resolvedBranchId }
+            if item.rowVersion > 0                      { itemPayload["expected_row_version"] = item.rowVersion }
             itemsPayload.append(itemPayload)
+
+            for oim in item.modifiers where !oim.isDeleted {
+                var modPayload: [String: Any] = [
+                    "id": oim.id.uuidString.lowercased(),
+                    "order_item_id": item.id.uuidString.lowercased(),
+                    "price": oim.price,
+                    "merchant_id": merchantId
+                ]
+                if let modifierId = oim.modifier?.id {
+                    modPayload["modifier_id"] = modifierId.uuidString.lowercased()
+                }
+                modifiersPayload.append(modPayload)
+            }
         }
 
         // ── ATOMIC RPC call (มาตรฐานสากล — Single Transaction) ───────────────
@@ -63,19 +119,84 @@ extension NetworkManager {
         // → idempotent: ON CONFLICT DO UPDATE → retry ปลอดภัย
         let rpcPayload: [String: Any] = [
             "p_order": orderPayload,
-            "p_items": itemsPayload
+            "p_items": itemsPayload,
+            "p_modifiers": modifiersPayload
         ]
 
         let data = try await sendSupabaseRequest(
             method:          "POST",
-            endpoint:        "rpc/create_order_atomic",
+            endpoint:        "rpc/create_order_atomic_cas",
             payload:         rpcPayload,
             timeoutOverride: 15.0
         )
 
+        // Subsidy fields are patched separately for backward compatibility with
+        // existing create_order_atomic deployments. The DB migration adds these
+        // columns without coupling rollout to a wholesale RPC replacement.
+        var accountingPatch: [String: Any] = [
+            "support_program_name": order.supportProgramName as Any? ?? NSNull(),
+            "support_government_rate": order.supportGovernmentRate,
+            "support_citizen_amount": order.supportCitizenAmount,
+            "support_government_amount": order.supportGovernmentAmount,
+            "support_settlement_status": order.supportSettlementStatus,
+            "business_date": order.businessDateKey.isEmpty ? NSNull() : order.businessDateKey,
+            "register_session_id": order.registerSessionId?.uuidString.lowercased() ?? NSNull()
+        ]
+        let patchQuery = [
+            URLQueryItem(name: "id", value: "eq.\(order.id.uuidString.lowercased())"),
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)")
+        ]
+        // Rolling-upgrade safety: an older self-hosted database may briefly
+        // lack the accounting columns. Do not block the whole order after the
+        // atomic RPC succeeded; retry only the compatible fields. The repair
+        // migration remains the authoritative fix and will backfill the data.
+        for attempt in 0..<3 {
+            do {
+                _ = try await sendSupabaseRequest(
+                    method: "PATCH",
+                    endpoint: "orders",
+                    queryItems: patchQuery,
+                    payload: accountingPatch
+                )
+                break
+            } catch {
+                let message = error.localizedDescription
+                guard message.contains("PGRST204") else { throw error }
+                let missingKey: String?
+                if message.contains("business_date") && accountingPatch["business_date"] != nil {
+                    missingKey = "business_date"
+                } else if message.contains("register_session_id") && accountingPatch["register_session_id"] != nil {
+                    missingKey = "register_session_id"
+                } else {
+                    missingKey = nil
+                }
+                guard let missingKey, attempt < 2 else { throw error }
+                accountingPatch.removeValue(forKey: missingKey)
+            }
+        }
+
+        // Modifiers were included in the atomic RPC — mark them synced locally.
+        for item in activeItems {
+            for oim in item.modifiers where !oim.isDeleted {
+                oim.isSynced = true
+                oim.updatedAt = Date()
+            }
+        }
+
         // ตรวจสอบ response { "order_id": "...", "items_count": N, "status": "ok" }
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let status = json["status"] as? String, status == "ok" {
+            if let serverOrderIdStr = json["order_id"] as? String,
+               let serverOrderId = UUID(uuidString: serverOrderIdStr),
+               serverOrderId != order.id {
+                order.id = serverOrderId
+            }
+            if let version = json["order_row_version"] as? Int { order.rowVersion = version }
+            if let versions = json["item_row_versions"] as? [String: Int] {
+                for item in activeItems {
+                    if let version = versions[item.id.uuidString.lowercased()] { item.rowVersion = version }
+                }
+            }
             return true
         }
         // RPC return ค่าอื่น — ถือว่าสำเร็จถ้าไม่มี HTTP error (sendSupabaseRequest throw แล้ว)
@@ -83,9 +204,15 @@ extension NetworkManager {
     }
 
     func fetchServiceRequests() async throws -> [[String: Any]] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
+        let now = NetworkManager.iso8601.string(from: Date())
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "service_requests", queryItems: [
             URLQueryItem(name: "select", value: "*"),
-            URLQueryItem(name: "status", value: "eq.pending")
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
+            URLQueryItem(name: "status", value: "eq.pending"),
+            URLQueryItem(name: "or", value: "(expires_at.is.null,expires_at.gt.\(now))")
         ])
 
         guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
@@ -97,22 +224,32 @@ extension NetworkManager {
             mapped["tableNumber"] = dict["table_number"]
             mapped["requestType"] = dict["request_type"]
             mapped["createdAt"] = dict["created_at"]
+            mapped["restaurantTableId"] = dict["restaurant_table_id"]
+            mapped["diningAreaId"] = dict["dining_area_id"]
+            mapped["expiresAt"] = dict["expires_at"]
             return mapped
         }
     }
 
     func resolveServiceRequest(id: String) async throws -> Bool {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         _ = try await sendSupabaseRequest(
             method: "PATCH",
             endpoint: "service_requests",
-            queryItems: [URLQueryItem(name: "id", value: "eq.\(id)")],
+            queryItems: [
+                URLQueryItem(name: "id", value: "eq.\(id)"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)")
+            ],
             payload: ["status": "completed"]
         )
         return true
     }
 
     func createServiceRequest(tableNumber: String, type: String) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         // Deterministic ID: hash from merchantId+tableNumber+type+minute-window
         // Prevents duplicate service requests when the call is retried within the same minute
         let minuteKey = Int(Date().timeIntervalSince1970 / 60)
@@ -124,7 +261,8 @@ extension NetworkManager {
             "request_type": type,
             "status": "pending",
             "created_at": NetworkManager.iso8601.string(from: Date()),
-            "merchant_id": merchantId
+            "merchant_id": merchantId,
+            "branch_id": branchId
         ]
         _ = try await sendSupabaseRequest(method: "POST", endpoint: "service_requests",
             queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
@@ -133,8 +271,16 @@ extension NetworkManager {
     }
 
     func fetchActiveSessions() async throws -> [[String: Any]] {
+        let storedMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let merchantId = storedMerchantId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !merchantId.isEmpty else {
+            throw NetworkError.serverError("No authenticated merchant")
+        }
+        let branchId = try activeOperationalBranchId()
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "table_sessions", queryItems: [
             URLQueryItem(name: "select", value: "*"),
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
             URLQueryItem(name: "is_active", value: "eq.1")
         ])
 
@@ -151,11 +297,15 @@ extension NetworkManager {
     }
 
     func closeTableSession(tableNumber: String) async throws -> Bool {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         let endedAtStr = NetworkManager.iso8601.string(from: Date())
         _ = try await sendSupabaseRequest(
             method: "PATCH",
             endpoint: "table_sessions",
             queryItems: [
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
                 URLQueryItem(name: "table_number", value: "eq.\(tableNumber)"),
                 URLQueryItem(name: "is_active", value: "eq.1")
             ],
@@ -193,19 +343,30 @@ extension NetworkManager {
         return true
     }
 
-    func uploadPayment(id: UUID, orderId: UUID?, amount: Double, method: String) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+    func uploadPayment(id: UUID, orderId: UUID?, amount: Double, method: String, paidAt: Date, businessDateKey: String, registerSessionId: UUID?) async throws -> Bool {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let payload: [String: Any] = [
             "id": id.uuidString,
             "order_id": orderId?.uuidString ?? "",
             "amount": amount,
             "payment_method": method,
-            "created_at": NetworkManager.iso8601.string(from: Date()),
+            "created_at": NetworkManager.iso8601.string(from: paidAt),
+            "business_date": businessDateKey,
+            "register_session_id": registerSessionId?.uuidString.lowercased() ?? NSNull(),
             "status": "completed",
             "merchant_id": merchantId
         ]
         _ = try await sendSupabaseRequest(method: "POST", endpoint: "payments", payload: payload)
         return true
+    }
+
+    func annotatePaymentBusinessContext(id: UUID, paidAt: Date, businessDateKey: String, registerSessionId: UUID?) async throws {
+        let payload: [String: Any] = [
+            "created_at": NetworkManager.iso8601.string(from: paidAt),
+            "business_date": businessDateKey,
+            "register_session_id": registerSessionId?.uuidString.lowercased() ?? NSNull()
+        ]
+        _ = try await sendSupabaseRequest(method: "PATCH", endpoint: "payments", queryItems: [URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())")], payload: payload)
     }
 
     func deletePaymentOnServer(id: UUID) async throws -> Bool {
@@ -214,25 +375,143 @@ extension NetworkManager {
         return true
     }
 
-    func completeCheckout(paymentId: UUID, orderId: UUID, amount: Double, method: String, tableNumber: String) async throws -> Bool {
+    func completeCheckout(order: Order, payments: [Payment], tableNumber: String) async throws -> Bool {
+        guard !payments.isEmpty else { return false }
+        let paymentPayloads: [[String: Any]] = payments.map { payment in
+            var value: [String: Any] = [
+                "id": payment.id.uuidString.lowercased(),
+                "amount": payment.amount,
+                "payment_method": payment.paymentMethod
+            ]
+            if let reference = payment.transactionReference, !reference.isEmpty {
+                value["transaction_reference"] = reference
+            }
+            return value
+        }
         let payload: [String: Any] = [
-            "p_payment_id": paymentId.uuidString,
-            "p_order_id": orderId.uuidString,
-            "p_amount": amount,
-            "p_method": method,
-            "p_table_number": tableNumber
+            "p_order_id": order.id.uuidString.lowercased(),
+            "p_idempotency_key": "checkout:\(order.id.uuidString.lowercased())",
+            "p_payments": paymentPayloads,
+            "p_table_number": tableNumber,
+            "p_breakdown": [
+                "subtotal": order.subtotal,
+                "tax": order.tax,
+                "service_charge": order.serviceCharge,
+                "discount": order.discount,
+                "grand_total": payments.reduce(0.0) { $0 + $1.amount }
+            ]
         ]
-        _ = try await sendSupabaseRequest(method: "POST", endpoint: "rpc/complete_checkout", payload: payload)
+        _ = try await sendSupabaseRequest(method: "POST", endpoint: "rpc/complete_checkout_atomic", payload: payload)
         return true
     }
 
+    /// Next daily queue integer for counter / quick / delivery orders.
+    func generateQueueNumber() async throws -> Int {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let data = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "rpc/generate_queue_number",
+            payload: ["p_merchant_id": merchantId]
+        )
+        if let value = try? JSONDecoder().decode(Int.self, from: data) { return value }
+        if let values = try? JSONDecoder().decode([Int].self, from: data), let value = values.first { return value }
+        if let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let value = Int(text) {
+            return value
+        }
+        throw NetworkError.serverError("Invalid generate_queue_number response")
+    }
+
+    /// Next daily receipt number `RCP-YYYYMMDD-NNN`.
+    func generateReceiptNumber() async throws -> String {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let data = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "rpc/generate_receipt_number",
+            payload: ["p_merchant_id": merchantId]
+        )
+        if let value = try? JSONDecoder().decode(String.self, from: data) { return value }
+        if let values = try? JSONDecoder().decode([String].self, from: data), let value = values.first { return value }
+        if let text = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\" \n\r\t")) ,
+           text.hasPrefix("RCP-") {
+            return text
+        }
+        throw NetworkError.serverError("Invalid generate_receipt_number response")
+    }
+
+    /// Formats a queue integer for display / storage as international standard (`001`, `002`, `015`),
+    /// with support for configurable auto-reset when reaching a maximum limit (e.g. 20, 30, 40).
+    static func formatQueueNumber(_ value: Int) -> String {
+        let enableLimit = UserDefaults.standard.bool(forKey: "enable_queue_reset_limit")
+        let maxLimit = UserDefaults.standard.integer(forKey: "queue_reset_max_count")
+        let normalizedValue: Int
+        if enableLimit && maxLimit > 0 {
+            let mod = max(1, value) % maxLimit
+            normalizedValue = mod == 0 ? maxLimit : mod
+        } else {
+            normalizedValue = max(1, value)
+        }
+        return String(format: "%03d", normalizedValue)
+    }
+
+    /// Cleans and sanitizes a raw queue number string into standard international format.
+    static func sanitizeQueueNumber(_ raw: String?) -> String? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        let digits = raw.filter { $0.isNumber }
+        if let intVal = Int(digits), intVal > 0 {
+            return formatQueueNumber(intVal)
+        }
+        return nil
+    }
+
+    /// Offline-safe local fallback when RPC is unavailable.
+    static func localFallbackQueueNumber(merchantId: String) -> String {
+        let day = Self.dayStampBangkok()
+        let key = "local_queue_seq_\(merchantId)_\(day)"
+        var next = UserDefaults.standard.integer(forKey: key) + 1
+
+        let enableLimit = UserDefaults.standard.bool(forKey: "enable_queue_reset_limit")
+        let maxLimit = UserDefaults.standard.integer(forKey: "queue_reset_max_count")
+        if enableLimit && maxLimit > 0 && next > maxLimit {
+            next = 1
+        }
+
+        UserDefaults.standard.set(next, forKey: key)
+        return formatQueueNumber(next)
+    }
+
+    /// Resets today's local queue counter back to start.
+    static func resetDailyQueueSequence(merchantId: String) {
+        let day = Self.dayStampBangkok()
+        let key = "local_queue_seq_\(merchantId)_\(day)"
+        UserDefaults.standard.set(0, forKey: key)
+    }
+
+    static func localFallbackReceiptNumber(merchantId: String) -> String {
+        let day = Self.dayStampBangkok()
+        let key = "local_receipt_seq_\(merchantId)_\(day)"
+        let next = UserDefaults.standard.integer(forKey: key) + 1
+        UserDefaults.standard.set(next, forKey: key)
+        return String(format: "RCP-%@-%03d", day, next)
+    }
+
+    private static func dayStampBangkok() -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Bangkok") ?? .current
+        let parts = cal.dateComponents([.year, .month, .day], from: Date())
+        return String(format: "%04d%02d%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
     func fetchCompletedOrdersFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "orders",
             queryItems: [
                 URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
                 URLQueryItem(name: "status", value: "eq.completed"),
                 URLQueryItem(name: "select", value: "*,order_items(*),payments(*)")
             ]
@@ -244,7 +523,8 @@ extension NetworkManager {
     }
 
     func uploadTimecard(id: UUID, employeeId: UUID, employeeName: String, clockIn: Date, clockOut: Date?, status: String, breakDuration: Int = 0, overtimeMinutes: Int = 0, notes: String? = nil, clockInConfidence: Double? = nil, clockOutConfidence: Double? = nil, clockInSelfieUrl: String? = nil, clockOutSelfieUrl: String? = nil, shiftId: UUID? = nil, verifiedByUserId: UUID? = nil) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         var payload: [String: Any] = [
             "id": id.uuidString,
             "employee_id": employeeId.uuidString,
@@ -253,7 +533,8 @@ extension NetworkManager {
             "break_duration": breakDuration,
             "overtime_minutes": overtimeMinutes,
             "status": status,
-            "merchant_id": merchantId
+            "merchant_id": merchantId,
+            "branch_id": branchId
         ]
         if let notes = notes { payload["notes"] = notes }
         if let clockInConfidence = clockInConfidence { payload["clock_in_confidence"] = clockInConfidence }
@@ -281,8 +562,12 @@ extension NetworkManager {
     /// Fetches the ID of an active (clocked-in, not clocked-out) timecard for an employee.
     /// Returns nil if no active timecard exists on the server.
     func fetchActiveTimecard(employeeId: UUID) async throws -> String? {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "timecards", queryItems: [
             URLQueryItem(name: "select", value: "id"),
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
             URLQueryItem(name: "employee_id", value: "eq.\(employeeId.uuidString.lowercased())"),
             URLQueryItem(name: "clock_out", value: "is.null"),
             URLQueryItem(name: "limit", value: "1")
@@ -303,90 +588,206 @@ extension NetworkManager {
         referenceId: UUID? = nil,
         notes: String? = nil,
         branchId: UUID? = nil,
+        createdAt: Date = Date(),
+        businessDateKey: String,
+        registerSessionId: UUID?,
         isDeleted: Bool = false,
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        reasonCode: String? = nil,
+        auditSignature: String? = nil
     ) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
-        var payload: [String: Any] = [
-            "id": id.uuidString.lowercased(),
-            "merchant_id": merchantId,
-            "item_name": itemName,
-            "quantity": quantity,
-            "type": type,
-            "transaction_type": type,
-            "is_deleted": isDeleted,
-            "is_synced": true,
-            "updated_at": NetworkManager.iso8601.string(from: updatedAt),
-            "created_at": NetworkManager.iso8601.string(from: Date())
+        guard let itemId else { return false }
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let payload: [String: Any] = [
+            "p_movement_id": id.uuidString.lowercased(),
+            "p_merchant_id": merchantId,
+            "p_item_id": itemId.uuidString.lowercased(),
+            "p_type": type,
+            "p_quantity": quantity,
+            "p_reference_id": referenceId?.uuidString.lowercased() ?? NSNull(),
+            "p_branch_id": branchId?.uuidString.lowercased() ?? NSNull(),
+            "p_cost_price": costPrice ?? NSNull(),
+            "p_notes": notes ?? NSNull(),
+            "p_reason_code": reasonCode ?? NSNull(),
+            "p_created_at": NetworkManager.iso8601.string(from: createdAt),
+            "p_audit_signature": auditSignature ?? NSNull(),
+            "p_business_date": businessDateKey.isEmpty ? NSNull() : businessDateKey,
+            "p_register_session_id": registerSessionId?.uuidString.lowercased() ?? NSNull()
         ]
+        _ = try await sendSupabaseRequest(method: "POST", endpoint: "rpc/apply_inventory_movement", payload: payload)
+        return true
+    }
 
-        if let itemId {
-            payload["item_id"] = itemId.uuidString.lowercased()
-        }
-        if let costPrice {
-            payload["cost_price"] = costPrice
-        }
-        if let referenceId {
-            payload["reference_id"] = referenceId.uuidString.lowercased()
-        }
-        if let notes {
-            payload["notes"] = notes
-        }
-        if let branchId {
-            payload["branch_id"] = branchId.uuidString.lowercased()
-        }
-
-        let conflictTarget = (referenceId != nil && itemId != nil)
-            ? "merchant_id,transaction_type,reference_id,item_id"
-            : "id"
-
+    func transferInventoryAtomic(
+        transferId: UUID,
+        sourceItemId: UUID,
+        targetItemId: UUID,
+        quantity: Double,
+        notes: String?,
+        createdAt: Date,
+        businessDateKey: String,
+        registerSessionId: UUID?
+    ) async throws -> Bool {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         _ = try await sendSupabaseRequest(
             method: "POST",
-            endpoint: "inventory_transactions",
-            queryItems: [URLQueryItem(name: "on_conflict", value: conflictTarget)],
-            payload: payload
+            endpoint: "rpc/transfer_inventory_atomic",
+            payload: [
+                "p_transfer_id": transferId.uuidString.lowercased(),
+                "p_merchant_id": merchantId,
+                "p_source_item_id": sourceItemId.uuidString.lowercased(),
+                "p_target_item_id": targetItemId.uuidString.lowercased(),
+                "p_quantity": quantity,
+                "p_notes": notes.map { $0 as Any } ?? NSNull(),
+                "p_created_at": NetworkManager.iso8601.string(from: createdAt),
+                "p_business_date": businessDateKey.isEmpty ? NSNull() : businessDateKey,
+                "p_register_session_id": registerSessionId?.uuidString.lowercased() ?? NSNull()
+            ]
         )
         return true
     }
 
+    func fetchInventoryTransactionsFromSupabase() async throws -> [[String: Any]] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
+        return try await fetchAllPages(
+            endpoint: "inventory_transactions",
+            queryItems: [
+                URLQueryItem(name: "select", value: "*"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
+                URLQueryItem(name: "is_deleted", value: "eq.false"),
+                URLQueryItem(name: "order", value: "created_at.asc,id.asc")
+            ],
+            pageSize: 500
+        )
+    }
+
     func fetchRestaurantTables() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
-        let data = try await sendSupabaseRequest(method: "GET", endpoint: "restaurant_tables", queryItems: [
+        let storedMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let merchantId = storedMerchantId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !merchantId.isEmpty else {
+            throw NetworkError.serverError("No authenticated merchant")
+        }
+        let branchId = try activeOperationalBranchId()
+        let queryItems = [
             URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
-            URLQueryItem(name: "is_deleted", value: "eq.false")
-        ])
+            URLQueryItem(name: "branch_id", value: "eq.\(branchId)")
+        ]
+        let data = try await sendSupabaseRequest(
+            method: "GET", endpoint: "restaurant_tables", queryItems: queryItems
+        )
         return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
     }
 
     func uploadRestaurantTable(table: RestaurantTable) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
-        let payload: [String: Any] = [
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let activeBranchId = BranchContext.shared.activeBranchIDString
+        let branchId = UUID(uuidString: table.branchId) != nil ? table.branchId : activeBranchId
+        guard UUID(uuidString: branchId) != nil, let diningAreaId = table.floorId else { return false }
+        var payload: [String: Any] = [
             "id": table.id.uuidString.lowercased(),
             "merchant_id": merchantId,
+            "branch_id": branchId,
             "table_number": table.tableNumber,
             "capacity": table.capacity,
-            "status": table.status,
+            "table_shape": table.tableShape,
+            "is_round": table.isRound,
             "qr_code_identifier": table.qrCodeIdentifier ?? "",
             "position_x": table.positionX,
             "position_y": table.positionY,
+            "layout_scale": table.resolvedLayoutScale,
             "floor": table.floor ?? 1,
             "is_deleted": table.isDeleted,
             "zone": table.zone ?? "Indoor",
             "updated_at": NetworkManager.iso8601.string(from: table.updatedAt)
         ]
+        payload["dining_area_id"] = diningAreaId.uuidString.lowercased()
 
-        // Upsert table
+        // Join/split: child → leader UUID; NULL clears the link on upsert.
+        if let parent = table.joinedParent, !parent.isDeleted, parent.id != table.id {
+            payload["joined_parent_table_id"] = parent.id.uuidString.lowercased()
+        } else {
+            payload["joined_parent_table_id"] = NSNull()
+        }
+
+        // occupied is derived from active table_sessions on the server.
+        if table.status != "occupied" {
+            payload["status"] = table.status
+        }
+
+        var patchPayload = payload
+        patchPayload.removeValue(forKey: "id")
+
+        // Update the exact row first. Matching by table number here lets a stale
+        // local duplicate resurrect a different row that was just soft-deleted.
+        let patchData = try await sendSupabaseRequest(
+            method: "PATCH",
+            endpoint: "restaurant_tables",
+            queryItems: [
+                URLQueryItem(name: "id", value: "eq.\(table.id.uuidString.lowercased())"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)")
+            ],
+            payload: patchPayload
+        )
+        let patchedCount = (try? JSONSerialization.jsonObject(with: patchData) as? [[String: Any]])?.count ?? 0
+        if patchedCount > 0 { return true }
+
+        // New local UUID with a reused table number: preserve the historical
+        // server UUID so existing order/session foreign keys remain valid.
+        let reusedData = try await sendSupabaseRequest(
+            method: "PATCH",
+            endpoint: "restaurant_tables",
+            queryItems: [
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
+                URLQueryItem(name: "dining_area_id", value: "eq.\(diningAreaId.uuidString.lowercased())"),
+                URLQueryItem(name: "table_number", value: "eq.\(table.tableNumber)")
+            ],
+            payload: patchPayload
+        )
+        let reusedCount = (try? JSONSerialization.jsonObject(with: reusedData) as? [[String: Any]])?.count ?? 0
+        if reusedCount > 0 { return true }
+
+        // No matching number exists yet: create it.
         _ = try await sendSupabaseRequest(
             method: "POST",
             endpoint: "restaurant_tables",
-            queryItems: [URLQueryItem(name: "on_conflict", value: "merchant_id,table_number")],
+            queryItems: [URLQueryItem(name: "on_conflict", value: "merchant_id,branch_id,dining_area_id,table_number")],
             payload: payload
         )
         return true
     }
 
+    func deleteRestaurantTableOnServer(id: UUID) async throws -> Bool {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        _ = try await sendSupabaseRequest(
+            method: "PATCH",
+            endpoint: "restaurant_tables",
+            queryItems: [
+                URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)")
+            ],
+            payload: [
+                "is_deleted": true,
+                "updated_at": NetworkManager.iso8601.string(from: Date())
+            ]
+        )
+        return true
+    }
+
+    func deleteRestaurantTablesOnServer(ids: [UUID]) async throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        let data = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "rpc/bulk_soft_delete_restaurant_tables",
+            payload: ["p_table_ids": ids.map { $0.uuidString.lowercased() }]
+        )
+        return try JSONDecoder().decode(Int.self, from: data)
+    }
+
     func fetchRestaurantWalls() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "restaurant_walls", queryItems: [
             URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
             URLQueryItem(name: "is_deleted", value: "eq.false")
@@ -395,7 +796,7 @@ extension NetworkManager {
     }
 
     func uploadRestaurantWall(wall: RestaurantWall) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let payload: [String: Any] = [
             "id": wall.id.uuidString.lowercased(),
             "merchant_id": merchantId,

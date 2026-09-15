@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+container=${PG_CONTAINER:-supabase_db_AlphaPos}
+database=${PG_DB:-postgres}
+backup_root=${ALPHAPOS_BACKUP_ROOT:-/var/backups/alphapos/postgres}
+retention_days=${ALPHAPOS_BACKUP_RETENTION_DAYS:-30}
+max_backup_bytes=${ALPHAPOS_BACKUP_MAX_BYTES:-5368709120}
+min_free_bytes=${ALPHAPOS_BACKUP_MIN_FREE_BYTES:-10737418240}
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+host=$(hostname -s)
+output=${backup_root}/${host}-${database}-${stamp}.dump
+partial=${output}.partial
+
+install -d -m 700 "$backup_root"
+trap 'rm -f "$partial"' EXIT
+
+free_bytes=$(df -PB1 "$backup_root" | awk 'NR==2 {print $4}')
+if (( free_bytes < min_free_bytes )); then
+  message="Backup refused: only ${free_bytes} bytes free; minimum is ${min_free_bytes}."
+  logger -p daemon.crit -t alphapos-backup "$message"
+  /usr/local/sbin/alphapos-send-alert critical "AlphaPos backup disk guard" "$message" || true
+  exit 1
+fi
+
+docker inspect "$container" >/dev/null
+docker exec "$container" pg_isready -U postgres -d "$database" >/dev/null
+docker exec "$container" pg_dump -U postgres -d "$database" -Fc > "$partial"
+test -s "$partial"
+
+# A backup is not accepted until pg_restore can parse its complete TOC.
+docker exec -i "$container" pg_restore -l < "$partial" >/dev/null
+mv "$partial" "$output"
+sha256sum "$output" > "${output}.sha256"
+chmod 600 "$output" "${output}.sha256"
+
+counts=$(docker exec "$container" psql -X -U postgres -d "$database" -AtF '|' -c \
+  "SELECT (SELECT count(*) FROM auth.users),(SELECT count(*) FROM public.merchants),(SELECT count(*) FROM public.branches),(SELECT count(*) FROM public.menu_items),(SELECT count(*) FROM public.inventory_items);")
+printf '{"created_at":"%s","database":"%s","container":"%s","counts":"%s"}\n' \
+  "$(date -u +%FT%TZ)" "$database" "$container" "$counts" > "${output}.manifest.json"
+chmod 600 "${output}.manifest.json"
+
+# Optional off-host copy. Example:
+#   ALPHAPOS_BACKUP_REMOTE=s3:alphapos-production/postgres
+if [[ -n "${ALPHAPOS_BACKUP_REMOTE:-}" ]]; then
+  command -v rclone >/dev/null || {
+    logger -p daemon.err -t alphapos-backup "off-host backup requested but rclone is unavailable"
+    exit 1
+  }
+  rclone copy "$output" "${output}.sha256" "${output}.manifest.json" \
+    "$ALPHAPOS_BACKUP_REMOTE" --immutable
+  logger -t alphapos-backup "off-host copy complete remote=$ALPHAPOS_BACKUP_REMOTE"
+fi
+
+find "$backup_root" -type f -name '*.dump' -mtime "+$retention_days" -delete
+find "$backup_root" -type f \( -name '*.sha256' -o -name '*.manifest.json' \) -mtime "+$retention_days" -delete
+
+# Enforce a hard directory cap. Remove complete oldest backup sets, but never
+# remove the backup created by this run.
+total_bytes=$(du -sb "$backup_root" | awk '{print $1}')
+while (( total_bytes > max_backup_bytes )); do
+  oldest=$(find "$backup_root" -maxdepth 1 -type f -name '*.dump' ! -path "$output" -printf '%T@ %p\n' \
+    | sort -n | awk 'NR==1 {sub(/^[^ ]+ /, ""); print}')
+  [[ -n "$oldest" ]] || break
+  rm -f "$oldest" "${oldest}.sha256" "${oldest}.manifest.json"
+  logger -t alphapos-backup "pruned oldest backup set=$oldest directory_cap=$max_backup_bytes"
+  total_bytes=$(du -sb "$backup_root" | awk '{print $1}')
+done
+
+logger -t alphapos-backup "verified backup=$output counts=$counts"
+echo "$output"

@@ -5,13 +5,15 @@ import SwiftData
 extension NetworkManager {
     // MARK: - Order Discounts Sync
     func fetchOrderDiscountsFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "order_discounts",
             queryItems: [
                 URLQueryItem(name: "select", value: "*"),
                 URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
                 URLQueryItem(name: "is_deleted", value: "eq.false")
             ]
         )
@@ -22,12 +24,14 @@ extension NetworkManager {
     }
 
     func uploadOrderDiscount(_ discount: RemoteOrderDiscountUploadable) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
 
         let orderId = discount.order?.id.uuidString.lowercased() ?? ""
         var payload: [String: Any] = [
             "id": discount.id.uuidString.lowercased(),
             "merchant_id": merchantId,
+            "branch_id": branchId,
             "order_id": orderId,
             "discount_type": discount.discountType,
             "discount_value": discount.discountValue,
@@ -36,9 +40,11 @@ extension NetworkManager {
             "updated_at": NetworkManager.iso8601.string(from: discount.updatedAt)
         ]
 
-        if let promoId = discount.promotion?.id.uuidString.lowercased() {
-            payload["promotion_id"] = promoId
-        }
+        // Private campaign definitions do not exist on the server. Preserve the
+        // financial discount snapshot without referencing a missing campaign FK.
+        payload["promotion_id"] = discount.promotion.flatMap {
+            $0.isPublicPromotion ? $0.id.uuidString.lowercased() : nil
+        }.map { $0 as Any } ?? NSNull()
         if let reason = discount.reason {
             payload["reason"] = reason
         }
@@ -84,13 +90,15 @@ extension NetworkManager {
 
     // MARK: - Order Tax Lines Sync
     func fetchOrderTaxLinesFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "order_tax_lines",
             queryItems: [
                 URLQueryItem(name: "select", value: "*"),
                 URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
                 URLQueryItem(name: "is_deleted", value: "eq.false")
             ]
         )
@@ -101,12 +109,14 @@ extension NetworkManager {
     }
 
     func uploadOrderTaxLine(_ taxLine: RemoteOrderTaxLineUploadable) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
 
         let orderId = taxLine.order?.id.uuidString.lowercased() ?? ""
         var payload: [String: Any] = [
             "id": taxLine.id.uuidString.lowercased(),
             "merchant_id": merchantId,
+            "branch_id": branchId,
             "order_id": orderId,
             "tax_name": taxLine.taxName,
             "tax_rate": taxLine.taxRate,
@@ -159,13 +169,15 @@ extension NetworkManager {
 
     // MARK: - Tips Sync
     func fetchTipsFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "tips",
             queryItems: [
                 URLQueryItem(name: "select", value: "*"),
                 URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
                 URLQueryItem(name: "is_deleted", value: "eq.false")
             ]
         )
@@ -176,12 +188,14 @@ extension NetworkManager {
     }
 
     func uploadTip(_ tip: RemoteTipUploadable) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
 
         let orderId = tip.order?.id.uuidString.lowercased() ?? ""
         var payload: [String: Any] = [
             "id": tip.id.uuidString.lowercased(),
             "merchant_id": merchantId,
+            "branch_id": branchId,
             "order_id": orderId,
             "amount": tip.amount,
             "tip_type": tip.tipType,
@@ -234,13 +248,15 @@ extension NetworkManager {
 
     // MARK: - Cash Movements Sync
     func fetchCashMovementsFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "cash_movements",
             queryItems: [
                 URLQueryItem(name: "select", value: "*"),
                 URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
                 URLQueryItem(name: "is_deleted", value: "eq.false")
             ]
         )
@@ -251,12 +267,14 @@ extension NetworkManager {
     }
 
     func uploadCashMovement(_ movement: RemoteCashMovementUploadable) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
 
         let sessionId = movement.registerSession?.id.uuidString.lowercased() ?? ""
         var payload: [String: Any] = [
             "id": movement.id.uuidString.lowercased(),
             "merchant_id": merchantId,
+            "branch_id": branchId,
             "register_session_id": sessionId,
             "movement_type": movement.movementType,
             "amount": movement.amount,
@@ -308,7 +326,7 @@ extension NetworkManager {
     // MARK: - Master Data Sync
 
     func fetchMasterData(endpoint: String) async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: endpoint,
@@ -343,7 +361,7 @@ extension NetworkManager {
     }
 
     func uploadCategory(_ category: Category) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
             "id": category.id.uuidString.lowercased(),
             "merchant_id": merchantId,

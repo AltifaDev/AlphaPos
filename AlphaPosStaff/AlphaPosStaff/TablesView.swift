@@ -135,7 +135,7 @@ struct TablesView: View {
                         // ── Landscape iPhone: single compact toolbar row ──
                         HStack(spacing: APSpacing.sm) {
                             // Stat badges (small)
-                            let vacant   = filteredTables.filter { $0.status != "occupied" }.count
+                            let vacant   = filteredTables.filter { $0.status == "vacant" }.count
                             let occupied = filteredTables.filter { $0.status == "occupied" }.count
                             compactStatBadge(label: "vacant".localized(for: appLanguage),
                                              count: vacant,   color: .appTeal)
@@ -313,22 +313,10 @@ struct TablesView: View {
                             Spacer()
 
                             // Stat badges inline in header
-                            let vacant   = filteredTables.filter { $0.status != "occupied" }.count
+                            let vacant   = filteredTables.filter { $0.status == "vacant" }.count
                             let occupied = filteredTables.filter { $0.status == "occupied" }.count
                             headerStatBadge(count: vacant,   color: .appTeal, icon: "circle.fill")
                             headerStatBadge(count: occupied, color: .appRose, icon: "circle.fill")
-
-                            // Quick Sales Summary chip
-                            let todayRevenue = networkService.tables.reduce(0.0) { $0 + $1.currentTotal }
-                            if todayRevenue > 0 {
-                                Text("\u{0E3F}\(Int(todayRevenue).formatted())")
-                                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                                    .foregroundColor(Color(hex: "2D71F8"))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color(hex: "2D71F8").opacity(0.10))
-                                    .cornerRadius(6)
-                            }
 
                             Divider().frame(height: 18)
 
@@ -700,9 +688,6 @@ struct TablesView: View {
         .navigationBarHidden(true)
         }
         .onAppear {
-            Task {
-                await loadTables()
-            }
             canvasTables = tables.filter { $0.floor == selectedFloor }
             loadCachedFloorPlanImage()
             withAnimation(.spring(response: 0.65, dampingFraction: 0.8)) {
@@ -1153,18 +1138,25 @@ struct TablesView: View {
     /// Compact inline badge used in landscape iPhone header
     // ── Mini stat badge used inside the compact header title row ──
     private func headerStatBadge(count: Int, color: Color, icon: String) -> some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 5) {
             Image(systemName: icon)
-                .font(.system(size: 6))
+                .font(.system(size: 7, weight: .bold))
                 .foregroundColor(color)
             Text("\(count)")
-                .font(.system(size: 12, weight: .bold, design: .rounded))
-                .foregroundColor(.textPrimary)
+                .font(.system(size: 13, weight: .heavy, design: .rounded))
+                .foregroundColor(color)
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4)
-        .background(color.opacity(0.10))
-        .cornerRadius(6)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(
+            Capsule(style: .continuous)
+                .fill(color.opacity(0.11))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(color.opacity(0.18), lineWidth: 1)
+        )
+        .shadow(color: color.opacity(0.08), radius: 5, x: 0, y: 2)
     }
 
     private func compactStatBadge(label: String, count: Int, color: Color) -> some View {
@@ -1173,13 +1165,13 @@ struct TablesView: View {
             Text(label)
                 .font(.caption2).foregroundColor(.textSecondary)
             Text("\(count)")
-                .font(.caption).fontWeight(.bold).foregroundColor(.textPrimary)
+                .font(.caption).fontWeight(.bold).foregroundColor(color)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.appSurface)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Color.appDivider, lineWidth: 1))
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(color.opacity(0.10))
+        .clipShape(Capsule(style: .continuous))
+        .overlay(Capsule(style: .continuous).stroke(color.opacity(0.18), lineWidth: 1))
     }
     
     private func statItem(label: String, count: Int, color: Color) -> some View {
@@ -1289,6 +1281,10 @@ struct TablesView: View {
     
     private func loadTables() async {
         isRefreshing = true
+        // Force-reconnect WebSocket ก่อน refresh เพื่อแก้ปัญหา iPad Sync Failed
+        networkService.forceReconnect()
+        // รอ 0.8 วินาทีให้ WebSocket join topic สำเร็จก่อน refreshAll
+        try? await Task.sleep(nanoseconds: 800_000_000)
         await networkService.refreshAll()
         isRefreshing = false
     }

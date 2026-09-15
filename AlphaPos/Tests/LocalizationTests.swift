@@ -10,6 +10,7 @@ enum LocalizationTests {
     static func runAll() -> [TestResult] {
         [
             test_translate_fallback(),
+            test_all_keys_cover_supported_languages(),
             test_t_noArgs(),
             test_t_intArg(),
             test_t_doubleArg(),
@@ -18,6 +19,19 @@ enum LocalizationTests {
             test_t_missingArgs(),
             test_t_extraArgs()
         ]
+    }
+
+    private static func test_all_keys_cover_supported_languages() -> TestResult {
+        let name = #function
+        let supported = Set(AppLanguage.allCases.map(\.rawValue))
+        let incomplete = AppLocalization.translations.compactMap { key, values -> String? in
+            let missing = supported.subtracting(values.keys)
+            return missing.isEmpty ? nil : "\(key): \(missing.sorted().joined(separator: ","))"
+        }
+
+        return incomplete.isEmpty
+            ? .success(name)
+            : .failure(name, "Missing translations: \(incomplete.sorted().joined(separator: "; "))")
     }
     
     private static func test_translate_fallback() -> TestResult {

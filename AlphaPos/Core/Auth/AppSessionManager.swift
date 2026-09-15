@@ -12,6 +12,7 @@ final class AppSessionManager: ObservableObject {
         case splash
         case firstLaunch   // ถามผู้ใช้ครั้งแรกว่าออฟไลน์หรือออนไลน์
         case merchantLogin
+        case ownerSetup    // Mandatory owner profile + PIN before dashboard
         case staffLock
         case dashboard
     }
@@ -28,9 +29,20 @@ final class AppSessionManager: ObservableObject {
     @Published private(set) var route: Route = .splash
     @Published private(set) var statusText = "Starting secure workspace"
     @Published private(set) var currentStaffSession: StaffSession?
+    @Published private(set) var isPreparingWorkspace = false
+    @Published private(set) var transitionText = "Preparing workspace"
+    /// Last user interaction time for idle staff-session timeout.
+    /// Not `@Published` — publishing on every touch re-renders MainDashboardView mid-tap
+    /// and cancels Buttons / sidebar / chip interactions.
+    private(set) var lastActivityAt = Date()
 
     private var hasBootstrapped = false
-    private let minimumSplashTime: UInt64 = 750_000_000
+    private let minimumSplashTime: UInt64 = 250_000_000
+    private var workspaceTransitionWatchdog: Task<Void, Never>?
+
+    func touchActivity() {
+        lastActivityAt = Date()
+    }
 
     func bootstrap(modelContext: ModelContext, force: Bool = false) async {
         guard force || !hasBootstrapped else { return }
@@ -49,15 +61,30 @@ final class AppSessionManager: ObservableObject {
         }
         if !userDidSetOfflineMode {
             // ผ่าน first launch แต่ flag เก่าค้าง → reset เป็น online (legacy migration)
-            UserDefaults.standard.set(false, forKey: "offline_sync_mode")
+            // ยกเว้นแผนออฟไลน์ที่ต้องบังคับโหมดออฟไลน์ตลอด
+            if OfflineSyncModeController.isOfflineSubscriptionPlan {
+                OfflineSyncModeController.enforcePlanPolicy(modelContext: modelContext)
+            } else {
+                UserDefaults.standard.set(false, forKey: "offline_sync_mode")
+            }
         }
+        // Offline plans always stay in offline sync mode.
+        OfflineSyncModeController.enforcePlanPolicy(modelContext: modelContext)
         // ─────────────────────────────────────────────────────────────────
 
         route = .splash
         statusText = "Checking trusted device"
 
+        // Recover an expiring/expired saved session before deciding to show login.
+        // refreshTokenIfNeeded() falls back to the stored merchant credentials.
+        if !UserDefaults.standard.bool(forKey: "offline_sync_mode"),
+           MerchantAuthManager.shared.currentToken != nil {
+            statusText = "Refreshing secure session"
+            await MerchantAuthManager.shared.refreshTokenIfNeeded()
+        }
+
         // Auth state is derived solely from Keychain JWT validity — not UserDefaults (tamper-resistant)
-        let merchantReady = MerchantAuthManager.shared.isAuthenticated
+        let merchantReady = TenantWorkspaceGuard.isAuthenticatedWorkspaceReady
 
         if merchantReady {
             statusText = "Loading staff access"
@@ -68,6 +95,19 @@ final class AppSessionManager: ObservableObject {
 
         if !merchantReady {
             route = .merchantLogin
+            return
+        }
+
+        let merchantId = MerchantAuthManager.shared.merchantId
+            ?? UserDefaults.standard.string(forKey: "active_merchant_id")
+            ?? ""
+        if !merchantId.isEmpty {
+            MerchantOnboardingGate.bootstrapReturningOwner(merchantId: merchantId)
+        }
+
+        if !MerchantOnboardingGate.canEnterDashboard(for: merchantId) {
+            // Returning / wiped device still needs owner PIN before any workspace.
+            route = .ownerSetup
         } else if currentStaffSession == nil {
             route = .staffLock
         } else {
@@ -76,7 +116,43 @@ final class AppSessionManager: ObservableObject {
     }
 
     func completeMerchantAuthentication(modelContext: ModelContext) {
-        // Auth state persisted in Keychain by MerchantAuthManager — no UserDefaults needed
+        let merchantId = MerchantAuthManager.shared.merchantId
+            ?? UserDefaults.standard.string(forKey: "active_merchant_id")
+            ?? ""
+
+        if !merchantId.isEmpty {
+            MerchantOnboardingGate.markCompleted(
+                [.account, .emailVerified, .shopProfile, .planAndTerms, .tenantActivated, .mfaSoftPrompt, .dashboardReady],
+                for: merchantId
+            )
+            if KeychainManager.shared.isOwnerPinConfigured() {
+                MerchantOnboardingGate.markCompleted(.ownerPin, for: merchantId)
+            }
+        }
+
+        // Phase 3: PIN is deferred — enter workspace immediately after tenant activate.
+        // OwnerSetup still used when Staff Lock / open-shift requires a missing PIN.
+        if MerchantOnboardingGate.canEnterDashboard(for: merchantId) {
+            seedStaffIfNeeded(modelContext: modelContext)
+            unlockAsStoreOwner(modelContext: modelContext)
+        } else {
+            route = .ownerSetup
+        }
+    }
+
+    /// Called when OwnerSetupView finishes PIN (+ optional MFA soft step).
+    func completeOwnerSetup(displayName: String, modelContext: ModelContext, skippedMfa: Bool) {
+        let merchantId = MerchantAuthManager.shared.merchantId
+            ?? UserDefaults.standard.string(forKey: "active_merchant_id")
+            ?? ""
+        if !displayName.isEmpty {
+            UserDefaults.standard.set(displayName, forKey: "logged_in_name")
+        }
+        if !merchantId.isEmpty {
+            MerchantOnboardingGate.markCompleted(.ownerPin, for: merchantId)
+            MerchantOnboardingGate.markCompleted(.mfaSoftPrompt, for: merchantId)
+            MerchantOnboardingGate.markCompleted(.dashboardReady, for: merchantId)
+        }
         seedStaffIfNeeded(modelContext: modelContext)
         unlockAsStoreOwner(modelContext: modelContext)
     }
@@ -86,7 +162,20 @@ final class AppSessionManager: ObservableObject {
         route = .merchantLogin
     }
 
+    func presentMerchantLoginForDeepLink() {
+        hasBootstrapped = true
+        route = .merchantLogin
+    }
+
     func unlockAsStoreOwner(modelContext: ModelContext) {
+        let merchantId = MerchantAuthManager.shared.merchantId
+            ?? UserDefaults.standard.string(forKey: "active_merchant_id")
+            ?? ""
+        guard MerchantOnboardingGate.canEnterDashboard(for: merchantId) else {
+            route = .ownerSetup
+            return
+        }
+
         let sessionId = UUID()
         let ownerId = UUID(uuidString: "00000000-0000-0000-0000-000000000000") ?? UUID()
         
@@ -97,16 +186,29 @@ final class AppSessionManager: ObservableObject {
             employeeId: ownerId,
             displayName: displayName,
             roleName: "Store Owner",
-            permissions: PermissionService.permissions(forRoleName: "Store Manager"),
+            permissions: PermissionService.permissions(forRoleName: "Store Owner"),
             startedAt: Date()
         )
+        touchActivity()
 
-        // Navigation is the critical path. Persist the audit/session on the next
-        // main-actor turn so SwiftUI can render the dashboard immediately.
-        route = .dashboard
+        beginWorkspaceTransition()
         Task { @MainActor [weak self] in
+            // First let SwiftUI commit the loading overlay. Constructing the
+            // query-heavy dashboard in the same transaction starves animations
+            // and triggers UIKit's system gesture gate timeout.
             await Task.yield()
             guard let self else { return }
+            self.route = .dashboard
+            // Authentication is complete once the session and route are set.
+            // Never keep the blocking overlay tied to optional audit persistence.
+            self.finishWorkspaceTransition()
+
+            // Let the first dashboard frame render before touching SwiftData.
+            // This avoids competing with query-heavy dashboard construction on
+            // the same MainActor immediately after PIN/biometric success.
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard self.currentStaffSession?.id == sessionId else { return }
+
             let deviceId = self.ensureCurrentDevice(modelContext: modelContext).id
             modelContext.insert(StaffSessionRecord(
                 id: sessionId,
@@ -139,11 +241,17 @@ final class AppSessionManager: ObservableObject {
             permissions: PermissionService.permissions(for: role),
             startedAt: Date()
         )
+        touchActivity()
 
-        route = .dashboard
+        beginWorkspaceTransition(for: displayName)
         Task { @MainActor [weak self] in
             await Task.yield()
             guard let self else { return }
+            self.route = .dashboard
+            self.finishWorkspaceTransition()
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard self.currentStaffSession?.id == sessionId else { return }
+
             let deviceId = self.ensureCurrentDevice(modelContext: modelContext).id
             modelContext.insert(StaffSessionRecord(
                 id: sessionId,
@@ -184,25 +292,71 @@ final class AppSessionManager: ObservableObject {
             SyncEngine.shared.alertStaffSessionLocked(name: session.displayName, reason: "Session timeout")
         }
         currentStaffSession = nil
+        isPreparingWorkspace = false
         route = .staffLock
     }
 
     func signOutMerchant(modelContext: ModelContext? = nil) {
-        lockStaffSession(modelContext: modelContext, reason: "merchant_sign_out")
+        // Signing out is an authentication action, not a data-erasure action.
+        // Preserve the offline-first workspace so a transient auth problem or
+        // owner sign-out can never destroy unsynced POS records.
+        lockStaffSession(
+            modelContext: nil,
+            reason: "merchant_sign_out"
+        )
+        // NotificationStore is process-wide; clear it before credentials change
+        // so no alert from the previous tenant survives on the login screen.
+        NotificationStore.shared.deactivateScope()
+        InAppNotificationManager.shared.clearAll()
+        SyncEngine.shared.resetNotificationRuntimeState()
         // Keychain token cleared by MerchantAuthManager.logout() below
-        MerchantAuthManager.shared.logout()
+        MerchantAuthManager.shared.logout(removeLocalData: false)
+        RememberStorePreferences.applyAfterLogout()
         route = .merchantLogin
+    }
+
+    private func beginWorkspaceTransition(for displayName: String? = nil) {
+        transitionText = displayName.map {
+            LocalizationManager.shared.t("opening_workspace_for", $0)
+        } ?? "preparing_workspace".t
+        isPreparingWorkspace = true
+        workspaceTransitionWatchdog?.cancel()
+        workspaceTransitionWatchdog = Task { @MainActor [weak self] in
+            // Defensive recovery: no persistence or dashboard workload may leave
+            // the full-screen input-blocking overlay visible indefinitely.
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.isPreparingWorkspace = false
+        }
+    }
+
+    private func finishWorkspaceTransition() {
+        workspaceTransitionWatchdog?.cancel()
+        workspaceTransitionWatchdog = nil
+        Task { @MainActor [weak self] in
+            // Give SwiftUI time to commit the first dashboard frame. The
+            // overlay itself uses the system ProgressView animation, so no
+            // custom loading animation is needed here.
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            self?.isPreparingWorkspace = false
+        }
     }
 
     func can(_ permission: AppPermission) -> Bool {
         currentStaffSession?.permissions.contains(permission) ?? false
     }
 
+    func canAssignRole(_ role: Role?, to employeeID: UUID?) -> Bool {
+        guard let session = currentStaffSession, can(.staffPermissionsManage), let role else { return false }
+        guard employeeID != session.employeeId else { return false }
+        return PermissionService.permissions(for: role).isSubset(of: session.permissions)
+    }
+
     private func seedStaffIfNeeded(modelContext: ModelContext) {
         let descriptor = FetchDescriptor<Employee>()
         let employees = (try? modelContext.fetch(descriptor)) ?? []
         guard employees.isEmpty else { return }
-        SampleDataSeeder.seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
+        RoleBootstrap.ensureDefaultRoles(modelContext: modelContext)
     }
 
     @discardableResult

@@ -2,10 +2,17 @@ import Foundation
 
 struct AppConfig {
     static var supabaseURL: URL {
-        if let overriddenURL = UserDefaults.standard.string(forKey: "dynamic_supabase_url"), !overriddenURL.isEmpty {
+        if let overriddenURL = UserDefaults.standard.string(forKey: "dynamic_supabase_url"),
+           !overriddenURL.isEmpty,
+           !isInvalidSupabaseURL(overriddenURL) {
             return requiredURL(overriddenURL, name: "SUPABASE_URL")
         }
         return requiredURL(requiredConfigValue("SUPABASE_URL"), name: "SUPABASE_URL")
+    }
+
+    static func isInvalidSupabaseURL(_ value: String) -> Bool {
+        guard let host = URL(string: value)?.host?.lowercased() else { return false }
+        return host != "api.alphaposweb.com"
     }
 
     static var supabaseAnonKey: String {
@@ -22,14 +29,6 @@ struct AppConfig {
 
     static var edgeFunctionURL: URL {
         URL(string: supabaseURL.absoluteString + "/functions/v1")!
-    }
-
-    static var defaultMerchantId: String {
-        requiredConfigValue("DEFAULT_MERCHANT_ID")
-    }
-
-    static var defaultDeviceSecret: String {
-        requiredConfigValue("DEFAULT_DEVICE_SECRET")
     }
 
     private static func requiredConfigValue(_ key: String) -> String {
@@ -63,8 +62,11 @@ struct AppConfig {
     }
 
     private static func requiredURL(_ value: String, name: String) -> URL {
-        guard let url = URL(string: value) else {
+        guard let url = URL(string: value), let host = url.host else {
             fatalError("Invalid AlphaPosStaff configuration URL for \(name): \(value)")
+        }
+        if name == "SUPABASE_URL" && (host == "supabase.co" || host.hasSuffix(".supabase.co")) {
+            fatalError("AlphaPosStaff requires the self-hosted Supabase VPS. Supabase Cloud URLs are not allowed.")
         }
         return url
     }

@@ -8,7 +8,8 @@ extension NetworkService {
 
     func startBreak(type: String) async throws {
         let merchantId = self.activeMerchantId
-        let employeeId = UserDefaults.standard.string(forKey: "employee_id") ?? ""
+        let employeeId = StaffSessionContext.employeeId
+        guard !employeeId.isEmpty else { throw StaffServiceError.missingEmployeeSession }
         
         let payload: [String: Any] = [
             "id": UUID().uuidString,
@@ -24,7 +25,8 @@ extension NetworkService {
 
     func endBreak() async throws {
         let merchantId = self.activeMerchantId
-        let employeeId = UserDefaults.standard.string(forKey: "employee_id") ?? ""
+        let employeeId = StaffSessionContext.employeeId
+        guard !employeeId.isEmpty else { throw StaffServiceError.missingEmployeeSession }
         
         let payload: [String: Any] = [
             "end_time": ISO8601DateFormatter().string(from: Date()),
@@ -45,7 +47,8 @@ extension NetworkService {
         formatter.dateFormat = "yyyy-MM-dd"
         let dateString = formatter.string(from: date)
         
-        let employeeId = UserDefaults.standard.string(forKey: "employee_id") ?? ""
+        let employeeId = StaffSessionContext.employeeId
+        guard !employeeId.isEmpty else { throw StaffServiceError.missingEmployeeSession }
         let merchantId = self.activeMerchantId
         
         let queryItems = [

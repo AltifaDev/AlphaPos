@@ -6,13 +6,49 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		04BB58212FFE85A5001B3567 /* logoicon.png in Resources */ = {isa = PBXBuildFile; fileRef = 04BB58202FFE85A5001B3567 /* logoicon.png */; };
+		04BB5C7130003412001B3567 /* StarIO10 in Frameworks */ = {isa = PBXBuildFile; productRef = 04BB5C7030003412001B3567 /* StarIO10 */; };
+		A10000010000000000000001 /* AlphaPosLaunchUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000001 /* AlphaPosLaunchUITests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A10000110000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 04A97FF72FD21D4000B1E90B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 04A97FFE2FD21D4000B1E90B;
+			remoteInfo = AlphaPos;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		04A97FFF2FD21D4000B1E90B /* AlphaPos.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AlphaPos.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		04BB58202FFE85A5001B3567 /* logoicon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = logoicon.png; sourceTree = "<group>"; };
+		A10000020000000000000001 /* AlphaPosLaunchUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlphaPosLaunchUITests.swift; sourceTree = "<group>"; };
+		A10000030000000000000001 /* AlphaPosUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AlphaPosUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		04BB58332FFF75B1001B3567 /* Exceptions for "AlphaPos" folder in "AlphaPos" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				ATS.plist,
+				Tests,
+			);
+			target = 04A97FFE2FD21D4000B1E90B /* AlphaPos */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		04A980012FD21D4000B1E90B /* AlphaPos */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				04BB58332FFF75B1001B3567 /* Exceptions for "AlphaPos" folder in "AlphaPos" target */,
+			);
+			explicitFolders = (
+				Tests,
+			);
 			path = AlphaPos;
 			sourceTree = "<group>";
 		};
@@ -20,6 +56,14 @@
 
 /* Begin PBXFrameworksBuildPhase section */
 		04A97FFC2FD21D4000B1E90B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				04BB5C7130003412001B3567 /* StarIO10 in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000040000000000000001 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,7 +77,9 @@
 			isa = PBXGroup;
 			children = (
 				04A980012FD21D4000B1E90B /* AlphaPos */,
+				A10000050000000000000001 /* AlphaPosUITests */,
 				04A980002FD21D4000B1E90B /* Products */,
+				04BB58202FFE85A5001B3567 /* logoicon.png */,
 			);
 			sourceTree = "<group>";
 		};
@@ -41,8 +87,17 @@
 			isa = PBXGroup;
 			children = (
 				04A97FFF2FD21D4000B1E90B /* AlphaPos.app */,
+				A10000030000000000000001 /* AlphaPosUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A10000050000000000000001 /* AlphaPosUITests */ = {
+			isa = PBXGroup;
+			children = (
+				A10000020000000000000001 /* AlphaPosLaunchUITests.swift */,
+			);
+			path = AlphaPosUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -52,9 +107,11 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 04A9800C2FD21D4000B1E90B /* Build configuration list for PBXNativeTarget "AlphaPos" */;
 			buildPhases = (
+				A1B2C3D42FD21D4000TURN1 /* Verify Turnstile Config */,
 				04A97FFB2FD21D4000B1E90B /* Sources */,
 				04A97FFC2FD21D4000B1E90B /* Frameworks */,
 				04A97FFD2FD21D4000B1E90B /* Resources */,
+				B2C3D4E53000341200STARIO /* Generate StarIO10 dSYM */,
 			);
 			buildRules = (
 			);
@@ -65,10 +122,29 @@
 			);
 			name = AlphaPos;
 			packageProductDependencies = (
+				04BB5C7030003412001B3567 /* StarIO10 */,
 			);
 			productName = AlphaPos;
 			productReference = 04A97FFF2FD21D4000B1E90B /* AlphaPos.app */;
 			productType = "com.apple.product-type.application";
+		};
+		A10000060000000000000001 /* AlphaPosUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000070000000000000001 /* Build configuration list for PBXNativeTarget "AlphaPosUITests" */;
+			buildPhases = (
+				A10000080000000000000001 /* Sources */,
+				A10000040000000000000001 /* Frameworks */,
+				A10000090000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A10000100000000000000001 /* PBXTargetDependency */,
+			);
+			name = AlphaPosUITests;
+			productName = AlphaPosUITests;
+			productReference = A10000030000000000000001 /* AlphaPosUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
 
@@ -78,10 +154,14 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2650;
-				LastUpgradeCheck = 2650;
+				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					04A97FFE2FD21D4000B1E90B = {
 						CreatedOnToolsVersion = 26.5;
+					};
+					A10000060000000000000001 = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = 04A97FFE2FD21D4000B1E90B;
 					};
 				};
 			};
@@ -94,12 +174,16 @@
 			);
 			mainGroup = 04A97FF62FD21D4000B1E90B;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				04BB5C6F30003412001B3567 /* XCRemoteSwiftPackageReference "StarXpand-SDK-iOS" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 04A980002FD21D4000B1E90B /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				04A97FFE2FD21D4000B1E90B /* AlphaPos */,
+				A10000060000000000000001 /* AlphaPosUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -109,10 +193,69 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				04BB58212FFE85A5001B3567 /* logoicon.png in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000090000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A1B2C3D42FD21D4000TURN1 /* Verify Turnstile Config */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/AlphaPos/Supporting Files/Config.plist",
+				"$(SRCROOT)/scripts/verify_turnstile_config.sh",
+			);
+			name = "Verify Turnstile Config";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${SRCROOT}/scripts/verify_turnstile_config.sh\"\n";
+		};
+		B2C3D4E53000341200STARIO /* Generate StarIO10 dSYM */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/StarIO10.framework/StarIO10",
+				"$(SRCROOT)/AppStoreBuild/insert_stario10_dsym.sh",
+			);
+			name = "Generate StarIO10 dSYM";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DWARF_DSYM_FOLDER_PATH)/StarIO10.framework.dSYM",
+				"$(DWARF_DSYM_FOLDER_PATH)/StarIO10.framework.dSYM/Contents",
+				"$(DWARF_DSYM_FOLDER_PATH)/StarIO10.framework.dSYM/Contents/Info.plist",
+				"$(DWARF_DSYM_FOLDER_PATH)/StarIO10.framework.dSYM/Contents/Resources",
+				"$(DWARF_DSYM_FOLDER_PATH)/StarIO10.framework.dSYM/Contents/Resources/DWARF",
+				"$(DWARF_DSYM_FOLDER_PATH)/StarIO10.framework.dSYM/Contents/Resources/DWARF/StarIO10",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"${SRCROOT}/AppStoreBuild/insert_stario10_dsym.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		04A97FFB2FD21D4000B1E90B /* Sources */ = {
@@ -122,7 +265,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A10000080000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000010000000000000001 /* AlphaPosLaunchUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A10000100000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 04A97FFE2FD21D4000B1E90B /* AlphaPos */;
+			targetProxy = A10000110000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		04A9800A2FD21D4000B1E90B /* Debug */ = {
@@ -159,7 +318,9 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = SNU4S3B885;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -181,6 +342,7 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -220,7 +382,9 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = SNU4S3B885;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -235,7 +399,10 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_ENABLE_BATCH_MODE = NO;
+				SWIFT_OPTIMIZATION_LEVEL = "-Osize";
 			};
 			name = Release;
 		};
@@ -247,17 +414,26 @@
 				CODE_SIGN_ENTITLEMENTS = AlphaPos/AlphaPos.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = SNU4S3B885;
+				CURRENT_PROJECT_VERSION = 24;
+				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AlphaPos/ATS.plist;
-				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = NO;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = NO;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "AlphaPos needs Bluetooth access to discover and print to wireless portable receipt printers (such as Xprinter and Epson models).";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "AlphaPos needs Bluetooth access to discover and print to wireless portable receipt printers (such as Xprinter and Epson models).";
+				INFOPLIST_KEY_NSBonjourServices = "_pdl-datastream._tcp";
 				INFOPLIST_KEY_NSCameraUsageDescription = "AlphaPos uses the camera to scan barcodes and preview staff attendance verification.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AlphaPos connects to the restaurant's local Supabase server.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "AlphaPos uses Face ID to unlock the register and verify staff identity for secure attendance features.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AlphaPos connects to the restaurant's local server and discovers network receipt/label printers (Wi-Fi/LAN, port 9100) on your local network.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "AlphaPos may save exported receipts, reports, and generated images to your photo library when you choose to save them.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "AlphaPos needs photo library access to attach product images, store logos, menu import photos, and stock document scans.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -268,7 +444,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.5;
@@ -285,7 +461,7 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TARGETED_DEVICE_FAMILY = "1,2";
 				XROS_DEPLOYMENT_TARGET = 26.5;
 			};
 			name = Debug;
@@ -298,17 +474,26 @@
 				CODE_SIGN_ENTITLEMENTS = AlphaPos/AlphaPos.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = SNU4S3B885;
+				CURRENT_PROJECT_VERSION = 24;
+				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = AlphaPos/ATS.plist;
-				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = NO;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = NO;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "AlphaPos needs Bluetooth access to discover and print to wireless portable receipt printers (such as Xprinter and Epson models).";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "AlphaPos needs Bluetooth access to discover and print to wireless portable receipt printers (such as Xprinter and Epson models).";
+				INFOPLIST_KEY_NSBonjourServices = "_pdl-datastream._tcp";
 				INFOPLIST_KEY_NSCameraUsageDescription = "AlphaPos uses the camera to scan barcodes and preview staff attendance verification.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AlphaPos connects to the restaurant's local Supabase server.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "AlphaPos uses Face ID to unlock the register and verify staff identity for secure attendance features.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AlphaPos connects to the restaurant's local server and discovers network receipt/label printers (Wi-Fi/LAN, port 9100) on your local network.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "AlphaPos may save exported receipts, reports, and generated images to your photo library when you choose to save them.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "AlphaPos needs photo library access to attach product images, store logos, menu import photos, and stock document scans.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -319,7 +504,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.5;
@@ -333,11 +518,49 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TARGETED_DEVICE_FAMILY = "1,2";
 				XROS_DEPLOYMENT_TARGET = 26.5;
+			};
+			name = Release;
+		};
+		A10000120000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4QY88M734J;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = AltifaDev.AlphaPosUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = AlphaPos;
+			};
+			name = Debug;
+		};
+		A10000130000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4QY88M734J;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = AltifaDev.AlphaPosUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = AlphaPos;
 			};
 			name = Release;
 		};
@@ -362,7 +585,35 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		A10000070000000000000001 /* Build configuration list for PBXNativeTarget "AlphaPosUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000120000000000000001 /* Debug */,
+				A10000130000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		04BB5C6F30003412001B3567 /* XCRemoteSwiftPackageReference "StarXpand-SDK-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/star-micronics/StarXpand-SDK-iOS";
+			requirement = {
+				kind = exactVersion;
+				version = 2.12.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		04BB5C7030003412001B3567 /* StarIO10 */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 04BB5C6F30003412001B3567 /* XCRemoteSwiftPackageReference "StarXpand-SDK-iOS" */;
+			productName = StarIO10;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 04A97FF72FD21D4000B1E90B /* Project object */;
 }

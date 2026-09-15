@@ -1,170 +1,214 @@
 import SwiftUI
+import SwiftData
 
 // MARK: - SystemFeatureConfigView
 // ─────────────────────────────────────────────────────────────────────────────
-// Centralized Feature Control Dashboard — Unified toggle panel for ALL
-// system-level feature flags discovered across the AlphaPos codebase.
-// Each @AppStorage key maps to exactly the same key used by the consuming
-// views (POSView, PrintService, KitchenDisplayView, etc.), ensuring
-// changes here propagate instantly via UserDefaults observation.
+// Operational feature flags (POS floorplan, tax, KDS, inventory, security).
+// Payment tenders are NOT edited here — enterprise IA routes them to the
+// Payments hub (single source of truth). This screen only deep-links there.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct SystemFeatureConfigView: View {
-    // ── 1. Payment Methods ───────────────────────────────────────────────
-    @AppStorage("payment_method_cash_enabled") private var cashEnabled = true
-    @AppStorage("payment_method_card_enabled") private var cardEnabled = true
-    @AppStorage("payment_method_qr_enabled") private var qrEnabled = true
-    @AppStorage("payment_method_truemoney_enabled") private var trueMoneyEnabled = true
-    @AppStorage("payment_method_linepay_enabled") private var linePayEnabled = false
-    @AppStorage("payment_method_grabpay_enabled") private var grabPayEnabled = false
-    @AppStorage("payment_test_mode") private var paymentTestMode = false
+    @Environment(\.modelContext) private var modelContext
 
-    // ── 2. POS & Floorplan Features ──────────────────────────────────────
+    // ── POS & Floorplan Features (payments live only under Payments hub) ─
     @AppStorage("enable_table_system") private var enableTableSystem = true
     @AppStorage("enable_web_ordering") private var enableWebOrdering = true
     @AppStorage("enable_tax") private var enableTax = true
     @AppStorage("enable_service_charge") private var enableServiceCharge = true
     @AppStorage("promotions_auto_apply") private var promotionsAutoApply = true
     @AppStorage("enable_realtime_stock_warning") private var enableRealtimeStockWarning = true
+    @AppStorage("enable_pos_sound_effects") private var enablePOSSoundEffects = true
+    @AppStorage("pos_sound_volume") private var posSoundVolume = 1.0
+    @AppStorage("inventory_profile") private var inventoryProfile = "restaurant"
+    @AppStorage("enable_inventory_stock_alerts") private var enableInventoryStockAlerts = true
+    @AppStorage("auto_disable_oos_menu") private var autoDisableOOSMenu = false
+    @AppStorage("enable_inventory_staff_push") private var enableInventoryStaffPush = true
+    @AppStorage("enable_in_app_notification_sounds") private var enableInAppNotificationSounds = true
 
-    // ── 3. Kitchen Display System (KDS) ──────────────────────────────────
+    // ── Kitchen Display System (KDS) ──────────────────────────────────
     @AppStorage("kds_show_kitchen") private var kdsShowKitchen = true
     @AppStorage("kds_show_bar") private var kdsShowBar = true
     @AppStorage("kds_auto_complete_enabled") private var kdsAutoCompleteEnabled = false
     @AppStorage("kds_sound_enabled") private var kdsSoundEnabled = true
 
-    // ── 4. Printers & Receipts ───────────────────────────────────────────
-    @AppStorage("receipt_printer_enabled") private var receiptPrinterEnabled = true
-    @AppStorage("kitchen_printer_enabled") private var kitchenPrinterEnabled = true
-    @AppStorage("disable_receipt_printing") private var disableReceiptPrinting = false
-    @AppStorage("auto_print_receipt_on_payment") private var autoPrintReceipt = false
-    @AppStorage("print_open_shift") private var printOpenShift = false
-    @AppStorage("print_close_shift") private var printCloseShift = true
-    @AppStorage("show_logo_on_receipt") private var showLogoOnReceipt = true
-    @AppStorage("show_qr_on_receipt") private var showQrOnReceipt = true
-
-    // ── 5. Security & Advanced ───────────────────────────────────────────
+    // ── Security & Advanced ───────────────────────────────────────────
     @AppStorage("require_manager_override_for_refund") private var requireManagerOverrideForRefund = true
-    @AppStorage("escalation_auto_sound") private var autoSound = true
-    @AppStorage("escalation_repeat_alert") private var repeatAlert = true
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @AppStorage("developer_mode_enabled") private var developerModeEnabled = false
-    @AppStorage("gemini_api_key") private var geminiApiKey = ""
+    @State private var openRouterApiKey = ""
 
     var body: some View {
         ScrollView {
             VStack(spacing: APSpacing.lg) {
 
-                // ═══════════════════════════════════════════════════════════
-                // SECTION 1: ช่องทางการชำระเงิน
-                // ═══════════════════════════════════════════════════════════
-                VStack(alignment: .leading, spacing: 0) {
-                    sectionHeader(
-                        title: "ช่องทางการชำระเงิน (Payment Methods)",
-                        icon: "creditcard.and.123",
-                        color: .appAccent
-                    )
+                // Enterprise IA: tenders belong in Payments, not System Control.
+                paymentsHubRedirectCard
 
-                    toggleRow(
-                        title: "รับชำระด้วยเงินสด (Cash)",
-                        subtitle: "เปิดรับชำระค่าอาหารและสินค้าด้วยเงินสดบนหน้าจอ POS",
-                        isOn: $cashEnabled
-                    )
-                    sectionDivider
-
-                    toggleRow(
-                        title: "รับชำระด้วยบัตรเครดิต (Credit Card)",
-                        subtitle: "เปิดรับชำระผ่านเครื่องรูดบัตรหรือสแกนบัตร",
-                        isOn: $cardEnabled
-                    )
-                    sectionDivider
-
-                    toggleRow(
-                        title: "รับชำระด้วย QR Code (PromptPay)",
-                        subtitle: "สร้างคิวอาร์โค้ดสแกนจ่ายผ่านพร้อมเพย์อัตโนมัติ",
-                        isOn: $qrEnabled
-                    )
-                    sectionDivider
-
-                    toggleRow(
-                        title: "รับชำระด้วย TrueMoney Wallet",
-                        subtitle: "เปิดรับชำระผ่านบัญชีทรูมันนี่วอลเล็ท",
-                        isOn: $trueMoneyEnabled
-                    )
-                    sectionDivider
-
-                    toggleRow(
-                        title: "รับชำระด้วย LINE Pay",
-                        subtitle: "เปิดรับชำระผ่าน Rabbit LINE Pay",
-                        isOn: $linePayEnabled
-                    )
-                    sectionDivider
-
-                    toggleRow(
-                        title: "รับชำระด้วย GrabPay",
-                        subtitle: "เปิดรับชำระผ่าน GrabPay wallet",
-                        isOn: $grabPayEnabled
-                    )
-                    sectionDivider
-
-                    toggleRow(
-                        title: "โหมดทดลองชำระเงิน (Payment Sandbox)",
-                        subtitle: "จำลองการทำรายการชำระเงินเพื่อทดสอบโดยไม่หักเงินจริง",
-                        isOn: $paymentTestMode,
-                        tint: .orange
-                    )
-                }
-                .apCard()
+                // Destructive data maintenance is kept behind its own screen
+                // so category selection, merchant scope and owner PIN are visible.
+                dataManagementCard
 
                 // ═══════════════════════════════════════════════════════════
-                // SECTION 2: ระบบ POS และผังโต๊ะ
+                // SECTION: ระบบ POS และผังโต๊ะ
                 // ═══════════════════════════════════════════════════════════
                 VStack(alignment: .leading, spacing: 0) {
                     sectionHeader(
-                        title: "ระบบ POS และผังโต๊ะ (POS & Floorplan)",
+                        title: "syscfg_section_pos".t,
                         icon: "banknote.fill",
                         color: .green
                     )
 
                     toggleRow(
-                        title: "ระบบผังโต๊ะอาหาร (Table System)",
-                        subtitle: "เปิดใช้งานระบบเลือกโต๊ะและสั่งอาหารแยกตามโต๊ะ หากปิดจะใช้โหมดขายปลีก Quick-Sale เท่านั้น",
+                        title: "enable_table".t,
+                        subtitle: "enable_table_desc".t,
                         isOn: $enableTableSystem
                     )
                     sectionDivider
 
                     toggleRow(
-                        title: "ระบบสั่งอาหารออนไลน์ (Web Ordering)",
-                        subtitle: "เปิดรับออเดอร์จากลูกค้าผ่าน QR Code / เว็บไซต์สั่งอาหารเข้ามาที่ POS อัตโนมัติ",
-                        isOn: $enableWebOrdering
+                        title: "enable_web_ordering".t,
+                        subtitle: offlineSyncMode
+                            ? "web_ordering_offline_unavailable".t
+                            : "enable_web_desc".t,
+                        isOn: $enableWebOrdering,
+                        isDisabled: offlineSyncMode
                     )
                     sectionDivider
 
                     toggleRow(
-                        title: "ระบบภาษีมูลค่าเพิ่ม (VAT/Tax)",
-                        subtitle: "คำนวณและบันทึกภาษีมูลค่าเพิ่ม (VAT 7%) ลงในบิลขาย",
+                        title: "syscfg_vat_title".t,
+                        subtitle: "syscfg_vat_desc".t,
                         isOn: $enableTax
                     )
                     sectionDivider
 
                     toggleRow(
-                        title: "คิดค่าบริการ (Service Charge)",
-                        subtitle: "คำนวณค่าบริการเพิ่มเติมตามร้อยละที่กำหนดสำหรับทานที่ร้าน",
+                        title: "syscfg_service_charge_title".t,
+                        subtitle: "syscfg_service_charge_desc".t,
                         isOn: $enableServiceCharge
                     )
                     sectionDivider
 
                     toggleRow(
-                        title: "ระบบโปรโมชันอัตโนมัติ (Auto Promotions)",
-                        subtitle: "คำนวณและใส่โปรโมชันที่เข้าเงื่อนไข (BOGO, ส่วนลด) ลงในตะกร้าโดยอัตโนมัติ",
+                        title: "syscfg_promo_title".t,
+                        subtitle: "syscfg_promo_desc".t,
                         isOn: $promotionsAutoApply
                     )
                     sectionDivider
 
                     toggleRow(
-                        title: "เตือนวัตถุดิบต่ำแบบเรียลไทม์ (Stock Warning)",
-                        subtitle: "แสดงไอคอนเตือน ⚠️ บนการ์ดเมนูอาหารในหน้า POS เมื่อส่วนผสมเหลือน้อยกว่าเกณฑ์คงเหลือ",
+                        title: "syscfg_stock_warn_title".t,
+                        subtitle: "syscfg_stock_warn_desc".t,
                         isOn: $enableRealtimeStockWarning
+                    )
+                    sectionDivider
+
+                    toggleRow(
+                        title: LocalizationManager.shared.currentLanguage == .thai ? "เสียงประกอบ POS (Sound Effects)" : "POS Sound Effects",
+                        subtitle: LocalizationManager.shared.currentLanguage == .thai ? "ส่งเสียงบี๊บเมื่อกดเลือกสินค้า และเสียงแคชเชียร์ Cha-Ching เมื่อรับชำระเงินสำเร็จ" : "Play beep sound when adding items and cash register Cha-Ching when payment succeeds",
+                        isOn: $enablePOSSoundEffects
+                    )
+                    if enablePOSSoundEffects {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text(LocalizationManager.shared.currentLanguage == .thai ? "ระดับความดังเสียง (Volume)" : "Volume")
+                                    .font(.system(size: 12))
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.textPrimary)
+                                Spacer()
+                                Text("\(Int(posSoundVolume * 100))%")
+                                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                                    .foregroundColor(.appAccent)
+                            }
+
+                            Slider(value: $posSoundVolume, in: 0.1...1.0, step: 0.05)
+                                .tint(.appAccent)
+                                .onChange(of: posSoundVolume) { _, _ in
+                                    APSoundEffect.itemTap()
+                                }
+
+                            HStack(spacing: 12) {
+                                Button {
+                                    APSoundEffect.itemTap()
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "speaker.wave.2.fill")
+                                        Text(LocalizationManager.shared.currentLanguage == .thai ? "ทดสอบเสียงบี๊บ (Beep)" : "Test Beep")
+                                            .font(.system(size: 12, weight: .medium))
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(Color.appAccent.opacity(0.12), in: Capsule())
+                                    .foregroundColor(.appAccent)
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    APSoundEffect.paymentSuccess()
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "dollarsign.circle.fill")
+                                        Text(LocalizationManager.shared.currentLanguage == .thai ? "ทดสอบเสียงแคชเชียร์ (Cha-Ching 🪙)" : "Test Cha-Ching")
+                                            .font(.system(size: 12, weight: .medium))
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(Color.appTeal.opacity(0.12), in: Capsule())
+                                    .foregroundColor(.appTeal)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                    }
+                    sectionDivider
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("inventory_profile_title".t)
+                            .font(.system(size: 12))
+                            .fontWeight(.medium)
+                            .foregroundColor(.textPrimary)
+                        Text("inventory_profile_desc".t)
+                            .font(.system(size: 12))
+                            .foregroundColor(.textSecondary)
+                        Picker("inventory_profile_title".t, selection: $inventoryProfile) {
+                            Text("inventory_profile_simple".t).tag("simple")
+                            Text("inventory_profile_restaurant".t).tag("restaurant")
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    sectionDivider
+
+                    toggleRow(
+                        title: "inventory_alerts_toggle_title".t,
+                        subtitle: "inventory_alerts_toggle_desc".t,
+                        isOn: $enableInventoryStockAlerts
+                    )
+                    sectionDivider
+
+                    toggleRow(
+                        title: "auto_disable_oos_toggle_title".t,
+                        subtitle: "auto_disable_oos_toggle_desc".t,
+                        isOn: $autoDisableOOSMenu,
+                        tint: .orange
+                    )
+                    sectionDivider
+
+                    toggleRow(
+                        title: "inventory_staff_push_toggle_title".t,
+                        subtitle: "inventory_staff_push_toggle_desc".t,
+                        isOn: $enableInventoryStaffPush
+                    )
+                    sectionDivider
+
+                    toggleRow(
+                        title: "notif_sound_toggle_title".t,
+                        subtitle: "notif_sound_toggle_desc".t,
+                        isOn: $enableInAppNotificationSounds
                     )
                 }
                 .apCard()
@@ -174,154 +218,105 @@ struct SystemFeatureConfigView: View {
                 // ═══════════════════════════════════════════════════════════
                 VStack(alignment: .leading, spacing: 0) {
                     sectionHeader(
-                        title: "ระบบจัดการครัว (Kitchen Display System)",
+                        title: "syscfg_section_kds".t,
                         icon: "flame.fill",
                         color: .appTeal
                     )
 
                     toggleRow(
-                        title: "แสดงรายการครัวอาหาร (Kitchen Station)",
-                        subtitle: "ส่งและแสดงรายการออเดอร์ไปยังหน้าจอครัวหลัก (Kitchen)",
+                        title: "syscfg_kds_kitchen_title".t,
+                        subtitle: "syscfg_kds_kitchen_desc".t,
                         isOn: $kdsShowKitchen
                     )
                     sectionDivider
 
                     toggleRow(
-                        title: "แสดงรายการบาร์เครื่องดื่ม (Bar Station)",
-                        subtitle: "ส่งและแสดงรายการออเดอร์ไปยังหน้าจอบาร์เครื่องดื่ม (Bar/Beverage)",
+                        title: "syscfg_kds_bar_title".t,
+                        subtitle: "syscfg_kds_bar_desc".t,
                         isOn: $kdsShowBar
                     )
                     sectionDivider
 
                     toggleRow(
-                        title: "เคลียร์ออเดอร์อัตโนมัติ (Auto-Complete)",
-                        subtitle: "เปลี่ยนสถานะออเดอร์เป็น 'พร้อมเสิร์ฟ' อัตโนมัติเมื่อปรุงอาหารครบทุกรายการ",
+                        title: "syscfg_kds_auto_title".t,
+                        subtitle: "syscfg_kds_auto_desc".t,
                         isOn: $kdsAutoCompleteEnabled
                     )
                     sectionDivider
 
                     toggleRow(
-                        title: "เสียงแจ้งเตือนออเดอร์ใหม่ (Alert Sounds)",
-                        subtitle: "ส่งเสียงเตือนผ่านลำโพงเครื่องเมื่อมีออเดอร์ใหม่เข้ามาในหน้าจอครัว",
+                        title: "syscfg_kds_sound_title".t,
+                        subtitle: "syscfg_kds_sound_desc".t,
                         isOn: $kdsSoundEnabled
                     )
                 }
                 .apCard()
 
                 // ═══════════════════════════════════════════════════════════
-                // SECTION 4: เครื่องพิมพ์และใบเสร็จ
+                // SECTION 4: Printers → redirected to Printers page
                 // ═══════════════════════════════════════════════════════════
                 VStack(alignment: .leading, spacing: 0) {
                     sectionHeader(
-                        title: "เครื่องพิมพ์และใบเสร็จ (Printers & Receipts)",
+                        title: "syscfg_section_printer".t,
                         icon: "printer.fill",
                         color: .orange
                     )
 
-                    // ── Printer Hardware Enable/Disable ──
-                    toggleRow(
-                        title: "เครื่องพิมพ์ใบเสร็จ (Receipt Printer)",
-                        subtitle: "เปิดใช้งานเครื่องพิมพ์สำหรับพิมพ์ใบเสร็จรับเงิน / ใบเสร็จย่อ",
-                        isOn: $receiptPrinterEnabled
-                    )
-                    sectionDivider
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "arrow.up.right.square.fill")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(.orange)
 
-                    toggleRow(
-                        title: "เครื่องพิมพ์ครัว/บาร์/สติกเกอร์ (Kitchen Printer)",
-                        subtitle: "เปิดใช้งานเครื่องพิมพ์สำหรับพิมพ์ตั๋วออเดอร์ครัว, บาร์เครื่องดื่ม และป้ายสติกเกอร์ฉลากสินค้า",
-                        isOn: $kitchenPrinterEnabled
-                    )
-                    sectionDivider
-
-                    // ── Receipt Behavior ──
-                    toggleRow(
-                        title: "ระงับพิมพ์ใบเสร็จทั้งหมด (Disable Receipt Printing)",
-                        subtitle: "ข้ามคำสั่งพิมพ์ใบเสร็จชั่วคราวทั้งแบบอัตโนมัติและแบบกดปุ่ม (ไม่ส่งผลต่อตั๋วครัว)",
-                        isOn: $disableReceiptPrinting,
-                        tint: .red
-                    )
-                    sectionDivider
-
-                    toggleRow(
-                        title: "พิมพ์ใบเสร็จอัตโนมัติ (Auto Print on Payment)",
-                        subtitle: "สั่งพิมพ์ใบเสร็จทันทีโดยอัตโนมัติเมื่อชำระเงินบนหน้าจอ POS สำเร็จ",
-                        isOn: $autoPrintReceipt
-                    )
-                    sectionDivider
-
-                    // ── Shift Reports ──
-                    toggleRow(
-                        title: "พิมพ์ใบเปิดกะอัตโนมัติ (Print Open Shift)",
-                        subtitle: "พิมพ์สรุปข้อมูลเปิดกะ (ยอดเปิดลิ้นชัก, ชื่อแคชเชียร์) อัตโนมัติเมื่อเปิดกะใหม่",
-                        isOn: $printOpenShift
-                    )
-                    sectionDivider
-
-                    toggleRow(
-                        title: "พิมพ์ Z-Report ปิดกะอัตโนมัติ (Print Close Shift)",
-                        subtitle: "พิมพ์รายงานสรุปยอดขายปิดกะ (Z-Report) อัตโนมัติเมื่อทำการปิดกะ",
-                        isOn: $printCloseShift
-                    )
-                    sectionDivider
-
-                    // ── Receipt Content ──
-                    toggleRow(
-                        title: "แสดงโลโก้บนใบเสร็จ (Show Logo)",
-                        subtitle: "พิมพ์รูปภาพโลโก้ร้านอาหารหรือข้อความ Header ที่หัวใบเสร็จ",
-                        isOn: $showLogoOnReceipt
-                    )
-                    sectionDivider
-
-                    toggleRow(
-                        title: "แสดง QR Code บนใบเสร็จ (Show QR Code)",
-                        subtitle: "พิมพ์ QR Code สำหรับการชำระเงินหรือตรวจสอบใบเสร็จดิจิทัลที่ท้ายใบเสร็จ",
-                        isOn: $showQrOnReceipt
-                    )
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("syscfg_printer_moved_title".t)
+                                .font(.system(size: 12))
+                                .fontWeight(.medium)
+                                .foregroundColor(.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text("syscfg_printer_moved_desc".t)
+                                .font(.system(size: 12))
+                                .foregroundColor(.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 8)
+                    }
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 14)
                 }
                 .apCard()
 
+
                 // ═══════════════════════════════════════════════════════════
-                // SECTION 5: ความปลอดภัยและระบบขั้นสูง
+                // SECTION 5: Security & Advanced
                 // ═══════════════════════════════════════════════════════════
                 VStack(alignment: .leading, spacing: 0) {
                     sectionHeader(
-                        title: "ความปลอดภัยและระบบขั้นสูง (Security & Advanced)",
+                        title: "syscfg_section_security".t,
                         icon: "lock.shield.fill",
                         color: .red
                     )
 
                     toggleRow(
-                        title: "อนุมัติคืนเงินโดยผู้จัดการ (Manager Override)",
-                        subtitle: "การดำเนินการคืนเงิน (Refund) ต้องยืนยันรหัส PIN ผู้จัดการร้านทุกครั้ง",
+                        title: "syscfg_manager_refund_title".t,
+                        subtitle: "syscfg_manager_refund_desc".t,
                         isOn: $requireManagerOverrideForRefund
                     )
                     sectionDivider
 
                     toggleRow(
-                        title: "เสียงเตือนออเดอร์ค้าง (Escalation Sound)",
-                        subtitle: "ส่งเสียงเตือนต่อเนื่องเมื่อออเดอร์ไม่ได้รับบริการตามระยะเวลาที่ตั้งไว้",
-                        isOn: $autoSound
-                    )
-                    sectionDivider
-
-                    toggleRow(
-                        title: "แจ้งเตือนส่งซ้ำ (Repeat Escalation Alerts)",
-                        subtitle: "ส่งแจ้งเตือนซ้ำหลายรอบจนกว่าจะมีพนักงานเข้ามากดรับงาน",
-                        isOn: $repeatAlert
-                    )
-                    sectionDivider
-
-                    toggleRow(
-                        title: "โหมดออฟไลน์ (Offline Sync Mode)",
-                        subtitle: "ทำงานแบบออฟไลน์ — บันทึกข้อมูลลงอุปกรณ์ในเครื่องเท่านั้น ซิงก์เมื่อกลับมาออนไลน์",
+                        title: "syscfg_offline_title".t,
+                        subtitle: OfflineSyncModeController.isToggleLockedByPlan
+                            ? "settings_offline_locked_by_plan".t
+                            : "syscfg_offline_desc".t,
                         isOn: $offlineSyncMode,
-                        tint: .orange
+                        tint: .orange,
+                        isDisabled: OfflineSyncModeController.isToggleLockedByPlan
                     )
                     sectionDivider
 
                     toggleRow(
-                        title: "โหมดนักพัฒนา (Developer Mode)",
-                        subtitle: "เปิดเมนูเครื่องมือนักพัฒนาสำหรับดีบัก แสดง Console Log และเมนูทดสอบภายใน",
+                        title: "syscfg_dev_mode_title".t,
+                        subtitle: "syscfg_dev_mode_desc".t,
                         isOn: $developerModeEnabled,
                         tint: .purple
                     )
@@ -329,11 +324,11 @@ struct SystemFeatureConfigView: View {
                 .apCard()
 
                 // ═══════════════════════════════════════════════════════════
-                // SECTION 6: การตั้งค่าปัญญาประดิษฐ์ (AI & Gemini Config)
+                // SECTION 6: AI & OpenRouter
                 // ═══════════════════════════════════════════════════════════
                 VStack(alignment: .leading, spacing: 0) {
                     sectionHeader(
-                        title: "ระบบประมวลผล AI & Gemini",
+                        title: "syscfg_section_ai".t,
                         icon: "sparkles",
                         color: .appTeal
                     )
@@ -342,18 +337,18 @@ struct SystemFeatureConfigView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "wifi.slash")
                                 .foregroundColor(.orange)
-                            Text("โหมดออฟไลน์เปิดอยู่: ฟังก์ชัน AI ทั้งหมดถูกปิดใช้งานชั่วคราว")
-                                .font(.caption2)
+                            Text("syscfg_ai_offline_banner".t)
+                                .font(.system(size: 12))
                                 .foregroundColor(.orange)
                         }
                         .padding(.vertical, 14)
                         .padding(.horizontal, 14)
                     } else {
                         textFieldRow(
-                            title: "Gemini API Key",
-                            subtitle: "ระบุรหัสเอพีไอคีย์สำหรับเชื่อมต่อประมวลผลเมนูและบิลใบเสร็จ (แชร์คีย์นี้ทุกหน้าใช้งาน AI)",
-                            placeholder: "ป้อน Gemini API Key ของคุณ...",
-                            text: $geminiApiKey,
+                            title: "syscfg_openrouter_title".t,
+                            subtitle: "syscfg_openrouter_desc".t,
+                            placeholder: "syscfg_openrouter_placeholder".t,
+                            text: $openRouterApiKey,
                             isSecure: true
                         )
                     }
@@ -364,14 +359,135 @@ struct SystemFeatureConfigView: View {
             .padding()
         }
         .background(Color.appBackground)
-        .navigationTitle("การควบคุมระบบ (System Control)")
+        .navigationTitle("settings_system_ops".t)
         .navigationBarTitleDisplayMode(.inline)
         .apNavBar(background: Color.appBackground)
+        .onAppear {
+            openRouterApiKey = KeychainManager.shared.openRouterAPIKey()
+            OfflineSyncModeController.enforcePlanPolicy(modelContext: modelContext)
+            offlineSyncMode = OfflineSyncModeController.isEnabled
+        }
+        .onChange(of: offlineSyncMode) { _, newValue in
+            if OfflineSyncModeController.isToggleLockedByPlan {
+                OfflineSyncModeController.enforcePlanPolicy(modelContext: modelContext)
+                offlineSyncMode = true
+                return
+            }
+            _ = OfflineSyncModeController.setUserPreference(
+                isOffline: newValue,
+                modelContext: modelContext
+            )
+            offlineSyncMode = OfflineSyncModeController.isEnabled
+        }
+        .onChange(of: enableTableSystem) { pushFeatureFlags() }
+        .onChange(of: enableWebOrdering) { pushFeatureFlags() }
+        .onChange(of: openRouterApiKey) { _, value in
+            _ = KeychainManager.shared.saveOpenRouterAPIKey(value)
+        }
+    }
+
+    private func pushFeatureFlags() {
+        guard !offlineSyncMode else { return }
+        Task {
+            do {
+                _ = try await NetworkManager.shared.updateMerchantFeatureFlags(
+                    isTableSystemEnabled: enableTableSystem,
+                    isWebOrderingEnabled: enableWebOrdering
+                )
+            } catch {
+                #if DEBUG
+                print("SystemFeatureConfigView [Feature Flags Sync Error]: \(error.localizedDescription)")
+                #endif
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // MARK: - Reusable Components
     // ─────────────────────────────────────────────────────────────────────────
+
+    private var paymentsHubRedirectCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionHeader(
+                title: "payment_hub_redirect_title".t,
+                icon: "creditcard.and.123",
+                color: .appAccent
+            )
+
+            Button {
+                APHaptic.trigger()
+                NotificationCenter.default.post(name: .openPaymentsNotification, object: nil)
+            } label: {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("payment_hub_redirect_desc".t)
+                            .font(.system(size: 12))
+                            .foregroundColor(.textSecondary)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("payment_hub_redirect_cta".t)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.appAccent)
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "arrow.up.right.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(.appAccent)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .apCard()
+    }
+
+    private var dataManagementCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionHeader(
+                title: "การจัดการและล้างข้อมูล",
+                icon: "externaldrive.badge.xmark",
+                color: .red
+            )
+
+            NavigationLink {
+                SystemOpsSettingsView()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "checklist")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.orange)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("ล้างข้อมูลทดสอบแบบเลือกประเภท")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.textPrimary)
+                        Text("เลือกแยกล้างออร์เดอร์ การชำระเงิน เซสชันโต๊ะ หรือกะเงินสด โดยไม่ลบสินค้าและการตั้งค่าร้าน")
+                            .font(.system(size: 12))
+                            .foregroundColor(.textSecondary)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.textSecondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .apCard()
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.red.opacity(0.2), lineWidth: 1)
+        )
+    }
 
     private var sectionDivider: some View {
         Divider().background(Color.appDivider).padding(.leading, 12)
@@ -380,14 +496,14 @@ struct SystemFeatureConfigView: View {
     private func sectionHeader(title: String, icon: String, color: Color) -> some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.white)
                 .frame(width: 30, height: 30)
                 .background(color.gradient)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
 
             Text(title)
-                .font(.subheadline)
+                .font(.system(size: 12))
                 .fontWeight(.bold)
                 .foregroundColor(.textPrimary)
         }
@@ -401,26 +517,29 @@ struct SystemFeatureConfigView: View {
         title: String,
         subtitle: String,
         isOn: Binding<Bool>,
-        tint: Color = .appAccent
+        tint: Color = .appAccent,
+        isDisabled: Bool = false
     ) -> some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.subheadline)
+                    .font(.system(size: 12))
                     .fontWeight(.medium)
-                    .foregroundColor(.textPrimary)
+                    .foregroundColor(isDisabled ? .textSecondary : .textPrimary)
                 Text(subtitle)
-                    .font(.caption2)
-                    .foregroundColor(.textSecondary)
+                    .font(.system(size: 12))
+                    .foregroundColor(isDisabled ? .orange : .textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             Toggle("", isOn: isOn)
                 .labelsHidden()
                 .tint(tint)
+                .disabled(isDisabled)
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
+        .opacity(isDisabled ? 0.85 : 1)
     }
 
     private func textFieldRow(
@@ -433,17 +552,17 @@ struct SystemFeatureConfigView: View {
         VStack(alignment: .leading, spacing: 6) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.subheadline)
+                    .font(.system(size: 12))
                     .fontWeight(.medium)
                     .foregroundColor(.textPrimary)
                 Text(subtitle)
-                    .font(.caption2)
+                    .font(.system(size: 12))
                     .foregroundColor(.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if isSecure {
                 SecureField(placeholder, text: text)
-                    .font(.footnote)
+                    .font(.system(size: 12))
                     .padding(10)
                     .background(Color.appBackground)
                     .cornerRadius(APRadius.sm)
@@ -455,7 +574,7 @@ struct SystemFeatureConfigView: View {
                     .autocorrectionDisabled()
             } else {
                 TextField(placeholder, text: text)
-                    .font(.footnote)
+                    .font(.system(size: 12))
                     .padding(10)
                     .background(Color.appBackground)
                     .cornerRadius(APRadius.sm)

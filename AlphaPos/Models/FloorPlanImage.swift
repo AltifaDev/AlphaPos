@@ -5,7 +5,8 @@ import SwiftData
 final class FloorPlanImage {
     @Attribute(.unique) var id: UUID
     var merchantId: String
-    var floor: Int
+    var branchId: String = ""
+    var diningAreaId: UUID
     /// Filename only (e.g. "floor_plan_1.jpg") — resolved against Documents directory at runtime
     var imageFilename: String
     var updatedAt: Date
@@ -20,7 +21,8 @@ final class FloorPlanImage {
     init(
         id: UUID = UUID(),
         merchantId: String,
-        floor: Int,
+        branchId: String = "",
+        diningAreaId: UUID,
         imageFilename: String,
         scale: Double = 1.0,
         offsetX: Double = 0.0,
@@ -31,7 +33,8 @@ final class FloorPlanImage {
     ) {
         self.id = id
         self.merchantId = merchantId
-        self.floor = floor
+        self.branchId = branchId
+        self.diningAreaId = diningAreaId
         self.imageFilename = imageFilename
         self.scale = scale
         self.offsetX = offsetX

@@ -1,0 +1,16 @@
+FaceEmbedding.mlpackage
+
+This model is based on face-reidentification-retail-0095 from the Intel Open Model Zoo.
+The model and the accompanying conversion artifacts are distributed under the Apache
+License, Version 2.0. The upstream model produces a 256-dimensional face embedding
+from a tightly aligned 128x128 BGR face crop. AlphaPos converts the input to RGB and
+uses cosine similarity for verification.
+
+Upstream documentation:
+https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/intel/face-reidentification-retail-0095
+
+Apache License 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
+
+The model is not an Apple Face ID or Touch ID component. Apple biometric templates
+remain protected by the Secure Enclave and are never read or stored by AlphaPos.

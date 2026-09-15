@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AlphaPos — Continue</title>
+  <meta name="robots" content="noindex,nofollow" />
+  <style>
+    :root {
+      --bg: #0b1220;
+      --card: #121a2b;
+      --text: #f3f6ff;
+      --muted: #9aa8c7;
+      --accent: #2d71f8;
+      --ok: #34d399;
+      --err: #f87171;
+      --field: rgba(255,255,255,0.06);
+      --border: rgba(255,255,255,0.12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(45,113,248,0.35), transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, rgba(52,211,153,0.18), transparent 50%),
+        var(--bg);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(440px, 100%);
+      background: color-mix(in srgb, var(--card) 92%, white 8%);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 20px;
+      padding: 28px 24px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.35);
+    }
+    .logo {
+      width: 52px; height: 52px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #2d71f8, #1a5fe8);
+      display: grid; place-items: center;
+      font-weight: 800; letter-spacing: -0.02em;
+      margin-bottom: 18px;
+    }
+    h1 { font-size: 1.35rem; margin: 0 0 8px; }
+    p { margin: 0 0 12px; color: var(--muted); line-height: 1.5; font-size: 0.95rem; }
+    .status { font-size: 0.9rem; margin: 14px 0 18px; min-height: 1.2em; }
+    .status.ok { color: var(--ok); }
+    .status.err { color: var(--err); }
+    .actions { display: grid; gap: 10px; }
+    a.btn, button.btn {
+      appearance: none; border: 0; cursor: pointer; text-decoration: none;
+      display: inline-flex; align-items: center; justify-content: center;
+      min-height: 48px; border-radius: 12px; font-weight: 700; font-size: 0.98rem;
+      padding: 0 16px; width: 100%;
+    }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .btn-primary { background: linear-gradient(135deg, #2d71f8, #1a5fe8); color: white; }
+    .btn-secondary { background: rgba(255,255,255,0.06); color: var(--text); border: 1px solid rgba(255,255,255,0.1); }
+    .hint { font-size: 0.8rem; color: var(--muted); margin-top: 16px; }
+    .field { display: grid; gap: 6px; margin-bottom: 12px; text-align: left; }
+    .field label { font-size: 0.78rem; font-weight: 700; color: rgba(243,246,255,0.85); }
+    .field input {
+      width: 100%; min-height: 46px; border-radius: 12px; border: 1px solid var(--border);
+      background: var(--field); color: var(--text); padding: 0 14px; font-size: 0.95rem;
+    }
+    .field input:focus { outline: 2px solid rgba(45,113,248,0.55); border-color: transparent; }
+    #webReset, #appOpen { display: none; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="logo">AP</div>
+    <h1 id="title">กำลังเปิด AlphaPos</h1>
+    <p id="desc">ยืนยันลิงก์สำเร็จแล้ว ระบบจะเปิดแอปเพื่อดำเนินการต่อ</p>
+    <div id="status" class="status"></div>
+
+    <div id="webReset">
+      <div class="field">
+        <label for="newPassword">รหัสผ่านใหม่ / New password</label>
+        <input id="newPassword" type="password" autocomplete="new-password" minlength="8" placeholder="อย่างน้อย 8 ตัวอักษร" />
+      </div>
+      <div class="field">
+        <label for="confirmPassword">ยืนยันรหัสผ่าน / Confirm password</label>
+        <input id="confirmPassword" type="password" autocomplete="new-password" minlength="8" placeholder="พิมพ์รหัสผ่านอีกครั้ง" />
+      </div>
+      <div class="actions">
+        <button id="savePassword" class="btn btn-primary" type="button">บันทึกรหัสผ่านใหม่</button>
+      </div>
+    </div>
+
+    <div id="appOpen" class="actions">
+      <a id="openApp" class="btn btn-primary" href="#">เปิดแอป AlphaPos</a>
+      <button id="retry" class="btn btn-secondary" type="button">ลองเปิดอีกครั้ง</button>
+    </div>
+
+    <p id="hint" class="hint"></p>
+  </main>
+  <script>
+    (function () {
+      // Replaced at deploy time from VPS .env (public anon key — same as iOS client).
+      var SUPABASE_URL = "https://api.alphaposweb.com";
+      var SUPABASE_ANON_KEY = "%%SUPABASE_ANON_KEY%%";
+
+      var APP_CALLBACK = "alphapos://auth/callback";
+      var hash = window.location.hash || "";
+      var search = window.location.search || "";
+      var raw = (hash && hash.length > 1 ? hash.slice(1) : "") ||
+               (search && search.length > 1 ? search.slice(1) : "");
+      var params = new URLSearchParams(raw);
+      var deepLink = APP_CALLBACK + (hash || (raw ? ("#" + raw) : ""));
+
+      var title = document.getElementById("title");
+      var desc = document.getElementById("desc");
+      var status = document.getElementById("status");
+      var hint = document.getElementById("hint");
+      var openApp = document.getElementById("openApp");
+      var retry = document.getElementById("retry");
+      var appOpen = document.getElementById("appOpen");
+      var webReset = document.getElementById("webReset");
+      var savePassword = document.getElementById("savePassword");
+      var newPassword = document.getElementById("newPassword");
+      var confirmPassword = document.getElementById("confirmPassword");
+
+      openApp.href = deepLink;
+
+      var ua = navigator.userAgent || "";
+      var isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      var isAndroid = /Android/i.test(ua);
+      var canLikelyOpenApp = isIOS || isAndroid;
+
+      var error = params.get("error") || params.get("error_code");
+      var errorDescription = (params.get("error_description") || "").replace(/\+/g, " ");
+      var type = (params.get("type") || "").toLowerCase();
+      var accessToken = params.get("access_token");
+      var isRecovery = type === "recovery";
+
+      function setStatus(kind, text) {
+        status.className = "status " + (kind || "");
+        status.textContent = text || "";
+      }
+
+      function showErrorState(message, detail) {
+        title.textContent = message;
+        desc.textContent = detail || "";
+        setStatus("err", detail ? "" : "error");
+        appOpen.classList.add("hidden");
+        webReset.classList.add("hidden");
+      }
+
+      if (error) {
+        showErrorState(
+          "ลิงก์ใช้ไม่ได้หรือหมดอายุ",
+          errorDescription || "กรุณาขอลิงก์ใหม่จากแอป AlphaPos"
+        );
+        status.textContent = error;
+        status.className = "status err";
+        return;
+      }
+
+      if (!accessToken && !raw) {
+        showErrorState("ไม่พบข้อมูลยืนยัน", "กรุณากดลิงก์จากอีเมลอีกครั้ง หรือขอลิงก์ใหม่ในแอป");
+        status.textContent = "missing_token";
+        return;
+      }
+
+      // ── Recovery on desktop / no app handler: reset password in browser ──
+      if (isRecovery && accessToken) {
+        title.textContent = "ตั้งรหัสผ่านใหม่";
+        desc.textContent = canLikelyOpenApp
+          ? "ตั้งรหัสผ่านบนหน้านี้ได้เลย หรือเปิดแอป AlphaPos ถ้าติดตั้งอยู่บนเครื่องนี้"
+          : "เปิดลิงก์บนคอมพิวเตอร์ — ตั้งรหัสผ่านใหม่ได้ที่นี่โดยไม่ต้องเปิดแอป";
+        webReset.style.display = "block";
+        hint.textContent = canLikelyOpenApp
+          ? "หลังบันทึกสำเร็จ ให้กลับไปเข้าสู่ระบบในแอป AlphaPos"
+          : "หลังบันทึกสำเร็จ ให้เปิดแอป AlphaPos บน iPad แล้วเข้าสู่ระบบด้วยรหัสผ่านใหม่";
+
+        if (canLikelyOpenApp) {
+          appOpen.style.display = "grid";
+        }
+
+        savePassword.addEventListener("click", function () {
+          var p1 = (newPassword.value || "").trim();
+          var p2 = (confirmPassword.value || "").trim();
+          if (p1.length < 8) {
+            setStatus("err", "รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร");
+            return;
+          }
+          if (p1 !== p2) {
+            setStatus("err", "รหัสผ่านทั้งสองช่องไม่ตรงกัน");
+            return;
+          }
+          if (!SUPABASE_ANON_KEY || SUPABASE_ANON_KEY.indexOf("%%") === 0) {
+            setStatus("err", "หน้าเว็บยังไม่ได้ตั้งค่า API key — ติดต่อผู้ดูแลระบบ");
+            return;
+          }
+
+          savePassword.disabled = true;
+          setStatus("", "กำลังบันทึกรหัสผ่าน…");
+
+          fetch(SUPABASE_URL.replace(/\/$/, "") + "/auth/v1/user", {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "apikey": SUPABASE_ANON_KEY,
+              "Authorization": "Bearer " + accessToken
+            },
+            body: JSON.stringify({ password: p1 })
+          }).then(function (res) {
+            return res.text().then(function (text) {
+              var body = null;
+              try { body = text ? JSON.parse(text) : null; } catch (_) {}
+              if (!res.ok) {
+                var msg = (body && (body.msg || body.message || body.error_description)) || ("HTTP " + res.status);
+                throw new Error(msg);
+              }
+              return body;
+            });
+          }).then(function () {
+            title.textContent = "เปลี่ยนรหัสผ่านสำเร็จ";
+            desc.textContent = "กลับไปที่แอป AlphaPos แล้วเข้าสู่ระบบด้วยรหัสผ่านใหม่";
+            webReset.classList.add("hidden");
+            setStatus("ok", "สำเร็จ — เปิดแอปแล้วล็อกอินได้ทันที");
+            hint.textContent = "หากเปิด Two-Factor ไว้ ยังต้องกรอกรหัสจากแอป Authenticator";
+            // Clear sensitive tokens from the address bar after success.
+            try {
+              history.replaceState(null, "", window.location.pathname);
+            } catch (_) {}
+          }).catch(function (err) {
+            savePassword.disabled = false;
+            setStatus("err", err && err.message ? err.message : "บันทึกไม่สำเร็จ กรุณาขอลิงก์ใหม่");
+          });
+        });
+      } else {
+        // Email confirm / other types
+        if (type === "signup" || type === "email") {
+          title.textContent = "ยืนยันอีเมลสำเร็จ";
+          desc.textContent = canLikelyOpenApp
+            ? "กดปุ่มด้านล่างเพื่อเปิดแอป AlphaPos และเข้าสู่ระบบต่อ"
+            : "ยืนยันอีเมลสำเร็จแล้ว — เปิดแอป AlphaPos บน iPad แล้วเข้าสู่ระบบ";
+        }
+        if (canLikelyOpenApp) {
+          appOpen.style.display = "grid";
+          hint.textContent = "ถ้าแอปไม่เปิด ให้กด「เปิดแอป AlphaPos」";
+        } else {
+          setStatus("ok", "ยืนยันสำเร็จบนเว็บแล้ว");
+          hint.textContent = "เปิดแอป AlphaPos บน iPad/iPhone ที่ติดตั้งไว้ แล้วเข้าสู่ระบบ — ไม่จำเป็นต้องกดเปิดแอปจากคอมพิวเตอร์";
+        }
+      }
+
+      function tryOpenApp() {
+        if (!canLikelyOpenApp) {
+          setStatus("err", "เครื่องนี้ไม่มีแอป AlphaPos — ใช้ฟอร์มด้านบน หรือเปิดลิงก์บน iPad");
+          return;
+        }
+        setStatus("ok", "กำลังเปิดแอป…");
+        // Prefer <a> navigation assigned to href; location.assign still used as fallback.
+        var iframe = document.createElement("iframe");
+        iframe.style.display = "none";
+        iframe.src = deepLink;
+        document.body.appendChild(iframe);
+        setTimeout(function () {
+          try { document.body.removeChild(iframe); } catch (_) {}
+          window.location.href = deepLink;
+        }, 50);
+        setTimeout(function () {
+          if (document.visibilityState === "visible") {
+            setStatus("ok", "ถ้าแอปไม่เปิด ให้ติดตั้ง AlphaPos บนเครื่องนี้ หรือใช้ฟอร์มตั้งรหัสผ่านด้านบน");
+          }
+        }, 1600);
+      }
+
+      openApp.addEventListener("click", function (e) {
+        e.preventDefault();
+        tryOpenApp();
+      });
+      retry.addEventListener("click", function (e) {
+        e.preventDefault();
+        tryOpenApp();
+      });
+
+      // Auto-open only on iOS/Android — never spam desktop (avoids console scheme errors).
+      if (canLikelyOpenApp && !isRecovery) {
+        setTimeout(tryOpenApp, 300);
+      } else if (canLikelyOpenApp && isRecovery) {
+        setStatus("ok", "ตั้งรหัสผ่านบนหน้านี้ได้ หรือกดเปิดแอป");
+      } else if (isRecovery) {
+        setStatus("ok", "กรอกรหัสผ่านใหม่ด้านล่างได้เลย");
+      }
+    })();
+  </script>
+</body>
+</html>

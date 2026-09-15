@@ -15,7 +15,7 @@ extension SyncEngine {
 
     func syncRestaurantWalls(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<RestaurantWall>(
-            predicate: #Predicate<RestaurantWall> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<RestaurantWall> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let walls = try? modelContext.fetch(descriptor), !walls.isEmpty else { return }
@@ -55,7 +55,8 @@ extension SyncEngine {
                 let isDeletedRemote = remoteBool(remote["is_deleted"])
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if isDeletedRemote {
                         modelContext.delete(local)
                         localById.removeValue(forKey: idStr.lowercased())
@@ -96,7 +97,7 @@ extension SyncEngine {
             }
             modelContext.saveWithLogging(label: #function)
         } catch {
-            encounteredSyncError = true
+            reportSyncFailure("restaurant_walls pull: \(error.localizedDescription)", soft: true)
             print("SyncEngine [RestaurantWall Pull Error]: \(error.localizedDescription)")
         }
     }
@@ -107,7 +108,7 @@ extension SyncEngine {
 
     func syncTableLayoutPresets(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<TableLayoutPreset>(
-            predicate: #Predicate<TableLayoutPreset> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<TableLayoutPreset> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let presets = try? modelContext.fetch(descriptor), !presets.isEmpty else { return }
@@ -123,8 +124,13 @@ extension SyncEngine {
                     preset.updatedAt = Date()
                 }
             } catch {
-                encounteredSyncError = true
-                print("SyncEngine [TableLayoutPreset Push Error]: \(error.localizedDescription)")
+                let msg = error.localizedDescription
+                let isPrivilege = msg.contains("42501")
+                    || msg.contains("401")
+                    || msg.lowercased().contains("permission")
+                    || msg.lowercased().contains("jwt")
+                reportSyncFailure("table_layout_presets push: \(msg)", soft: isPrivilege)
+                print("SyncEngine [TableLayoutPreset Push Error]: \(msg)")
             }
         }
         modelContext.saveWithLogging(label: #function)
@@ -140,17 +146,20 @@ extension SyncEngine {
             let locals = (try? modelContext.fetch(__desclocals)) ?? []
             var localById = Dictionary(uniqueKeysWithValues: locals.map { ($0.id.uuidString.lowercased(), $0) })
 
-            let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+            let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
 
             for remote in remotePresets {
                 guard let idStr = remote["id"] as? String,
                       let id = UUID(uuidString: idStr),
+                      let diningAreaIdString = remote["dining_area_id"] as? String,
+                      let diningAreaId = UUID(uuidString: diningAreaIdString),
                       let name = remote["name"] as? String else { continue }
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
                 let isDeletedRemote = remoteBool(remote["is_deleted"])
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if isDeletedRemote {
                         modelContext.delete(local)
                         localById.removeValue(forKey: idStr.lowercased())
@@ -158,9 +167,11 @@ extension SyncEngine {
                     }
                     if local.isDeleted { continue }
                     local.name = name
-                    local.floor = remoteInt(remote["floor"])
+                    local.diningAreaId = diningAreaId
                     local.branchId = remote["branch_id"] as? String ?? local.branchId
                     local.bgImageFilename = remote["bg_image_filename"] as? String
+                    local.bgImageChecksum = remote["bg_image_checksum"] as? String
+                    local.schemaVersion = remoteInt(remote["schema_version"], fallback: 1)
                     local.bgImageScale = remoteDouble(remote["bg_image_scale"], fallback: 1.0)
                     local.bgImageOffsetX = remoteDouble(remote["bg_image_offset_x"])
                     local.bgImageOffsetY = remoteDouble(remote["bg_image_offset_y"])
@@ -173,13 +184,15 @@ extension SyncEngine {
                         id: id,
                         merchantId: remote["merchant_id"] as? String ?? merchantId,
                         branchId: remote["branch_id"] as? String ?? "",
-                        floor: remoteInt(remote["floor"]),
+                        diningAreaId: diningAreaId,
                         name: name,
                         bgImageFilename: remote["bg_image_filename"] as? String,
+                        bgImageChecksum: remote["bg_image_checksum"] as? String,
                         bgImageScale: remoteDouble(remote["bg_image_scale"], fallback: 1.0),
                         bgImageOffsetX: remoteDouble(remote["bg_image_offset_x"]),
                         bgImageOffsetY: remoteDouble(remote["bg_image_offset_y"]),
                         tableLayoutJson: remote["table_layout_json"] as? String ?? "[]",
+                        schemaVersion: remoteInt(remote["schema_version"], fallback: 1),
                         updatedAt: updatedAt == .distantPast ? Date() : updatedAt,
                         isSynced: true,
                         isDeleted: false
@@ -190,7 +203,9 @@ extension SyncEngine {
             }
             modelContext.saveWithLogging(label: #function)
         } catch {
-            encounteredSyncError = true
+            // Missing GRANT / RLS (42501) or stale JWT (401) must not paint the
+            // whole sync cycle red — floor plan still works from local SwiftData.
+            reportSyncFailure("table_layout_presets: \(error.localizedDescription)", soft: true)
             print("SyncEngine [TableLayoutPreset Pull Error]: \(error.localizedDescription)")
         }
     }
@@ -201,7 +216,7 @@ extension SyncEngine {
 
     func syncReceiptTemplates(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<ReceiptTemplate>(
-            predicate: #Predicate<ReceiptTemplate> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<ReceiptTemplate> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let templates = try? modelContext.fetch(descriptor), !templates.isEmpty else { return }
@@ -241,7 +256,8 @@ extension SyncEngine {
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.name = name
                     local.templateType = remote["template_type"] as? String ?? local.templateType

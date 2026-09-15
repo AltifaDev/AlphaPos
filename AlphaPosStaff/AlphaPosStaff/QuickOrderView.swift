@@ -7,16 +7,23 @@ import SwiftUI
 struct QuickOrderView: View {
     @AppStorage("app_language") private var appLanguage = "en"
     @AppStorage("logged_in_employee_name") private var staffName = ""
+    @AppStorage("logged_in_employee_id") private var loggedInEmployeeId = ""
     
     @State private var networkService = NetworkService.shared
     @State private var menuItems: [MenuItem] = []
     @State private var cartItems: [MenuItem: Int] = [:]
     @State private var selectedOrderType: OrderType = .takeaway
+    @State private var deliveryBrand: String = "GrabFood"
+    @State private var platformOrderNumber: String = ""
+    @State private var deliveryCanScrollLeading = false
+    @State private var deliveryCanScrollTrailing = true
     @State private var selectedCategory = "all"
     @State private var isLoading = false
     @State private var isSubmitting = false
     @State private var showSuccess = false
     @State private var submittedQueueNumber = ""
+    @State private var submittedOrderNumber = ""
+    @State private var submittedReceiptNumber = ""
     @State private var submittedOrderId = ""
     @State private var showOrderTimeline = false
     @State private var showPaymentSheet = false
@@ -24,6 +31,7 @@ struct QuickOrderView: View {
     @State private var submitError: String? = nil
     @State private var showSplitBill = false
     @State private var showSubmitConfirm = false
+    @State private var showShiftGuard = false
     
     // Filter & Sorting State
     @State private var showFilterSheet = false
@@ -31,7 +39,18 @@ struct QuickOrderView: View {
     @State private var filterMinPrice = ""
     @State private var filterMaxPrice = ""
     @State private var filterFavoritesOnly = false
-    
+
+    // ── Modifier / option picker ─────────────────────────────────────────────
+    // Cart lines that carry chosen options (kept separate from the plain
+    // `[MenuItem: Int]` cart, which cannot represent per-line modifiers).
+    @State private var modifierLines: [CartLine] = []
+    @State private var pickerItem: MenuItem? = nil
+    @State private var pickerGroups: [StaffModifierGroup] = []
+    @State private var isLoadingOptions = false
+    @State private var showCartDetail = false
+    // When set, the picker is editing this existing line (replace on confirm).
+    @State private var editingLineId: String? = nil
+
     // Persistent Favorites
     @AppStorage("favorite_menu_item_ids") private var favoriteItemIdsData: Data = Data()
     
@@ -57,9 +76,11 @@ struct QuickOrderView: View {
     }
     
     enum OrderType: String, CaseIterable {
+        /// Stored as take_out for kitchen-filter compatibility; SQL queue RPC accepts both.
         case takeaway = "take_out"
         case delivery = "delivery"
-        case walkIn = "dine_in"
+        /// Walk-in counter service — never a table dine-in session.
+        case walkIn = "walk_in"
         
         var displayKey: String {
             switch self {
@@ -84,6 +105,11 @@ struct QuickOrderView: View {
             case .walkIn:   return Color.appAmber
             }
         }
+    }
+    
+    private var postDeliveryOrderType: OrderType {
+        let pref = UserDefaults.standard.string(forKey: "delivery_post_payment_order_type") ?? "take_out"
+        return (pref == "dine_in" || pref == "walk_in") ? .walkIn : .takeaway
     }
     
     private var categories: [String] {
@@ -130,11 +156,12 @@ struct QuickOrderView: View {
     }
     
     private var cartCount: Int {
-        cartItems.values.reduce(0, +)
+        cartItems.values.reduce(0, +) + modifierLines.reduce(0) { $0 + $1.quantity }
     }
     
     private var cartTotal: Double {
         cartItems.reduce(0.0) { $0 + (Double($1.value) * $1.key.price) }
+            + modifierLines.reduce(0.0) { $0 + $1.lineTotal }
     }
     
     var body: some View {
@@ -192,7 +219,7 @@ struct QuickOrderView: View {
                 OrderTimelineView(
                     order: Order(
                         id: submittedOrderId,
-                        orderNumber: submittedQueueNumber.isEmpty ? "QO-0000" : submittedQueueNumber,
+                        orderNumber: submittedOrderNumber.isEmpty ? "QO-0000" : submittedOrderNumber,
                         tableNumber: "QUICK",
                         total: cartTotal,
                         status: "preparing",
@@ -200,7 +227,15 @@ struct QuickOrderView: View {
                         items: cartItems.map { (menuItem, qty) in
                             OrderItem(id: UUID().uuidString, name: menuItem.name, quantity: qty, price: menuItem.price, status: "cooking", item_id: menuItem.id, notes: nil, servedBy: nil)
                         },
-                        sessionToken: nil
+                        sessionToken: nil,
+                        orderSource: "staff",
+                        orderType: selectedOrderType.rawValue,
+                        queueNumber: submittedQueueNumber.isEmpty ? nil : submittedQueueNumber,
+                        receiptNumber: submittedReceiptNumber.isEmpty ? nil : submittedReceiptNumber,
+                        deliveryBrand: selectedOrderType == .delivery ? deliveryBrand : nil,
+                        platformOrderNumber: selectedOrderType == .delivery
+                            ? (platformOrderNumber.isEmpty ? nil : platformOrderNumber)
+                            : nil
                     )
                 )
             }
@@ -210,8 +245,12 @@ struct QuickOrderView: View {
                     orderItems: cartItems.map { (menuItem, qty) in
                         OrderItem(id: UUID().uuidString, name: menuItem.name, quantity: qty, price: menuItem.price, status: "cooking", item_id: menuItem.id, notes: nil, servedBy: nil)
                     },
-                    totalAmount: cartTotal
+                    totalAmount: cartTotal,
+                    tableNumber: "QUICK"
                 )
+            }
+            .fullScreenCover(isPresented: $showShiftGuard) {
+                ShiftGuardOverlay()
             }
             .sheet(isPresented: $showFilterSheet) {
                 MenuFilterSheet(
@@ -221,6 +260,53 @@ struct QuickOrderView: View {
                     favoritesOnly: $filterFavoritesOnly,
                     appLanguage: appLanguage
                 )
+            }
+            .sheet(item: $pickerItem) { item in
+                ModifierPickerSheet(
+                    menuItem: item,
+                    groups: pickerGroups,
+                    appLanguage: appLanguage,
+                    preselectedModifierIds: editingLineId.flatMap { id in
+                        modifierLines.first { $0.id == id }.map { Set($0.selectedModifiers.map(\.id)) }
+                    } ?? [],
+                    initialQuantity: editingLineId.flatMap { id in
+                        modifierLines.first { $0.id == id }?.quantity
+                    } ?? 1,
+                    onConfirm: { mods, qty in
+                        if let editId = editingLineId,
+                           let idx = modifierLines.firstIndex(where: { $0.id == editId }) {
+                            // Replace the edited line in place
+                            modifierLines[idx].quantity = qty
+                            modifierLines[idx].selectedModifiers = mods
+                        } else {
+                            modifierLines.append(CartLine(menuItem: item, quantity: qty, selectedModifiers: mods))
+                        }
+                        editingLineId = nil
+                        APHaptic.success()
+                    }
+                )
+                .onDisappear { editingLineId = nil }
+            }
+            .sheet(isPresented: $showCartDetail) {
+                CartDetailSheet(
+                    lines: modifierLines,
+                    appLanguage: appLanguage,
+                    onEdit: { line in
+                        showCartDetail = false
+                        editLine(line)
+                    },
+                    onRemove: { line in
+                        removeLine(line)
+                        if modifierLines.isEmpty { showCartDetail = false }
+                    },
+                    onQuantityChange: { line, newQty in
+                        if let idx = modifierLines.firstIndex(where: { $0.id == line.id }) {
+                            modifierLines[idx].quantity = newQty
+                            APHaptic.trigger()
+                        }
+                    }
+                )
+                .presentationDetents([.medium, .large])
             }
             .alert("submit_order_failed".localized(for: appLanguage),
                    isPresented: Binding(get: { submitError != nil }, set: { if !$0 { submitError = nil } })) {
@@ -284,10 +370,254 @@ struct QuickOrderView: View {
                     .buttonStyle(.plain)
                 }
             }
+
+            if selectedOrderType == .delivery {
+                deliveryPlatformFields
+                    .onAppear {
+                        if platformOrderNumber.isEmpty {
+                            platformOrderNumber = PlatformOrderNumber.prefix(for: deliveryBrand) ?? ""
+                        }
+                    }
+            }
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
         .background(Color.appBackground)
+    }
+
+    private func deliveryBrandColor(for brand: String) -> Color {
+        switch brand {
+        case "GrabFood", "Grab": return Color(hex: "00B14F")
+        case "LINE MAN": return Color(hex: "00C25B")
+        case "ShopeeFood": return Color(hex: "F04D23")
+        case "Foodpanda": return Color(hex: "D6125D")
+        case "Robinhood": return Color(hex: "7E22CE")
+        default: return Color.appTeal
+        }
+    }
+
+    private func cleanDeliveryBody(_ value: String) -> String {
+        PlatformOrderNumber.stripKnownPrefix(value)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-_/ "))
+    }
+
+    private func liquidGlassScrollButton(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: {
+            action()
+            APHaptic.trigger()
+        }) {
+            ZStack {
+                Circle()
+                    .fill(.ultraThinMaterial)
+
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.55),
+                                Color.white.opacity(0.08)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+
+                Circle()
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.75),
+                                Color.white.opacity(0.20)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.8
+                    )
+
+                Image(systemName: systemName)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.textPrimary)
+            }
+            .frame(width: 26, height: 26)
+            .shadow(color: Color.black.opacity(0.15), radius: 4, x: 0, y: 1.5)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var deliveryPlatformFields: some View {
+        VStack(spacing: 8) {
+            ScrollViewReader { proxy in
+                ZStack {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(["GrabFood", "LINE MAN", "ShopeeFood", "Foodpanda", "Robinhood"], id: \.self) { brand in
+                                let selected = deliveryBrand == brand
+                                let brandColor = deliveryBrandColor(for: brand)
+                                Button {
+                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) {
+                                        deliveryBrand = brand
+                                        let currentBody = cleanDeliveryBody(platformOrderNumber)
+                                        let prefix = PlatformOrderNumber.prefix(for: brand) ?? ""
+                                        platformOrderNumber = currentBody.isEmpty ? prefix : prefix + currentBody
+                                    }
+                                    APHaptic.trigger()
+                                } label: {
+                                    Text(brand)
+                                        .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 7)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .fill(selected ? brandColor.opacity(0.16) : Color.appSurface)
+                                        )
+                                        .foregroundColor(selected ? brandColor : .textSecondary)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .stroke(selected ? brandColor : Color.appDivider, lineWidth: selected ? 1.8 : 1)
+                                        )
+                                        .shadow(color: selected ? brandColor.opacity(0.25) : Color.clear, radius: 4, y: 1.5)
+                                        .scaleEffect(selected ? 1.03 : 0.98)
+                                }
+                                .buttonStyle(.plain)
+                                .id(brand)
+                                .compositingGroup()
+                                .animation(.spring(response: 0.28, dampingFraction: 0.75), value: selected)
+                            }
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 4)
+                    }
+                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                    .onScrollGeometryChange(for: Bool.self) { geo in
+                        geo.contentOffset.x > 4
+                    } action: { _, newValue in
+                        if deliveryCanScrollLeading != newValue {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                deliveryCanScrollLeading = newValue
+                            }
+                        }
+                    }
+                    .onScrollGeometryChange(for: Bool.self) { geo in
+                        let maxOffset = max(0, geo.contentSize.width - geo.containerSize.width)
+                        return geo.contentOffset.x < (maxOffset - 4) && maxOffset > 8
+                    } action: { _, newValue in
+                        if deliveryCanScrollTrailing != newValue {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                deliveryCanScrollTrailing = newValue
+                            }
+                        }
+                    }
+
+                    // Leading Liquid Glass Arrow Indicator
+                    if deliveryCanScrollLeading {
+                        HStack(spacing: 0) {
+                            liquidGlassScrollButton(systemName: "chevron.left") {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                                    proxy.scrollTo("GrabFood", anchor: .leading)
+                                }
+                            }
+                            .padding(.leading, 2)
+
+                            Spacer()
+                        }
+                        .background(
+                            LinearGradient(
+                                colors: [Color.appBackground.opacity(0.95), Color.appBackground.opacity(0)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                            .frame(width: 40)
+                            .allowsHitTesting(false),
+                            alignment: .leading
+                        )
+                        .transition(.asymmetric(insertion: .scale(scale: 0.85).combined(with: .opacity), removal: .opacity))
+                    }
+
+                    // Trailing Liquid Glass Arrow Indicator
+                    if deliveryCanScrollTrailing {
+                        HStack(spacing: 0) {
+                            Spacer()
+
+                            liquidGlassScrollButton(systemName: "chevron.right") {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                                    proxy.scrollTo("Robinhood", anchor: .trailing)
+                                }
+                            }
+                            .padding(.trailing, 2)
+                        }
+                        .background(
+                            LinearGradient(
+                                colors: [Color.appBackground.opacity(0), Color.appBackground.opacity(0.95)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                            .frame(width: 40)
+                            .allowsHitTesting(false),
+                            alignment: .trailing
+                        )
+                        .transition(.asymmetric(insertion: .scale(scale: 0.85).combined(with: .opacity), removal: .opacity))
+                    }
+                }
+                .animation(.easeInOut(duration: 0.2), value: deliveryCanScrollLeading)
+                .animation(.easeInOut(duration: 0.2), value: deliveryCanScrollTrailing)
+            }
+
+            // Input field with clean prefix outside (never GP- GP-!)
+            HStack(spacing: 8) {
+                Text(PlatformOrderNumber.prefix(for: deliveryBrand) ?? "#")
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundColor(deliveryBrandColor(for: deliveryBrand))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 8)
+                    .background(deliveryBrandColor(for: deliveryBrand).opacity(0.12))
+                    .cornerRadius(8)
+
+                TextField(
+                    "12345",
+                    text: Binding(
+                        get: {
+                            cleanDeliveryBody(platformOrderNumber)
+                        },
+                        set: {
+                            let clean = cleanDeliveryBody($0)
+                            let prefix = PlatformOrderNumber.prefix(for: deliveryBrand) ?? ""
+                            platformOrderNumber = clean.isEmpty ? prefix : prefix + clean
+                        }
+                    )
+                )
+                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                .keyboardType(.numberPad)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+                .padding(10)
+                .background(Color.appSurface)
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.appDivider, lineWidth: 1)
+                )
+
+                Button {
+                    if let pasted = PlatformOrderNumber.fromPasteboard(brand: deliveryBrand) {
+                        let clean = cleanDeliveryBody(pasted)
+                        let prefix = PlatformOrderNumber.prefix(for: deliveryBrand) ?? ""
+                        platformOrderNumber = clean.isEmpty ? prefix : prefix + clean
+                        APHaptic.success()
+                    } else {
+                        APHaptic.error()
+                    }
+                } label: {
+                    Image(systemName: "doc.on.clipboard")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(deliveryBrandColor(for: deliveryBrand))
+                        .padding(10)
+                        .background(deliveryBrandColor(for: deliveryBrand).opacity(0.12))
+                        .cornerRadius(12)
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
     
     // MARK: - Menu Section
@@ -530,8 +860,7 @@ struct QuickOrderView: View {
                     .cornerRadius(12)
                 } else {
                     Button {
-                        cartItems[item] = 1
-                        APHaptic.trigger()
+                        handleAddTap(item)
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 12, weight: .bold))
@@ -561,28 +890,37 @@ struct QuickOrderView: View {
     private var cartBar: some View {
         HStack(spacing: 14) {
             // Cart info
-            VStack(alignment: .leading, spacing: 2) {
-                Text("your_cart".localized(for: appLanguage))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.textSecondary)
-                HStack(spacing: 4) {
-                    Text("\(cartCount) " + "items_label".localized(for: appLanguage))
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.textPrimary)
-                    Text("•")
-                        .foregroundColor(.textTertiary)
-                    Text("฿\(String(format: "%.0f", cartTotal))")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.appAccent)
+            Button {
+                if !modifierLines.isEmpty { showCartDetail = true }
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("your_cart".localized(for: appLanguage))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.textSecondary)
+                    HStack(spacing: 4) {
+                        Text("\(cartCount) " + "items_label".localized(for: appLanguage))
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.textPrimary)
+                        Text("•")
+                            .foregroundColor(.textTertiary)
+                        Text("฿\(String(format: "%.0f", cartTotal))")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.appAccent)
+                        if !modifierLines.isEmpty {
+                            Image(systemName: "chevron.up.circle.fill")
+                                .font(.system(size: 13))
+                                .foregroundColor(.textTertiary)
+                        }
+                    }
                 }
             }
-            
+            .buttonStyle(PressableButtonStyle(scale: 0.98))
+
             Spacer()
             
             // Submit button
             Button {
-                // แสดง confirm summary ก่อนไปเลือกวิธีชำระเงิน
-                showSubmitConfirm = true
+                verifyWorkSessionBeforeCheckout()
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "paperplane.fill")
@@ -592,18 +930,15 @@ struct QuickOrderView: View {
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
-                .background(
-                    LinearGradient(
-                        colors: [selectedOrderType.color, selectedOrderType.color.opacity(0.8)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
                 .foregroundColor(.white)
-                .cornerRadius(12)
+                .background(
+                    Color.clear.apLiquidGlass(
+                        tint: selectedOrderType.color, interactive: true,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                )
                 .shadow(color: selectedOrderType.color.opacity(0.3), radius: 6, x: 0, y: 3)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
             .disabled(isSubmitting)
         }
         .padding(.horizontal, 16)
@@ -636,14 +971,14 @@ struct QuickOrderView: View {
             }
             .padding(.horizontal, 30)
             
-            // Queue number
+            // Queue number (primary customer-facing ID for counter service)
             VStack(spacing: 6) {
-                Text("queue_number".localized(for: appLanguage).uppercased())
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundColor(Color.brandGreenDark)
+                Text(appLanguage == "th" ? "คิวที่" : "queue_number".localized(for: appLanguage).uppercased())
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundColor(Color(hex: "4B5563"))
                     .tracking(1.5)
                 
-                Text(submittedQueueNumber)
+                Text(submittedQueueNumber.replacingOccurrences(of: "#", with: ""))
                     .font(.system(size: 40, weight: .black, design: .rounded))
                     .foregroundColor(Color.brandGreenDark)
             }
@@ -657,6 +992,20 @@ struct QuickOrderView: View {
             )
             .padding(.horizontal, 40)
             .padding(.top, 10)
+
+            // Order + receipt identifiers (never table number)
+            VStack(spacing: 4) {
+                if !submittedOrderNumber.isEmpty {
+                    Text(submittedOrderNumber)
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.textPrimary)
+                }
+                if !submittedReceiptNumber.isEmpty {
+                    Text(submittedReceiptNumber)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(.textSecondary)
+                }
+            }
             
             // Order type badge
             HStack(spacing: 6) {
@@ -721,6 +1070,11 @@ struct QuickOrderView: View {
                     withAnimation(.spring()) {
                         showSuccess = false
                         cartItems.removeAll()
+                        modifierLines.removeAll()
+                        if selectedOrderType == .delivery {
+                            selectedOrderType = postDeliveryOrderType
+                            platformOrderNumber = ""
+                        }
                     }
                 } label: {
                     HStack(spacing: 8) {
@@ -754,22 +1108,105 @@ struct QuickOrderView: View {
         }
         isLoading = false
     }
-    
+
+    /// Tapped "+" on a menu item: fetch its options. If it has modifier groups,
+    /// open the picker; otherwise add straight to the plain cart (fast path).
+    private func handleAddTap(_ item: MenuItem) {
+        APHaptic.trigger()
+        guard !isLoadingOptions else { return }
+        isLoadingOptions = true
+        Task {
+            let groups = (try? await NetworkService.shared.fetchModifierGroups(forMenuItemId: item.id)) ?? []
+            await MainActor.run {
+                isLoadingOptions = false
+                if groups.isEmpty {
+                    // No options → behave exactly like before.
+                    cartItems[item] = (cartItems[item] ?? 0) + 1
+                } else {
+                    pickerGroups = groups
+                    pickerItem = item   // presents the sheet
+                }
+            }
+        }
+    }
+
+    /// Reopen the picker to edit an existing modifier line.
+    private func editLine(_ line: CartLine) {
+        guard !isLoadingOptions else { return }
+        isLoadingOptions = true
+        APHaptic.trigger()
+        Task {
+            let groups = (try? await NetworkService.shared.fetchModifierGroups(forMenuItemId: line.menuItem.id)) ?? []
+            await MainActor.run {
+                isLoadingOptions = false
+                guard !groups.isEmpty else { return }
+                editingLineId = line.id
+                pickerGroups = groups
+                pickerItem = line.menuItem
+            }
+        }
+    }
+
+    /// Remove a modifier line from the cart.
+    private func removeLine(_ line: CartLine) {
+        modifierLines.removeAll { $0.id == line.id }
+        APHaptic.trigger()
+    }
+
     private func submitOrder(paymentMethod: String?) {
         guard cartCount > 0 else { return }
         isSubmitting = true
         
-        let items: [[String: Any]] = cartItems.map { (menuItem, qty) in
+        // Plain cart items (no options)
+        var items: [[String: Any]] = cartItems.map { (menuItem, qty) in
             ["id": UUID().uuidString, "name": menuItem.name,
-             "itemId": menuItem.id, "quantity": qty, "price": menuItem.price]
+             "itemId": menuItem.id, "quantity": qty, "price": menuItem.price,
+             "lineType": menuItem.orderLineType]
+        }
+        // Modifier-carrying lines — attach chosen options so uploadOrder can
+        // persist them into order_item_modifiers (parity with master device).
+        for line in modifierLines {
+            items.append([
+                "id": UUID().uuidString,
+                "name": line.menuItem.name,
+                "itemId": line.menuItem.id,
+                "quantity": line.quantity,
+                "price": line.unitPrice,   // includes add-on price
+                "lineType": line.menuItem.orderLineType,
+                "modifiers": line.selectedModifiers.map { mod in
+                    ["id": mod.id, "name": mod.name, "price": mod.extraPrice] as [String: Any]
+                }
+            ])
         }
         let total = cartTotal
         let orderId = UUID().uuidString
-        let queueNum = "Q-\(Int.random(in: 100...999))"
-        let orderNumber = "QO-\(Int.random(in: 1000...9999))"
+        let day = DateFormatter.orderDayStamp()
+        let orderNumber = "QO-\(day)-\(String(UUID().uuidString.prefix(6)).uppercased())"
         
         Task {
             do {
+                let merchantId = NetworkService.shared.activeMerchantId
+                let queueNum: String
+                if let seq = try? await NetworkService.shared.generateQueueNumber() {
+                    queueNum = NetworkService.formatQueueNumber(seq)
+                } else {
+                    queueNum = NetworkService.localFallbackQueueNumber(merchantId: merchantId)
+                }
+
+                var receiptNum: String? = nil
+                if paymentMethod != nil {
+                    if let remote = try? await NetworkService.shared.generateReceiptNumber() {
+                        receiptNum = remote
+                    } else {
+                        receiptNum = NetworkService.localFallbackReceiptNumber(merchantId: merchantId)
+                    }
+                }
+
+                let platformNum: String = {
+                    guard selectedOrderType == .delivery else { return "" }
+                    let value = PlatformOrderNumber.applyBrandPrefix(platformOrderNumber, brand: deliveryBrand)
+                    return PlatformOrderNumber.stripKnownPrefix(value).isEmpty ? "" : value
+                }()
                 _ = try await NetworkService.shared.uploadOrder(
                     orderId: orderId,
                     orderNumber: orderNumber,
@@ -780,22 +1217,34 @@ struct QuickOrderView: View {
                     guestCount: 1,
                     orderType: selectedOrderType.rawValue,
                     queueNumber: queueNum,
+                    receiptNumber: receiptNum,
+                    deliveryBrand: selectedOrderType == .delivery ? deliveryBrand : nil,
+                    platformOrderNumber: platformNum.isEmpty ? nil : platformNum,
                     cashierName: staffName
                 )
                 
                 // Upload payment if method provided
                 if let method = paymentMethod {
-                    _ = try? await NetworkService.shared.uploadPayment(
+                    _ = try await NetworkService.shared.completeCheckout(
+                        paymentId: UUID(),
                         orderId: orderId,
                         amount: total,
-                        method: method
+                        method: method,
+                        tableNumber: "QUICK",
+                        subtotal: total
                     )
                 }
                 
                 await MainActor.run {
                     submittedQueueNumber = queueNum
+                    submittedOrderNumber = orderNumber
+                    submittedReceiptNumber = receiptNum ?? ""
                     submittedOrderId = orderId
                     isSubmitting = false
+                    if selectedOrderType == .delivery {
+                        selectedOrderType = postDeliveryOrderType
+                        platformOrderNumber = ""
+                    }
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                         showSuccess = true
                     }
@@ -810,7 +1259,163 @@ struct QuickOrderView: View {
             }
         }
     }
+
+    private func verifyWorkSessionBeforeCheckout() {
+        guard !loggedInEmployeeId.isEmpty else {
+            showShiftGuard = true
+            return
+        }
+        Task {
+            let isWorking = (try? await NetworkService.shared.hasActiveTimecard(for: loggedInEmployeeId)) ?? false
+            await MainActor.run {
+                if isWorking {
+                    showSubmitConfirm = true
+                } else {
+                    showShiftGuard = true
+                }
+            }
+        }
+    }
 }
+
+private extension DateFormatter {
+    static func orderDayStamp() -> String {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.timeZone = TimeZone(identifier: "Asia/Bangkok") ?? .current
+        f.dateFormat = "yyyyMMdd"
+        return f.string(from: Date())
+    }
+}
+
+// MARK: - Cart Detail Sheet (customized option lines)
+
+private struct CartDetailSheet: View {
+    let lines: [CartLine]
+    let appLanguage: String
+    let onEdit: (CartLine) -> Void
+    let onRemove: (CartLine) -> Void
+    let onQuantityChange: (CartLine, Int) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    private let royalBlue = Color.appAccent
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(lines) { line in
+                        lineCard(line)
+                    }
+                    if lines.isEmpty {
+                        Text("—")
+                            .foregroundColor(.textTertiary)
+                            .padding(.top, 40)
+                    }
+                }
+                .padding(16)
+            }
+            .background(Color.appBackground)
+            .navigationTitle("customize_options".localized(for: appLanguage))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("done".localized(for: appLanguage)) { dismiss() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func lineCard(_ line: CartLine) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("\(line.quantity)×")
+                    .font(.system(size: 14, weight: .black))
+                    .foregroundColor(royalBlue)
+                Text(line.menuItem.name)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.textPrimary)
+                Spacer()
+                Text("฿\(Int(line.lineTotal))")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.textPrimary)
+            }
+
+            if !line.selectedModifiers.isEmpty {
+                FlowChips(
+                    chips: line.selectedModifiers.map { ($0.name, $0.extraPrice) },
+                    tint: royalBlue
+                )
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    onEdit(line)
+                } label: {
+                    Label("edit".localized(for: appLanguage), systemImage: "pencil")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(royalBlue)
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .apLiquidGlass(tint: royalBlue.opacity(0.12), interactive: true,
+                                       in: Capsule(style: .continuous))
+                }
+                .buttonStyle(PressableButtonStyle())
+
+                Button {
+                    onRemove(line)
+                } label: {
+                    Label("delete".localized(for: appLanguage), systemImage: "trash")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(Color.appRose)
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .apLiquidGlass(tint: Color.appRose.opacity(0.12), interactive: true,
+                                       in: Capsule(style: .continuous))
+                }
+                .buttonStyle(PressableButtonStyle())
+
+                Spacer()
+
+                // Quantity stepper — adjust line quantity inline
+                HStack(spacing: 12) {
+                    Button {
+                        onQuantityChange(line, max(1, line.quantity - 1))
+                    } label: {
+                        Image(systemName: "minus")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(line.quantity > 1 ? .textPrimary : .textTertiary)
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                    .disabled(line.quantity <= 1)
+
+                    Text("\(line.quantity)")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.textPrimary)
+                        .frame(minWidth: 20)
+
+                    Button {
+                        onQuantityChange(line, line.quantity + 1)
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(royalBlue)
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                }
+                .padding(.horizontal, 4)
+                .apLiquidGlass(tint: royalBlue.opacity(0.10),
+                               in: Capsule(style: .continuous))
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .apLiquidGlass(tint: royalBlue.opacity(0.05),
+                       in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
 
 // MARK: - Payment Method Sheet
 
@@ -1177,4 +1782,3 @@ struct MenuFilterSheet: View {
         }
     }
 }
-

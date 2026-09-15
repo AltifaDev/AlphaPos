@@ -601,7 +601,7 @@ enum InventoryAdvancedTests {
     private static func test_movement_type_case_count() -> TestResult {
         let name = #function
         // Ensure no case was accidentally added/removed
-        let expectedCount = 9
+        let expectedCount = 12
         let actual = InventoryMovementType.allCases.count
         return actual == expectedCount
             ? .success(name)

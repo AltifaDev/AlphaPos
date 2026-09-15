@@ -288,7 +288,7 @@ struct TimecardChartsView: View {
                 AxisMarks(position: .leading, values: [0, 4, 8, 12]) { value in
                     AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [4]))
                         .foregroundStyle(Color.appDivider)
-                    AxisValueLabel {
+                    AxisValueLabel(anchor: .trailing) {
                         Text("\(value.as(Int.self) ?? 0)")
                             .font(.caption2)
                             .foregroundColor(.textSecondary)
@@ -297,7 +297,7 @@ struct TimecardChartsView: View {
             }
             .chartXAxis {
                 AxisMarks { value in
-                    AxisValueLabel {
+                    AxisValueLabel(anchor: .top) {
                         Text(value.as(String.self) ?? "")
                             .font(.caption2)
                             .foregroundColor(.textSecondary)

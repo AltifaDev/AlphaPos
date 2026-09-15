@@ -348,7 +348,7 @@ struct SplitPaymentView: View {
     private func paymentEntryCard(vm: SplitPaymentViewModel, entry: SplitPaymentEntry, index: Int) -> some View {
         VStack(spacing: APSpacing.sm) {
             HStack {
-                Text(String(format: "split_payment_index_template".t, index + 1))
+                Text(LocalizationManager.shared.t("split_payment_index_template", index + 1))
                     .font(.caption.weight(.bold))
                     .foregroundColor(.textSecondary)
                     .textCase(.uppercase)

@@ -6,6 +6,7 @@ struct DeliverySettingsSheet: View {
     @Binding var adFeeIsPct: Bool
     @Binding var otherFee: Double
     let brandName: String
+    let onApply: () -> Void
     
     @Environment(\.dismiss) private var dismiss
     @AppStorage("app_language") private var appLanguage = "en"
@@ -14,6 +15,18 @@ struct DeliverySettingsSheet: View {
     @State private var adFeeString = ""
     @State private var adFeeIsPctLocal = false
     @State private var otherFeeString = ""
+
+    private func validAmount(_ text: String, maximum: Double? = nil) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty || (Double(trimmed)?.isFinite == true && Double(trimmed)! >= 0) else { return false }
+        return maximum.map { (Double(trimmed) ?? 0) <= $0 } ?? true
+    }
+
+    private var feesAreValid: Bool {
+        validAmount(gpString, maximum: 100)
+            && validAmount(adFeeString, maximum: adFeeIsPctLocal ? 100 : nil)
+            && validAmount(otherFeeString)
+    }
     
     var body: some View {
         NavigationStack {
@@ -116,6 +129,12 @@ struct DeliverySettingsSheet: View {
                                     .foregroundColor(.textSecondary)
                             }
                         }
+
+                        if !feesAreValid {
+                            Text("delivery_invalid_fees".t)
+                                .font(.caption)
+                                .foregroundColor(.appRose)
+                        }
                     }
                     .padding(APSpacing.lg)
                     .apCard()
@@ -127,11 +146,13 @@ struct DeliverySettingsSheet: View {
                         adFee = Double(adFeeString) ?? 0.0
                         adFeeIsPct = adFeeIsPctLocal
                         otherFee = Double(otherFeeString) ?? 0.0
+                        onApply()
                         dismiss()
                     }) {
                         Text("delivery_apply_btn".t)
                             .apGradientButton()
                     }
+                    .disabled(!feesAreValid)
                     .padding(.horizontal, APSpacing.lg)
                     .padding(.bottom, APSpacing.lg)
                 }

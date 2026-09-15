@@ -10,8 +10,10 @@ struct StartShiftRegisterSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var lm: LocalizationManager
+    @AppStorage(BranchContext.storageKey) private var activeBranchId = ""
     
     @Query(sort: \User.username) private var users: [User]
+    @Query(filter: #Predicate<Branch> { !$0.isDeleted }, sort: \Branch.name) private var branches: [Branch]
     
     @State private var openingCashString = "1000"
     @State private var openingNotes = ""
@@ -315,6 +317,10 @@ struct StartShiftRegisterSheet: View {
         
         let amount = Double(openingCashString) ?? 0.0
         let userId = users.first?.id ?? UUID()
+        guard let activeBranch = try? BranchContext.shared.requireActiveBranch(in: modelContext) else {
+            isProcessing = false
+            return
+        }
         
         // Auto-close any other active sessions to prevent duplicate open shifts
         let descriptor = FetchDescriptor<RegisterSession>(
@@ -341,6 +347,7 @@ struct StartShiftRegisterSheet: View {
             openedByUserId: userId,
             openedAt: Date(),
             openingCash: amount,
+            branch: activeBranch,
             isSynced: false,
             isDeleted: false,
             updatedAt: Date()

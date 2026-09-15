@@ -6,7 +6,6 @@
 
 import SwiftUI
 import SwiftData
-import Charts
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Employee Hours Report View
@@ -95,25 +94,53 @@ struct EmployeeHoursReportView: View {
                     .padding(.vertical, APSpacing.lg)
                     .frame(maxWidth: .infinity)
             } else {
-                Chart(viewModel.employeeHoursEntries.prefix(15)) { entry in
-                    BarMark(
-                        x: .value("Hours", entry.regularHours),
-                        y: .value("Employee", entry.name)
-                    )
-                    .foregroundStyle(Color.appAccent.gradient)
+                let maxHours = max(viewModel.employeeHoursEntries.prefix(15).map { $0.regularHours + $0.overtimeHours }.max() ?? 0, 1)
 
-                    BarMark(
-                        x: .value("OT Hours", entry.overtimeHours),
-                        y: .value("Employee", entry.name)
-                    )
-                    .foregroundStyle(Color.orange.gradient)
+                VStack(spacing: 8) {
+                    ForEach(viewModel.employeeHoursEntries.prefix(15)) { entry in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(entry.name)
+                                    .font(.subheadline)
+                                Spacer()
+                                Text(String(format: "%.1fh", entry.regularHours + entry.overtimeHours))
+                                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                            }
+
+                            GeometryReader { geo in
+                                let totalW = geo.size.width
+                                let regW = max(CGFloat(max(entry.regularHours, 0) / maxHours) * totalW, 0)
+                                let otW = max(CGFloat(max(entry.overtimeHours, 0) / maxHours) * totalW, 0)
+
+                                HStack(spacing: 2) {
+                                    if regW > 0 {
+                                        RoundedRectangle(cornerRadius: 3)
+                                            .fill(Color.appAccent.gradient)
+                                            .frame(width: regW, height: 10)
+                                    }
+                                    if otW > 0 {
+                                        RoundedRectangle(cornerRadius: 3)
+                                            .fill(Color.orange.gradient)
+                                            .frame(width: otW, height: 10)
+                                    }
+                                }
+                            }
+                            .frame(height: 10)
+                        }
+                    }
                 }
-                .chartXAxisLabel(L.Reports.hours.t)
-                .chartForegroundStyleScale([
-                    L.Reports.regularHours.t: Color.appAccent,
-                    L.Reports.overtimeHours.t: Color.orange
-                ])
-                .frame(height: max(200, CGFloat(min(viewModel.employeeHoursEntries.count, 15)) * 32))
+
+                HStack(spacing: APSpacing.md) {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.appAccent).frame(width: 8, height: 8)
+                        Text(L.Reports.regularHours.t).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.orange).frame(width: 8, height: 8)
+                        Text(L.Reports.overtimeHours.t).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 4)
             }
         }
         .padding(APSpacing.md)

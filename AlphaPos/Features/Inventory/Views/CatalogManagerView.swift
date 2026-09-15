@@ -7,6 +7,7 @@ import SwiftData
 struct CatalogManagerView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
+    @EnvironmentObject private var sessionManager: AppSessionManager
     @Query(
         filter: #Predicate<MenuItem> { !$0.isDeleted },
         sort: \MenuItem.name
@@ -16,17 +17,28 @@ struct CatalogManagerView: View {
         sort: \Category.name
     ) private var categories: [Category]
     @Query(sort: \ModifierGroup.name) private var modifierGroups: [ModifierGroup]
+    @Query(
+        filter: #Predicate<Recipe> { !$0.isDeleted },
+        sort: \Recipe.updatedAt
+    ) private var allRecipes: [Recipe]
 
     @State private var subTab = 0 // 0: Products, 1: Categories, 2: Extras
     @State private var searchText = ""
 
     // Sheet States
     @State private var selectedProduct: MenuItem? = nil
+    @State private var pendingProductForAuthorization: MenuItem? = nil
+    @State private var showingProductEditPIN = false
+    @State private var productEditAuthorizedBy: UUID? = nil
+    @State private var authorizationErrorMessage: String? = nil
     @State private var selectedCategory: Category? = nil
     @State private var selectedModifierGroup: ModifierGroup? = nil
 
     @State private var showingAddProduct = false
+    @State private var showingFinishedGood = false
+    @State private var showingFirstProductGuide = false
     @State private var showingMenuImport = false
+    @AppStorage("inventory_profile") private var inventoryProfile = "restaurant"
     @State private var showingAddCategory = false
     @State private var showingAddModifierGroup = false
 
@@ -58,15 +70,51 @@ struct CatalogManagerView: View {
                         .buttonStyle(.plain)
                     }
 
-                    Button(action: openAddSheet) {
-                        Image(systemName: "plus")
-                            .font(.subheadline).fontWeight(.bold)
-                            .foregroundColor(.white)
-                            .padding(8)
-                            .background(APGradient.accent)
-                            .clipShape(Circle())
+                    if subTab == 0 {
+                        if products.isEmpty {
+                            Button(action: { openFirstProductFlow() }) {
+                                Image(systemName: "plus")
+                                    .font(.subheadline).fontWeight(.bold)
+                                    .foregroundColor(.white)
+                                    .padding(8)
+                                    .background(APGradient.accent)
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("first_product_start_cta".t)
+                        } else {
+                            Menu {
+                                Button {
+                                    showingFinishedGood = true
+                                } label: {
+                                    Label("fg_quick_create_title".t, systemImage: "shippingbox.fill")
+                                }
+                                Button {
+                                    showingAddProduct = true
+                                } label: {
+                                    Label("fg_full_product_editor".t, systemImage: "fork.knife")
+                                }
+                            } label: {
+                                Image(systemName: "plus")
+                                    .font(.subheadline).fontWeight(.bold)
+                                    .foregroundColor(.white)
+                                    .padding(8)
+                                    .background(APGradient.accent)
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    } else {
+                        Button(action: openAddSheet) {
+                            Image(systemName: "plus")
+                                .font(.subheadline).fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding(8)
+                                .background(APGradient.accent)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
 
                 // Search field
@@ -113,7 +161,7 @@ struct CatalogManagerView: View {
 
             // Sub-views lists
             ScrollView {
-                VStack(spacing: APSpacing.sm) {
+                LazyVStack(spacing: APSpacing.sm) {
                     switch subTab {
                     case 0:
                         productsList
@@ -130,10 +178,24 @@ struct CatalogManagerView: View {
             .background(Color.appBackground)
         }
         .fullScreenCover(item: $selectedProduct) { item in
-            ProductEditSheet(menuItem: item) { selectedProduct = nil }
+            ProductEditSheet(menuItem: item, authorizedByEmployeeId: productEditAuthorizedBy) {
+                selectedProduct = nil
+                productEditAuthorizedBy = nil
+            }
         }
         .fullScreenCover(isPresented: $showingAddProduct) {
             ProductEditSheet(menuItem: nil) { showingAddProduct = false }
+        }
+        .sheet(isPresented: $showingFinishedGood) {
+            FinishedGoodQuickCreateSheet(activeBranch: activeCatalogBranch) {
+                showingFinishedGood = false
+            }
+        }
+        .sheet(isPresented: $showingFirstProductGuide) {
+            FirstProductGuideSheet { outcome in
+                showingFirstProductGuide = false
+                handleFirstProductOutcome(outcome)
+            }
         }
         .fullScreenCover(isPresented: $showingMenuImport) {
             MenuImportSheet { showingMenuImport = false }
@@ -150,13 +212,74 @@ struct CatalogManagerView: View {
         .sheet(isPresented: $showingAddModifierGroup) {
             ModifierGroupEditSheet(group: nil) { showingAddModifierGroup = false }
         }
+        .sheet(isPresented: $showingProductEditPIN) {
+            ManagerPINVerificationSheet(
+                isPresented: $showingProductEditPIN,
+                onSuccess: authorizePendingProductEdit,
+                onAuthorizedManager: { manager in
+                    productEditAuthorizedBy = manager.employeeProfile?.id
+                },
+                onDismiss: {
+                    if !showingProductEditPIN && selectedProduct == nil {
+                        pendingProductForAuthorization = nil
+                        productEditAuthorizedBy = nil
+                    }
+                },
+                allowStoreOwnerPin: true,
+                requiredPermission: .inventoryManage
+            )
+        }
+        .alert("catalog_edit_auth_required_title".t, isPresented: Binding(
+            get: { authorizationErrorMessage != nil },
+            set: { if !$0 { authorizationErrorMessage = nil } }
+        )) {
+            Button("ok_btn".t, role: .cancel) { authorizationErrorMessage = nil }
+        } message: {
+            Text(authorizationErrorMessage ?? "")
+        }
         .onAppear {
             let urls = products.compactMap { $0.imageUrl }
             RemoteImageManager.shared.prefetchImages(urls: urls)
+            presentPendingFirstProductGuideIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openFirstProductGuideNotification)) { _ in
+            presentPendingFirstProductGuideIfNeeded()
         }
         .onChange(of: products) { _, newProducts in
             let urls = newProducts.compactMap { $0.imageUrl }
             RemoteImageManager.shared.prefetchImages(urls: urls)
+        }
+    }
+
+    private func presentPendingFirstProductGuideIfNeeded() {
+        guard StoreSetupChecklist.consumePendingFirstProductGuide() else { return }
+        guard products.isEmpty else { return }
+        subTab = 0
+        // Slight delay so InventoryView can switch to .menu first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            showingFirstProductGuide = true
+        }
+    }
+
+    private func openFirstProductFlow() {
+        if products.isEmpty {
+            showingFirstProductGuide = true
+        } else if inventoryProfile == "simple" {
+            showingFinishedGood = true
+        } else {
+            showingAddProduct = true
+        }
+    }
+
+    private func handleFirstProductOutcome(_ outcome: FirstProductGuideOutcome) {
+        switch outcome {
+        case .createTable:
+            StoreSetupChecklist.requestAddFirstTable()
+        case .openPOS:
+            // Tables-on → floor plan (open a table); tables-off → POS.
+            NotificationCenter.default.post(name: .openPOSTabNotification, object: nil)
+        case .dismiss:
+            break
         }
     }
 
@@ -234,7 +357,9 @@ struct CatalogManagerView: View {
     private var productsList: some View {
         VStack(spacing: 12) {
             let grouped = productsGroupedByCategory
-            if grouped.isEmpty {
+            if products.isEmpty {
+                firstProductEmptyState
+            } else if grouped.isEmpty {
                 emptyListView(message: "no_products_matched_search".t)
             } else {
                 ForEach(grouped, id: \.category) { section in
@@ -271,9 +396,10 @@ struct CatalogManagerView: View {
 
                         if !isCollapsed {
                             ForEach(section.items) { item in
-                                let recipes = item.recipes
-                                let trackingText = recipes.isEmpty ? "catalog_not_tracked".t : (recipes.count == 1 && recipes.first?.quantityRequired == 1.0 ? "catalog_finished_good".t : "catalog_recipe_based".t)
-                                let cost = recipes.reduce(0.0) { $0 + ($1.inventoryItem?.costPrice ?? 0.0) * $1.quantityRequired }
+                                let recipes = allRecipes.filter { $0.menuItem?.id == item.id }
+                                let mode = item.resolvedTrackingMode
+                                let trackingText = mode.catalogLocalizationKey.t
+                                let cost = RecipeCostCalculator.cost(for: recipes)
                                 let fcPercent = item.price > 0 ? (cost / item.price) * 100.0 : 0.0
 
                                 HStack(spacing: APSpacing.sm) {
@@ -297,8 +423,8 @@ struct CatalogManagerView: View {
                                                 .font(.system(size: 7, weight: .bold))
                                                 .padding(.horizontal, 4)
                                                 .padding(.vertical, 1)
-                                                .background(recipes.isEmpty ? Color.appSurfaceHigh : (recipes.count == 1 ? Color.appTeal.opacity(0.1) : Color.appAccent.opacity(0.1)))
-                                                .foregroundColor(recipes.isEmpty ? .textSecondary : (recipes.count == 1 ? .appTeal : .appAccent))
+                                                .background(mode == .notTracked ? Color.appSurfaceHigh : (mode == .finishedGood ? Color.appTeal.opacity(0.1) : Color.appAccent.opacity(0.1)))
+                                                .foregroundColor(mode == .notTracked ? .textSecondary : (mode == .finishedGood ? .appTeal : .appAccent))
                                                 .clipShape(Capsule())
                                         }
 
@@ -344,7 +470,7 @@ struct CatalogManagerView: View {
                                 .padding(APSpacing.sm)
                                 .apCard()
                                 .onTapGesture {
-                                    selectedProduct = item
+                                    requestProductEditAuthorization(for: item)
                                 }
                             }
                         }
@@ -471,6 +597,36 @@ struct CatalogManagerView: View {
 
     // MARK: - Shared helpers
 
+    private var firstProductEmptyState: some View {
+        VStack(spacing: APSpacing.md) {
+            Image(systemName: "menucard.fill")
+                .font(.system(size: 40))
+                .foregroundStyle(APGradient.accent)
+            Text("catalog_empty_products_title".t)
+                .font(.headline)
+                .foregroundColor(.textPrimary)
+            Text("catalog_empty_products_subtitle".t)
+                .font(.subheadline)
+                .foregroundColor(.textSecondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+            Button {
+                openFirstProductFlow()
+            } label: {
+                Label("first_product_start_cta".t, systemImage: "plus.circle.fill")
+                    .fontWeight(.semibold)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .background(APGradient.accent)
+                    .foregroundColor(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: APRadius.md, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, minHeight: 220)
+        .padding(.vertical, APSpacing.lg)
+    }
+
     private func emptyListView(message: String) -> some View {
         VStack(spacing: APSpacing.sm) {
             Image(systemName: "magnifyingglass.circle")
@@ -485,10 +641,31 @@ struct CatalogManagerView: View {
 
     private func openAddSheet() {
         switch subTab {
-        case 0: showingAddProduct = true
+        case 0:
+            openFirstProductFlow()
         case 1: showingAddCategory = true
         case 2: showingAddModifierGroup = true
         default: break
         }
+    }
+
+    private func requestProductEditAuthorization(for item: MenuItem) {
+        pendingProductForAuthorization = item
+        productEditAuthorizedBy = sessionManager.currentStaffSession?.employeeId
+        showingProductEditPIN = true
+    }
+
+    private func authorizePendingProductEdit() {
+        guard let item = pendingProductForAuthorization else {
+            authorizationErrorMessage = "catalog_edit_not_authorized".t
+            pendingProductForAuthorization = nil
+            return
+        }
+        selectedProduct = item
+        pendingProductForAuthorization = nil
+    }
+
+    private var activeCatalogBranch: Branch? {
+        try? BranchContext.shared.requireActiveBranch(in: modelContext)
     }
 }

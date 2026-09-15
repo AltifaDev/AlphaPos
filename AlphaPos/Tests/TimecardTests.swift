@@ -99,8 +99,121 @@ enum TimecardTests {
             test_autoApprove_highConfidence(),
             test_autoApprove_lowConfidence(),
             test_autoApprove_nilConfidence(),
-            test_autoApprove_exactThreshold()
+            test_autoApprove_exactThreshold(),
+            test_shiftMatcher_prefersContainingWindow(),
+            test_shiftMatcher_matchesOvernightWindow(),
+            test_shiftMatcher_ignoresDeletedWindow(),
+            test_shiftMatcher_lateAfterGrace(),
+            test_shiftMatcher_otAfterScheduledEnd(),
+            test_shiftMatcher_unscheduledPending(),
+            test_shiftMatcher_earlyOutPending()
         ]
+    }
+
+    // MARK: - Schedule ↔ attendance matcher
+
+    private static func test_shiftMatcher_prefersContainingWindow() -> TestResult {
+        let name = #function
+        let morning = ShiftAttendanceMatcher.ShiftWindow(
+            start: dateAt(hour: 8, minute: 0),
+            end: dateAt(hour: 12, minute: 0)
+        )
+        let afternoon = ShiftAttendanceMatcher.ShiftWindow(
+            start: dateAt(hour: 13, minute: 0),
+            end: dateAt(hour: 17, minute: 0)
+        )
+        let pick = ShiftAttendanceMatcher.activeShiftWindow(
+            from: [morning, afternoon],
+            at: dateAt(hour: 14, minute: 30)
+        )
+        return pick == afternoon
+            ? .success(name)
+            : .failure(name, "Expected afternoon window for 14:30")
+    }
+
+    private static func test_shiftMatcher_matchesOvernightWindow() -> TestResult {
+        let name = #function
+        let overnight = ShiftAttendanceMatcher.ShiftWindow(
+            start: dateAt(hour: 22, minute: 0, dayOffset: -1),
+            end: dateAt(hour: 6, minute: 0)
+        )
+        let pick = ShiftAttendanceMatcher.activeShiftWindow(
+            from: [overnight],
+            at: dateAt(hour: 2, minute: 0)
+        )
+        return pick == overnight
+            ? .success(name)
+            : .failure(name, "Expected previous-day overnight shift at 02:00")
+    }
+
+    private static func test_shiftMatcher_ignoresDeletedWindow() -> TestResult {
+        let name = #function
+        let deleted = ShiftAttendanceMatcher.ShiftWindow(
+            start: dateAt(hour: 8, minute: 0),
+            end: dateAt(hour: 17, minute: 0),
+            isDeleted: true
+        )
+        let pick = ShiftAttendanceMatcher.activeShiftWindow(
+            from: [deleted],
+            at: dateAt(hour: 10, minute: 0)
+        )
+        return pick == nil
+            ? .success(name)
+            : .failure(name, "Deleted shift must not match attendance")
+    }
+
+    private static func test_shiftMatcher_lateAfterGrace() -> TestResult {
+        let name = #function
+        let start = dateAt(hour: 9, minute: 0)
+        let onTime = ShiftAttendanceMatcher.lateMinutes(
+            clockIn: dateAt(hour: 9, minute: 8),
+            scheduledStart: start,
+            graceMinutes: 10
+        )
+        let late = ShiftAttendanceMatcher.lateMinutes(
+            clockIn: dateAt(hour: 9, minute: 25),
+            scheduledStart: start,
+            graceMinutes: 10
+        )
+        return onTime == 0 && late == 25
+            ? .success(name)
+            : .failure(name, "Expected onTime=0 late=25, got \(onTime)/\(late)")
+    }
+
+    private static func test_shiftMatcher_otAfterScheduledEnd() -> TestResult {
+        let name = #function
+        let end = dateAt(hour: 17, minute: 0)
+        let ot = ShiftAttendanceMatcher.overtimeMinutes(
+            clockOut: dateAt(hour: 18, minute: 30),
+            scheduledEnd: end
+        )
+        return ot == 90
+            ? .success(name)
+            : .failure(name, "Expected 90 OT minutes, got \(ot)")
+    }
+
+    private static func test_shiftMatcher_unscheduledPending() -> TestResult {
+        let name = #function
+        let decision = ShiftAttendanceMatcher.clockInDecision(
+            hasShift: false,
+            scheduledStart: nil,
+            clockIn: dateAt(hour: 10, minute: 0)
+        )
+        return decision.status == "pending_audit" && !decision.hasShift
+            ? .success(name)
+            : .failure(name, "Unscheduled clock-in should be pending_audit")
+    }
+
+    private static func test_shiftMatcher_earlyOutPending() -> TestResult {
+        let name = #function
+        let decision = ShiftAttendanceMatcher.clockOutDecision(
+            scheduledEnd: dateAt(hour: 17, minute: 0),
+            clockOut: dateAt(hour: 15, minute: 0),
+            graceMinutes: 10
+        )
+        return decision.earlyOutMinutes == 120 && decision.status == "pending_audit"
+            ? .success(name)
+            : .failure(name, "Expected early-out pending, got early=\(decision.earlyOutMinutes) status=\(decision.status)")
     }
 
     // MARK: - Worked minutes

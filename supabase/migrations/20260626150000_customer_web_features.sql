@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS public.customer_feedback (
 
 ALTER TABLE public.customer_feedback ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "merchant_isolation_customer_feedback" ON public.customer_feedback;
 CREATE POLICY "merchant_isolation_customer_feedback" ON public.customer_feedback
     FOR ALL TO anon
     USING (merchant_id = get_active_merchant_id())
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS public.allergen_tags (
 
 ALTER TABLE public.allergen_tags ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "merchant_isolation_allergen_tags" ON public.allergen_tags;
 CREATE POLICY "merchant_isolation_allergen_tags" ON public.allergen_tags
     FOR ALL TO anon
     USING (merchant_id = get_active_merchant_id())
@@ -89,6 +91,7 @@ CREATE TABLE IF NOT EXISTS public.menu_item_allergens (
 
 ALTER TABLE public.menu_item_allergens ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "merchant_isolation_menu_item_allergens" ON public.menu_item_allergens;
 CREATE POLICY "merchant_isolation_menu_item_allergens" ON public.menu_item_allergens
     FOR ALL TO anon
     USING (merchant_id = get_active_merchant_id())
@@ -127,6 +130,7 @@ CREATE TABLE IF NOT EXISTS public.prep_time_logs (
 
 ALTER TABLE public.prep_time_logs ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "merchant_isolation_prep_time_logs" ON public.prep_time_logs;
 CREATE POLICY "merchant_isolation_prep_time_logs" ON public.prep_time_logs
     FOR ALL TO anon
     USING (merchant_id = get_active_merchant_id())

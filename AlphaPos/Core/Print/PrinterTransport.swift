@@ -14,6 +14,7 @@ import UIKit
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - TCP Transport (Network Port 9100)
 // ─────────────────────────────────────────────────────────────────────────────
+@MainActor
 struct TCPTransport: PrinterTransport {
     let timeout: Double
     
@@ -31,6 +32,8 @@ struct TCPTransport: PrinterTransport {
         logger.append("    Initializing NWConnection socket...")
         
         let result = await withCheckedContinuation { continuation in
+            // Capture logger as nonisolated local — PrintLogger is Sendable/thread-safe internally
+            let log = logger
             let endpoint = NWEndpoint.hostPort(
                 host: NWEndpoint.Host(ip),
                 port: NWEndpoint.Port(integerLiteral: UInt16(printer.port))
@@ -38,13 +41,36 @@ struct TCPTransport: PrinterTransport {
             let connection = NWConnection(to: endpoint, using: .tcp)
             let queue = DispatchQueue(label: "com.alphapos.print.\(ip)")
             
-            var didResume = false
-            let resume = { (success: Bool, message: String) in
-                if !didResume {
-                    didResume = true
-                    connection.cancel()
-                    continuation.resume(returning: PrintResult(success: success, message: message))
+            // NWConnection callbacks and the timeout timer can run concurrently.
+            // A plain captured Bool is racy and can resume the checked
+            // continuation twice, which traps as EXC_BREAKPOINT.
+            final class CompletionGate: @unchecked Sendable {
+                private let lock = NSLock()
+                private var completed = false
+                private var sendStarted = false
+
+                func claim() -> Bool {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !completed else { return false }
+                    completed = true
+                    return true
                 }
+
+                func claimSend() -> Bool {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !completed, !sendStarted else { return false }
+                    sendStarted = true
+                    return true
+                }
+            }
+
+            let completionGate = CompletionGate()
+            let resume: @Sendable (Bool, String) -> Void = { success, message in
+                guard completionGate.claim() else { return }
+                connection.cancel()
+                continuation.resume(returning: PrintResult(success: success, message: message))
             }
             
             let timeoutTimer = DispatchSource.makeTimerSource(queue: queue)
@@ -57,7 +83,10 @@ struct TCPTransport: PrinterTransport {
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    logger.append("    Socket connected. Sending data...")
+                    // A connection should send once. Some path changes can
+                    // deliver another ready callback before cancellation wins.
+                    guard completionGate.claimSend() else { break }
+                    log.append("    Socket connected. Sending data...")
                     connection.send(content: data, completion: .contentProcessed { error in
                         timeoutTimer.cancel()
                         if let error = error {
@@ -86,33 +115,31 @@ struct TCPTransport: PrinterTransport {
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - EAAccessory Transport (USB MFi Fallback)
 // ─────────────────────────────────────────────────────────────────────────────
+@MainActor
+/// iOS allows only ONE EASession per protocol per accessory at a time.
+/// We hold a static reference so we can explicitly close the previous session
+/// before opening a new one — preventing the "Session Busy / nil" failure
+/// that occurs when back-to-back prints are attempted.
+private final class EASessionCache {
+    static let shared = EASessionCache()
+    private init() {}
+
+    var activeSession: EASession? = nil
+    var activeProtocol: String? = nil
+
+    func close() {
+        activeSession?.outputStream?.close()
+        activeSession?.inputStream?.close()
+        activeSession = nil
+        activeProtocol = nil
+    }
+}
+
+@MainActor
 struct EAAccessoryTransport: PrinterTransport {
     func deliver(data: Data, printer: Printer, logger: PrintLogger) async -> PrintResult {
         let supportedProtocols = PrinterBrand.allCases.flatMap { $0.mfiProtocols }
 
-        // Printer model does not have 'emulation' — derive brand from connection type or default to escpos
-        let emulationHint = "escpos"
-        if let configuredBrand = PrinterBrand(rawValue: emulationHint) {
-            logger.append("    Configured brand: \(configuredBrand.displayName)")
-            logger.append("    Brand hint: \(configuredBrand.connectionHint)")
-
-            if configuredBrand.requiresSDKForUSB {
-                logger.append("    ERROR: \(configuredBrand.displayName) USB requires its vendor SDK transport.")
-                return PrintResult(
-                    success: false,
-                    message: "\(configuredBrand.displayName) USB on iPad requires its vendor SDK. Use TCP/IP for now, or link the vendor SDK."
-                )
-            }
-
-            if !configuredBrand.supportsDirectUSBOnIOS && configuredBrand.mfiProtocols.isEmpty {
-                logger.append("    \(configuredBrand.displayName) has no registered MFi USB protocol in this build.")
-                return PrintResult(
-                    success: false,
-                    message: "\(configuredBrand.displayName) direct USB is not available on iPad unless the printer is MFi-certified. Use TCP/IP LAN/Wi‑Fi for ESC/POS printing."
-                )
-            }
-        }
-        
         logger.append("    Accessing EAAccessoryManager...")
         let manager = EAAccessoryManager.shared()
         let accessories = manager.connectedAccessories
@@ -145,19 +172,33 @@ struct EAAccessoryTransport: PrinterTransport {
         
         logger.append("    Supported protocols matching this brand: \(accessoryProtocols.joined(separator: ", "))")
         
+        // ── Close any previously cached session before opening a new one ──────
+        // iOS allows only ONE EASession per protocol per accessory at a time.
+        // If a prior session is still retained (from a previous print job that
+        // finished but wasn't fully deallocated), EASession(init) returns nil.
+        // Explicitly closing + waiting gives iOS time to reclaim the resource.
+        let cache = EASessionCache.shared
+        if cache.activeSession != nil {
+            logger.append("    Closing previous EASession before opening new one...")
+            cache.close()
+            try? await Task.sleep(nanoseconds: 400_000_000) // 400ms — iOS needs time to reclaim
+        }
+
         var session: EASession? = nil
         var chosenProtocol: String? = nil
         
         for protocolString in accessoryProtocols {
             logger.append("    Attempting to open EASession with protocol: \(protocolString)...")
-            for retry in 1...3 {
+            for retry in 1...5 {
                 session = EASession(accessory: accessory, forProtocol: protocolString)
                 if session != nil {
                     chosenProtocol = protocolString
                     break
                 }
                 logger.append("        WARNING: EASession returned nil (attempt \(retry)/3), retrying in 250ms...")
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                // Exponential back-off: 300ms → 500ms → 700ms → 900ms → 1100ms
+                let delay = UInt64(300_000_000 + (UInt64(retry - 1) * 200_000_000))
+                try? await Task.sleep(nanoseconds: delay)
             }
             if session != nil {
                 break
@@ -173,6 +214,10 @@ struct EAAccessoryTransport: PrinterTransport {
         }
         
         logger.append("    Successfully established EASession with protocol: \(protocolString)")
+        // Save the unwrapped session to cache so the next print job can close it cleanly
+        let cachedSession = activeSession
+        cache.activeSession = cachedSession
+        cache.activeProtocol = protocolString
         
         guard let outputStream = activeSession.outputStream else {
             logger.append("    ERROR: EASession outputStream is nil.")
@@ -180,7 +225,7 @@ struct EAAccessoryTransport: PrinterTransport {
         }
         
         logger.append("    Scheduling Output Stream in Main RunLoop...")
-        let streamRunLoop = RunLoop.current
+        let streamRunLoop = RunLoop.main
         outputStream.schedule(in: streamRunLoop, forMode: .default)
         
         logger.append("    Opening Output Stream...")
@@ -189,6 +234,8 @@ struct EAAccessoryTransport: PrinterTransport {
             logger.append("    Closing Output Stream...")
             outputStream.close()
             outputStream.remove(from: streamRunLoop, forMode: .default)
+            // Keep session in cache (don't nil it here) — iOS needs it alive a moment longer
+            // The NEXT print job will close it via cache.close() with a proper delay
         }
         
         logger.append("    Waiting for stream space availability...")
@@ -242,6 +289,21 @@ struct EAAccessoryTransport: PrinterTransport {
         }
         
         logger.append("    Successfully wrote \(bytesWritten) bytes.")
+
+        // CRITICAL: outputStream.write() only copies bytes into iOS's internal send
+        // buffer — it does NOT guarantee they have physically reached the printer.
+        // If we let `defer` close the stream immediately, iOS discards any bytes still
+        // in flight, so the printer reports "success" but never actually prints.
+        // Wait for the buffer to drain (stream reports space available = buffer emptied)
+        // and add a small safety margin scaled to payload size before the defer closes it.
+        logger.append("    Flushing stream buffer to printer before closing...")
+        // Base flush time + extra time proportional to payload (≈1s per 4KB), capped.
+        let baseFlushNs: UInt64 = 1_200_000_000                 // 1.2s baseline
+        let perByteNs = UInt64(bytesWritten) * 250_000          // ~0.25ms per byte (~1s / 4KB)
+        let flushNs = min(baseFlushNs + perByteNs, 4_000_000_000) // cap at 4s
+        try? await Task.sleep(nanoseconds: flushNs)
+        logger.append("    Flush wait complete (\(flushNs / 1_000_000)ms). Safe to close stream.")
+
         return PrintResult(success: true, message: "Printed successfully via USB/Lightning to \(accessory.name).")
     }
 }
@@ -249,6 +311,7 @@ struct EAAccessoryTransport: PrinterTransport {
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Star SDK Transport (Official Star SDK Placeholder Stub)
 // ─────────────────────────────────────────────────────────────────────────────
+@MainActor
 struct StarUSBTransport: PrinterTransport {
     func deliver(data: Data, printer: Printer, logger: PrintLogger) async -> PrintResult {
         logger.append("    Routing to official Star Micronics SDK Command Path...")
@@ -257,9 +320,11 @@ struct StarUSBTransport: PrinterTransport {
 #if canImport(StarIO10) && canImport(UIKit)
         let settings = StarConnectionSettings(
             interfaceType: .usb,
-            identifier: StarConnectionSettings.FIRST_FOUND_DEVICE,
+            identifier: printer.bluetoothName.flatMap { $0.isEmpty ? nil : $0 }
+                ?? StarConnectionSettings.FIRST_FOUND_DEVICE,
             autoSwitchInterface: false
         )
+        logger.append("    Star USB identifier: \(settings.identifier)")
         let starPrinter = StarPrinter(settings)
 
         do {
@@ -268,10 +333,23 @@ struct StarUSBTransport: PrinterTransport {
                 Task { await starPrinter.close() }
             }
 
-            let printableWidth = printer.paperWidth == "58mm" ? 384 : 576
-            let image = await MainActor.run {
-                receiptImage(from: data, width: printableWidth)
+            let status = try await starPrinter.getStatus()
+            logger.append("    Star status before print: \(status.description)")
+            if status.hasError {
+                let reason = status.paperEmpty
+                    ? "printer is out of paper"
+                    : (status.coverOpen ? "printer cover is open" : "printer reported an error")
+                logger.append("    ERROR: Star printer is not ready: \(reason).")
+                return PrintResult(success: false, message: "Star USB printer is not ready: \(reason).")
             }
+            if status.paperNearEmpty {
+                logger.append("    WARNING: Printer paper is nearly empty.")
+            }
+
+            let printableWidth = printer.printableWidthDots > 0
+                ? printer.printableWidthDots
+                : (printer.paperWidth == "58mm" ? 384 : 576)
+            let image = receiptImage(from: data, width: printableWidth)
             let imageParameter = StarXpandCommand.Printer.ImageParameter(image: image, width: printableWidth)
                 .setEffectDiffusion(true)
 
@@ -287,18 +365,30 @@ struct StarUSBTransport: PrinterTransport {
             )
 
             try await starPrinter.print(command: builder.getCommands())
+            let finalStatus = try await starPrinter.getStatus()
+            if finalStatus.hasError {
+                let reason = finalStatus.paperEmpty
+                    ? "printer ran out of paper"
+                    : (finalStatus.coverOpen ? "printer cover is open" : "printer reported an error")
+                logger.append("    ERROR: Star printer reported an error after print: \(reason).")
+                return PrintResult(success: false, message: "Star USB print was sent, but \(reason).")
+            }
             logger.append("    Star SDK print completed.")
-            return PrintResult(success: true, message: "Printed successfully via Star Micronics USB SDK.")
+            return PrintResult(
+                success: true,
+                message: "Printer SDK confirmed the print command.",
+                confirmation: .confirmed
+            )
         } catch {
             logger.append("    ERROR: Star SDK print failed: \(error.localizedDescription)")
             return PrintResult(success: false, message: "Star USB print failed: \(error.localizedDescription)")
         }
 #else
-        // ponytail: no raw EASession fallback for Star; add the SDK adapter when the framework is linked.
-        logger.append("    Star SDK is not compiled in this build target.")
+        logger.append("    ERROR: Star SDK is not compiled in this build target.")
+        logger.append("    Star USB printers require the official StarIO10 path; raw EAAccessory writes can be accepted by iOS without printing.")
         return PrintResult(
             success: false,
-            message: "Star TSP143IIIU USB is detected, but this build does not include the Star Micronics SDK. Use TCP/IP for now, or link StarXpand/StarPRNT SDK."
+            message: "Star USB printing requires Star Micronics StarIO10 SDK in this app build. The printer is connected, but this build cannot send a valid Star USB print command."
         )
 #endif
     }
@@ -599,8 +689,61 @@ struct StarUSBTransport: PrinterTransport {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Star SDK Cash Drawer Transport
+// ─────────────────────────────────────────────────────────────────────────────
+@MainActor
+struct StarDrawerTransport: PrinterTransport {
+    func deliver(data: Data, printer: Printer, logger: PrintLogger) async -> PrintResult {
+#if canImport(StarIO10)
+        let settings = StarConnectionSettings(
+            interfaceType: .usb,
+            identifier: printer.bluetoothName.flatMap { $0.isEmpty ? nil : $0 }
+                ?? StarConnectionSettings.FIRST_FOUND_DEVICE,
+            autoSwitchInterface: false
+        )
+        let starPrinter = StarPrinter(settings)
+
+        do {
+            try await starPrinter.open()
+            defer { Task { await starPrinter.close() } }
+
+            let status = try await starPrinter.getStatus()
+            guard !status.hasError else {
+                let reason = status.paperEmpty
+                    ? "printer is out of paper"
+                    : (status.coverOpen ? "printer cover is open" : "printer reported an error")
+                return PrintResult(success: false, message: "Cannot open cash drawer: \(reason).")
+            }
+
+            let builder = StarXpandCommand.StarXpandCommandBuilder()
+            _ = builder.addDocument(
+                StarXpandCommand.DocumentBuilder()
+                    .addDrawer(
+                        StarXpandCommand.DrawerBuilder()
+                            .actionOpen(StarXpandCommand.Drawer.OpenParameter())
+                    )
+            )
+            try await starPrinter.print(command: builder.getCommands())
+            logger.append("    Star SDK cash drawer command completed.")
+            return PrintResult(
+                success: true,
+                message: "Cash drawer opened through StarIO10.",
+                confirmation: .confirmed
+            )
+        } catch {
+            logger.append("    ERROR: Star SDK drawer command failed: \(error.localizedDescription)")
+            return PrintResult(success: false, message: "Star cash drawer failed: \(error.localizedDescription)")
+        }
+#else
+        return PrintResult(success: false, message: "StarIO10 is unavailable in this build.")
+#endif
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - BLE Transport (Bluetooth Low Energy)
 // ─────────────────────────────────────────────────────────────────────────────
+@MainActor
 struct BLETransport: PrinterTransport {
     func deliver(data: Data, printer: Printer, logger: PrintLogger) async -> PrintResult {
         return await BLEPrinterManager.shared.printData(data, printer: printer, logger: logger)
@@ -662,7 +805,7 @@ final class BLEPrinterManager: NSObject, CBCentralManagerDelegate, CBPeripheralD
             
             centralManager?.cancelPeripheralConnection(peripheral)
             logger.append("✓ Bluetooth BLE print job completed.")
-            return PrintResult(success: true, message: "Printed successfully via Bluetooth BLE to \(name).")
+            return PrintResult(success: true, message: "Data accepted by Bluetooth transport for \(name).")
         } catch {
             logger.append("    ERROR: Bluetooth error: \(error.localizedDescription)")
             if let p = targetPeripheral {

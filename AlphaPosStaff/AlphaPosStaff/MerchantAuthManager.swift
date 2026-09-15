@@ -7,11 +7,8 @@ import CryptoKit
 /// Obtains a per-merchant JWT from the `issue-merchant-token` Edge Function,
 /// stores it in Keychain, and auto-refreshes before expiry.
 ///
-/// **Token lifecycle:**
-/// 1. `authenticate(merchantId:deviceSecret:)` → calls Edge Function → stores JWT in Keychain
-/// 2. Background timer auto-refreshes 1 hour before expiry
-/// 3. `currentToken` is always available for NetworkService
-/// 4. On token refresh, posts `.merchantTokenDidRefresh` notification
+/// Devices authenticate only through one-time pairing. No reusable merchant
+/// device secret is accepted or stored by the Staff app.
 final class MerchantAuthManager {
     static let shared = MerchantAuthManager()
     
@@ -20,7 +17,8 @@ final class MerchantAuthManager {
     private let keychainTokenKey = "alphapos_staff_merchant_jwt"
     private let keychainExpiryKey = "alphapos_staff_merchant_jwt_expiry"
     private let keychainMerchantIdKey = "alphapos_staff_merchant_id"
-    private let keychainDeviceSecretKey = "alphapos_staff_device_secret"
+    private let keychainDeviceIdKey = "alphapos_staff_device_id"
+    private let keychainRefreshTokenKey = "alphapos_staff_refresh_token"
     
     private let refreshMarginSeconds: TimeInterval = 3600 // 1 hour
     private var refreshTimer: Timer?
@@ -47,74 +45,39 @@ final class MerchantAuthManager {
     private init() {
         if isAuthenticated {
             scheduleAutoRefresh()
+        } else if currentToken != nil {
+            Task { await refreshTokenIfNeeded() }
         }
     }
     
-    // MARK: - Authentication
-    
-    @discardableResult
-    func authenticate(merchantId: String, deviceSecret: String) async throws -> String {
-        let edgeFunctionURL = URL(string: AppConfig.supabaseURL.absoluteString + "/functions/v1/issue-merchant-token")!
-        
-        var request = URLRequest(url: edgeFunctionURL)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(AppConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(AppConfig.supabaseAnonKey)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 10.0
-        
-        let payload: [String: String] = [
-            "merchant_id": merchantId,
-            "device_secret": deviceSecret
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw AuthError.invalidResponse
-        }
-        
-        guard (200...299).contains(httpResponse.statusCode) else {
-            let errorMsg = String(data: data, encoding: .utf8) ?? "Unknown error"
-            if httpResponse.statusCode == 401 {
-                throw AuthError.invalidCredentials(errorMsg)
-            }
-            throw AuthError.serverError(httpResponse.statusCode, errorMsg)
-        }
-        
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let accessToken = json["access_token"] as? String,
-              let expiresIn = json["expires_in"] as? Int else {
-            throw AuthError.invalidResponse
-        }
-        
+    func acceptPairedSession(
+        accessToken: String,
+        expiresIn: Int,
+        merchantId: String,
+        deviceId: String,
+        refreshToken: String
+    ) {
         let expiryTimestamp = Date().timeIntervalSince1970 + Double(expiresIn)
         keychainSave(accessToken, forKey: keychainTokenKey)
         keychainSave(String(expiryTimestamp), forKey: keychainExpiryKey)
         keychainSave(merchantId, forKey: keychainMerchantIdKey)
-        keychainSave(deviceSecret, forKey: keychainDeviceSecretKey)
-        
+        keychainSave(deviceId, forKey: keychainDeviceIdKey)
+        keychainSave(refreshToken, forKey: keychainRefreshTokenKey)
         UserDefaults.standard.set(merchantId, forKey: "active_merchant_id")
-        
-        #if DEBUG
-        print("MerchantAuthManager: Authenticated merchant \(merchantId)")
-        #endif
-        
         scheduleAutoRefresh()
-        return accessToken
+        NotificationCenter.default.post(name: .merchantTokenDidRefresh, object: nil)
     }
     
     // MARK: - Token Refresh
     
-    func refreshTokenIfNeeded() async {
+    func refreshTokenIfNeeded(force: Bool = false) async {
         guard let token = currentToken else { return }
         
         guard let expiryStr = keychainRetrieve(forKey: keychainExpiryKey),
               let expiry = Double(expiryStr) else { return }
         
         let timeUntilExpiry = expiry - Date().timeIntervalSince1970
-        guard timeUntilExpiry < refreshMarginSeconds else { return }
+        guard force || timeUntilExpiry < refreshMarginSeconds else { return }
         
         #if DEBUG
         print("MerchantAuthManager: Refreshing token (\(Int(timeUntilExpiry))s until expiry)")
@@ -131,7 +94,16 @@ final class MerchantAuthManager {
             request.setValue("Bearer \(AppConfig.supabaseAnonKey)", forHTTPHeaderField: "Authorization")
             // Pass the custom merchant token in X-Merchant-Token header
             request.setValue(token, forHTTPHeaderField: "X-Merchant-Token")
-            request.timeoutInterval = 10.0
+            // Authentication is on the critical interaction path. Fail fast so
+            // the UI can offer a retry instead of appearing frozen.
+            request.timeoutInterval = 5.0
+            if let deviceId = keychainRetrieve(forKey: keychainDeviceIdKey),
+               let refreshToken = keychainRetrieve(forKey: keychainRefreshTokenKey) {
+                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "device_id": deviceId,
+                    "refresh_token": refreshToken
+                ])
+            }
             
             let (data, response) = try await URLSession.shared.data(for: request)
             
@@ -158,17 +130,8 @@ final class MerchantAuthManager {
             print("MerchantAuthManager: Refresh failed, attempting re-authentication...")
             #endif
             
-            guard let storedMerchantId = keychainRetrieve(forKey: keychainMerchantIdKey),
-                  let storedDeviceSecret = keychainRetrieve(forKey: keychainDeviceSecretKey) else { return }
-            
-            do {
-                try await authenticate(merchantId: storedMerchantId, deviceSecret: storedDeviceSecret)
-                NotificationCenter.default.post(name: .merchantTokenDidRefresh, object: nil)
-            } catch {
-                #if DEBUG
-                print("MerchantAuthManager: Re-authentication also failed: \(error)")
-                #endif
-            }
+            // Pairing credentials are the only recovery path. Keep the expired
+            // session so LoginView can explain that re-pairing is required.
         }
     }
     
@@ -180,7 +143,8 @@ final class MerchantAuthManager {
         keychainDelete(forKey: keychainTokenKey)
         keychainDelete(forKey: keychainExpiryKey)
         keychainDelete(forKey: keychainMerchantIdKey)
-        keychainDelete(forKey: keychainDeviceSecretKey)
+        keychainDelete(forKey: keychainDeviceIdKey)
+        keychainDelete(forKey: keychainRefreshTokenKey)
     }
     
     // MARK: - Private Helpers

@@ -5,7 +5,6 @@
 // for the last N months side-by-side with trend indicators.
 
 import SwiftUI
-import Charts
 
 struct MonthlyComparisonReportView: View {
     @Bindable var viewModel: ReportsViewModel
@@ -124,47 +123,40 @@ struct MonthlyComparisonReportView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(color.opacity(0.18), lineWidth: 1))
     }
 
-    // MARK: - Revenue Bar Chart
+    // MARK: - Revenue Bar Visualizer
 
     private var revenueChart: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("report_revenue_trend".t)
                 .font(.caption.bold()).foregroundColor(.appAccent).tracking(0.8)
 
-            Chart(points) { pt in
-                BarMark(
-                    x: .value("Month", pt.label),
-                    y: .value("Revenue", pt.revenue)
-                )
-                .foregroundStyle(
-                    pt.id == current?.id
-                        ? AnyShapeStyle(APGradient.accent)
-                        : AnyShapeStyle(Color.appSurfaceHigh)
-                )
-                .cornerRadius(4)
-            }
-            .chartYAxis {
-                AxisMarks(position: .leading) { val in
-                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                    AxisValueLabel {
-                        if let v = val.as(Double.self) {
-                            Text("\(currencySymbol)\((v/1000).formatted(.number.precision(.fractionLength(0))))k")
-                                .font(.caption2).foregroundColor(.textTertiary)
-                        }
-                    }
-                }
-            }
-            .chartXAxis {
-                AxisMarks { val in
-                    AxisValueLabel {
-                        Text(val.as(String.self) ?? "")
-                            .font(.caption2)
-                            .foregroundColor(.textSecondary)
-                    }
-                }
-            }
+            let maxRevenue = max(points.map(\.revenue).max() ?? 0, 1)
 
-            .frame(height: 180)
+            HStack(alignment: .bottom, spacing: 12) {
+                ForEach(points) { pt in
+                    VStack(spacing: 6) {
+                        Text("\(currencySymbol)\((pt.revenue/1000).formatted(.number.precision(.fractionLength(0))))k")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(pt.id == current?.id ? Color.appAccent : .secondary)
+
+                        let ratio = CGFloat(max(pt.revenue, 0) / maxRevenue)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(
+                                pt.id == current?.id
+                                    ? AnyShapeStyle(APGradient.accent)
+                                    : AnyShapeStyle(Color.appSurfaceHigh)
+                            )
+                            .frame(height: max(ratio * 110, 8))
+
+                        Text(pt.label)
+                            .font(.caption2)
+                            .foregroundStyle(pt.id == current?.id ? .primary : .secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(height: 160)
+            .padding(.top, 4)
         }
         .padding(14)
         .background(Color.appSurface)

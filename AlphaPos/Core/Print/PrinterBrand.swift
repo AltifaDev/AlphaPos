@@ -40,12 +40,7 @@ enum PrinterBrand: String, CaseIterable, Identifiable, Codable {
     }
 
     var supportsRawUSB: Bool {
-        switch self {
-        case .epson, .bixolon:
-            return true
-        case .star, .xprinter, .generic, .tspl:
-            return false
-        }
+        false
     }
 
     var requiresSDKForUSB: Bool {
@@ -64,7 +59,7 @@ enum PrinterBrand: String, CaseIterable, Identifiable, Codable {
     var connectionHint: String {
         switch self {
         case .epson:
-            return "Epson ESC/POS works best via TCP/IP. Some MFi Epson USB models may also work through ExternalAccessory."
+            return "Epson ESC/POS is supported over Wi-Fi/LAN using TCP/IP."
         case .star:
             return "Star USB on iPad requires the Star Micronics SDK path; TCP/IP can still use raw printing when the model supports it."
         case .xprinter:
@@ -74,16 +69,15 @@ enum PrinterBrand: String, CaseIterable, Identifiable, Codable {
         case .tspl:
             return "TSPL is for label printers and is normally used over TCP/IP or vendor-specific interfaces."
         case .bixolon:
-            return "Bixolon ESC/POS-compatible models can use TCP/IP; some MFi models may work over USB/Bluetooth with the registered protocol."
+            return "Bixolon ESC/POS-compatible models are supported over Wi-Fi/LAN using TCP/IP."
         }
     }
     
     // MFi protocol strings registered with Apple
     var mfiProtocols: [String] {
         switch self {
-        case .epson: return ["com.epson.escpos"]
-        case .star: return ["jp.star-m.starpro", "jp.star-m.starprnt", "jp.star-m.starprnt-lsp"]
-        case .bixolon: return ["com.bixolon.protocol"]
+        // Official StarXpand protocol for USB and classic Bluetooth.
+        case .star: return ["jp.star-m.starpro"]
         default: return []
         }
     }
@@ -92,7 +86,9 @@ enum PrinterBrand: String, CaseIterable, Identifiable, Codable {
     var cutCommand: [UInt8] {
         switch self {
         case .star:
-            return [0x1B, 0x64, 0x32] // Star partial cut
+            // Star mode: ESC d n cuts paper. n=3 = partial cut after feeding to cut position.
+            // (The previous value 0x32 = 50 fed 50 lines instead of cutting.)
+            return [0x1B, 0x64, 0x03] // Star partial cut
         default:
             return [0x1D, 0x56, 0x42, 0x00] // Epson/Generic full cut
         }

@@ -134,6 +134,7 @@ export default {
         const configJs = `window.ALPHAPOS_CONFIG = ${JSON.stringify({
           supabaseUrl: url.origin,
           supabaseRealtimeUrl: realtimeUrl,
+          edgeFunctionUrl: `${realtimeUrl.replace(/\/$/, '')}/functions/v1`,
           supabaseKey: supabaseAnonKey,
           localServerURL: url.origin,
           merchantId: env.MERCHANT_ID || "",

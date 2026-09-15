@@ -18,7 +18,8 @@ extension NetworkService {
                 category: dict["category"] as? String ?? "mains",
                 emoji: dict["emoji"] as? String,
                 imgClass: dict["img_class"] as? String,
-                image_url: dict["image_url"] as? String
+                image_url: dict["image_url"] as? String,
+                salesRole: dict["sales_role"] as? String
             )
         }
         // Cache for offline use
@@ -28,6 +29,50 @@ extension NetworkService {
         prefetchImages(items)
         
         return items
+    }
+
+    // MARK: - Modifier Groups (option picker)
+
+    /// Fetch the modifier groups (and their modifiers) attached to a menu item.
+    /// Mirrors the master device: menu_item_modifier_groups → modifier_groups → modifiers.
+    /// Returns an empty array when the item has no options (caller adds it directly).
+    func fetchModifierGroups(forMenuItemId itemId: String) async throws -> [StaffModifierGroup] {
+        guard !itemId.isEmpty else { return [] }
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "menu_item_modifier_groups", queryItems: [
+            URLQueryItem(name: "select",
+                         value: "modifier_groups(id,name,min_selection,max_selection,modifiers(id,name,extra_price,is_available))"),
+            URLQueryItem(name: "menu_item_id", value: "eq.\(itemId)")
+        ])
+        let rows = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+
+        var groups: [StaffModifierGroup] = []
+        for row in rows {
+            guard let g = row["modifier_groups"] as? [String: Any] else { continue }
+            if let deleted = g["is_deleted"] as? Bool, deleted { continue }
+            let modsRaw = g["modifiers"] as? [[String: Any]] ?? []
+            let mods: [StaffModifier] = modsRaw.compactMap { m in
+                if let del = m["is_deleted"] as? Bool, del { return nil }
+                let available = m["is_available"] as? Bool ?? true
+                guard available else { return nil }
+                let name = m["name"] as? String ?? ""
+                guard !name.isEmpty else { return nil }
+                return StaffModifier(
+                    id: m["id"] as? String ?? UUID().uuidString,
+                    name: name,
+                    extraPrice: m["extra_price"] as? Double ?? 0.0,
+                    isAvailable: available
+                )
+            }
+            guard !mods.isEmpty else { continue }
+            groups.append(StaffModifierGroup(
+                id: g["id"] as? String ?? UUID().uuidString,
+                name: g["name"] as? String ?? "",
+                minSelection: g["min_selection"] as? Int ?? 0,
+                maxSelection: g["max_selection"] as? Int ?? 1,
+                modifiers: mods
+            ))
+        }
+        return groups
     }
 
     private func prefetchImages(_ items: [MenuItem]) {

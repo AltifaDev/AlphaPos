@@ -15,41 +15,93 @@ struct RecipeCatalogView: View {
         filter: #Predicate<MenuItem> { !$0.isDeleted },
         sort: \MenuItem.name
     ) private var menuItems: [MenuItem]
+    @Query(
+        filter: #Predicate<Recipe> { !$0.isDeleted },
+        sort: \Recipe.updatedAt
+    ) private var allRecipes: [Recipe]
+    @Query(
+        filter: #Predicate<PrepRecipe> { !$0.isDeleted },
+        sort: \PrepRecipe.name
+    ) private var nestedRecipes: [PrepRecipe]
 
     @State private var selectedItem: MenuItem?
     @State private var showingBuilder = false
     @State private var searchText = ""
     @State private var selectedCategoryId: UUID? = nil
+    @State private var recipeWorkspace = 0
+    @State private var showingRecipeGuide = false
 
     private var filteredItems: [MenuItem] {
         menuItems.filter { item in
+            // A prep output is an internal formula in this workflow, not a
+            // customer-facing menu. Keeping it out of the sales workspace
+            // prevents operators from confusing sauce/prep setup with a sale.
+            guard !isIntermediateMenu(item) else { return false }
             let matchesSearch = searchText.isEmpty || item.name.localizedCaseInsensitiveContains(searchText)
             let matchesCategory = selectedCategoryId == nil || item.category?.id == selectedCategoryId
             return matchesSearch && matchesCategory
         }
     }
 
+    private func isIntermediateMenu(_ item: MenuItem) -> Bool {
+        nestedRecipes.contains {
+            $0.outputItem?.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                .localizedCaseInsensitiveCompare(item.name.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // Filter Bar
-            filterBar
+            // Clean Native Segmented Control Header
+            HStack(spacing: APSpacing.md) {
+                Picker("", selection: $recipeWorkspace) {
+                    Text(lm.currentLanguage == .thai ? "เมนูหน้าร้าน" : "Menu Dishes").tag(0)
+                    Text(lm.currentLanguage == .thai ? "สูตรเตรียม" : "Prep Recipes").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 360)
+
+                Spacer()
+
+                Button {
+                    showingRecipeGuide = true
+                } label: {
+                    Label(lm.currentLanguage == .thai ? "คู่มือการตัดสต็อก" : "Stock Guide",
+                          systemImage: "questionmark.circle")
+                        .font(.subheadline.weight(.medium))
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.horizontal, APSpacing.md)
+            .padding(.vertical, APSpacing.sm)
+            .apLiquidGlass(allowNativeOnPad: true, in: RoundedRectangle(cornerRadius: 16))
 
             Divider().background(Color.appDivider)
 
-            if filteredItems.isEmpty {
-                emptyState
+            if recipeWorkspace == 1 {
+                PrepRecipeCatalogView()
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 4) {
-                        ForEach(filteredItems) { item in
-                            menuItemRecipeCard(item: item)
-                                .onTapGesture {
-                                    selectedItem = item
-                                    showingBuilder = true
-                                }
+                // Filter Bar
+                filterBar
+
+                Divider().background(Color.appDivider)
+
+                if filteredItems.isEmpty {
+                    emptyState
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 290), spacing: APSpacing.sm)], spacing: APSpacing.sm) {
+                            ForEach(filteredItems) { item in
+                                menuItemRecipeCard(item: item)
+                                    .onTapGesture {
+                                        selectedItem = item
+                                        showingBuilder = true
+                                    }
+                            }
                         }
+                        .padding(12)
                     }
-                    .padding(APSpacing.sm)
                 }
             }
         }
@@ -58,7 +110,11 @@ struct RecipeCatalogView: View {
                 selectedItem = nil
             }
         }
-        .background(Color.appBackground)
+        .sheet(isPresented: $showingRecipeGuide) {
+            RecipeStockGuideSheet()
+        }
+        .background(recipeWorkspace == 1 ? Color.white : Color.appBackground)
+        .animation(.easeInOut(duration: 0.24), value: recipeWorkspace)
         .onAppear {
             let urls = menuItems.compactMap { $0.imageUrl }
             RemoteImageManager.shared.prefetchImages(urls: urls)
@@ -137,103 +193,74 @@ struct RecipeCatalogView: View {
     // MARK: - Menu Item Row Card
 
     private func menuItemRecipeCard(item: MenuItem) -> some View {
-        // Calculate tracking mode and costing
-        let recipes = item.recipes
-        let trackingMode: String
-        let costPrice: Double
+        // The recipe workspace is about stock relationships. Financial metrics
+        // live in reporting so they do not compete with the setup task here.
+        let recipes = allRecipes.filter { $0.menuItem?.id == item.id }
+        let mode = item.resolvedTrackingMode
 
-        if recipes.isEmpty {
-            trackingMode = "Not Tracked"
-            costPrice = 0.0
-        } else if recipes.count == 1 && recipes.first?.quantityRequired == 1.0 {
-            trackingMode = "Finished Good"
-            costPrice = recipes.first?.inventoryItem?.costPrice ?? 0.0
-        } else {
-            trackingMode = "Recipe-Based"
-            costPrice = recipes.reduce(0.0) { $0 + ($1.inventoryItem?.costPrice ?? 0.0) * $1.quantityRequired }
+        let linkedIntermediates = recipes.compactMap { recipe in
+            nestedRecipes.first { $0.outputItem?.id == recipe.inventoryItem?.id }?.name
         }
+        let isReady = mode != .notTracked && !recipes.isEmpty
 
-        let foodCostPercent = item.price > 0 ? (costPrice / item.price) * 100.0 : 0.0
-        let marginPercent = 100.0 - foodCostPercent
-
-        return HStack(spacing: APSpacing.sm) {
+        return HStack(spacing: 10) {
             RemoteImageView(
                 imageUrl: item.imageUrl,
                 imageData: item.imageData,
                 fallbackColor: Color.appSurfaceHigh,
-                fallbackIcon: recipes.isEmpty ? "slash.circle" : (recipes.count == 1 && recipes.first?.quantityRequired == 1.0 ? "shippingbox" : "fork.knife"),
+                fallbackIcon: mode == .notTracked ? "slash.circle" : (mode == .finishedGood ? "shippingbox" : "fork.knife"),
                 iconSize: 10
             )
-            .frame(width: 28, height: 28)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .frame(width: 44, height: 44)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(item.name)
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundColor(.textPrimary)
+                        .lineLimit(2)
 
-                    // Badge for tracking mode
-                    Text(trackingMode == "Not Tracked" ? "catalog_not_tracked".t : (trackingMode == "Finished Good" ? "catalog_finished_good".t : "catalog_recipe_based".t))
-                        .font(.system(size: 7, weight: .bold))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(
-                            trackingMode == "Not Tracked" ? Color.appSurfaceHigh :
-                            (trackingMode == "Finished Good" ? Color.appTeal.opacity(0.12) : Color.appAccent.opacity(0.12))
-                        )
-                        .foregroundColor(
-                            trackingMode == "Not Tracked" ? .textTertiary :
-                            (trackingMode == "Finished Good" ? .appTeal : .appAccent)
-                        )
-                        .clipShape(Capsule())
+                    readinessBadge(isReady: isReady)
                 }
 
-                if !recipes.isEmpty {
-                    Text(LocalizationManager.shared.t("ingredients_linked_template", recipes.count))
-                        .font(.system(size: 9))
+                if isReady {
+                    Text(lm.currentLanguage == .thai
+                         ? "ใช้ \(recipes.count) รายการ · ตัดสต็อกเมื่อขาย"
+                         : "Uses \(recipes.count) components · deducts on sale")
+                        .font(.caption)
                         .foregroundColor(.textSecondary)
+                    if !linkedIntermediates.isEmpty {
+                        Label(linkedIntermediates.joined(separator: " · "), systemImage: "arrow.triangle.branch")
+                            .font(.caption2.weight(.medium))
+                            .foregroundColor(.appTeal)
+                    }
                 } else {
-                    Text("no_stock_setup".t)
-                        .font(.system(size: 9))
-                        .foregroundColor(.textTertiary)
+                    Text(lm.currentLanguage == .thai ? "ยังไม่มีสูตรสำหรับตัดสต๊อก" : "No stock formula configured")
+                        .font(.caption).foregroundColor(.textTertiary)
                 }
             }
 
             Spacer()
 
-            // Financial Costing indicators
-            HStack(spacing: APSpacing.sm) {
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(LocalizationManager.shared.t("price_template", item.price))
-                        .font(.system(size: 9))
-                        .foregroundColor(.textPrimary)
-                    if !recipes.isEmpty {
-                        Text(LocalizationManager.shared.t("cost_template", costPrice))
-                            .font(.system(size: 9))
-                            .foregroundColor(.textSecondary)
-                    }
-                }
-
-                if !recipes.isEmpty {
-                    VStack(alignment: .trailing, spacing: 1) {
-                        Text(LocalizationManager.shared.t("margin_template", Int(marginPercent)))
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(marginPercent >= 60 ? .appTeal : (marginPercent >= 30 ? .appAmber : .appRose))
-                        Text(LocalizationManager.shared.t("food_cost_template", Int(foodCostPercent)))
-                            .font(.system(size: 8))
-                            .foregroundColor(.textTertiary)
-                    }
-                    .frame(width: 60, alignment: .trailing)
-                }
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8))
-                    .foregroundColor(.textTertiary)
-            }
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.bold))
+                .foregroundColor(.textTertiary)
         }
-        .padding(APSpacing.sm)
-        .apCard()
+        .padding(12)
+        .apLiquidGlass(tint: isReady ? Color.appAccent.opacity(0.035) : Color.appAmber.opacity(0.05),
+                       interactive: true, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func readinessBadge(isReady: Bool) -> some View {
+        Label(isReady
+              ? (lm.currentLanguage == .thai ? "พร้อมตัดสต๊อก" : "Stock ready")
+              : (lm.currentLanguage == .thai ? "ต้องตั้งค่าสูตร" : "Formula needed"),
+              systemImage: isReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+            .font(.caption2.weight(.bold))
+            .foregroundColor(isReady ? .appTeal : .appAmber)
+            .padding(.horizontal, 7).padding(.vertical, 4)
+            .background((isReady ? Color.appTeal : Color.appAmber).opacity(0.12), in: Capsule())
     }
 
     // MARK: - Empty State
@@ -246,6 +273,11 @@ struct RecipeCatalogView: View {
             Text("no_menu_items_found".t)
                 .font(.headline)
                 .foregroundColor(.textSecondary)
+            Text("inventory_recipes_empty_hint".t)
+                .font(.caption)
+                .foregroundColor(.textTertiary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, APSpacing.lg)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

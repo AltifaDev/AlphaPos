@@ -1,0 +1,10 @@
+[Unit]
+Description=Protect AlphaPos production from disk exhaustion
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/alphapos-disk-guard
+TimeoutStartSec=15min
+

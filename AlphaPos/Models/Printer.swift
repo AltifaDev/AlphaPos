@@ -14,6 +14,13 @@ final class Printer {
     var role: String // "receipt", "kitchen", "label"
     var isActive: Bool
     var emulation: String // "escpos", "starprnt", "tspl"
+    var dpi: Int = 203
+    var printableWidthDots: Int = 576
+    var charactersPerLine: Int = 42
+    var feedLinesBeforeCut: Int = 3
+    var qrModuleSize: Int = 7
+    var calibrationStatus: String = "not_tested" // not_tested | pending_confirmation | verified
+    var calibratedAt: Date?
 
     @Relationship(deleteRule: .cascade, inverse: \PrintRoutingRule.printer)
     var routingRules: [PrintRoutingRule] = []
@@ -35,6 +42,13 @@ final class Printer {
         role: String = "kitchen",
         isActive: Bool = true,
         emulation: String = "escpos",
+        dpi: Int = 203,
+        printableWidthDots: Int? = nil,
+        charactersPerLine: Int? = nil,
+        feedLinesBeforeCut: Int = 3,
+        qrModuleSize: Int? = nil,
+        calibrationStatus: String = "not_tested",
+        calibratedAt: Date? = nil,
         isSynced: Bool = false,
         isDeleted: Bool = false,
         updatedAt: Date = Date()
@@ -50,6 +64,13 @@ final class Printer {
         self.role = role
         self.isActive = isActive
         self.emulation = emulation
+        self.dpi = dpi
+        self.printableWidthDots = printableWidthDots ?? (paperWidth == "58mm" ? 384 : 576)
+        self.charactersPerLine = charactersPerLine ?? (paperWidth == "58mm" ? 32 : 42)
+        self.feedLinesBeforeCut = feedLinesBeforeCut
+        self.qrModuleSize = qrModuleSize ?? (paperWidth == "58mm" ? 5 : 7)
+        self.calibrationStatus = calibrationStatus
+        self.calibratedAt = calibratedAt
         self.isSynced = isSynced
         self.isDeleted = isDeleted
         self.updatedAt = updatedAt
@@ -67,7 +88,7 @@ final class PrintJobRecord {
     var role: String
     var trigger: String
     var itemIdsCSV: String
-    var status: String // "queued", "printing", "succeeded", "failed"
+    var status: String // "queued", "printing", "sent", "succeeded", "failed"
     var attempts: Int
     var maxAttempts: Int
     var lastError: String?

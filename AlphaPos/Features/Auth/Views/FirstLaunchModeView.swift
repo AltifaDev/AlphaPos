@@ -67,15 +67,12 @@ struct FirstLaunchModeView: View {
             VStack(spacing: 0) {
                 // ── Header ──────────────────────────────────────────────────
                 VStack(spacing: 12) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(APGradient.accent)
-                            .frame(width: 64, height: 64)
-                            .shadow(color: Color.appAccent.opacity(0.4), radius: 12, y: 4)
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 28, weight: .black))
-                            .foregroundColor(.white)
-                    }
+                    Image("AppLogo")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 68, height: 68)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .shadow(color: Color.appAccent.opacity(0.4), radius: 12, y: 4)
                     .padding(.top, 48)
 
                     Text("ยินดีต้อนรับสู่ AlphaPos")
@@ -136,7 +133,24 @@ struct FirstLaunchModeView: View {
                 }
                 .disabled(selectedMode == nil)
                 .padding(.horizontal, 32)
-                .padding(.bottom, 48)
+                .padding(.top, 8)
+
+                // Phase 1: plan selection is the source of truth — allow skip.
+                Button {
+                    UserDefaults.standard.set(false, forKey: "offline_sync_mode")
+                    UserDefaults.standard.set(false, forKey: "offline_mode_user_set")
+                    UserDefaults.standard.set(true, forKey: "has_completed_first_launch")
+                    onModeSelected(false)
+                } label: {
+                    Text("first_launch_decide_later".t)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 32)
+                .padding(.bottom, 36)
                 .animation(.easeInOut(duration: 0.2), value: selectedMode)
             }
         }
@@ -158,7 +172,7 @@ struct FirstLaunchModeView: View {
             Button("ยกเลิก", role: .cancel) {}
         } message: {
             Text(selectedMode == .offline
-                 ? "ข้อมูลจะเก็บบน iPad เครื่องนี้เท่านั้น คุณยังสามารถเปลี่ยนเป็นออนไลน์ได้ในภายหลัง"
+                 ? "ข้อมูลจะเก็บบน iPad เครื่องนี้ การลบแอปจะลบข้อมูลที่ยังไม่ได้ Backup คุณสามารถ Backup ไปยัง Cloud ด้วยตนเองภายหลังได้"
                  : "ข้อมูลจะซิงค์กับ Cloud อัตโนมัติ คุณยังสามารถเปลี่ยนเป็นออฟไลน์ได้ในภายหลัง")
         }
     }

@@ -30,9 +30,91 @@ enum SecurityTests {
             test_verify_wrongPasswordReturnsFalse(),
             test_verify_hashMismatchReturnsFalse(),
             test_verify_withSalt(),
+            test_authServerMessage(),
+            test_authServerMessageFallback(),
             test_pin_verification(),
-            test_lockout_persistence()
+            test_lockout_persistence(),
+            test_ownerAlwaysHasSensitiveFinancialPermissions(),
+            test_managerDoesNotReceiveSensitiveFinancialPermissionsByDefault(),
+            test_managerCanBeGrantedSensitiveFinancialPermissions(),
+            test_permissionPolicyFailClosed(),
+            test_operationalPresetsDoNotGrantAdministration()
         ]
+    }
+
+    private static func test_ownerAlwaysHasSensitiveFinancialPermissions() -> TestResult {
+        let name = #function
+        let permissions = PermissionPolicyCore.permissionKeys(
+            roleName: "Store Owner",
+            explicitCSV: "dashboard.view",
+            allKeys: testPermissionKeys
+        )
+        guard permissions.contains("profit_analytics.view"), permissions.contains("product_costs.view") else {
+            return .failure(name, "Owner must retain sensitive financial access even with a legacy permission list.")
+        }
+        return .success(name)
+    }
+
+    private static func test_managerDoesNotReceiveSensitiveFinancialPermissionsByDefault() -> TestResult {
+        let name = #function
+        let permissions = PermissionPolicyCore.defaultPermissionKeys(roleName: "Store Manager", allKeys: testPermissionKeys)
+        guard !permissions.contains("profit_analytics.view"), !permissions.contains("product_costs.view") else {
+            return .failure(name, "Manager must require an explicit grant for profit and product-cost data.")
+        }
+        return .success(name)
+    }
+
+    private static func test_managerCanBeGrantedSensitiveFinancialPermissions() -> TestResult {
+        let name = #function
+        let permissions = PermissionPolicyCore.permissionKeys(
+            roleName: "Store Manager",
+            explicitCSV: "dashboard.view,profit_analytics.view,product_costs.view",
+            allKeys: testPermissionKeys
+        )
+        guard permissions.contains("profit_analytics.view"), permissions.contains("product_costs.view") else {
+            return .failure(name, "Explicit manager financial grants must be honored.")
+        }
+        return .success(name)
+    }
+
+    private static let testPermissionKeys: Set<String> = [
+        "pos.sell", "discount.apply", "cash_drawer.open", "dashboard.view",
+        "organization.manage", "profit_analytics.view", "product_costs.view",
+        "staff_permissions.manage", "staff.manage", "payroll.manage", "settings.manage",
+        "device.manage", "payments.manage", "inventory.adjust", "inventory.approve",
+        "promotions.manage", "expenses.manage", "accounting.view", "inventory.receive"
+    ]
+
+    private static func test_permissionPolicyFailClosed() -> TestResult {
+        for role in ["unknown", "assistant administrator", "cashier admin trainee", "owner assistant"] {
+            guard PermissionPolicyCore.defaultPermissionKeys(roleName: role, allKeys: testPermissionKeys).isEmpty else {
+                return .failure(#function, "Unknown or substring-matched role gained permissions: \(role)")
+            }
+        }
+        for policy in ["none", "invalid.permission"] {
+            guard PermissionPolicyCore.permissionKeys(roleName: "Cashier", explicitCSV: policy, allKeys: testPermissionKeys).isEmpty else {
+                return .failure(#function, "Explicit deny/invalid policy fell back to cashier access")
+            }
+        }
+        guard PermissionPolicyCore.defaultPermissionKeys(roleName: " Cashier ", allKeys: testPermissionKeys).contains("pos.sell") else {
+            return .failure(#function, "Known exact alias no longer works")
+        }
+        return .success(#function)
+    }
+
+    private static func test_operationalPresetsDoNotGrantAdministration() -> TestResult {
+        let sensitive: Set<String> = ["staff_permissions.manage", "staff.manage", "payroll.manage", "settings.manage", "device.manage", "payments.manage", "inventory.adjust", "inventory.approve", "promotions.manage", "expenses.manage", "accounting.view"]
+        for role in ["Manager", "Supervisor", "Cashier"] {
+            let keys = PermissionPolicyCore.defaultPermissionKeys(roleName: role, allKeys: testPermissionKeys)
+            guard keys.isDisjoint(with: sensitive) else {
+                return .failure(#function, "Operational role received implicit sensitive permission: \(role)")
+            }
+        }
+        let cashier = PermissionPolicyCore.defaultPermissionKeys(roleName: "Cashier", allKeys: testPermissionKeys)
+        guard !cashier.contains("inventory.receive"), !cashier.contains("discount.apply"), !cashier.contains("dashboard.view") else {
+            return .failure(#function, "Cashier received broad stock, discount or KPI access")
+        }
+        return .success(#function)
     }
 
     /// Tests PIN verification matching algorithms (SHA256 hashed).
@@ -210,19 +292,38 @@ enum SecurityTests {
         return .success(name)
     }
 
-    /// Verifies that saving a lockout timestamp persists across View resets (simulated via UserDefaults).
+    private static func test_authServerMessage() -> TestResult {
+        let name = #function
+        let data = Data(#"{"msg":"User already registered"}"#.utf8)
+        let message = SecurityHelper.serverMessage(from: data, fallback: "Sign up failed")
+        return message == "User already registered"
+            ? .success(name)
+            : .failure(name, "Expected Supabase message, got \(message)")
+    }
+
+    private static func test_authServerMessageFallback() -> TestResult {
+        let name = #function
+        let message = SecurityHelper.serverMessage(from: Data("not-json".utf8), fallback: "Sign up failed")
+        return message == "Sign up failed"
+            ? .success(name)
+            : .failure(name, "Expected fallback message, got \(message)")
+    }
+
+    /// Lockout state must live in this-device-only Keychain storage rather than
+    /// resettable UserDefaults.
     private static func test_lockout_persistence() -> TestResult {
         let name = #function
-        let testTime = Date().addingTimeInterval(300).timeIntervalSince1970
-        UserDefaults.standard.set(testTime, forKey: "staff_lockout_until_time")
-
-        let retrievedTime = UserDefaults.standard.double(forKey: "staff_lockout_until_time")
-        guard retrievedTime == testTime else {
-            UserDefaults.standard.removeObject(forKey: "staff_lockout_until_time")
-            return .failure(name, "Persisted lockout time mismatch (lockout can be bypassed)")
+        let subject = "security-test-\(UUID().uuidString)"
+        defer { KeychainManager.shared.clearPinAttempts(subjectId: subject) }
+        _ = KeychainManager.shared.recordFailedPinAttempt(
+            subjectId: subject,
+            maxAttempts: 1,
+            lockoutMinutes: 5
+        )
+        let restored = KeychainManager.shared.pinAttemptState(subjectId: subject)
+        guard restored.attempts == 1, let lockedUntil = restored.lockedUntil, lockedUntil > Date() else {
+            return .failure(name, "Keychain lockout state did not persist")
         }
-
-        UserDefaults.standard.removeObject(forKey: "staff_lockout_until_time")
         return .success(name)
     }
 }

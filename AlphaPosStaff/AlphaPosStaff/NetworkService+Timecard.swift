@@ -2,23 +2,37 @@
 // Timecards, PIN verification, employees, and face registration.
 
 import Foundation
-import CryptoKit
+import OSLog
+
+enum PinVerificationError: Error {
+    case invalidServerResponse
+}
 
 extension NetworkService {
+    private static var pinLogger: Logger {
+        Logger(subsystem: "com.alphapos.staff", category: "Authentication")
+    }
     func fetchEmployees() async throws -> [Employee] {
-        // SECURITY: select only the fields the UI actually needs.
-        // pin_code and face_embedding are NEVER fetched to the client —
-        // PIN verification is done server-side via verifyPin().
-        let safeSelect = "id,first_name,last_name,phone,national_id," +
-                         "employment_type,pay_rate,username,role," +
-                         "face_registered_at"
-        let data = try await sendSupabaseRequest(method: "GET", endpoint: "employees", queryItems: [
-            URLQueryItem(name: "select", value: safeSelect)
-        ])
-        // Use Codable decoder — Employee already has CodingKeys defined in Models.swift
+        guard !activeMerchantId.isEmpty else { throw StaffServiceError.missingMerchantSession }
+        guard !StaffSessionContext.branchId.isEmpty else { throw StaffServiceError.missingBranchSession }
+        // SECURITY: the database RPC is the single eligibility boundary. It
+        // returns only active, branch-scoped, PIN-enabled profiles and never
+        // exposes credential hashes to the device.
+        let data = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "rpc/get_staff_login_profiles",
+            payload: [:]
+        )
         let decoder = JSONDecoder()
-        let employees = (try? decoder.decode([Employee].self, from: data)) ?? []
-        return employees
+        do {
+            let profiles = try decoder.decode([Employee].self, from: data)
+            // The RPC is authoritative. Defensive ID de-duplication prevents a
+            // malformed response from producing duplicate SwiftUI identities.
+            var seen = Set<String>()
+            return profiles.filter { seen.insert($0.id.lowercased()).inserted }
+        } catch {
+            throw NetworkError.serverError("Invalid staff login profile response")
+        }
     }
 
     // NOTE: registerEmployeeFace() is retained for future use when a real
@@ -39,79 +53,44 @@ extension NetworkService {
         return true
     }
 
-    private func constantTimeCompare(_ a: String, _ b: String) -> Bool {
-        guard a.count == b.count else { return false }
-        let aBytes = [UInt8](a.utf8)
-        let bBytes = [UInt8](b.utf8)
-        var result: UInt8 = 0
-        for i in 0..<aBytes.count {
-            result |= aBytes[i] ^ bBytes[i]
-        }
-        return result == 0
-    }
-
-    func verifyPin(employeeId: String, pinDigits: String, expectedPinHash: String? = nil) async throws -> Bool {
-        // Try new format (iter:salt:hash) first, fall back to legacy SHA256
-        func matchesStoredHash(_ stored: String) -> Bool {
-            if stored.hasPrefix("iter:") {
-                return verifyIteratedPin(pinDigits, against: stored)
-            } else {
-                // Legacy SHA256-only hash
-                let inputData = Data(pinDigits.utf8)
-                let hashed = CryptoKit.SHA256.hash(data: inputData)
-                let pinHash = hashed.compactMap { String(format: "%02x", $0) }.joined()
-                return constantTimeCompare(pinHash, stored)
-            }
-        }
-        
-        // 1. Local / pre-loaded verification (Offline fallback)
-        if let expected = expectedPinHash {
-            return matchesStoredHash(expected)
-        }
-        
-        // 2. Database verification (Direct column query fallback)
+    func verifyPin(employeeId: String, pinDigits: String) async throws -> Bool {
+        guard StaffPINPolicy.isValid(pinDigits) else { return false }
+        // PIN hashes never leave the database. The RPC resolves the employee and
+        // canonical user credential, verifies the hash, and returns one Boolean.
+        let startedAt = Date()
         do {
-            let data = try await sendSupabaseRequest(method: "GET", endpoint: "employees", queryItems: [
-                URLQueryItem(name: "id", value: "eq.\(employeeId)"),
-                URLQueryItem(name: "select", value: "pin_code")
-            ])
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-               let firstResult = json.first,
-               let dbPinCode = firstResult["pin_code"] as? String {
-                return matchesStoredHash(dbPinCode)
+            let data = try await sendSupabaseRequest(
+                method: "POST",
+                endpoint: "rpc/verify_staff_pin",
+                payload: ["p_employee_id": employeeId, "p_pin": pinDigits],
+                timeoutInterval: 5.0
+            )
+            guard let verified = try? JSONDecoder().decode(Bool.self, from: data) else {
+                throw PinVerificationError.invalidServerResponse
             }
+            let totalMilliseconds = Int(Date().timeIntervalSince(startedAt) * 1_000)
+            Self.pinLogger.info("staff_auth rpc_total_ms=\(totalMilliseconds, privacy: .public) verified=\(verified, privacy: .public)")
+            return verified
         } catch {
-            print("verifyPin error: \(error.localizedDescription)")
+            let totalMilliseconds = Int(Date().timeIntervalSince(startedAt) * 1_000)
+            Self.pinLogger.error("staff_auth rpc_failed_ms=\(totalMilliseconds, privacy: .public) error=\(String(describing: error), privacy: .public)")
             throw error
         }
-        
-        return false
-    }
-
-    /// Verify an iterated hash (format: "iter:<n>:<salt_b64>:<hash_hex>")
-    private func verifyIteratedPin(_ pin: String, against storedHash: String) -> Bool {
-        let parts = storedHash.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
-        guard parts.count == 4,
-              let iterations = Int(parts[1]) else { return false }
-        let salt = String(parts[2])
-        let expectedHash = String(parts[3])
-        
-        var hash = salt + pin
-        for _ in 0..<iterations {
-            let inputData = Data(hash.utf8)
-            let digested = CryptoKit.SHA256.hash(data: inputData)
-            hash = digested.compactMap { String(format: "%02x", $0) }.joined()
-        }
-        return constantTimeCompare(hash, expectedHash)
     }
 
     func fetchTimecards(for employeeId: String) async throws -> [Timecard] {
+        guard !activeMerchantId.isEmpty else { throw StaffServiceError.missingMerchantSession }
+        guard !StaffSessionContext.branchId.isEmpty else { throw StaffServiceError.missingBranchSession }
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "timecards", queryItems: [
             URLQueryItem(name: "select", value: "*"),
+            URLQueryItem(name: "merchant_id", value: "eq.\(activeMerchantId)"),
+            URLQueryItem(name: "branch_id", value: "eq.\(StaffSessionContext.branchId)"),
             URLQueryItem(name: "employee_id", value: "eq.\(employeeId)"),
             URLQueryItem(name: "order", value: "clock_in.desc")
         ])
-        let jsonArray = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+        guard let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw NetworkError.serverError("Invalid timecard response")
+        }
         let formatter = ISO8601DateFormatter()
         return jsonArray.map { dict in
             let clockInStr = dict["clock_in"] as? String ?? ""
@@ -132,13 +111,38 @@ extension NetworkService {
                 notes: dict["notes"] as? String,
                 clockInFaceConfidence: dict["clock_in_confidence"] as? Double,
                 clockOutFaceConfidence: dict["clock_out_confidence"] as? Double,
+                clockInSelfieUrl: dict["clock_in_selfie_url"] as? String,
+                clockOutSelfieUrl: dict["clock_out_selfie_url"] as? String,
                 shiftId: dict["shift_id"] as? String
             )
         }
     }
 
+    /// Work authorization is based on an open timecard, never on the presence
+    /// of a scheduled shift. This keeps authentication and scheduling separate
+    /// while giving POS actions one consistent attendance check.
+    func hasActiveTimecard(for employeeId: String) async throws -> Bool {
+        guard !activeMerchantId.isEmpty else { throw StaffServiceError.missingMerchantSession }
+        guard !StaffSessionContext.branchId.isEmpty else { throw StaffServiceError.missingBranchSession }
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "timecards", queryItems: [
+            URLQueryItem(name: "select", value: "id"),
+            URLQueryItem(name: "merchant_id", value: "eq.\(activeMerchantId)"),
+            URLQueryItem(name: "branch_id", value: "eq.\(StaffSessionContext.branchId)"),
+            URLQueryItem(name: "employee_id", value: "eq.\(employeeId)"),
+            URLQueryItem(name: "clock_out", value: "is.null"),
+            URLQueryItem(name: "limit", value: "1")
+        ])
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw NetworkError.serverError("Invalid active-timecard response")
+        }
+        return !rows.isEmpty
+    }
+
     func uploadTimecard(timecard: Timecard) async throws -> Bool {
         let merchantId = self.activeMerchantId
+        let branchId = StaffSessionContext.branchId
+        guard !merchantId.isEmpty else { throw StaffServiceError.missingMerchantSession }
+        guard !branchId.isEmpty else { throw StaffServiceError.missingBranchSession }
         let formatter = ISO8601DateFormatter()
         let clockInStr = formatter.string(from: Date(timeIntervalSince1970: timecard.clockIn))
         
@@ -154,8 +158,12 @@ extension NetworkService {
             "clock_in_confidence": timecard.clockInFaceConfidence ?? 0.0,
             "clock_out_confidence": timecard.clockOutFaceConfidence ?? 0.0,
             "merchant_id": merchantId,
+            "branch_id": branchId,
             "shift_id": timecard.shiftId ?? NSNull()
         ]
+
+        payload["clock_in_selfie_url"] = timecard.clockInSelfieUrl ?? NSNull()
+        payload["clock_out_selfie_url"] = timecard.clockOutSelfieUrl ?? NSNull()
         
         if let clockOut = timecard.clockOut, clockOut > 0 {
             payload["clock_out"] = formatter.string(from: Date(timeIntervalSince1970: clockOut))
@@ -170,5 +178,32 @@ extension NetworkService {
             queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
             payload: payload)
         return true
+    }
+
+    /// Uploads a deliberately low-resolution evidence JPEG to a private bucket.
+    /// The returned value is an object path, not a public URL.
+    func uploadTimecardEvidence(_ jpegData: Data, employeeId: String, timecardId: String, event: String) async throws -> String {
+        guard !activeMerchantId.isEmpty else { throw NetworkError.invalidResponse }
+        await MerchantAuthManager.shared.refreshTokenIfNeeded()
+
+        let safeEvent = event == "clock_out" ? "clock-out" : "clock-in"
+        let objectPath = "\(activeMerchantId)/\(employeeId.lowercased())/\(timecardId.lowercased())/\(safeEvent).jpg"
+        guard let projectURL = URL(string: baseURL.absoluteString.replacingOccurrences(of: "/rest/v1", with: "")) else {
+            throw NetworkError.invalidResponse
+        }
+        var request = URLRequest(url: projectURL.appendingPathComponent("storage/v1/object/timecard-evidence/\(objectPath)"))
+        request.httpMethod = "POST"
+        request.httpBody = jpegData
+        request.timeoutInterval = 20
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(authorizationToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        request.setValue("true", forHTTPHeaderField: "x-upsert")
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw NetworkError.serverError(String(data: data, encoding: .utf8) ?? "Evidence upload failed")
+        }
+        return objectPath
     }
 }

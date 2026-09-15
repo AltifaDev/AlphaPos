@@ -1,34 +1,42 @@
 import Foundation
+import SwiftData
 
-/// Lightweight floor descriptor stored as JSON in AppStorage.
-/// Supports dynamic add/remove/rename floors without SwiftData migration.
-struct FloorData: Codable, Identifiable, Equatable {
-    var id: Int          // floor number (1-based, stable key for table.floor)
-    var name: String     // display name, e.g. "Floor 1", "Rooftop"
+/// A branch-scoped dining area (floor/room/patio) that is synced across devices.
+/// `floorNumber` remains as the canvas/layout key while tables migrate to the
+/// stable UUID in `floorId`.
+@Model
+final class FloorData {
+    @Attribute(.unique) var uuid: UUID
+    var floorNumber: Int
+    var name: String
+    var branchId: String
+    var sortOrder: Int
+    var isActive: Bool
+    var isSynced: Bool
+    var isDeleted: Bool
+    var updatedAt: Date
 
-    static let defaultFloors: [FloorData] = [
-        FloorData(id: 1, name: "Floor 1"),
-        FloorData(id: 2, name: "Floor 2"),
-        FloorData(id: 3, name: "Floor 3")
-    ]
-}
+    var id: Int { floorNumber }
 
-// MARK: - AppStorage helper
-extension Array where Element == FloorData {
-    /// Encode to JSON string for AppStorage
-    var jsonString: String {
-        (try? String(data: JSONEncoder().encode(self), encoding: .utf8)) ?? "[]"
-    }
-}
-
-extension String {
-    /// Decode JSON string back to [FloorData]
-    var asFloorDataArray: [FloorData] {
-        guard let data = self.data(using: .utf8),
-              let floors = try? JSONDecoder().decode([FloorData].self, from: data),
-              !floors.isEmpty else {
-            return FloorData.defaultFloors
-        }
-        return floors.sorted { $0.id < $1.id }
+    init(
+        uuid: UUID = UUID(),
+        floorNumber: Int,
+        name: String,
+        branchId: String,
+        sortOrder: Int = 0,
+        isActive: Bool = true,
+        isSynced: Bool = false,
+        isDeleted: Bool = false,
+        updatedAt: Date = Date()
+    ) {
+        self.uuid = uuid
+        self.floorNumber = floorNumber
+        self.name = name
+        self.branchId = branchId
+        self.sortOrder = sortOrder
+        self.isActive = isActive
+        self.isSynced = isSynced
+        self.isDeleted = isDeleted
+        self.updatedAt = updatedAt
     }
 }

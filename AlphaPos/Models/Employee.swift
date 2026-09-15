@@ -15,10 +15,21 @@ final class Employee {
     var payRate: Double // Hourly rate or base monthly salary
     var joinedAt: Date
     var resignedAt: Date?
+    /// Operational ownership. Kept as UUID text to avoid coupling employee
+    /// history to deletion of a local Branch object.
+    var branchId: String = ""
+    /// Explicit authorization for the companion Staff app. Employment and
+    /// login eligibility are separate concerns; never infer this from the
+    /// mere existence of an Employee row.
+    var staffAppEnabled: Bool = false
     
     // Local Facial Template stored as Binary Data for CoreML comparison
     var faceEmbeddingData: Data?
     var faceRegisteredAt: Date?
+    /// Durable intent marker. A nil local embedding can mean that this device
+    /// has not loaded the private template; only an explicit clear operation
+    /// may remove the server-side biometric template.
+    var faceEmbeddingNeedsRemoteClear: Bool = false
     
     // Standard HR compliance fields
     var email: String?
@@ -51,8 +62,11 @@ final class Employee {
         payRate: Double,
         joinedAt: Date = Date(),
         resignedAt: Date? = nil,
+        branchId: String = "",
+        staffAppEnabled: Bool = false,
         faceEmbeddingData: Data? = nil,
         faceRegisteredAt: Date? = nil,
+        faceEmbeddingNeedsRemoteClear: Bool = false,
         email: String? = nil,
         dateOfBirth: Date? = nil,
         address: String? = nil,
@@ -74,8 +88,11 @@ final class Employee {
         self.payRate = payRate
         self.joinedAt = joinedAt
         self.resignedAt = resignedAt
+        self.branchId = branchId
+        self.staffAppEnabled = staffAppEnabled
         self.faceEmbeddingData = faceEmbeddingData
         self.faceRegisteredAt = faceRegisteredAt
+        self.faceEmbeddingNeedsRemoteClear = faceEmbeddingNeedsRemoteClear
         self.email = email
         self.dateOfBirth = dateOfBirth
         self.address = address

@@ -7,7 +7,7 @@ extension NetworkManager {
 
     func fetchBranchesFromSupabase() async throws -> [[String: Any]] {
         // branches table has no is_deleted column — use custom query without that filter
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "branches",
@@ -23,11 +23,13 @@ extension NetworkManager {
     }
 
     func uploadBranch(_ branch: Branch) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
             "id": branch.id.uuidString.lowercased(),
             "merchant_id": merchantId,
             "name": branch.name,
+            "business_day_cutoff_hour": branch.businessDayCutoffHour,
+            "time_zone_id": branch.timeZoneID,
             "updated_at": NetworkManager.iso8601.string(from: branch.updatedAt)
         ]
         // NOTE: branches table has NO 'location' column in Supabase (PGRST204).
@@ -53,19 +55,31 @@ extension NetworkManager {
     }
 
     func fetchInventoryItemsFromSupabase() async throws -> [[String: Any]] {
-        try await fetchMasterData(endpoint: "inventory_items")
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
+        return try await fetchAllPages(
+            endpoint: "inventory_items",
+            queryItems: [
+                URLQueryItem(name: "select", value: "*"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
+                URLQueryItem(name: "is_deleted", value: "eq.false"),
+                URLQueryItem(name: "order", value: "updated_at.asc,id.asc")
+            ],
+            pageSize: 500
+        )
     }
 
     func uploadInventoryItem(_ item: InventoryItem) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
             "id": item.id.uuidString.lowercased(),
             "merchant_id": merchantId,
             "name": item.name,
             "unit": item.unit,
-            "current_quantity": item.currentQuantity,
             "reorder_level": item.reorderLevel,
             "cost_price": item.costPrice,
+            "out_of_stock_policy": item.outOfStockPolicyRaw,
             "safety_stock_level": item.safetyStockLevel,
             "max_stock_level":    item.maxStockLevel,
             "lead_time_days":     item.leadTimeDays,
@@ -99,7 +113,7 @@ extension NetworkManager {
     }
 
     func uploadModifierGroup(_ group: ModifierGroup) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let payload: [String: Any] = [
             "id": group.id.uuidString.lowercased(),
             "merchant_id": merchantId,
@@ -127,7 +141,7 @@ extension NetworkManager {
     }
 
     func uploadModifier(_ modifier: Modifier) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
             "id": modifier.id.uuidString.lowercased(),
             "merchant_id": merchantId,
@@ -159,7 +173,7 @@ extension NetworkManager {
     }
 
     func uploadMenuItemModifierGroup(_ relation: MenuItemModifierGroup) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         guard let menuItemId = relation.menuItem?.id.lowercased(),
               let modifierGroupId = relation.modifierGroup?.id.uuidString.lowercased() else {
             throw NetworkError.serverError("Menu item modifier group relation requires both sides.")

@@ -20,8 +20,13 @@ struct AddTableSheet: View {
     @Binding var isPresented: Bool
     @EnvironmentObject private var lm: LocalizationManager
     let modelContext: ModelContext
+    @Query(sort: \FloorData.sortOrder) private var allFloors: [FloorData]
     
     @State private var tableNumber: String = ""
+    @State private var createsMultipleTables = false
+    @State private var tableCount = 10
+    @State private var startingNumber = 1
+    @State private var padsTableNumber = true
     @State private var capacity: Int = 2
     @State private var selectedStatus: String = "vacant"
     @State private var selectedShape: TableShapeOption = .rectangle
@@ -30,6 +35,22 @@ struct AddTableSheet: View {
     @State private var selectedFloor: Int
     @State private var selectedZone: String = "Indoor"
     let defaultFloor: Int
+
+    private var floors: [FloorData] {
+        let branchKey = (BranchContext.shared.activeBranchIDString).lowercased()
+        let candidates = allFloors
+            .filter { $0.branchId.lowercased() == branchKey && $0.isActive && !$0.isDeleted }
+            .sorted {
+                if $0.floorNumber == $1.floorNumber, $0.isSynced != $1.isSynced {
+                    return $0.isSynced
+                }
+                return $0.sortOrder == $1.sortOrder
+                    ? $0.floorNumber < $1.floorNumber
+                    : $0.sortOrder < $1.sortOrder
+            }
+        var seenFloorNumbers = Set<Int>()
+        return candidates.filter { seenFloorNumbers.insert($0.floorNumber).inserted }
+    }
     
     init(isPresented: Binding<Bool>, modelContext: ModelContext, defaultFloor: Int = 1) {
         self._isPresented = isPresented
@@ -66,9 +87,20 @@ struct AddTableSheet: View {
                     // Form Content
                     ScrollView {
                         VStack(alignment: .leading, spacing: 24) {
+                            Picker("", selection: $createsMultipleTables) {
+                                Text(lm.languageCode == "th" ? "โต๊ะเดียว" : "Single table").tag(false)
+                                Text(lm.languageCode == "th" ? "หลายโต๊ะ" : "Multiple tables").tag(true)
+                            }
+                            .pickerStyle(.segmented)
+
                             // Table Number Section
                             VStack(alignment: .leading, spacing: 8) {
-                                Label("table_number_name_lbl".t, systemImage: "tablecells")
+                                Label(
+                                    createsMultipleTables
+                                        ? (lm.languageCode == "th" ? "คำนำหน้าชื่อโต๊ะ" : "Table name prefix")
+                                        : "table_number_name_lbl".t,
+                                    systemImage: "tablecells"
+                                )
                                     .font(.subheadline)
                                     .fontWeight(.bold)
                                     .foregroundColor(.textPrimary)
@@ -86,9 +118,38 @@ struct AddTableSheet: View {
                                             .stroke(Color.appBorderSubtle, lineWidth: 1)
                                     )
                                 
-                                Text("table_number_name_hint".t)
+                                Text(
+                                    createsMultipleTables
+                                        ? (lm.languageCode == "th" ? "เช่น T-, โต๊ะ หรือ Table " : "For example: T-, Table, or Patio ")
+                                        : "table_number_name_hint".t
+                                )
                                     .font(.caption)
                                     .foregroundColor(.textTertiary)
+
+                                if createsMultipleTables {
+                                    HStack(spacing: 12) {
+                                        Stepper(
+                                            (lm.languageCode == "th" ? "จำนวน \(tableCount) โต๊ะ" : "\(tableCount) tables"),
+                                            value: $tableCount,
+                                            in: 2...80
+                                        )
+                                        Stepper(
+                                            (lm.languageCode == "th" ? "เริ่มที่ \(startingNumber)" : "Start at \(startingNumber)"),
+                                            value: $startingNumber,
+                                            in: 0...999
+                                        )
+                                    }
+
+                                    Toggle(
+                                        lm.languageCode == "th" ? "แสดงเลข 2 หลัก (01, 02…)" : "Use two-digit numbers (01, 02…)",
+                                        isOn: $padsTableNumber
+                                    )
+                                    .font(.caption)
+
+                                    Text(generatedTableNames.prefix(4).joined(separator: ", ") + (tableCount > 4 ? "…" : ""))
+                                        .font(.caption)
+                                        .foregroundColor(.appAccent)
+                                }
                             }
                             
                             // Floor Section
@@ -98,12 +159,30 @@ struct AddTableSheet: View {
                                     .fontWeight(.bold)
                                     .foregroundColor(.textPrimary)
                                 
-                                Picker("Floor", selection: $selectedFloor) {
-                                    Text("table_floor_1".t).tag(1)
-                                    Text("table_floor_2".t).tag(2)
-                                    Text("table_floor_3".t).tag(3)
+                                if floors.count <= 3 {
+                                    Picker("Floor", selection: $selectedFloor) {
+                                        ForEach(floors) { floor in
+                                            Text(floor.name).tag(floor.id)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                } else {
+                                    Picker("Floor", selection: $selectedFloor) {
+                                        ForEach(floors) { floor in
+                                            Text(floor.name).tag(floor.id)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 10)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.appSurfaceHigh)
+                                    .cornerRadius(APRadius.md)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: APRadius.md)
+                                            .stroke(Color.appBorderSubtle, lineWidth: 1)
+                                    )
                                 }
-                                .pickerStyle(.segmented)
                                 
                                 Text("table_floor_level_hint".t)
                                     .font(.caption)
@@ -256,7 +335,9 @@ struct AddTableSheet: View {
                                 
                                 // Preview table card
                                 DynamicTableLayoutView(
-                                    tableNumber: tableNumber.isEmpty ? "No." : tableNumber,
+                                    tableNumber: tableNumber.isEmpty
+                                        ? "No."
+                                        : (createsMultipleTables ? (generatedTableNames.first ?? tableNumber) : tableNumber),
                                     capacity: capacity,
                                     isRound: selectedShape == .circle || selectedShape == .oval,
                                     status: selectedStatus,
@@ -279,7 +360,11 @@ struct AddTableSheet: View {
                     // Action Buttons
                     VStack(spacing: 12) {
                         Button(action: addTable) {
-                            Text("table_create_btn".t)
+                            Text(
+                                createsMultipleTables
+                                    ? (lm.languageCode == "th" ? "สร้าง \(tableCount) โต๊ะ" : "Create \(tableCount) tables")
+                                    : "table_create_btn".t
+                            )
                                 .font(.headline)
                                 .foregroundColor(.white)
                                 .frame(maxWidth: .infinity)
@@ -309,6 +394,11 @@ struct AddTableSheet: View {
                 Button("ok_btn".t, role: .cancel) { }
             } message: {
                 Text(errorMessage)
+            }
+            .onAppear {
+                if !floors.contains(where: { $0.id == selectedFloor }) {
+                    selectedFloor = floors.first?.id ?? defaultFloor
+                }
             }
         }
         .apColorScheme()
@@ -398,22 +488,43 @@ struct AddTableSheet: View {
         default: return .textSecondary
         }
     }
+
+    private var generatedTableNames: [String] {
+        let prefix = tableNumber.trimmingCharacters(in: .newlines)
+        return (startingNumber..<(startingNumber + tableCount)).map {
+            prefix + (padsTableNumber ? String(format: "%02d", $0) : String($0))
+        }
+    }
     
     private func addTable() {
         // Validation
-        if tableNumber.trimmingCharacters(in: .whitespaces).isEmpty {
+        let trimmedNumber = tableNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedNumber.isEmpty {
             errorMessage = "table_error_empty_number".t
+            showingError = true
+            return
+        }
+
+        let existingDescriptor = FetchDescriptor<RestaurantTable>(
+            predicate: #Predicate<RestaurantTable> { !$0.isDeleted }
+        )
+        let existing = (try? modelContext.fetch(existingDescriptor)) ?? []
+        let names = createsMultipleTables ? generatedTableNames : [trimmedNumber]
+        let existingNames = Set(existing.map {
+            $0.tableNumber.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        })
+        if names.contains(where: { existingNames.contains($0.lowercased()) }) {
+            errorMessage = "table_error_duplicate_number".t
             showingError = true
             return
         }
         
         // Table limit check
-        let descriptor = FetchDescriptor<RestaurantTable>(
-            predicate: #Predicate<RestaurantTable> { !$0.isDeleted }
-        )
-        let currentCount = (try? modelContext.fetchCount(descriptor)) ?? 0
-        if currentCount >= 40 {
-            errorMessage = lm.languageCode == "th" ? "ไม่สามารถเพิ่มโต๊ะได้เนื่องจากระบบจำกัดจำนวนโต๊ะสูงสุดไว้ที่ 40 โต๊ะ" : "Cannot add table: table count limit of 40 reached."
+        if existing.count + names.count > 80 {
+            let remaining = max(0, 80 - existing.count)
+            errorMessage = lm.languageCode == "th"
+                ? "สร้างได้อีกไม่เกิน \(remaining) โต๊ะ เนื่องจากระบบจำกัดไว้ที่ 80 โต๊ะ"
+                : "Only \(remaining) more tables can be created because the limit is 80."
             showingError = true
             return
         }
@@ -423,21 +534,27 @@ struct AddTableSheet: View {
             showingError = true
             return
         }
+
+        // Keep floor within the configured floor list
+        let floorId = floors.contains(where: { $0.id == selectedFloor })
+            ? selectedFloor
+            : (floors.first?.id ?? defaultFloor)
         
-        // Create and add table
-        let newTable = RestaurantTable(
-            tableNumber: tableNumber.trimmingCharacters(in: .whitespaces),
-            capacity: capacity,
-            tableShape: selectedShape.rawValue,
-            status: selectedStatus,
-            qrCodeIdentifier: "table_\(UUID().uuidString)",
-            positionX: Double.random(in: 20...300),
-            positionY: Double.random(in: 20...300),
-            floor: selectedFloor,
-            zone: selectedZone
-        )
-        
-        modelContext.insert(newTable)
+        for (index, name) in names.enumerated() {
+            modelContext.insert(RestaurantTable(
+                tableNumber: name,
+                capacity: capacity,
+                tableShape: selectedShape.rawValue,
+                status: selectedStatus,
+                qrCodeIdentifier: "table_\(UUID().uuidString)",
+                positionX: Double(100 + (index % 5) * 160),
+                positionY: Double(100 + (index / 5) * 160),
+                floor: floorId,
+                floorId: floors.first(where: { $0.id == floorId })?.uuid,
+                branchId: BranchContext.shared.activeBranchIDString,
+                zone: selectedZone
+            ))
+        }
         modelContext.saveWithLogging(label: #function)
         
         Task {
@@ -449,7 +566,7 @@ struct AddTableSheet: View {
 }
 
 #Preview {
-    let container = try! ModelContainer(for: RestaurantTable.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    let container = try! ModelContainer(for: RestaurantTable.self, FloorData.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
     return AddTableSheet(
         isPresented: .constant(true),
         modelContext: ModelContext(container)

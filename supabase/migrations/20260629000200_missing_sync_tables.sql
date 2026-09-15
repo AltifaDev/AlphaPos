@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS public.table_layout_presets (
 
 ALTER TABLE public.table_layout_presets ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "merchant_isolation_table_layout_presets" ON public.table_layout_presets;
 CREATE POLICY "merchant_isolation_table_layout_presets" ON public.table_layout_presets
     FOR ALL TO anon
     USING (merchant_id = get_active_merchant_id())
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS public.expenses (
 
 ALTER TABLE public.expenses ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "merchant_isolation_expenses" ON public.expenses;
 CREATE POLICY "merchant_isolation_expenses" ON public.expenses
     FOR ALL TO anon
     USING (merchant_id = get_active_merchant_id())

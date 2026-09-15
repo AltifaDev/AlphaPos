@@ -61,7 +61,16 @@ self.addEventListener('fetch', (event) => {
                     caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
                     return response;
                 })
-                .catch(() => caches.match(event.request))
+                .catch(async () => {
+                    const cached = await caches.match(event.request) ||
+                        await caches.match('./index.html') ||
+                        await caches.match('/index.html') ||
+                        await caches.match('/');
+                    return cached || new Response('Offline', {
+                        status: 503,
+                        headers: { 'Content-Type': 'text/plain' }
+                    });
+                })
         );
         return;
     }
@@ -84,7 +93,10 @@ self.addEventListener('fetch', (event) => {
                         return networkResponse;
                     })
                     .catch(() => {
-                        // offline placeholder
+                        return new Response('Offline', {
+                            status: 503,
+                            headers: { 'Content-Type': 'text/plain' }
+                        });
                     });
             })
     );

@@ -20,13 +20,16 @@ flowchart TD
     B --> C{"Trusted merchant session?"}
     C -- "No" --> D["Merchant Login / Store Onboarding"]
     C -- "Yes" --> E["Staff Lock Screen"]
-    D --> E
-    E --> F{"Valid staff passcode?"}
+    D --> G
+    E --> F{"Valid staff passcode / owner PIN?"}
     F -- "No" --> E
-    F -- "Yes" --> G["Dashboard filtered by permissions"]
+    F -- "Yes" --> G["Dashboard + setup checklist"]
     G --> H{"Idle / switch staff / end shift"}
     H --> E
 ```
+
+> Onboarding redesign (2026-07-25): see `Docs/ONBOARDING_REDESIGN_SPEC.md`.  
+> Owner PIN is deferred until open-shift / store-account unlock. Paid plans start a 14-day `trial`.
 
 ## UX Principles
 

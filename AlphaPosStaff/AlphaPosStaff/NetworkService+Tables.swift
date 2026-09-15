@@ -4,52 +4,62 @@
 import Foundation
 
 extension NetworkService {
+    func fetchDiningAreas() async throws -> [DiningAreaStaff] {
+        let merchantId = activeMerchantId
+        let branchId = StaffSessionContext.branchId
+        guard !merchantId.isEmpty else { throw StaffServiceError.missingMerchantSession }
+        guard !branchId.isEmpty else { throw StaffServiceError.missingBranchSession }
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "dining_areas", queryItems: [
+            URLQueryItem(name: "select", value: "id,branch_id,floor_number,name,sort_order"),
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
+            URLQueryItem(name: "is_active", value: "eq.true"),
+            URLQueryItem(name: "is_deleted", value: "eq.false"),
+            URLQueryItem(name: "order", value: "sort_order.asc,floor_number.asc")
+        ])
+        return try JSONDecoder().decode([DiningAreaStaff].self, from: data)
+    }
+
     func fetchTables() async throws -> [RestaurantTable] {
-        var dynamicTables: [(String, Int, Int, Double, Double, String, Bool, String)] = []
+        let merchantId = activeMerchantId
+        guard !merchantId.isEmpty else { throw StaffServiceError.missingMerchantSession }
+        let branchId = StaffSessionContext.branchId
+        guard !branchId.isEmpty else { throw StaffServiceError.missingBranchSession }
+        var dynamicTables: [(String, String?, String?, String?, Int, Int, Double, Double, String, Bool, String)] = []
 
         do {
             let tablesData = try await sendSupabaseRequest(method: "GET", endpoint: "restaurant_tables", queryItems: [
-                URLQueryItem(name: "select", value: "table_number,capacity,floor,position_x,position_y,status,is_round,zone"),
+                URLQueryItem(name: "select", value: "id,branch_id,dining_area_id,table_number,capacity,floor,position_x,position_y,status,is_round,table_shape,zone,dining_areas(name,floor_number)"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
                 URLQueryItem(name: "is_deleted", value: "eq.false")
             ])
             let tablesJson = (try? JSONSerialization.jsonObject(with: tablesData) as? [[String: Any]]) ?? []
-            dynamicTables = tablesJson.compactMap { dict -> (String, Int, Int, Double, Double, String, Bool, String)? in
+            dynamicTables = tablesJson.compactMap { dict -> (String, String?, String?, String?, Int, Int, Double, Double, String, Bool, String)? in
                 guard let num = dict["table_number"] as? String,
                       let cap = dict["capacity"] as? Int,
                       let floor = dict["floor"] as? Int else { return nil }
                 let posX = dict["position_x"] as? Double ?? 0.0
                 let posY = dict["position_y"] as? Double ?? 0.0
                 let status = dict["status"] as? String ?? "vacant"
-                let isRound = dict["is_round"] as? Bool ?? false
-                let zone = dict["zone"] as? String ?? "Indoor"
-                return (num, cap, floor, posX, posY, status, isRound, zone)
+                let shape = (dict["table_shape"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let isRound: Bool = {
+                    if !shape.isEmpty { return shape == "circle" || shape == "oval" }
+                    return dict["is_round"] as? Bool ?? false
+                }()
+                let area = dict["dining_areas"] as? [String: Any]
+                let zone = area?["name"] as? String ?? dict["zone"] as? String ?? "Indoor"
+                return (num, dict["id"] as? String, dict["branch_id"] as? String,
+                        dict["dining_area_id"] as? String, cap, floor, posX, posY, status, isRound, zone)
             }
         } catch {
-            #if DEBUG
-            print("NetworkService [fetchTables Error]: \(error.localizedDescription). Using static fallback.")
-            #endif
-        }
-        
-        if dynamicTables.isEmpty {
-            dynamicTables = [
-                // Floor 1 Tables: Synchronized with AlphaPos (6 tables)
-                ("1", 2, 1, 40.0, 40.0, "vacant", false, "Indoor"),
-                ("2", 4, 1, 200.0, 40.0, "vacant", false, "Indoor"),
-                ("3", 4, 1, 380.0, 40.0, "vacant", false, "Indoor"),
-                ("4", 6, 1, 40.0, 200.0, "vacant", false, "Indoor"),
-                ("5", 8, 1, 320.0, 200.0, "vacant", false, "Indoor"),
-                ("VIP 1", 10, 1, 140.0, 360.0, "vacant", false, "Indoor"),
-                // Floor 2 Tables (3 tables)
-                ("201", 4, 2, 60.0, 60.0, "vacant", false, "Indoor"),
-                ("202", 4, 2, 240.0, 60.0, "vacant", false, "Indoor"),
-                ("203", 6, 2, 420.0, 60.0, "vacant", false, "Indoor"),
-                // Floor 3 Tables (1 table)
-                ("301 (ROOF)", 8, 3, 120.0, 120.0, "vacant", false, "Rooftop")
-            ]
+            throw error
         }
         
         let sessionsData = try await sendSupabaseRequest(method: "GET", endpoint: "table_sessions", queryItems: [
             URLQueryItem(name: "select", value: "*"),
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
             URLQueryItem(name: "is_active", value: "eq.1")
         ])
         
@@ -65,7 +75,8 @@ extension NetworkService {
         
         let ordersData = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
             URLQueryItem(name: "select", value: "table_number,total,created_at"),
-            URLQueryItem(name: "status", value: "neq.cancelled")
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "status", value: "in.(pending,preparing,ready)")
         ])
         
         let orders = (try? JSONSerialization.jsonObject(with: ordersData) as? [[String: Any]]) ?? []
@@ -83,19 +94,24 @@ extension NetworkService {
             }
         }
         
-        return dynamicTables.map { num, cap, floor, posX, posY, dbStatus, isRound, zoneVal in
+        return dynamicTables.map { num, tableId, branchId, diningAreaId, cap, floor, posX, posY, dbStatus, isRound, zoneVal in
             if let session = activeSessionsMap[num] {
                 let guestCount = session["guest_count"] as? Int ?? 2
+                let activeSessionId = session["id"] as? String
                 let token = session["session_token"] as? String
                 let total = tableTotals[num] ?? 0.0
                 let startedAt = session["started_at"] as? String ?? session["created_at"] as? String
                 return RestaurantTable(
+                    restaurantTableId: tableId,
+                    branchId: branchId,
+                    diningAreaId: diningAreaId,
                     tableNumber: num,
                     capacity: cap,
                     floor: floor,
                     zone: zoneVal,
                     status: "occupied",
                     guestCount: guestCount,
+                    activeSessionId: activeSessionId,
                     sessionToken: token,
                     isRound: isRound,
                     currentTotal: total,
@@ -105,6 +121,9 @@ extension NetworkService {
                 )
             } else {
                 return RestaurantTable(
+                    restaurantTableId: tableId,
+                    branchId: branchId,
+                    diningAreaId: diningAreaId,
                     tableNumber: num,
                     capacity: cap,
                     floor: floor,
@@ -123,18 +142,28 @@ extension NetworkService {
     }
 
     func fetchFloorPlanImages() async throws -> [FloorPlanImageStaff] {
-        let merchantId = activeMerchantId.isEmpty ? AppConfig.defaultMerchantId : activeMerchantId
+        let merchantId = activeMerchantId
+        guard !merchantId.isEmpty else { throw StaffServiceError.missingMerchantSession }
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "floor_plan_images", queryItems: [
+            URLQueryItem(name: "select", value: "id,branch_id,dining_area_id,floor,image_filename,is_deleted,scale,offset_x,offset_y,dining_areas(floor_number)"),
             URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
             URLQueryItem(name: "is_deleted", value: "eq.false")
         ])
         let json = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
         return json.compactMap { dict -> FloorPlanImageStaff? in
             guard let id = dict["id"] as? String,
-                  let floor = dict["floor"] as? Int,
                   let imageFilename = dict["image_filename"] as? String else { return nil }
+            let area = dict["dining_areas"] as? [String: Any]
+            let floor = dict["floor"] as? Int ?? area?["floor_number"] as? Int ?? 1
             let isDeleted = dict["is_deleted"] as? Bool ?? false
-            var staffImage = FloorPlanImageStaff(id: id, floor: floor, imageFilename: imageFilename, isDeleted: isDeleted)
+            var staffImage = FloorPlanImageStaff(
+                id: id,
+                branchId: dict["branch_id"] as? String,
+                diningAreaId: dict["dining_area_id"] as? String,
+                floor: floor,
+                imageFilename: imageFilename,
+                isDeleted: isDeleted
+            )
             staffImage.scale = dict["scale"] as? Double ?? 1.0
             staffImage.offsetX = dict["offset_x"] as? Double ?? 0.0
             staffImage.offsetY = dict["offset_y"] as? Double ?? 0.0
@@ -143,7 +172,8 @@ extension NetworkService {
     }
 
     func downloadFloorPlanMedia(fileName: String) async throws -> Data {
-        let merchantId = activeMerchantId.isEmpty ? AppConfig.defaultMerchantId : activeMerchantId
+        let merchantId = activeMerchantId
+        guard !merchantId.isEmpty else { throw StaffServiceError.missingMerchantSession }
         let objectPath = "\(merchantId.lowercased())/floor_plans/\(fileName)"
         var publicURL = AppConfig.supabaseURL
         for component in ["storage", "v1", "object", "public", "product-media"] + objectPath.split(separator: "/").map(String.init) {
@@ -157,20 +187,56 @@ extension NetworkService {
         return data
     }
 
-    func fetchMerchantSettings() async throws -> (Bool, String, Bool, Bool) {
+    struct MerchantSettingsPayload: Sendable {
+        var kitchenWorkflowRequired: Bool = true
+        var promptPayNumber: String = ""
+        var isTableSystemEnabled: Bool = true
+        var isWebOrderingEnabled: Bool = true
+        var merchantName: String = ""
+        var taxRate: Double = 0.0
+        var taxType: String = "inclusive"
+        var serviceChargeRate: Double = 0.0
+        var currency: String = "THB"
+        var phone: String = ""
+        var address: String = ""
+        var taxId: String = ""
+        var receiptHeader: String = ""
+        var receiptFooter: String = ""
+    }
+
+    func fetchMerchantSettings() async throws -> MerchantSettingsPayload {
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "merchants", queryItems: [
-            URLQueryItem(name: "select", value: "kitchen_workflow_required,promptpay_number,is_table_system_enabled,is_web_ordering_enabled"),
+            URLQueryItem(name: "select", value: "name,phone,address_street,tax_id,receipt_header,receipt_footer,kitchen_workflow_required,promptpay_number,is_table_system_enabled,is_web_ordering_enabled,tax_rate,tax_type,service_charge_rate,currency"),
             URLQueryItem(name: "id", value: "eq.\(activeMerchantId)")
         ])
         if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
            let firstMerchant = json.first {
-            let workflow = firstMerchant["kitchen_workflow_required"] as? Bool ?? true
-            let promptPay = firstMerchant["promptpay_number"] as? String ?? ""
-            let tableSystem = firstMerchant["is_table_system_enabled"] as? Bool ?? true
-            let webOrdering = firstMerchant["is_web_ordering_enabled"] as? Bool ?? true
-            return (workflow, promptPay, tableSystem, webOrdering)
+            var payload = MerchantSettingsPayload()
+            payload.merchantName = firstMerchant["name"] as? String ?? ""
+            payload.phone = firstMerchant["phone"] as? String ?? ""
+            payload.address = firstMerchant["address_street"] as? String ?? ""
+            payload.taxId = firstMerchant["tax_id"] as? String ?? ""
+            payload.receiptHeader = firstMerchant["receipt_header"] as? String ?? ""
+            payload.receiptFooter = firstMerchant["receipt_footer"] as? String ?? ""
+            payload.kitchenWorkflowRequired = firstMerchant["kitchen_workflow_required"] as? Bool ?? true
+            payload.promptPayNumber = firstMerchant["promptpay_number"] as? String ?? ""
+            payload.isTableSystemEnabled = firstMerchant["is_table_system_enabled"] as? Bool ?? true
+            payload.isWebOrderingEnabled = firstMerchant["is_web_ordering_enabled"] as? Bool ?? true
+            if let tr = firstMerchant["tax_rate"] as? Double {
+                payload.taxRate = tr
+            } else if let trStr = firstMerchant["tax_rate"] as? String, let tr = Double(trStr) {
+                payload.taxRate = tr
+            }
+            payload.taxType = firstMerchant["tax_type"] as? String ?? "inclusive"
+            if let sc = firstMerchant["service_charge_rate"] as? Double {
+                payload.serviceChargeRate = sc
+            } else if let scStr = firstMerchant["service_charge_rate"] as? String, let sc = Double(scStr) {
+                payload.serviceChargeRate = sc
+            }
+            payload.currency = firstMerchant["currency"] as? String ?? "THB"
+            return payload
         }
-        return (true, "", true, true)
+        return MerchantSettingsPayload()
     }
 
     func updateTableStatus(tableNumber: String, status: String) async throws -> Bool {

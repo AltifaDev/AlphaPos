@@ -59,8 +59,9 @@ extension NetworkService {
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "employee_shifts", queryItems: [
             URLQueryItem(name: "select", value: "*,employees(first_name,last_name)"),
             URLQueryItem(name: "employee_id", value: "eq.\(employeeId)"),
-            URLQueryItem(name: "scheduled_start", value: "gte.\(startDate)T00:00:00"),
-            URLQueryItem(name: "scheduled_start", value: "lte.\(endDate)T23:59:59"),
+            URLQueryItem(name: "scheduled_start", value: "lt.\(endDate)T23:59:59"),
+            URLQueryItem(name: "scheduled_end", value: "gt.\(startDate)T00:00:00"),
+            URLQueryItem(name: "is_deleted", value: "eq.false"),
             URLQueryItem(name: "order", value: "scheduled_start.asc")
         ])
         
@@ -121,8 +122,9 @@ extension NetworkService {
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "employee_shifts", queryItems: [
             URLQueryItem(name: "select", value: "*,employees(first_name,last_name)"),
             URLQueryItem(name: "employee_id", value: "neq.\(employeeId)"),
-            URLQueryItem(name: "scheduled_start", value: "gte.\(startDate)T00:00:00"),
-            URLQueryItem(name: "scheduled_start", value: "lte.\(endDate)T23:59:59"),
+            URLQueryItem(name: "scheduled_start", value: "lt.\(endDate)T23:59:59"),
+            URLQueryItem(name: "scheduled_end", value: "gt.\(startDate)T00:00:00"),
+            URLQueryItem(name: "is_deleted", value: "eq.false"),
             URLQueryItem(name: "order", value: "scheduled_start.asc")
         ])
         
@@ -228,24 +230,42 @@ extension NetworkService {
     }
 
     func fetchTodayActiveShift(employeeId: String) async throws -> Shift? {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        let todayStr = formatter.string(from: Date())
+        let now = Date()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let dayStart = calendar.startOfDay(for: now)
+        guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else {
+            throw NetworkError.invalidResponse
+        }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "employee_shifts", queryItems: [
             URLQueryItem(name: "select", value: "*,employees(first_name,last_name)"),
             URLQueryItem(name: "employee_id", value: "eq.\(employeeId)"),
-            URLQueryItem(name: "scheduled_start", value: "gte.\(todayStr)T00:00:00"),
-            URLQueryItem(name: "scheduled_start", value: "lte.\(todayStr)T23:59:59")
+            // Overlap query also includes a shift that started yesterday and
+            // continues after midnight.
+            URLQueryItem(name: "scheduled_start", value: "lt.\(iso.string(from: dayEnd))"),
+            URLQueryItem(name: "scheduled_end", value: "gt.\(iso.string(from: dayStart))"),
+            URLQueryItem(name: "is_deleted", value: "eq.false"),
+            URLQueryItem(name: "order", value: "scheduled_start.asc")
         ])
         
         let jsonArray = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
-        guard let dict = jsonArray.first else { return nil }
+        let candidates: [([String: Any], Date, Date)] = jsonArray.compactMap { row in
+            guard let startText = row["scheduled_start"] as? String,
+                  let endText = row["scheduled_end"] as? String,
+                  let start = parseDate(startText),
+                  let end = parseDate(endText) else { return nil }
+            return (row, start, end)
+        }
+        let selected = candidates.first { now >= $0.1 && now <= $0.2 }
+            ?? candidates.first { $0.1 > now }
+            ?? candidates.last { $0.1 <= now }
+        guard let (dict, selectedStart, selectedEnd) = selected else { return nil }
         
         guard let id = dict["id"] as? String,
-              let empId = dict["employee_id"] as? String,
-              let scheduledStartStr = dict["scheduled_start"] as? String,
-              let scheduledEndStr = dict["scheduled_end"] as? String
+              let empId = dict["employee_id"] as? String
         else { return nil }
         
         let empDict = dict["employees"] as? [String: Any]
@@ -253,9 +273,8 @@ extension NetworkService {
         let lastName = empDict?["last_name"] as? String ?? ""
         let empName = "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
         
-        guard let startDateVal = parseDate(scheduledStartStr),
-              let endDateVal = parseDate(scheduledEndStr)
-        else { return nil }
+        let startDateVal = selectedStart
+        let endDateVal = selectedEnd
         
         let dateOnlyFormatter = DateFormatter()
         dateOnlyFormatter.dateFormat = "yyyy-MM-dd"

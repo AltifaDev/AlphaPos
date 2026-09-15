@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS public.customer_accounts (
 
 ALTER TABLE public.customer_accounts ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "merchant_isolation_customer_accounts" ON public.customer_accounts;
 CREATE POLICY "merchant_isolation_customer_accounts" ON public.customer_accounts
     FOR ALL TO anon
     USING (merchant_id = get_active_merchant_id())
@@ -79,6 +80,7 @@ CREATE TABLE IF NOT EXISTS public.loyalty_tiers (
 
 ALTER TABLE public.loyalty_tiers ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "merchant_isolation_loyalty_tiers" ON public.loyalty_tiers;
 CREATE POLICY "merchant_isolation_loyalty_tiers" ON public.loyalty_tiers
     FOR ALL TO anon
     USING (merchant_id = get_active_merchant_id())
@@ -108,6 +110,7 @@ CREATE TABLE IF NOT EXISTS public.loyalty_points (
 
 ALTER TABLE public.loyalty_points ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "merchant_isolation_loyalty_points" ON public.loyalty_points;
 CREATE POLICY "merchant_isolation_loyalty_points" ON public.loyalty_points
     FOR ALL TO anon
     USING (merchant_id = get_active_merchant_id())
@@ -156,6 +159,7 @@ CREATE TABLE IF NOT EXISTS public.table_reservations (
 
 ALTER TABLE public.table_reservations ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "merchant_isolation_table_reservations" ON public.table_reservations;
 CREATE POLICY "merchant_isolation_table_reservations" ON public.table_reservations
     FOR ALL TO anon
     USING (merchant_id = get_active_merchant_id())
@@ -591,6 +595,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_reservation_update ON public.table_reservations;
 CREATE TRIGGER trg_reservation_update
     BEFORE UPDATE ON public.table_reservations
     FOR EACH ROW
@@ -629,6 +634,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_customer_account_welcome ON public.customer_accounts;
 CREATE TRIGGER trg_customer_account_welcome
     AFTER INSERT ON public.customer_accounts
     FOR EACH ROW

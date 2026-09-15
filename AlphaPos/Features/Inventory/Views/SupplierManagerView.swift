@@ -1,5 +1,5 @@
 // SupplierManagerView.swift
-// AlphaPos — Premium Supplier & Contact Center
+// AlphaPos — Dense supplier master with CRUD + linked inventory items
 
 import SwiftUI
 import SwiftData
@@ -9,215 +9,286 @@ struct SupplierManagerView: View {
     @EnvironmentObject private var lm: LocalizationManager
     @Query(sort: \Supplier.name) private var suppliers: [Supplier]
     @Query(sort: \InventoryItem.name) private var allInventoryItems: [InventoryItem]
-    
+
     @State private var viewModel = InventoryViewModel()
     @State private var selectedSupplier: Supplier?
-    @State private var showingAddSheet = false
+    @State private var showingEditor = false
+    @State private var editingSupplier: Supplier?
+    @State private var showingDeleteConfirm = false
     @State private var searchText = ""
-    
-    // Add Supplier Sheet fields
+    @State private var linkedExpanded = true
+
+    // Editor fields
     @State private var name = ""
     @State private var contactName = ""
     @State private var phone = ""
     @State private var email = ""
     @State private var address = ""
-    
+    @State private var taxId = ""
+    @State private var paymentTerms = ""
+    @State private var leadTimeDays = "7"
+
+    private var activeSuppliers: [Supplier] {
+        suppliers.filter { !$0.isDeleted }
+    }
+
     private var filteredSuppliers: [Supplier] {
-        guard !searchText.isEmpty else { return suppliers }
-        return suppliers.filter {
+        guard !searchText.isEmpty else { return activeSuppliers }
+        return activeSuppliers.filter {
             $0.name.localizedCaseInsensitiveContains(searchText) ||
-            ($0.contactName ?? "").localizedCaseInsensitiveContains(searchText)
+            ($0.contactName ?? "").localizedCaseInsensitiveContains(searchText) ||
+            ($0.taxId ?? "").localizedCaseInsensitiveContains(searchText) ||
+            ($0.phone ?? "").localizedCaseInsensitiveContains(searchText)
         }
     }
-    
+
     var body: some View {
         HStack(spacing: 0) {
-            // Left list panel
-            VStack(spacing: 0) {
-                // Header search and add
-                HStack(spacing: APSpacing.sm) {
-                    HStack(spacing: APSpacing.xs) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundColor(.textSecondary)
-                            .font(.footnote)
-                        TextField("search_supplier_placeholder".t, text: $searchText)
-                            .font(.subheadline)
-                            .foregroundColor(.textPrimary)
-                    }
-                    .padding(8)
-                    .background(Color.appSurfaceHigh)
-                    .cornerRadius(APRadius.md)
-                    
-                    Button(action: { showingAddSheet = true }) {
-                        Image(systemName: "plus")
-                            .foregroundColor(.white)
-                            .padding(9)
-                            .background(APGradient.accent)
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(APSpacing.md)
-                .background(Color.appSurface)
-                .overlay(Rectangle().fill(Color.appDivider).frame(height: 1), alignment: .bottom)
-                
-                // Suppliers list
-                if filteredSuppliers.isEmpty {
-                    VStack(spacing: APSpacing.sm) {
-                        Image(systemName: "person.2.slash.fill")
-                            .font(.largeTitle)
-                            .foregroundColor(.textTertiary)
-                        Text("no_suppliers_found".t)
-                            .font(.subheadline)
-                            .foregroundColor(.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List(selection: $selectedSupplier) {
-                        ForEach(filteredSuppliers) { supplier in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(supplier.name)
-                                        .font(.subheadline)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(.textPrimary)
-                                    Text(supplier.contactName ?? "no_contact_name".t)
-                                        .font(.caption2)
-                                        .foregroundColor(.textSecondary)
-                                }
-                                Spacer()
-                                if supplier.inventoryItems.count > 0 {
-                                    Text(LocalizationManager.shared.t("items_count_template", supplier.inventoryItems.count))
-                                        .font(.system(size: 10, weight: .bold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Color.appAccent.opacity(0.1))
-                                        .foregroundColor(.appAccent)
-                                        .clipShape(Capsule())
-                                }
-                            }
-                            .tag(supplier)
-                        }
-                    }
-                    .listStyle(.plain)
-                    .background(Color.appBackground)
-                }
-            }
-            .frame(width: 320)
-            .overlay(Rectangle().fill(Color.appDivider).frame(width: 1), alignment: .trailing)
-            
-            // Right detail panel
-            if let supplier = selectedSupplier {
+            supplierListPanel
+                .frame(width: 300)
+                .overlay(Rectangle().fill(Color.appDivider).frame(width: 1), alignment: .trailing)
+
+            if let supplier = selectedSupplier, !supplier.isDeleted {
                 supplierDetailView(supplier)
             } else {
-                VStack(spacing: APSpacing.md) {
-                    Image(systemName: "building.2.fill")
-                        .font(.system(size: 64))
-                        .foregroundStyle(APGradient.accent)
-                    Text("select_supplier_title".t)
-                        .font(.title3)
-                        .fontWeight(.bold)
-                        .foregroundColor(.textPrimary)
-                    Text("select_supplier_subtitle".t)
-                        .font(.subheadline)
-                        .foregroundColor(.textSecondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 300)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.appBackground)
+                compactEmptyDetail
             }
         }
-        .sheet(isPresented: $showingAddSheet) {
-            addSupplierSheet
+        .sheet(isPresented: $showingEditor) {
+            supplierEditorSheet
+        }
+        .alert("supplier_delete_title".t, isPresented: $showingDeleteConfirm) {
+            Button("cancel_btn".t, role: .cancel) {}
+            Button("delete_action".t, role: .destructive) {
+                if let s = selectedSupplier {
+                    viewModel.deleteSupplier(s)
+                    selectedSupplier = nil
+                }
+            }
+        } message: {
+            Text("supplier_delete_msg".t)
         }
         .onAppear {
             viewModel.modelContext = modelContext
-            if selectedSupplier == nil && !suppliers.isEmpty {
-                selectedSupplier = suppliers.first
+            if selectedSupplier == nil {
+                selectedSupplier = activeSuppliers.first
             }
         }
     }
-    
-    // MARK: - Detail Panel View
-    
+
+    // MARK: - List
+
+    private var supplierListPanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                    TextField("search_supplier_placeholder".t, text: $searchText)
+                        .font(.caption)
+                        .foregroundColor(.textPrimary)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.appSurfaceHigh)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+                Button {
+                    editingSupplier = nil
+                    clearEditorFields()
+                    showingEditor = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: 28, height: 28)
+                        .background(APGradient.accent)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, APSpacing.sm)
+            .padding(.vertical, 8)
+            .background(Color.appSurface)
+            .overlay(Rectangle().fill(Color.appDivider).frame(height: 1), alignment: .bottom)
+
+            if filteredSuppliers.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "person.2")
+                        .font(.system(size: 22))
+                        .foregroundColor(.textTertiary)
+                    Text("no_suppliers_found".t)
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                    Button {
+                        editingSupplier = nil
+                        clearEditorFields()
+                        showingEditor = true
+                    } label: {
+                        Text("add_new_supplier_title".t)
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.appTeal)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.appBackground)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filteredSuppliers) { supplier in
+                            Button {
+                                selectedSupplier = supplier
+                            } label: {
+                                HStack(spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(supplier.name)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundColor(.textPrimary)
+                                            .lineLimit(1)
+                                        HStack(spacing: 4) {
+                                            if let phone = supplier.phone, !phone.isEmpty {
+                                                Text(phone)
+                                                    .font(.system(size: 9))
+                                                    .foregroundColor(.textSecondary)
+                                                    .lineLimit(1)
+                                            }
+                                            if let tax = supplier.taxId, !tax.isEmpty {
+                                                Text("· \(tax)")
+                                                    .font(.system(size: 9))
+                                                    .foregroundColor(.textTertiary)
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                    }
+                                    Spacer(minLength: 0)
+                                    let linked = linkedItems(for: supplier).count
+                                    if linked > 0 {
+                                        Text("\(linked)")
+                                            .font(.system(size: 10, weight: .bold).monospacedDigit())
+                                            .foregroundColor(.appAccent)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color.appAccent.opacity(0.12))
+                                            .clipShape(Capsule())
+                                    }
+                                }
+                                .padding(.horizontal, APSpacing.sm)
+                                .padding(.vertical, 7)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(selectedSupplier?.id == supplier.id ? Color.appTeal.opacity(0.08) : Color.clear)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Divider().background(Color.appDivider)
+                        }
+                    }
+                }
+                .background(Color.appBackground)
+            }
+        }
+    }
+
+    private var compactEmptyDetail: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "building.2")
+                .font(.system(size: 28))
+                .foregroundColor(.textTertiary)
+            Text("select_supplier_title".t)
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.textSecondary)
+            Text("select_supplier_subtitle".t)
+                .font(.caption)
+                .foregroundColor(.textTertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 260)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.appBackground)
+    }
+
+    // MARK: - Detail
+
     private func supplierDetailView(_ supplier: Supplier) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: APSpacing.lg) {
-                // Info block
-                VStack(alignment: .leading, spacing: APSpacing.md) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(supplier.name)
-                                .font(.title3)
-                                .fontWeight(.bold)
-                                .foregroundColor(.textPrimary)
-                            Text("supplier_profile_details".t)
+            VStack(alignment: .leading, spacing: APSpacing.md) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(supplier.name)
+                            .font(.headline.weight(.bold))
+                            .foregroundColor(.textPrimary)
+                        if let contact = supplier.contactName, !contact.isEmpty {
+                            Text(contact)
                                 .font(.caption)
                                 .foregroundColor(.textSecondary)
                         }
-                        Spacer()
                     }
-                    
-                    Divider().background(Color.appDivider)
-                    
-                    Grid(alignment: .leading, horizontalSpacing: APSpacing.lg, verticalSpacing: APSpacing.sm) {
-                        detailGridRow(label: "supplier_contact_person".t, value: supplier.contactName ?? "—")
-                        detailGridRow(label: "supplier_phone_number".t, value: supplier.phone ?? "—")
-                        detailGridRow(label: "supplier_email_address".t, value: supplier.email ?? "—")
-                        detailGridRow(label: "supplier_address".t, value: supplier.address ?? "—")
+                    Spacer()
+                    Button {
+                        beginEdit(supplier)
+                    } label: {
+                        Label("edit_details".t, systemImage: "pencil")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.appTeal)
                     }
+                    .buttonStyle(.plain)
+                    Button {
+                        showingDeleteConfirm = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.appRose)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .padding(APSpacing.md)
-                .apCard()
-                
-                // Supplied Items list
-                VStack(alignment: .leading, spacing: APSpacing.sm) {
-                    Text("supplied_raw_ingredients".t)
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .foregroundColor(.textSecondary)
-                        .textCase(.uppercase)
-                    
-                    let suppliedItems = allInventoryItems.filter { $0.supplier?.id == supplier.id }
-                    
-                    if suppliedItems.isEmpty {
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    detailCell("supplier_phone_number".t, supplier.phone ?? "—")
+                    detailCell("supplier_email_address".t, supplier.email ?? "—")
+                    detailCell("supplier_tax_id".t, supplier.taxId ?? "—")
+                    detailCell("supplier_payment_terms".t, supplier.paymentTerms ?? "—")
+                    detailCell("supplier_lead_time".t, "\(supplier.defaultLeadTimeDays)d")
+                    detailCell("supplier_address".t, supplier.address ?? "—")
+                }
+
+                DisclosureGroup(isExpanded: $linkedExpanded) {
+                    let items = linkedItems(for: supplier)
+                    if items.isEmpty {
                         Text("no_supplied_ingredients_linked".t)
                             .font(.caption)
                             .foregroundColor(.textTertiary)
-                            .padding(.vertical, 8)
+                            .padding(.vertical, 6)
                     } else {
-                        VStack(spacing: APSpacing.sm) {
-                            ForEach(suppliedItems) { item in
+                        VStack(spacing: 0) {
+                            ForEach(items) { item in
                                 HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
+                                    VStack(alignment: .leading, spacing: 1) {
                                         Text(item.name)
-                                            .font(.subheadline)
-                                            .fontWeight(.medium)
-                                            .foregroundColor(.textPrimary)
-                                        Text("SKU: \(item.sku ?? "N/A")")
-                                            .font(.caption2)
+                                            .font(.caption.weight(.medium))
+                                            .lineLimit(1)
+                                        Text(item.sku ?? "—")
+                                            .font(.system(size: 9))
                                             .foregroundColor(.textSecondary)
                                     }
                                     Spacer()
-                                    VStack(alignment: .trailing, spacing: 2) {
-                                        Text(LocalizationManager.shared.t("cost_per_unit_template", item.costPrice, item.unit))
-                                            .font(.caption)
-                                            .fontWeight(.bold)
-                                            .foregroundColor(.textPrimary)
-                                        Text(LocalizationManager.shared.t("on_hand_with_unit_template", item.currentQuantity, item.unit))
-                                            .font(.caption2)
-                                            .foregroundColor(.textSecondary)
-                                    }
+                                    Text(String(format: "%.1f %@", item.currentQuantity, item.unit))
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundColor(.textSecondary)
+                                    Text(String(format: "฿%.2f", item.costPrice))
+                                        .font(.caption.weight(.semibold).monospacedDigit())
+                                        .frame(width: 64, alignment: .trailing)
                                 }
-                                .padding(.vertical, 4)
-                                
-                                Divider().background(Color.appDivider)
+                                .padding(.vertical, 5)
+                                Divider().opacity(0.3)
                             }
                         }
-                        .padding(APSpacing.md)
-                        .apCard()
                     }
+                } label: {
+                    Text("supplied_raw_ingredients".t)
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(.textSecondary)
+                        .textCase(.uppercase)
                 }
             }
             .padding(APSpacing.md)
@@ -225,99 +296,126 @@ struct SupplierManagerView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.appBackground)
     }
-    
-    private func detailGridRow(label: String, value: String) -> some View {
-        GridRow {
+
+    private func detailCell(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.subheadline)
-                .foregroundColor(.textSecondary)
+                .font(.system(size: 9))
+                .foregroundColor(.textTertiary)
             Text(value)
-                .font(.subheadline)
-                .fontWeight(.medium)
+                .font(.caption.weight(.medium))
                 .foregroundColor(.textPrimary)
+                .lineLimit(2)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(Color.appSurfaceHigh.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
-    
-    // MARK: - Add Supplier Sheet
-    
-    private var addSupplierSheet: some View {
+
+    private func linkedItems(for supplier: Supplier) -> [InventoryItem] {
+        allInventoryItems.filter { !$0.isDeleted && $0.supplier?.id == supplier.id }
+    }
+
+    // MARK: - Editor
+
+    private var supplierEditorSheet: some View {
         NavigationStack {
-            ZStack {
-                Color.appBackground.ignoresSafeArea()
-                
-                ScrollView {
-                    VStack(spacing: APSpacing.md) {
-                        VStack(alignment: .leading, spacing: APSpacing.sm) {
-                            Text("supplier_contact_details_section".t)
-                                .font(.caption)
-                                .fontWeight(.bold)
-                                .foregroundColor(.textSecondary)
-                                .textCase(.uppercase)
-                            
-                            inputRow(label: "company_supplier_name_label".t, placeholder: "company_supplier_name_placeholder".t, text: $name)
-                            inputRow(label: "contact_person_name_label".t, placeholder: "contact_person_name_placeholder".t, text: $contactName)
-                            inputRow(label: "phone_number_label".t, placeholder: "phone_number_placeholder".t, text: $phone)
-                            inputRow(label: "email_address_label".t, placeholder: "email_address_placeholder".t, text: $email)
-                            inputRow(label: "full_address_label".t, placeholder: "full_address_placeholder".t, text: $address)
-                        }
-                        .apCard()
-                    }
-                    .padding(APSpacing.md)
+            Form {
+                Section("supplier_contact_details_section".t) {
+                    TextField("company_supplier_name_label".t, text: $name)
+                    TextField("contact_person_name_label".t, text: $contactName)
+                    TextField("phone_number_label".t, text: $phone)
+                        .keyboardType(.phonePad)
+                    TextField("email_address_label".t, text: $email)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                    TextField("full_address_label".t, text: $address)
+                }
+                Section("supplier_commercial_section".t) {
+                    TextField("supplier_tax_id".t, text: $taxId)
+                    TextField("supplier_payment_terms".t, text: $paymentTerms)
+                    TextField("supplier_lead_time".t, text: $leadTimeDays)
+                        .keyboardType(.numberPad)
                 }
             }
-            .navigationTitle("add_new_supplier_title".t)
+            .navigationTitle(editingSupplier == nil ? "add_new_supplier_title".t : "edit_supplier_title".t)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("cancel_btn".t) {
-                        dismissAddSheet()
-                    }
-                    .foregroundColor(.textSecondary)
+                    Button("cancel_btn".t) { showingEditor = false }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("add_btn".t) {
-                        viewModel.addSupplier(
-                            name: name,
-                            contactName: contactName.isEmpty ? nil : contactName,
-                            phone: phone.isEmpty ? nil : phone,
-                            email: email.isEmpty ? nil : email,
-                            address: address.isEmpty ? nil : address
-                        )
-                        dismissAddSheet()
+                    Button(editingSupplier == nil ? "add_btn".t : "save_btn".t) {
+                        saveEditor()
                     }
-                    .disabled(name.isEmpty)
-                    .foregroundStyle(APGradient.accent)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
         .apColorScheme()
     }
-    
-    private func inputRow(label: String, placeholder: String, text: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption2)
-                .foregroundColor(.textSecondary)
-            TextField(placeholder, text: text)
-                .font(.subheadline)
-                .padding(8)
-                .background(Color.appSurfaceHigh)
-                .cornerRadius(APRadius.sm)
-                .overlay(
-                    RoundedRectangle(cornerRadius: APRadius.sm)
-                        .stroke(Color.appBorderSubtle, lineWidth: 1)
-                )
-                .foregroundColor(.textPrimary)
-        }
-        .padding(.vertical, 4)
+
+    private func beginEdit(_ supplier: Supplier) {
+        editingSupplier = supplier
+        name = supplier.name
+        contactName = supplier.contactName ?? ""
+        phone = supplier.phone ?? ""
+        email = supplier.email ?? ""
+        address = supplier.address ?? ""
+        taxId = supplier.taxId ?? ""
+        paymentTerms = supplier.paymentTerms ?? ""
+        leadTimeDays = "\(supplier.defaultLeadTimeDays)"
+        showingEditor = true
     }
-    
-    private func dismissAddSheet() {
+
+    private func clearEditorFields() {
         name = ""
         contactName = ""
         phone = ""
         email = ""
         address = ""
-        showingAddSheet = false
+        taxId = ""
+        paymentTerms = ""
+        leadTimeDays = "7"
+    }
+
+    private func saveEditor() {
+        let lead = Int(leadTimeDays) ?? 7
+        let cName = contactName.isEmpty ? nil : contactName
+        let ph = phone.isEmpty ? nil : phone
+        let em = email.isEmpty ? nil : email
+        let addr = address.isEmpty ? nil : address
+        let tax = taxId.isEmpty ? nil : taxId
+        let terms = paymentTerms.isEmpty ? nil : paymentTerms
+
+        if let existing = editingSupplier {
+            viewModel.updateSupplier(
+                existing,
+                name: name,
+                contactName: cName,
+                phone: ph,
+                email: em,
+                address: addr,
+                taxId: tax,
+                paymentTerms: terms,
+                defaultLeadTimeDays: lead
+            )
+            selectedSupplier = existing
+        } else {
+            viewModel.addSupplier(
+                name: name,
+                contactName: cName,
+                phone: ph,
+                email: em,
+                address: addr,
+                taxId: tax,
+                paymentTerms: terms,
+                defaultLeadTimeDays: lead
+            )
+        }
+        showingEditor = false
+        clearEditorFields()
+        editingSupplier = nil
     }
 }

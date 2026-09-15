@@ -1,0 +1,67 @@
+# AlphaPos — Caddy reverse proxy for the self-hosted Supabase VPS (119.59.99.163)
+# Replaces the current plain-HTTP nginx (which listens on :80 -> 127.0.0.1:54321
+# and :8080 -> 127.0.0.1:8081) and adds automatic HTTPS via Let's Encrypt.
+#
+# ACTUAL BACKEND PORTS (verified on the VPS):
+#   Supabase Kong gateway   ->  127.0.0.1:54321   (docker-proxy -> kong:8000)
+#   customer-order-web app  ->  127.0.0.1:8081
+#
+# PREREQUISITES (must be done BEFORE Caddy can get certificates)
+#   1. Own a real domain and point it at this VPS.
+#   2. DNS A records (Cloudflare "DNS only" / grey cloud so ACME resolves to the VPS):
+#        api.alphaposweb.com   A  119.59.99.163
+#        sync.alphaposweb.com  A  119.59.99.163
+#   3. Ports 80 + 443 open (ufw already allows them) and FREE for Caddy:
+#        systemctl disable --now nginx     # frees :80 and :8080
+#
+# INSTALL / RUN
+#   scp deploy/Caddyfile root@119.59.99.163:/etc/caddy/Caddyfile
+#   systemctl reload caddy && journalctl -u caddy -f
+
+{
+	# Email for Let's Encrypt expiry notices
+	email admin@alphaposweb.com
+}
+
+# ── Public website / App Store privacy and support pages ──────────────────────
+alphaposweb.com {
+	root * /var/www/alphaposweb
+	encode zstd gzip
+	file_server
+}
+
+www.alphaposweb.com {
+	redir https://alphaposweb.com{uri} permanent
+}
+
+# ── Supabase (Kong gateway) — REST / Auth / Realtime WS / Storage / Edge Fns ──
+api.alphaposweb.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:54321 {
+		# Disable response buffering so Realtime WebSocket / streaming works
+		flush_interval -1
+	}
+}
+
+# ── Local application / customer-order-web server ────────────────────────────
+sync.alphaposweb.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8081 {
+		flush_interval -1
+	}
+}
+
+# ── OPTIONAL: legacy plain-HTTP over the raw IP (zero-downtime transition) ────
+# Keeps already-installed TestFlight builds (http://119.59.99.163[:8080]) working
+# until every device updates to the HTTPS build. REMOVE both blocks once migrated.
+http://119.59.99.163 {
+	reverse_proxy 127.0.0.1:54321 {
+		flush_interval -1
+	}
+}
+
+http://119.59.99.163:8080 {
+	reverse_proxy 127.0.0.1:8081 {
+		flush_interval -1
+	}
+}

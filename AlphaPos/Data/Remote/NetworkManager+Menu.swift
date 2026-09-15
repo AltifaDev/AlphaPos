@@ -23,7 +23,7 @@ extension NetworkManager {
 
         var request = URLRequest(url: uploadURL)
         request.httpMethod = "POST"
-        let token = MerchantAuthManager.shared.currentToken ?? anonKey
+        let token = MerchantAuthManager.shared.authorizationToken ?? anonKey
         request.setValue(anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
@@ -31,7 +31,7 @@ extension NetworkManager {
         request.httpBody = data
         request.timeoutInterval = 60
 
-        let (responseData, response) = try await URLSession.shared.data(for: request)
+        let (responseData, response) = try await AppNetworkTransport.data(for: request, purpose: .cloudData)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NetworkError.serverError("Invalid HTTP response")
         }
@@ -42,7 +42,9 @@ extension NetworkManager {
                 #if DEBUG
                 print("NetworkManager: Detected authentication/RLS error during storage upload. Clearing token...")
                 #endif
-                MerchantAuthManager.shared.logout()
+                // Authentication failure must never erase locally committed POS
+                // data. Re-authentication can retry this media upload later.
+                MerchantAuthManager.shared.logout(removeLocalData: false)
             }
             throw NetworkError.serverError(message)
         }
@@ -69,7 +71,7 @@ extension NetworkManager {
 
         var request = URLRequest(url: uploadURL)
         request.httpMethod = "POST"
-        let token = MerchantAuthManager.shared.currentToken ?? anonKey
+        let token = MerchantAuthManager.shared.authorizationToken ?? anonKey
         request.setValue(anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
@@ -77,7 +79,7 @@ extension NetworkManager {
         request.httpBody = data
         request.timeoutInterval = 60
 
-        let (responseData, response) = try await URLSession.shared.data(for: request)
+        let (responseData, response) = try await AppNetworkTransport.data(for: request, purpose: .cloudData)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NetworkError.serverError("Invalid HTTP response")
         }
@@ -94,6 +96,38 @@ extension NetworkManager {
         return publicURL.absoluteString
     }
 
+    func uploadStoreWebCover(
+        _ data: Data,
+        merchantId: String,
+        fileName: String,
+        contentType: String
+    ) async throws -> String {
+        await MerchantAuthManager.shared.refreshTokenIfNeeded()
+        let objectPath = "\(merchantId.lowercased())/branding/\(fileName)"
+        var uploadURL = config.supabaseURL
+        for component in ["storage", "v1", "object", "product-media"] + objectPath.split(separator: "/").map(String.init) {
+            uploadURL.appendPathComponent(component)
+        }
+        var request = URLRequest(url: uploadURL)
+        request.httpMethod = "POST"
+        let token = MerchantAuthManager.shared.authorizationToken ?? anonKey
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.setValue("true", forHTTPHeaderField: "x-upsert")
+        request.httpBody = data
+        request.timeoutInterval = 120
+        let (responseData, response) = try await AppNetworkTransport.data(for: request, purpose: .cloudData)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw NetworkError.serverError(String(data: responseData, encoding: .utf8) ?? "Cover upload failed")
+        }
+        var publicURL = config.supabaseURL
+        for component in ["storage", "v1", "object", "public", "product-media"] + objectPath.split(separator: "/").map(String.init) {
+            publicURL.appendPathComponent(component)
+        }
+        return publicURL.absoluteString
+    }
+
     /// Maps iPad Category display names to the lowercase category slugs used by the iPhone app and Supabase schema.
     private func categorySlug(from categoryName: String?) -> String {
         guard let name = categoryName?.lowercased() else { return "mains" }
@@ -102,6 +136,7 @@ extension NetworkManager {
         case let n where n.contains("main"), let n where n.contains("dish"): return "mains"
         case let n where n.contains("beverage"), let n where n.contains("drink"): return "drinks"
         case let n where n.contains("dessert"), let n where n.contains("sweet"): return "desserts"
+        case let n where n == "เพิ่มเติม" || n.contains("add-on") || n.contains("addon") || n.contains("extra"): return "addons"
         default: return "mains"
         }
     }
@@ -119,7 +154,7 @@ extension NetworkManager {
 
     /// Upserts a single MenuItem from SwiftData to the Supabase `menu_items` table.
     func uploadMenuItem(item: MenuItem) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let catSlug = categorySlug(from: item.category?.name)
 
         if let data = item.imageData {
@@ -149,7 +184,10 @@ extension NetworkManager {
             "image_url_3": item.imageUrl3 ?? "",
             "video_url": item.videoUrl ?? "",
             "name_translations": item.nameTranslations,
-            "description_translations": item.descriptionTranslations
+            "description_translations": item.descriptionTranslations,
+            "is_available": item.isAvailable,
+            "sales_role": item.resolvedSalesRole.rawValue,
+            "sales_role_confirmed": item.isSalesRoleConfirmed
         ]
 
         _ = try await sendSupabaseRequest(
@@ -174,12 +212,12 @@ extension NetworkManager {
     /// Fetches all menu items for the active merchant from Supabase.
     /// Returns an array of dictionaries with all menu item fields.
     func fetchMenuItemsFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "menu_items",
             queryItems: [
-                URLQueryItem(name: "select", value: "*"),
+                URLQueryItem(name: "select", value: "*,delivery_prices(*)"),
                 URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
                 // is_deleted column does not exist on menu_items table — filter omitted
             ]
@@ -194,7 +232,7 @@ extension NetworkManager {
     /// Deleted rows are needed as tombstones so local caches can purge records
     /// when an admin changes the database directly.
     func fetchPromotionsFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "promotions",
@@ -209,14 +247,68 @@ extension NetworkManager {
         return jsonArray
     }
 
-    func uploadPromotion(promotion: Promotion) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+    /// Uploads promotion banner (image/video) to Storage when `imageData` is base64.
+    /// Returns the public URL (or empty) that should be stored in `promotions.image_data`.
+    func resolvePromotionMediaURL(for promotion: Promotion) async throws -> String {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        guard let raw = promotion.imageData?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return ""
+        }
+        if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
+            return raw
+        }
+
+        var base64 = raw
+        if raw.hasPrefix("data:"), let comma = raw.firstIndex(of: ",") {
+            base64 = String(raw[raw.index(after: comma)...])
+        }
+        guard let binary = Data(base64Encoded: base64) else {
+            throw NetworkError.serverError("Invalid promotion media payload")
+        }
+
+        let isVideo = promotion.mediaType == "video"
+        // Keep under bucket limit (15 MB). Prefer compressed media before calling this.
+        guard binary.count <= 15 * 1_024 * 1_024 else {
+            throw NetworkError.serverError("Promotion media exceeds 15 MB storage limit")
+        }
+
+        let fileName = isVideo ? "banner.mp4" : "banner.jpg"
+        let contentType = isVideo ? "video/mp4" : "image/jpeg"
+        let objectId = "promotions-\(promotion.id.uuidString.lowercased())"
+        return try await uploadProductMedia(
+            binary,
+            merchantId: merchantId,
+            itemId: objectId,
+            fileName: fileName,
+            contentType: contentType
+        )
+    }
+
+    /// Upserts promotion row. Media is uploaded to Supabase Storage; `image_data` stores the public URL.
+    /// Returns the resolved media URL stored remotely (may be empty).
+    @MainActor
+    @discardableResult
+    func uploadPromotion(promotion: Promotion) async throws -> String {
+        guard promotion.isPublicPromotion,
+              !OfflineSyncModeController.isEnabled,
+              !OfflineSyncModeController.isOfflineSubscriptionPlan else {
+            throw NetworkError.serverError("This promotion is available only on this POS")
+        }
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let mediaURL = try await resolvePromotionMediaURL(for: promotion)
+        // Scope can change while media upload is suspended.
+        guard promotion.isPublicPromotion,
+              !OfflineSyncModeController.isEnabled,
+              !OfflineSyncModeController.isOfflineSubscriptionPlan else {
+            throw NetworkError.serverError("Promotion publication was cancelled")
+        }
+
         var payload: [String: Any] = [
             "id": promotion.id.uuidString.lowercased(),
             "merchant_id": merchantId,
             "title": promotion.title,
             "promo_description": promotion.promoDescription ?? "",
-            "image_data": promotion.imageData ?? "",
+            "image_data": mediaURL,
             "media_type": promotion.mediaType,
             "is_active": promotion.isActive ? 1 : 0,
             "discount_type": promotion.discountType,
@@ -238,27 +330,29 @@ extension NetworkManager {
         if let endsAt = promotion.endsAt {
             payload["ends_at"] = NetworkManager.iso8601.string(from: endsAt)
         }
-
-        var supabaseSuccess = false
-        do {
-            _ = try await sendSupabaseRequest(
-                method: "POST",
-                endpoint: "promotions",
-                queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
-                payload: payload
-            )
-            supabaseSuccess = true
-        } catch {
-            print("NetworkManager: Supabase promotion upload failed: \(error.localizedDescription)")
+        if let code = promotion.couponCode, !code.isEmpty {
+            payload["coupon_code"] = code
+            payload["coupon_max_redemptions"] = promotion.couponMaxRedemptions.map { $0 as Any } ?? NSNull()
+            if let expires = promotion.couponExpiresAt {
+                payload["coupon_expires_at"] = NetworkManager.iso8601.string(from: expires)
+            }
         }
 
-        // Legacy local server call removed — Supabase is the single source of truth.
-        // isSynced is only set true when Supabase succeeds.
-        return supabaseSuccess
+        _ = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "promotions",
+            queryItems: [URLQueryItem(name: "on_conflict", value: "id")],
+            payload: payload
+        )
+        return mediaURL
     }
 
+    @MainActor
     func uploadPromotionBundleItems(for promotion: Promotion) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        guard promotion.isPublicPromotion,
+              !OfflineSyncModeController.isEnabled,
+              !OfflineSyncModeController.isOfflineSubscriptionPlan else { return false }
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
 
         let payload: [[String: Any]] = promotion.bundleItems.compactMap { bundleItem in
             guard let menuItemId = bundleItem.menuItem?.id else { return nil }
@@ -312,7 +406,7 @@ extension NetworkManager {
     }
 
     func fetchPromotionBundleItemsFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "promotion_bundle_items",

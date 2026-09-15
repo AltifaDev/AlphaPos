@@ -1,6 +1,13 @@
 import Foundation
 import SwiftData
 
+enum OutOfStockPolicy: String, CaseIterable, Identifiable {
+    case block = "block"
+    case allowNegative = "allow_negative"
+
+    var id: String { rawValue }
+}
+
 @Model
 final class InventoryItem {
     @Attribute(.unique) var id: UUID
@@ -10,6 +17,15 @@ final class InventoryItem {
     var currentQuantity: Double
     var reorderLevel: Double
     var costPrice: Double
+    /// Controls whether POS blocks a sale or records a negative balance when stock is insufficient.
+    /// Stored as a raw value so SwiftData can lightweight-migrate existing stores safely.
+    /// Defaults to allowNegative to enable uninterrupted front-of-house sales (backflush model).
+    var outOfStockPolicyRaw: String = OutOfStockPolicy.allowNegative.rawValue
+
+    var outOfStockPolicy: OutOfStockPolicy {
+        get { OutOfStockPolicy(rawValue: outOfStockPolicyRaw) ?? .allowNegative }
+        set { outOfStockPolicyRaw = newValue.rawValue }
+    }
 
     // ── Safety Stock & Lead Time (ISO 9001 / GS1 Best Practice) ──────────
     /// Buffer stock to absorb demand spikes or late deliveries.
@@ -56,6 +72,7 @@ final class InventoryItem {
         currentQuantity: Double = 0.0,
         reorderLevel: Double = 0.0,
         costPrice: Double = 0.0,
+        outOfStockPolicy: OutOfStockPolicy = .allowNegative,
         supplier: Supplier? = nil,
         branch: Branch? = nil,
         safetyStockLevel: Double = 0.0,
@@ -77,6 +94,7 @@ final class InventoryItem {
         self.currentQuantity = currentQuantity
         self.reorderLevel = reorderLevel
         self.costPrice = costPrice
+        self.outOfStockPolicyRaw = outOfStockPolicy.rawValue
         self.supplier = supplier
         self.branch = branch
         self.safetyStockLevel = safetyStockLevel

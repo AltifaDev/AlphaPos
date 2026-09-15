@@ -1,3 +1,4 @@
+import LocalAuthentication
 import SwiftData
 import SwiftUI
 
@@ -13,7 +14,13 @@ import SwiftUI
 
 struct StaffLockView: View {
     @Query(sort: \Employee.firstName) private var employees: [Employee]
-    @AppStorage("logged_in_name") private var storeDisplayName = "AlphaPos Store"
+    @ObservedObject private var notificationStore = NotificationStore.shared
+    // The profile filter is branch-scoped. Observe branch selection so this
+    // screen re-evaluates immediately after startup/bootstrap selects a branch.
+    // Reading BranchContext.shared only inside a computed property does not
+    // register a SwiftUI observation dependency.
+    @ObservedObject private var branchContext = BranchContext.shared
+    @AppStorage("logged_in_name") private var storeDisplayName = "Somchai Lertwit"
     @AppStorage("passcode_max_attempts") private var maxAttempts = 5
     @AppStorage("passcode_lockout_minutes") private var lockoutMinutes = 5
 
@@ -24,18 +31,38 @@ struct StaffLockView: View {
     @State private var passcode = ""
     @State private var errorMessage = ""
     @State private var attempts = 0
-    @AppStorage("staff_lockout_until_time") private var lockedUntilTime: Double = 0.0
+    @State private var lockedUntilTime: Double = 0.0
     private var lockedUntil: Date? {
         get { lockedUntilTime > 0 ? Date(timeIntervalSince1970: lockedUntilTime) : nil }
         set { lockedUntilTime = newValue?.timeIntervalSince1970 ?? 0.0 }
     }
     @State private var isShowingPasscode = false
     @State private var isOwnerPasscodeEntry = false
+    /// When owner PIN was never set (or only legacy 8888), collect new PIN + confirm.
+    @State private var isSettingOwnerPin = false
+    @State private var pendingNewOwnerPin: String? = nil
     @State private var shakeAttempts = 0
+    @State private var isVerifying = false
+    @State private var isOwnerBiometricAuthenticating = false
+    @State private var biometricContext: LAContext?
+    @State private var biometricAttemptID: UUID?
+    @State private var pinVerificationTask: Task<Void, Never>?
     @Namespace private var animationNamespace
 
     private let passcodeLength = 4
     private let keypad = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "⌫"]
+
+    private var passcodePromptText: String {
+        if isOwnerPasscodeEntry {
+            if isSettingOwnerPin {
+                return pendingNewOwnerPin == nil
+                    ? "owner_pin_create_prompt".t
+                    : "owner_pin_confirm_prompt".t
+            }
+            return "owner_pin_enter_prompt".t
+        }
+        return "staff_pin_enter_prompt".t
+    }
 
     // MARK: - Body
 
@@ -82,13 +109,39 @@ struct StaffLockView: View {
             errorMessage = ""
             isShowingPasscode = false
             isOwnerPasscodeEntry = false
+            isSettingOwnerPin = false
+            pendingNewOwnerPin = nil
+        }
+        .onDisappear {
+            // A LocalAuthentication callback can arrive after SwiftUI has already
+            // replaced this screen. Invalidate it so an obsolete attempt cannot
+            // create a second owner session or mutate stale view state.
+            biometricContext?.invalidate()
+            biometricContext = nil
+            biometricAttemptID = nil
+            pinVerificationTask?.cancel()
+            pinVerificationTask = nil
+            isOwnerBiometricAuthenticating = false
+            isVerifying = false
         }
     }
 
     // MARK: - Helpers
 
     private var activeEmployees: [Employee] {
-        employees.filter { $0.resignedAt == nil && ($0.user?.isActive ?? true) }
+        let activeBranch = branchContext.activeBranchIDString.lowercased()
+        return employees.filter { employee in
+            guard employee.staffAppEnabled,
+                  !employee.isDeleted,
+                  employee.resignedAt == nil,
+                  let user = employee.user,
+                  user.isActive,
+                  !user.isDeleted,
+                  user.pinCodeHash?.isEmpty == false else { return false }
+            return activeBranch.isEmpty
+                ? false
+                : employee.branchId.lowercased() == activeBranch
+        }
     }
 
     private var isLockedOut: Bool {
@@ -159,20 +212,12 @@ struct StaffLockView: View {
             VStack(spacing: 10) {
                 // App badge
                 HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color(hex: "2D71F8"), Color(hex: "6E3FFF")],
-                                    startPoint: .topLeading, endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: 48, height: 48)
-                            .shadow(color: Color(hex: "2D71F8").opacity(0.5), radius: 12, x: 0, y: 4)
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 24, weight: .black))
-                            .foregroundColor(.white)
-                    }
+                    Image("AppLogoMark")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 50, height: 50)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .shadow(color: Color(hex: "2D71F8").opacity(0.5), radius: 12, x: 0, y: 4)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text("AlphaPos")
@@ -202,7 +247,9 @@ struct StaffLockView: View {
             Spacer().frame(height: 40)
 
             // ── Profile Grid ───────────────────────────────────────────────
-            if activeEmployees.isEmpty {
+            if !notificationStore.isInitialReconciliationComplete {
+                loadingProfilesView
+            } else if activeEmployees.isEmpty {
                 emptyStateView
             } else {
                 profileGrid
@@ -218,15 +265,10 @@ struct StaffLockView: View {
 
                 Button {
                     APHaptic.trigger()
-                    passcode = ""
-                    errorMessage = ""
-                    isOwnerPasscodeEntry = true
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
-                        isShowingPasscode = true
-                    }
+                    authenticateStoreOwner()
                 } label: {
                     HStack(spacing: 7) {
-                        Image(systemName: "person.badge.key.fill")
+                        Image(systemName: isOwnerBiometricAuthenticating ? "faceid" : "person.badge.key.fill")
                         Text("use_store_account_btn".t)
                     }
                     .font(.system(size: 14, weight: .bold))
@@ -240,6 +282,7 @@ struct StaffLockView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .disabled(isOwnerBiometricAuthenticating)
                 .padding(.bottom, 36)
             }
         }
@@ -259,11 +302,19 @@ struct StaffLockView: View {
                         namespace: animationNamespace,
                         namespaceId: "employee-\(employee.id.uuidString)"
                     ) {
-                        selectedEmployee = employee
-                        passcode = ""
-                        errorMessage = ""
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
-                            isShowingPasscode = true
+                        if isStoreOwner(employee) {
+                            // The owner profile uses the iPad's biometric identity.
+                            // Employee and other roles continue through the PIN flow.
+                            selectedEmployee = nil
+                            authenticateStoreOwner()
+                        } else {
+                            selectedEmployee = employee
+                            restorePinAttemptState(subjectId: employee.id.uuidString)
+                            passcode = ""
+                            errorMessage = ""
+                            withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                                isShowingPasscode = true
+                            }
                         }
                     }
                 }
@@ -284,6 +335,27 @@ struct StaffLockView: View {
             Text("Use the store account to set up staff.")
                 .font(.subheadline)
                 .foregroundColor(.white.opacity(0.55))
+        }
+        .padding(40)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+        )
+        .frame(maxWidth: 420)
+    }
+
+    private var loadingProfilesView: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .controlSize(.large)
+                .tint(.white)
+            Text("syncing".t)
+                .font(.headline)
+                .foregroundColor(.white)
         }
         .padding(40)
         .background(
@@ -404,6 +476,13 @@ struct StaffLockView: View {
                             Text(roleName)
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(.white.opacity(0.55))
+                            if isOwnerPasscodeEntry {
+                                Text(passcodePromptText)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .multilineTextAlignment(.center)
+                                    .padding(.top, 4)
+                            }
                         }
                     }
 
@@ -437,18 +516,32 @@ struct StaffLockView: View {
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
 
+                    if isVerifying {
+                        HStack(spacing: 9) {
+                            ProgressView()
+                                .tint(.white)
+                            Text(LocalizationManager.shared.currentLanguage == .thai
+                                 ? "กำลังตรวจสอบรหัส…"
+                                 : "Verifying passcode…")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.white.opacity(0.82))
+                        }
+                        .transition(.opacity)
+                    }
+
                     // ── Keypad ──────────────────────────────────────────────
                     LazyVGrid(
                         columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: 3),
                         spacing: 14
                     ) {
                         ForEach(keypad, id: \.self) { key in
-                            GlassKeypadButton(key: key, disabled: isLockedOut) {
+                            GlassKeypadButton(key: key, disabled: isLockedOut || isVerifying) {
                                 handleKey(key)
                             }
                         }
                     }
                     .frame(maxWidth: 300)
+                    .opacity(isVerifying ? 0.55 : 1)
 
                     // ── Back button ─────────────────────────────────────────
                     Button {
@@ -462,6 +555,8 @@ struct StaffLockView: View {
                             if !isShowingPasscode {
                                 selectedEmployee = nil
                                 isOwnerPasscodeEntry = false
+                                isSettingOwnerPin = false
+                                pendingNewOwnerPin = nil
                             }
                         }
                     } label: {
@@ -498,8 +593,98 @@ struct StaffLockView: View {
     // MARK: - Actions
     // ─────────────────────────────────────────────────────────────────────────
 
+    private func isStoreOwner(_ employee: Employee) -> Bool {
+        PermissionPolicyCore.normalizedRole(employee.user?.role?.name ?? "") == "owner"
+    }
+
+    /// Store-owner access is device-bound: Face ID / Touch ID is attempted
+    /// first and never used for employee profiles. PIN remains the recovery
+    /// path when biometrics are unavailable, locked, cancelled, or rejected.
+    private func authenticateStoreOwner() {
+        guard !isOwnerBiometricAuthenticating else { return }
+
+        let context = LAContext()
+        let attemptID = UUID()
+        context.localizedCancelTitle = LocalizationManager.shared.currentLanguage == .thai ? "ยกเลิก" : "Cancel"
+        context.localizedFallbackTitle = ""
+        var evaluationError: NSError?
+
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &evaluationError) else {
+            showOwnerPinFallback(message: ownerBiometricFallbackMessage(evaluationError))
+            return
+        }
+
+        isOwnerBiometricAuthenticating = true
+        biometricContext = context
+        biometricAttemptID = attemptID
+        errorMessage = ""
+        Task { @MainActor in
+            do {
+                let reason = LocalizationManager.shared.currentLanguage == .thai
+                    ? "ยืนยันตัวตนเจ้าของร้านเพื่อเข้าใช้งาน AlphaPos"
+                    : "Verify the store owner to access AlphaPos"
+                let verified = try await context.evaluatePolicy(
+                    .deviceOwnerAuthenticationWithBiometrics,
+                    localizedReason: reason
+                )
+                guard biometricAttemptID == attemptID else { return }
+                isOwnerBiometricAuthenticating = false
+                biometricContext = nil
+                biometricAttemptID = nil
+                guard verified else {
+                    showOwnerPinFallback(message: ownerBiometricFallbackMessage(nil))
+                    return
+                }
+                clearPinAttemptState(subjectId: "store_owner")
+                APHaptic.trigger()
+                onUseStoreAccount()
+            } catch {
+                guard biometricAttemptID == attemptID else { return }
+                isOwnerBiometricAuthenticating = false
+                biometricContext = nil
+                biometricAttemptID = nil
+                showOwnerPinFallback(message: ownerBiometricFallbackMessage(error as NSError))
+            }
+        }
+    }
+
+    @MainActor
+    private func showOwnerPinFallback(message: String) {
+        biometricContext = nil
+        biometricAttemptID = nil
+        isOwnerBiometricAuthenticating = false
+        passcode = ""
+        errorMessage = message
+        pendingNewOwnerPin = nil
+        isOwnerPasscodeEntry = true
+        restorePinAttemptState(subjectId: "store_owner")
+        isSettingOwnerPin = !KeychainManager.shared.isOwnerPinConfigured()
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+            isShowingPasscode = true
+        }
+    }
+
+    private func ownerBiometricFallbackMessage(_ error: NSError?) -> String {
+        let thai = LocalizationManager.shared.currentLanguage == .thai
+        guard let error, let code = LAError.Code(rawValue: error.code) else {
+            return thai ? "ไม่สามารถยืนยันด้วยไบโอเมตริกได้ กรุณาใช้ PIN" : "Biometric verification failed. Use the owner PIN."
+        }
+        switch code {
+        case .biometryNotEnrolled:
+            return thai ? "ยังไม่ได้ตั้งค่า Face ID หรือ Touch ID กรุณาใช้ PIN" : "Face ID or Touch ID is not enrolled. Use the owner PIN."
+        case .biometryNotAvailable:
+            return thai ? "อุปกรณ์นี้ไม่พร้อมใช้ไบโอเมตริก กรุณาใช้ PIN" : "Biometrics are unavailable. Use the owner PIN."
+        case .biometryLockout:
+            return thai ? "ไบโอเมตริกถูกล็อกชั่วคราว กรุณาใช้ PIN" : "Biometrics are locked. Use the owner PIN."
+        case .userCancel, .systemCancel, .appCancel:
+            return thai ? "ยกเลิกการยืนยันด้วยไบโอเมตริก กรุณาใช้ PIN" : "Biometric verification was cancelled. Use the owner PIN."
+        default:
+            return thai ? "ยืนยันไบโอเมตริกไม่สำเร็จ กรุณาใช้ PIN" : "Biometric verification failed. Use the owner PIN."
+        }
+    }
+
     private func handleKey(_ key: String) {
-        guard !isLockedOut else { return }
+        guard !isLockedOut, !isVerifying else { return }
         APHaptic.trigger()
         errorMessage = ""
 
@@ -518,21 +703,38 @@ struct StaffLockView: View {
     }
 
     private func verifyPasscode() {
+        guard !isVerifying else { return }
         let capturedPasscode = passcode
-        Task.detached(priority: .userInitiated) {
+        isVerifying = true
+        pinVerificationTask?.cancel()
+        pinVerificationTask = Task.detached(priority: .userInitiated) {
             let isOwner = await MainActor.run { isOwnerPasscodeEntry }
+            guard !Task.isCancelled else { return }
             if isOwner {
-                if await KeychainManager.shared.verifyOwnerPin(capturedPasscode) {
+                let needsSetup = await MainActor.run { isSettingOwnerPin || !KeychainManager.shared.isOwnerPinConfigured() }
+                if needsSetup {
                     await MainActor.run {
-                        attempts = 0; lockedUntilTime = 0.0; passcode = ""
+                        isVerifying = false
+                        handleOwnerPinSetup(capturedPasscode)
+                    }
+                    return
+                }
+
+                if await KeychainManager.shared.verifyOwnerPin(capturedPasscode) {
+                    guard !Task.isCancelled else { return }
+                    await MainActor.run {
+                        isVerifying = false
+                        clearPinAttemptState(subjectId: "store_owner"); passcode = ""
+                        pendingNewOwnerPin = nil
+                        isSettingOwnerPin = false
                         onUseStoreAccount()
                     }
                 } else {
                     await MainActor.run {
+                        isVerifying = false
                         withAnimation { shakeAttempts += 1 }
-                        attempts += 1; passcode = ""
+                        recordFailedPinAttempt(subjectId: "store_owner"); passcode = ""
                         if attempts >= maxAttempts {
-                            lockedUntilTime = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60)).timeIntervalSince1970
                             errorMessage = "ล็อคชั่วคราว — พยายามหลายครั้งเกินไป"
                         } else {
                             errorMessage = LocalizationManager.shared.currentLanguage == .thai
@@ -546,12 +748,13 @@ struct StaffLockView: View {
                     (selectedEmployee?.id, selectedEmployee?.user?.pinCodeHash)
                 }
                 let verified = storedHash.map { SecurityHelper.verifyPIN(capturedPasscode, against: $0) } ?? false
+                guard !Task.isCancelled else { return }
                 guard let employeeId, verified else {
                     await MainActor.run {
+                        isVerifying = false
                         withAnimation { shakeAttempts += 1 }
-                        attempts += 1; passcode = ""
+                        recordFailedPinAttempt(subjectId: employeeId?.uuidString ?? "unknown_staff"); passcode = ""
                         if attempts >= maxAttempts {
-                            lockedUntilTime = Date().addingTimeInterval(TimeInterval(lockoutMinutes * 60)).timeIntervalSince1970
                             errorMessage = "ล็อคชั่วคราว — พยายามหลายครั้งเกินไป"
                         } else {
                             errorMessage = attempts >= 3
@@ -562,15 +765,78 @@ struct StaffLockView: View {
                     return
                 }
                 await MainActor.run {
+                    isVerifying = false
                     guard let employee = employees.first(where: { $0.id == employeeId }) else {
                         passcode = ""; errorMessage = "Staff profile unavailable."
                         return
                     }
-                    attempts = 0; lockedUntilTime = 0.0; passcode = ""
+                    clearPinAttemptState(subjectId: employeeId.uuidString); passcode = ""
                     onUnlock(employee)
                 }
             }
         }
+    }
+
+    @MainActor
+    private func restorePinAttemptState(subjectId: String) {
+        let state = KeychainManager.shared.pinAttemptState(subjectId: subjectId)
+        attempts = state.attempts
+        lockedUntilTime = state.lockedUntil?.timeIntervalSince1970 ?? 0
+    }
+
+    @MainActor
+    private func recordFailedPinAttempt(subjectId: String) {
+        let state = KeychainManager.shared.recordFailedPinAttempt(
+            subjectId: subjectId,
+            maxAttempts: maxAttempts,
+            lockoutMinutes: lockoutMinutes
+        )
+        attempts = state.attempts
+        lockedUntilTime = state.lockedUntil?.timeIntervalSince1970 ?? 0
+    }
+
+    @MainActor
+    private func clearPinAttemptState(subjectId: String) {
+        KeychainManager.shared.clearPinAttempts(subjectId: subjectId)
+        attempts = 0
+        lockedUntilTime = 0
+    }
+
+    @MainActor
+    private func handleOwnerPinSetup(_ entered: String) {
+        passcode = ""
+
+        if pendingNewOwnerPin == nil {
+            guard KeychainManager.isAcceptableOwnerPin(entered) else {
+                withAnimation { shakeAttempts += 1 }
+                errorMessage = "owner_pin_weak_error".t
+                return
+            }
+            pendingNewOwnerPin = entered
+            isSettingOwnerPin = true
+            errorMessage = ""
+            return
+        }
+
+        guard pendingNewOwnerPin == entered else {
+            withAnimation { shakeAttempts += 1 }
+            pendingNewOwnerPin = nil
+            errorMessage = "owner_pin_mismatch_error".t
+            return
+        }
+
+        guard KeychainManager.shared.saveOwnerPin(entered) else {
+            pendingNewOwnerPin = nil
+            errorMessage = "settings_pin_save_failed".t
+            return
+        }
+
+        UserDefaults.standard.removeObject(forKey: "merchant_owner_pin")
+        clearPinAttemptState(subjectId: "store_owner")
+        pendingNewOwnerPin = nil
+        isSettingOwnerPin = false
+        errorMessage = ""
+        onUseStoreAccount()
     }
 }
 

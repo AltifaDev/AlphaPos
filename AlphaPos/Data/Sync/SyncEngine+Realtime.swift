@@ -9,8 +9,20 @@ import os
 // are declared in SyncEngine.swift (the main class file).
 extension SyncEngine {
 
+    // ponytail: keep the existing Postgres Changes client while traffic is
+    // store-scale; move to private Broadcast/Supabase Swift when measured event
+    // throughput or protocol maintenance exceeds this small adapter.
+
     func startRealtimeSync(modelContext: ModelContext) {
         self.cachedModelContext = modelContext
+        guard TenantWorkspaceGuard.isAuthenticatedWorkspaceReady else {
+            cancelPendingSync()
+            return
+        }
+        guard NetworkPolicy.shared.allows(.realtime) else {
+            cancelPendingSync()
+            return
+        }
         guard webSocketTask == nil else { return }
 
         let baseRealtimeURL = config.supabaseURL.absoluteString
@@ -22,8 +34,13 @@ extension SyncEngine {
         let wsSessionConfig = URLSessionConfiguration.default
         wsSessionConfig.timeoutIntervalForRequest = 30
         wsSessionConfig.timeoutIntervalForResource = 60
-        let session = URLSession(configuration: wsSessionConfig)
-        let task = session.webSocketTask(with: url)
+        guard let task = try? AppNetworkTransport.webSocketTask(
+            with: url,
+            configuration: wsSessionConfig
+        ) else {
+            cancelPendingSync()
+            return
+        }
         self.webSocketTask = task
         task.resume()
 
@@ -42,6 +59,38 @@ extension SyncEngine {
 
     }
 
+    func scheduleRealtimeReconnect(modelContext: ModelContext, reason: String) {
+        guard !UserDefaults.standard.bool(forKey: "offline_sync_mode"),
+              realtimeReconnectTask == nil else { return }
+
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        realtimeListenTask?.cancel()
+        realtimeListenTask = nil
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        pendingHeartbeatRef = nil
+
+        let delay = min(maxReconnectDelay, pow(2.0, Double(reconnectAttempt)))
+        let finalDelay = max(1.0, delay + delay * Double.random(in: -0.25...0.25))
+        reconnectAttempt += 1
+
+        #if DEBUG
+        print("SyncEngine [Realtime]: \(reason). Reconnecting in \(String(format: "%.1f", finalDelay))s")
+        #endif
+
+        realtimeReconnectTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(finalDelay))
+            guard let self, !Task.isCancelled else { return }
+            self.realtimeReconnectTask = nil
+            await MerchantAuthManager.shared.refreshTokenIfNeeded()
+            self.startRealtimeSync(modelContext: modelContext)
+            // Postgres Changes has no replay guarantee. A full pull closes the
+            // gap before sync status/connection-restored UI is announced.
+            await self.syncAll(modelContext: modelContext)
+        }
+    }
+
     func listenToWebSocket(modelContext: ModelContext) async {
         while !Task.isCancelled, let task = webSocketTask {
             do {
@@ -58,68 +107,55 @@ extension SyncEngine {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                print("SyncEngine WebSocket error: \(error.localizedDescription)")
-                self.webSocketTask = nil
-                self.heartbeatTimer?.invalidate()
-                self.heartbeatTimer = nil
-
-                // Exponential backoff: 2s → 4s → 8s → 16s → 30s max
-                let delay = min(maxReconnectDelay, pow(2.0, Double(reconnectAttempt)) * 1.0)
-                // Add jitter (±25%) to prevent thundering herd
-                let jitter = delay * Double.random(in: -0.25...0.25)
-                let finalDelay = max(1.0, delay + jitter)
-                reconnectAttempt += 1
-
-                #if DEBUG
-                print("SyncEngine: Reconnecting in \(String(format: "%.1f", finalDelay))s (attempt \(reconnectAttempt))")
-                #endif
-
-                try? await Task.sleep(for: .seconds(finalDelay))
-                if !Task.isCancelled {
-                    self.startRealtimeSync(modelContext: modelContext)
-                }
+                self.scheduleRealtimeReconnect(
+                    modelContext: modelContext,
+                    reason: "WebSocket receive failed: \(error.localizedDescription)"
+                )
                 return
             }
         }
     }
 
     func joinRealtimeTopic() {
-        let rawMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
-        let merchantId = rawMerchantId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? config.defaultMerchantId.lowercased() : rawMerchantId.lowercased()
+        guard TenantWorkspaceGuard.isAuthenticatedWorkspaceReady,
+              let rawMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") else {
+            cancelPendingSync()
+            return
+        }
+        let merchantId = rawMerchantId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !merchantId.isEmpty else {
+            cancelPendingSync()
+            return
+        }
 
-        let accessToken = MerchantAuthManager.shared.currentToken ?? anonKey
+        guard let accessToken = MerchantAuthManager.shared.authorizationToken else {
+            cancelPendingSync()
+            return
+        }
+        #if DEBUG
+        print("SyncEngine [Realtime] JOIN: merchantId=\(merchantId) tokenType=\(MerchantAuthManager.shared.authorizationToken != nil ? "AUTH" : "ANON")")
+        #endif
         let joinPayload: [String: Any] = [
             "topic": "realtime:public",
             "event": "phx_join",
             "payload": [
                 "config": [
                     "postgres_changes": [
+                        // Keep the always-on channel limited to operational tables
+                        // guaranteed by 20260713000200_realtime_order_session_integrity.
+                        // Master data is reconciled by the foreground/full pull.
                         ["event": "*", "schema": "public", "table": "orders", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "order_items", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "order_item_modifiers", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "table_sessions", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "service_requests", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "restaurant_tables", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "merchants", "filter": "id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "menu_items", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "categories", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "modifiers", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "modifier_groups", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "employees", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "employee_shifts", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "inventory_items", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "customers", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "payments", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "promotions", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "expenses", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "suppliers", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "tax_rates", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "recipes", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "receipt_templates", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "table_layout_presets", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "currency_exchange_rates", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "users", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "refund_transactions", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "tips", "filter": "merchant_id=eq.\(merchantId)"]
+                        ["event": "*", "schema": "public", "table": "inventory_transactions", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "inventory_lots", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "purchase_orders", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "purchase_order_items", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "sync_outbox", "filter": "merchant_id=eq.\(merchantId)"]
                     ]
                 ],
                 "access_token": accessToken
@@ -147,22 +183,37 @@ extension SyncEngine {
 
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: true) { [weak self] timer in
             Task { @MainActor [weak self] in
-            guard let self, let task = self.webSocketTask else {
+            guard let self,
+                  let task = self.webSocketTask,
+                  let modelContext = self.cachedModelContext else {
                 timer.invalidate()
                 return
             }
+            if self.pendingHeartbeatRef != nil {
+                self.scheduleRealtimeReconnect(
+                    modelContext: modelContext,
+                    reason: "Heartbeat acknowledgement timed out"
+                )
+                return
+            }
+            self.heartbeatSequence += 1
+            let heartbeatRef = "heartbeat-\(self.heartbeatSequence)"
+            self.pendingHeartbeatRef = heartbeatRef
             let heartbeat: [String: Any] = [
                 "topic": "phoenix",
                 "event": "heartbeat",
                 "payload": [:],
-                "ref": "heartbeat"
+                "ref": heartbeatRef
             ]
             if let data = try? JSONSerialization.data(withJSONObject: heartbeat, options: []),
                let jsonString = String(data: data, encoding: .utf8) {
                 do {
                     try await task.send(.string(jsonString))
                 } catch {
-                    print("SyncEngine heartbeat failed: \(error)")
+                    self.scheduleRealtimeReconnect(
+                        modelContext: modelContext,
+                        reason: "Heartbeat send failed: \(error.localizedDescription)"
+                    )
                 }
             }
             }
@@ -170,34 +221,59 @@ extension SyncEngine {
     }
 
     func handleWebSocketMessage(_ text: String, modelContext: ModelContext) {
+        #if DEBUG
+        print("SyncEngine [Realtime] RAW MSG: \(text.prefix(500))")
+        #endif
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let event = json["event"] as? String else { return }
 
-        // Supabase Realtime V1 sends postgres change events with event name "postgres_changes".
-        // Also handle system events and detect changes from payload for robustness.
+        if event == "phx_reply",
+           let payload = json["payload"] as? [String: Any],
+           let status = payload["status"] as? String {
+            let ref = json["ref"] as? String
+            if ref == pendingHeartbeatRef {
+                pendingHeartbeatRef = nil
+            }
+            if status == "error" {
+                scheduleRealtimeReconnect(
+                    modelContext: modelContext,
+                    reason: "Channel request rejected: \(String(describing: payload["response"]))"
+                )
+            } else if ref == "1" {
+                reconnectAttempt = 0
+            }
+            return
+        }
+
+        if event == "phx_error" || event == "phx_close" {
+            scheduleRealtimeReconnect(modelContext: modelContext, reason: "Channel received \(event)")
+            return
+        }
+
+        if event == "system" {
+            let payload = json["payload"] as? [String: Any]
+            if (payload?["status"] as? String)?.lowercased() == "error" {
+                let message = payload?["message"] as? String ?? "Unknown Realtime system error"
+                if message.contains("Unable to subscribe to changes with given parameters") {
+                    // This is deterministic configuration drift. Reconnecting with
+                    // the same payload only creates a hot loop and repeated full pulls.
+                    encounteredSyncError = true
+                    #if DEBUG
+                    print("SyncEngine [Realtime]: Non-retryable subscription error: \(message)")
+                    #endif
+                } else {
+                    scheduleRealtimeReconnect(modelContext: modelContext, reason: "Realtime system error: \(message)")
+                }
+            }
+            return
+        }
+
+        // Supabase Realtime V1 normally uses `postgres_changes`; tolerate an
+        // equivalent payload event for compatibility with self-hosted versions.
         let isPostgresChange: Bool
         if event == "postgres_changes" {
             isPostgresChange = true
-        } else if event == "phx_reply" || event == "system" || event == "phx_close" {
-            // Handle connection lifecycle events
-            if event == "phx_reply" {
-                if let payload = json["payload"] as? [String: Any],
-                   let status = payload["status"] as? String {
-                   if status == "ok" {
-                        reconnectAttempt = 0
-                        // Enterprise Alert: WebSocket reconnected successfully after failures
-                        if self.consecutiveSyncFailures > 0 {
-                            self.alertConnectionRestored()
-                            self.consecutiveSyncFailures = 0
-                        }
-                    }
-                    #if DEBUG
-                    print("SyncEngine [Realtime]: phx_reply status = \(status)")
-                    #endif
-                }
-            }
-            isPostgresChange = false
         } else {
             // Catch any other events that contain postgres change data in payload
             if let payload = json["payload"] as? [String: Any],
@@ -208,12 +284,9 @@ extension SyncEngine {
             }
         }
 
-        guard isPostgresChange else { return }
-
-        // Guard against circular sync: if we are currently pushing data, skip pull
-        guard !isCurrentlySyncing else {
+guard isPostgresChange else {
             #if DEBUG
-            print("SyncEngine [Realtime]: Skipping pull — currently syncing (avoiding circular sync).")
+            print("SyncEngine [Realtime]: Ignored non-postgres event: \(event)")
             #endif
             return
         }
@@ -235,8 +308,28 @@ extension SyncEngine {
         // H-9 FIX: Double-check merchant_id in the changed record to prevent
         // processing events that accidentally broadcast across tenants.
         // Supabase RLS + join filter should handle this, but we verify defensively.
-        let activeMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id")
-            ?? config.defaultMerchantId
+        let activeMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        guard TenantWorkspaceGuard.isAuthenticatedWorkspaceReady,
+              !activeMerchantId.isEmpty else {
+            return
+        }
+
+        #if DEBUG
+        print("SyncEngine [Realtime]: Postgres event=\(event) table=\(changedTable ?? "nil") merchantCheck=\(activeMerchantId)")
+        #endif
+
+        // Capture the changed row itself so downstream handlers (e.g. remote
+        // receipt printing on `payments`) can inspect it inside the debounced
+        // work item without re-parsing the payload.
+        let changedRecord: [String: Any]? = {
+            if let payload = json["payload"] as? [String: Any],
+               let data    = payload["data"]    as? [String: Any],
+               let rec     = data["record"]     as? [String: Any] {
+                return rec
+            }
+            return nil
+        }()
+
         if let payload    = json["payload"]  as? [String: Any],
            let data       = payload["data"]  as? [String: Any],
            let record     = data["record"]   as? [String: Any],
@@ -249,123 +342,115 @@ extension SyncEngine {
             return
         }
 
-        // ── Debounce: per-event-type delay ───────────────────────────────
-        // C-6 FIX: Use shorter delay for status-critical events so table cards
-        // reflect open/close session changes immediately.
-        //   table_sessions / orders  → 0.4s  (balanced instant visual feedback and network load)
-        //   restaurant_tables        → 0.6s  (layout shift less jarring when batched)
-        //   default / full pull      → 1.0s  (multiple endpoints — batch saves network)
+        let tableKey = changedTable ?? "*"
+        pendingRealtimeTables.insert(tableKey)
+        if let changedRecord {
+            pendingRealtimeRecords[tableKey, default: []].append(changedRecord)
+        }
+        assert(pendingRealtimeRecords.keys.allSatisfy(pendingRealtimeTables.contains))
+
+        // The running drain consumes anything added while it is awaiting HTTP.
+        guard !isCurrentlySyncing, realtimeDebounceWorkItem == nil else { return }
+
         let debounceDelay: Double = {
             switch changedTable {
-            case "table_sessions", "orders", "order_items": return 0.4
+            case "table_sessions", "orders", "order_items", "merchants": return 0.4
             case "restaurant_tables":                        return 0.6
             default:                                         return 1.0
             }
         }()
-        realtimeDebounceWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            let capturedTable = changedTable
-            Task {
-                #if DEBUG
-                print("SyncEngine [Realtime]: Debounced pull — changed table: \(capturedTable ?? "unknown")")
-                #endif
-                self.isCurrentlySyncing = true
-
-                // ── Smart routing: pull only what changed ─────────────────
-                // Pulls only the endpoints that actually need refreshing to optimize network usage.
-                switch capturedTable {
-                case "table_sessions":
-                    await self.pullActiveSessions(modelContext)
-                case "orders", "order_items":
-                    await self.pullCustomerOrders(modelContext)
-                    await self.pullActiveSessions(modelContext)
-                case "service_requests":
-                    await self.syncServiceRequests()
-                case "restaurant_tables":
-                    await self.pullRestaurantTables(modelContext)
-                    await self.pullActiveSessions(modelContext)
-                case "menu_items":
-                    await self.pullMenuItemsFromSupabase(modelContext)
-                case "categories":
-                    await self.pullCategoriesFromSupabase(modelContext)
-                case "modifiers":
-                    await self.pullModifiersFromSupabase(modelContext)
-                case "modifier_groups":
-                    await self.pullModifierGroupsFromSupabase(modelContext)
-                case "employees":
-                    await self.pullEmployees(modelContext)
-                case "employee_shifts":
-                    await self.pullEmployeeShifts(modelContext)
-                case "inventory_items":
-                    await self.pullInventoryItemsFromSupabase(modelContext)
-                case "customers":
-                    await self.pullCustomersFromSupabase(modelContext)
-                case "payments":
-                    await self.pullCompletedOrdersAndPayments(modelContext)
-                case "promotions":
-                    await self.pullPromotionsFromSupabase(modelContext)
-                    await self.pullPromotionBundleItemsFromSupabase(modelContext)
-                case "expenses":
-                    await self.pullExpensesFromSupabase(modelContext)
-                case "suppliers":
-                    await self.pullSuppliersFromSupabase(modelContext)
-                case "tax_rates":
-                    await self.pullTaxRatesFromSupabase(modelContext)
-                case "recipes":
-                    await self.pullRecipesFromSupabase(modelContext)
-                case "receipt_templates":
-                    await self.pullReceiptTemplatesFromSupabase(modelContext)
-                case "table_layout_presets":
-                    await self.pullTableLayoutPresetsFromSupabase(modelContext)
-                case "currency_exchange_rates":
-                    await self.pullCurrencyExchangeRatesFromSupabase(modelContext)
-                case "users":
-                    await self.pullUsersFromSupabase(modelContext)
-                case "refund_transactions":
-                    await self.pullRefundTransactionsFromSupabase(modelContext)
-                case "tips":
-                    await self.pullTipsFromSupabase(modelContext)
-                case "order_tax_lines":
-                    await self.pullOrderTaxLinesFromSupabase(modelContext)
-                case "order_item_modifiers":
-                    await self.pullOrderItemModifiersFromSupabase(modelContext)
-                default:
-                    // Unknown / composite event — full pull
-                    await self.pullRestaurantTables(modelContext)
-                    await self.pullRestaurantWallsFromSupabase(modelContext)
-                    await self.pullTableLayoutPresetsFromSupabase(modelContext)
-                    await self.pullCustomerOrders(modelContext)
-                    await self.pullActiveSessions(modelContext)
-                    await self.syncServiceRequests()
-                    await self.pullEmployees(modelContext)
-                    await self.pullEmployeeShifts(modelContext)
-                    await self.pullMenuItemsFromSupabase(modelContext)
-                    await self.pullPromotionsFromSupabase(modelContext)
-                    await self.pullPromotionBundleItemsFromSupabase(modelContext)
-                    await self.pullRegisterSessions(modelContext)
-                    await self.pullCashMovements(modelContext)
-                    await self.pullShiftReportsFromSupabase(modelContext)
-                    await self.pullCustomersFromSupabase(modelContext)
-                    await self.pullGiftCardsFromSupabase(modelContext)
-                    await self.pullLoyaltyTransactionsFromSupabase(modelContext)
-                    await self.pullTaxRatesFromSupabase(modelContext)
-                    await self.pullCurrencyExchangeRatesFromSupabase(modelContext)
-                    await self.pullRecipesFromSupabase(modelContext)
-                    await self.pullExpensesFromSupabase(modelContext)
-                    await self.pullRefundTransactionsFromSupabase(modelContext)
-                    await self.pullOrderTaxLinesFromSupabase(modelContext)
-                    await self.pullTipsFromSupabase(modelContext)
-                    await self.pullOrderItemModifiersFromSupabase(modelContext)
-                    await self.pullUsersFromSupabase(modelContext)
-                    await self.pullReceiptTemplatesFromSupabase(modelContext)
-                }
-
-                self.isCurrentlySyncing = false
-            }
+            guard let self else { return }
+            self.realtimeDebounceWorkItem = nil
+            Task { await self.drainRealtimeChanges(modelContext: modelContext) }
         }
         realtimeDebounceWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + debounceDelay, execute: workItem)
+    }
+
+    func drainRealtimeChanges(modelContext: ModelContext) async {
+        guard !isCurrentlySyncing else { return }
+        isCurrentlySyncing = true
+        defer { isCurrentlySyncing = false }
+
+        while !pendingRealtimeTables.isEmpty {
+            let tables = pendingRealtimeTables
+            let records = pendingRealtimeRecords
+            assert(records.keys.allSatisfy(tables.contains))
+            pendingRealtimeTables.removeAll()
+            pendingRealtimeRecords.removeAll()
+
+            // Stable order keeps table metadata ahead of session-derived status.
+            for table in tables.sorted(by: realtimeTablePrecedes) {
+                await pullRealtimeChange(table, records: records[table] ?? [], modelContext: modelContext)
+            }
+        }
+    }
+
+    private func realtimeTablePrecedes(_ lhs: String, _ rhs: String) -> Bool {
+        let priority = ["restaurant_tables", "table_sessions", "orders", "order_items"]
+        return (priority.firstIndex(of: lhs) ?? priority.count) < (priority.firstIndex(of: rhs) ?? priority.count)
+    }
+
+    private func pullRealtimeChange(
+        _ table: String,
+        records: [[String: Any]],
+        modelContext: ModelContext
+    ) async {
+        switch table {
+        case "table_sessions":
+            await pullActiveSessions(modelContext)
+        case "orders", "order_items":
+            await pullCustomerOrders(modelContext)
+            await pullActiveSessions(modelContext)
+            await handleRemoteKitchenPrint(modelContext: modelContext)
+        case "service_requests": await syncServiceRequests()
+        case "restaurant_tables":
+            await pullRestaurantTables(modelContext)
+            await pullActiveSessions(modelContext)
+        case "merchants": await pullMerchantSettings()
+        case "menu_items": await pullMenuItemsFromSupabase(modelContext)
+        case "categories": await pullCategoriesFromSupabase(modelContext)
+        case "modifiers": await pullModifiersFromSupabase(modelContext)
+        case "modifier_groups": await pullModifierGroupsFromSupabase(modelContext)
+        case "employees": await pullEmployees(modelContext)
+        case "employee_shifts": await pullEmployeeShifts(modelContext)
+        case "inventory_items": await pullInventoryItemsFromSupabase(modelContext)
+        case "inventory_transactions":
+            if await pullInventoryTransactionsFromSupabase(modelContext) {
+                reconcileInventoryFromLedger(modelContext)
+            }
+        case "inventory_lots": _ = await pullInventoryLotsFromSupabase(modelContext)
+        case "purchase_orders", "purchase_order_items": await pullPurchaseOrdersFromSupabase(modelContext)
+        case "customers": await pullCustomersFromSupabase(modelContext)
+        case "payments":
+            await pullCompletedOrdersAndPayments(modelContext)
+            for record in records {
+                await handleRemotePaymentPrint(record: record, modelContext: modelContext)
+            }
+        case "sync_outbox":
+            // Staff (or triggers) enqueued a print/push job — drain immediately.
+            await drainSyncOutbox(modelContext)
+        case "promotions":
+            await pullPromotionsFromSupabase(modelContext)
+            await pullPromotionBundleItemsFromSupabase(modelContext)
+        case "expenses": await pullExpensesFromSupabase(modelContext)
+        case "suppliers": await pullSuppliersFromSupabase(modelContext)
+        case "tax_rates": await pullTaxRatesFromSupabase(modelContext)
+        case "recipes": await pullRecipesFromSupabase(modelContext)
+        case "receipt_templates": await pullReceiptTemplatesFromSupabase(modelContext)
+        case "table_layout_presets": await pullTableLayoutPresetsFromSupabase(modelContext)
+        case "floor_plan_images": await pullFloorPlanImagesFromSupabase(modelContext)
+        case "dining_areas": await pullDiningAreas(modelContext)
+        case "currency_exchange_rates": await pullCurrencyExchangeRatesFromSupabase(modelContext)
+        case "users": await pullUsersFromSupabase(modelContext)
+        case "refund_transactions": await pullRefundTransactionsFromSupabase(modelContext)
+        case "tips": await pullTipsFromSupabase(modelContext)
+        case "order_tax_lines": await pullOrderTaxLinesFromSupabase(modelContext)
+        case "order_item_modifiers": await pullOrderItemModifiersFromSupabase(modelContext)
+        default:
+            await syncAll(modelContext: modelContext)
+        }
     }
 
 

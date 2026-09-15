@@ -1,0 +1,13 @@
+-- Fix: the staff/iPad apps authenticate with the merchant JWT issued by the
+-- `issue-merchant-token` Edge Function, whose Postgres role is `anon`
+-- (see supabase/functions/issue-merchant-token/index.ts, role: "anon").
+--
+-- The 20260713000300 migration granted approve_customer_order EXECUTE only to
+-- `authenticated` and revoked PUBLIC, so rpc/approve_customer_order returned
+-- "permission denied" for the staff app and the approve button did nothing.
+--
+-- Tenant isolation is enforced inside the function via get_active_merchant_id()
+-- (read from the JWT `merchant_id` claim) plus the order_source='web' /
+-- is_deleted=FALSE guards, so granting EXECUTE to `anon` is safe and matches
+-- the existing create_customer_order grant.
+GRANT EXECUTE ON FUNCTION public.approve_customer_order(UUID) TO anon, authenticated;

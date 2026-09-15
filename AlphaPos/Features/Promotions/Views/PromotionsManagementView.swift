@@ -9,6 +9,8 @@ import SwiftUI
 import SwiftData
 import PhotosUI
 import AVKit
+import AVFoundation
+import CoreTransferable
 
 private enum PromotionListFilter: String, CaseIterable, Identifiable {
     case all = "All"
@@ -18,9 +20,52 @@ private enum PromotionListFilter: String, CaseIterable, Identifiable {
     case expired = "Expired"
 
     var id: String { rawValue }
+
+    var localizedTitle: String {
+        switch self {
+        case .all: return "promo_filter_all".t
+        case .active: return "promo_status_active".t
+        case .scheduled: return "promo_status_scheduled".t
+        case .inactive: return "promo_status_inactive".t
+        case .expired: return "promo_status_expired".t
+        }
+    }
+}
+
+/// Quick-start draft passed into the create form from the empty / landing state.
+struct PromotionFormDraft: Identifiable, Equatable {
+    let id = UUID()
+    var discountType: String
+    var title: String
+    var discountValue: Double
+    var requiredQuantity: Int
+    var rewardQuantity: Int
+    var audience: String = "public"
+
+    static func preset(_ kind: String) -> PromotionFormDraft {
+        switch kind {
+        case "staff":
+            return PromotionFormDraft(discountType: "fixed_per_item", title: "ส่วนลดพนักงาน ฿10 ต่อรายการ", discountValue: 10, requiredQuantity: 1, rewardQuantity: 1, audience: "staff")
+        case "percentage":
+            return PromotionFormDraft(discountType: "percentage", title: "10% Off", discountValue: 10, requiredQuantity: 1, rewardQuantity: 1)
+        case "fixed":
+            return PromotionFormDraft(discountType: "fixed", title: "฿50 Off", discountValue: 50, requiredQuantity: 1, rewardQuantity: 1)
+        case "bundle_price":
+            return PromotionFormDraft(discountType: "bundle_price", title: "3 for 299", discountValue: 299, requiredQuantity: 3, rewardQuantity: 1)
+        case "buy_x_get_y":
+            return PromotionFormDraft(discountType: "buy_x_get_y", title: "Buy 1 Get 1", discountValue: 0, requiredQuantity: 1, rewardQuantity: 1)
+        case "buy_x_pay_y":
+            return PromotionFormDraft(discountType: "buy_x_pay_y", title: "Buy 3 Pay 2", discountValue: 0, requiredQuantity: 3, rewardQuantity: 2)
+        default:
+            return PromotionFormDraft(discountType: "none", title: "", discountValue: 0, requiredQuantity: 1, rewardQuantity: 1)
+        }
+    }
 }
 
 struct PromotionsManagementView: View {
+    @AppStorage("offline_sync_mode") private var offlineMode = false
+    private var isOffline: Bool { offlineMode || OfflineSyncModeController.isOfflineSubscriptionPlan }
+    @EnvironmentObject private var sessionManager: AppSessionManager
     @Environment(\.modelContext) private var modelContext
     @Query(filter: #Predicate<Promotion> { $0.isDeleted == false }, sort: \Promotion.updatedAt, order: .reverse) private var promotions: [Promotion]
     @Query(filter: #Predicate<OrderDiscount> { $0.isDeleted == false }) private var orderDiscounts: [OrderDiscount]
@@ -28,7 +73,7 @@ struct PromotionsManagementView: View {
     @Binding var columnVisibility: NavigationSplitViewVisibility
     @EnvironmentObject private var lm: LocalizationManager
 
-    @State private var showingAddSheet = false
+    @State private var formDraft: PromotionFormDraft? = nil
     @State private var promotionToEdit: Promotion? = nil
     // M-2: Coupon Code
     @State private var showingCouponSheet = false
@@ -43,24 +88,30 @@ struct PromotionsManagementView: View {
         ZStack {
             Color.appBackground.ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    headerView
+            VStack(spacing: 0) {
+                campaignOverview
 
-                    if promotions.isEmpty {
-                        emptyStateView
-                    } else {
-                        campaignOverview
-                        filterBar
-                        promotionsGridView
-                    }
+                if promotions.isEmpty {
+                    emptyStateView
+                } else {
+                    filterBar
+                    promotionsGridView
                 }
+            }
         }
-        .navigationBarHidden(true)
-        .sheet(isPresented: $showingAddSheet) {
-            PromotionFormSheet(promotion: nil)
+        .navigationTitle(L.Promos.title.t)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                headerView
+            }
+        }
+        .sheet(item: $formDraft) { draft in
+            PromotionFormSheet(promotion: nil, draft: draft)
         }
         .sheet(item: $promotionToEdit) { promotion in
-            PromotionFormSheet(promotion: promotion)
+            PromotionFormSheet(promotion: promotion, draft: nil)
         }
         // M-2: Coupon Code sheet
         .sheet(isPresented: $showingCouponSheet) {
@@ -68,7 +119,11 @@ struct PromotionsManagementView: View {
         }
         .onAppear {
             Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
+                guard !isOffline else { return }
+                // Ensure menu catalog + promotions are on device before setup.
+                await SyncEngine.shared.pullMenuItemsFromSupabase(modelContext)
+                await SyncEngine.shared.pullPromotionsFromSupabase(modelContext)
+                await SyncEngine.shared.syncPromotions(modelContext)
             }
         }
         .alert("promo_update_failed".t, isPresented: $showingErrorAlert) {
@@ -95,39 +150,7 @@ struct PromotionsManagementView: View {
     }
 
     private var headerView: some View {
-        HStack(spacing: 16) {
-            if columnVisibility == .detailOnly {
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        columnVisibility = .all
-                    }
-                    APHaptic.trigger()
-                }) {
-                    Image(systemName: "sidebar.left")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundColor(.appAccent)
-                        .padding(10)
-                        .background(Color.appSurfaceHigh)
-                        .cornerRadius(12)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(Color.appBorderSubtle, lineWidth: 1)
-                        )
-                }
-                .transition(.move(edge: .leading).combined(with: .opacity))
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L.Promos.title.t)
-                    .font(.title)
-                    .fontWeight(.bold)
-                    .foregroundColor(.textPrimary)
-                Text(L.Promos.subtitle.t)
-                    .font(.subheadline)
-                    .foregroundColor(.textSecondary)
-            }
-            Spacer()
-
+        HStack(spacing: 8) {
             // M-2: Coupon Codes button
             Button(action: { showingCouponSheet = true }) {
                 HStack(spacing: 6) {
@@ -147,7 +170,7 @@ struct PromotionsManagementView: View {
                 )
             }
 
-            Button(action: { showingAddSheet = true }) {
+            Button(action: { formDraft = PromotionFormDraft.preset("none") }) {
                 HStack(spacing: 8) {
                     Image(systemName: "plus")
                         .font(.system(size: 14, weight: .bold))
@@ -157,42 +180,307 @@ struct PromotionsManagementView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
                 .background(
-                    LinearGradient(colors: [Color(hex: "10B981"), Color(hex: "34D399")], startPoint: .leading, endPoint: .trailing)
+                    LinearGradient(colors: [Color(hex: "0F766E"), Color(hex: "14B8A6")], startPoint: .leading, endPoint: .trailing)
                 )
                 .foregroundColor(.white)
                 .cornerRadius(12)
-                .shadow(color: Color(hex: "10B981").opacity(0.4), radius: 8, x: 0, y: 4)
+                .shadow(color: Color(hex: "0F766E").opacity(0.35), radius: 10, x: 0, y: 4)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 24)
-        .padding(.bottom, 16)
     }
 
     private var emptyStateView: some View {
-        VStack(spacing: 16) {
-            ZStack {
-                Circle()
-                    .fill(Color.appSurfaceHigh)
-                    .frame(width: 80, height: 80)
-                Image(systemName: "megaphone.fill")
-                    .font(.system(size: 36))
-                    .foregroundColor(Color(hex: "10B981"))
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 28) {
+                emptyHeroPanel
+                standardsComplianceStrip
+                quickStartSection
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 8)
+            .padding(.bottom, 40)
+        }
+    }
+
+    private var emptyHeroPanel: some View {
+        ZStack(alignment: .bottomLeading) {
+            // Atmospheric plane — suitable for product screenshots / website demos
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(hex: "0F766E"),
+                            Color(hex: "115E59"),
+                            Color(hex: "134E4A")
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    GeometryReader { geo in
+                        Circle()
+                            .fill(Color.white.opacity(0.08))
+                            .frame(width: geo.size.width * 0.55)
+                            .offset(x: geo.size.width * 0.55, y: -geo.size.height * 0.25)
+                        Circle()
+                            .fill(Color(hex: "5EEAD4").opacity(0.12))
+                            .frame(width: geo.size.width * 0.4)
+                            .offset(x: -geo.size.width * 0.1, y: geo.size.height * 0.55)
+                    }
+                    .clipped()
+                )
+
+            HStack(alignment: .bottom, spacing: 24) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("promo_hub_badge".t)
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(Color(hex: "99F6E4"))
+                        .tracking(1.2)
+                        .textCase(.uppercase)
+
+                    Text(L.Promos.noPromotionsTitle.t)
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+
+                    Text("promo_hub_hero_subtitle".t)
+                        .font(.body)
+                        .foregroundColor(Color.white.opacity(0.85))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 480, alignment: .leading)
+
+                    HStack(spacing: 12) {
+                        Button(action: { formDraft = PromotionFormDraft.preset("none") }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 13, weight: .bold))
+                                Text(L.Promos.addPromotion.t)
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
+                            .background(Color.white)
+                            .foregroundColor(Color(hex: "0F766E"))
+                            .cornerRadius(12)
+                        }
+                        .buttonStyle(.plain)
+
+                        Button(action: { showingCouponSheet = true }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "ticket")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text("coupon_codes_btn".t)
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .background(Color.white.opacity(0.12))
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.top, 4)
+                }
+
+                Spacer(minLength: 0)
+
+                ZStack {
+                    Circle()
+                        .fill(Color.white.opacity(0.1))
+                        .frame(width: 120, height: 120)
+                    Image(systemName: "megaphone.fill")
+                        .font(.system(size: 48, weight: .medium))
+                        .foregroundColor(Color(hex: "5EEAD4"))
+                }
+                .padding(.trailing, 8)
+                .padding(.bottom, 8)
+            }
+            .padding(28)
+        }
+        .frame(maxWidth: .infinity, minHeight: 260)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(color: Color(hex: "0F766E").opacity(0.25), radius: 20, x: 0, y: 10)
+    }
+
+    private var standardsComplianceStrip: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("promo_standards_title".t)
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.textPrimary)
+
+            HStack(spacing: 12) {
+                standardPill(
+                    icon: "shippingbox.fill",
+                    title: "promo_std_stock_title".t,
+                    detail: "promo_std_stock_detail".t,
+                    tint: Color(hex: "0F766E")
+                )
+                standardPill(
+                    icon: "chart.line.uptrend.xyaxis",
+                    title: "promo_std_sales_title".t,
+                    detail: "promo_std_sales_detail".t,
+                    tint: Color(hex: "0369A1")
+                )
+                standardPill(
+                    icon: "bolt.fill",
+                    title: "promo_std_pos_title".t,
+                    detail: "promo_std_pos_detail".t,
+                    tint: Color(hex: "B45309")
+                )
+            }
+        }
+    }
+
+    private func standardPill(icon: String, title: String, detail: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(tint)
+                .frame(width: 36, height: 36)
+                .background(tint.opacity(0.12))
+                .cornerRadius(10)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.textPrimary)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.appSurface)
+        .cornerRadius(14)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.appBorderSubtle, lineWidth: 1)
+        )
+    }
+
+    private var quickStartSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("promo_quick_start_title".t)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.textPrimary)
+                Spacer()
+                Text("promo_quick_start_hint".t)
+                    .font(.caption)
+                    .foregroundColor(.textTertiary)
             }
 
-            VStack(spacing: 8) {
-                Text(L.Promos.noPromotionsTitle.t)
-                    .font(.title3)
-                    .fontWeight(.bold)
-                    .foregroundColor(.textPrimary)
-                Text(L.Promos.noPromotionsSubtitle.t)
-                    .font(.body)
-                    .foregroundColor(.textSecondary)
-                    .multilineTextAlignment(.center)
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12)
+                ],
+                spacing: 12
+            ) {
+                quickStartCard(
+                    title: "ส่วนลดพนักงาน",
+                    subtitle: "ลด ฿10 ต่อสินค้า 1 ชิ้น · เฉพาะ POS",
+                    icon: "person.badge.shield.checkmark",
+                    tint: Color(hex: "0F766E"),
+                    kind: "staff"
+                )
+                if !isOffline {
+                quickStartCard(
+                    title: "promo_tpl_banner".t,
+                    subtitle: "promo_tpl_banner_sub".t,
+                    icon: "photo.on.rectangle.angled",
+                    tint: Color(hex: "64748B"),
+                    kind: "none"
+                )
+                }
+                quickStartCard(
+                    title: "promo_tpl_percent".t,
+                    subtitle: "promo_tpl_percent_sub".t,
+                    icon: "percent",
+                    tint: Color(hex: "0F766E"),
+                    kind: "percentage"
+                )
+                quickStartCard(
+                    title: "promo_tpl_fixed".t,
+                    subtitle: "promo_tpl_fixed_sub".t,
+                    icon: "banknote",
+                    tint: Color(hex: "0369A1"),
+                    kind: "fixed"
+                )
+                quickStartCard(
+                    title: "promo_tpl_bundle".t,
+                    subtitle: "promo_tpl_bundle_sub".t,
+                    icon: "cube.box.fill",
+                    tint: Color(hex: "7C3AED"),
+                    kind: "bundle_price"
+                )
+                quickStartCard(
+                    title: "promo_tpl_bogo".t,
+                    subtitle: "promo_tpl_bogo_sub".t,
+                    icon: "gift.fill",
+                    tint: Color(hex: "BE185D"),
+                    kind: "buy_x_get_y"
+                )
+                quickStartCard(
+                    title: "promo_tpl_payy".t,
+                    subtitle: "promo_tpl_payy_sub".t,
+                    icon: "tag.fill",
+                    tint: Color(hex: "B45309"),
+                    kind: "buy_x_pay_y"
+                )
             }
-            .padding(.horizontal, 32)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func quickStartCard(title: String, subtitle: String, icon: String, tint: Color, kind: String) -> some View {
+        Button(action: { formDraft = PromotionFormDraft.preset(kind) }) {
+            VStack(alignment: .leading, spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(tint)
+                    .frame(width: 40, height: 40)
+                    .background(tint.opacity(0.12))
+                    .cornerRadius(10)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.textPrimary)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 4) {
+                    Text("promo_quick_start_cta".t)
+                        .font(.caption.weight(.semibold))
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .foregroundColor(tint)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 148, alignment: .topLeading)
+            .background(Color.appSurface)
+            .cornerRadius(14)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Color.appBorderSubtle, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private var promotionsGridView: some View {
@@ -214,24 +502,25 @@ struct PromotionsManagementView: View {
     }
 
     private var filteredEmptyState: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             Image(systemName: "line.3.horizontal.decrease.circle")
                 .font(.system(size: 34))
                 .foregroundColor(.textTertiary)
-            Text("No \(selectedFilter.rawValue.lowercased()) campaigns")
+            Text(LocalizationManager.shared.t("promo_filter_empty_title", selectedFilter.localizedTitle))
                 .font(.headline)
                 .foregroundColor(.textPrimary)
-            Text("no_promotions_desc".t)
+            Text(L.Promos.noPromotionsSubtitle.t)
                 .font(.subheadline)
                 .foregroundColor(.textSecondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 52)
+        .padding(.horizontal, 24)
         .background(Color.appSurface)
-        .cornerRadius(8)
+        .cornerRadius(14)
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 14)
                 .stroke(Color.appBorderSubtle, lineWidth: 1)
         )
     }
@@ -261,11 +550,11 @@ struct PromotionsManagementView: View {
         let totalDiscount = orderDiscounts.reduce(0.0) { $0 + $1.discountAmount }
 
         return HStack(spacing: 12) {
-            overviewTile("Active", value: "\(activeCount)", icon: "bolt.fill", color: .appTeal)
-            overviewTile("Scheduled", value: "\(scheduledCount)", icon: "calendar.badge.clock", color: .orange)
-            overviewTile("History", value: "\(expiredCount)", icon: "clock.arrow.circlepath", color: .textSecondary)
-            overviewTile("Used", value: "\(totalUses)", icon: "receipt", color: .appAccent)
-            overviewTile("Discount", value: "฿\(totalDiscount.formatted(.number.precision(.fractionLength(0...0))))", icon: "chart.bar.fill", color: .appRose)
+            overviewTile("promo_status_active".t, value: "\(activeCount)", icon: "bolt.fill", color: Color(hex: "0F766E"))
+            overviewTile("promo_status_scheduled".t, value: "\(scheduledCount)", icon: "calendar.badge.clock", color: Color(hex: "B45309"))
+            overviewTile("promo_kpi_history".t, value: "\(expiredCount)", icon: "clock.arrow.circlepath", color: .textSecondary)
+            overviewTile("promo_kpi_used".t, value: "\(totalUses)", icon: "receipt", color: .appAccent)
+            overviewTile("promo_kpi_discount".t, value: "฿\(totalDiscount.formatted(.number.precision(.fractionLength(0...0))))", icon: "chart.bar.fill", color: .appRose)
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 12)
@@ -276,9 +565,9 @@ struct PromotionsManagementView: View {
             Image(systemName: icon)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(color)
-                .frame(width: 30, height: 30)
+                .frame(width: 34, height: 34)
                 .background(color.opacity(0.12))
-                .cornerRadius(8)
+                .cornerRadius(10)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(value)
@@ -293,11 +582,11 @@ struct PromotionsManagementView: View {
             Spacer(minLength: 0)
         }
         .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 64)
+        .frame(maxWidth: .infinity, minHeight: 68)
         .background(Color.appSurface)
-        .cornerRadius(8)
+        .cornerRadius(12)
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.appBorderSubtle, lineWidth: 1)
         )
     }
@@ -306,15 +595,15 @@ struct PromotionsManagementView: View {
         HStack(spacing: 10) {
             Picker("Promotion status", selection: $selectedFilter) {
                 ForEach(PromotionListFilter.allCases) { filter in
-                    Text(filter.rawValue).tag(filter)
+                    Text(filter.localizedTitle).tag(filter)
                 }
             }
             .pickerStyle(.segmented)
 
-            Text("\(filteredPromotions.count) campaigns")
+            Text(LocalizationManager.shared.t("promo_campaigns_count", filteredPromotions.count))
                 .font(.caption)
                 .foregroundColor(.textSecondary)
-                .frame(width: 96, alignment: .trailing)
+                .frame(minWidth: 96, alignment: .trailing)
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 16)
@@ -324,13 +613,15 @@ struct PromotionsManagementView: View {
     private func promotionCard(for promo: Promotion) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack {
-                promotionMediaPreview(promo)
+                if !isOffline && promo.isPublicPromotion {
+                    promotionMediaPreview(promo)
+                }
 
                 // Status Badge Overlay
                 VStack {
                     HStack {
                         Spacer()
-                        Text(promotionStatusText(promo))
+                        Text(promotionStatusLocalized(promo))
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white)
                             .padding(.horizontal, 10)
@@ -345,6 +636,11 @@ struct PromotionsManagementView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
+                Text(promo.audienceLabel).font(.caption).foregroundStyle(.secondary)
+                if promo.pendingWebRemoval {
+                    Text("รอลบโปรโมชั่นเดิมออกจากเว็บเมื่อเชื่อมต่อออนไลน์")
+                        .font(.caption).foregroundStyle(.orange)
+                }
                 HStack(alignment: .top, spacing: 10) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(promo.title)
@@ -405,7 +701,7 @@ struct PromotionsManagementView: View {
                         Image(systemName: deletingPromotionIds.contains(promo.id) ? "hourglass" : (promo.isSynced ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath"))
                             .font(.system(size: 10))
                             .foregroundColor(deletingPromotionIds.contains(promo.id) ? .orange : (promo.isSynced ? .appTeal : .orange))
-                        Text(deletingPromotionIds.contains(promo.id) ? "Deleting" : (promo.isSynced ? "Synced" : "Unsynced"))
+                        Text(isOffline || !promo.isPublicPromotion ? "บันทึกในเครื่อง" : (deletingPromotionIds.contains(promo.id) ? "Deleting" : (promo.isSynced ? "Synced" : "Unsynced")))
                             .font(.system(size: 10))
                             .foregroundColor(.textSecondary)
                     }
@@ -415,6 +711,7 @@ struct PromotionsManagementView: View {
                     // Action Buttons
                     HStack(spacing: 16) {
                         Button(action: {
+                            guard sessionManager.can(.promotionsManage) else { return }
                             withAnimation {
                                 promo.isActive.toggle()
                                 promo.isSynced = false
@@ -423,7 +720,8 @@ struct PromotionsManagementView: View {
 
                                 // Trigger sync in the background
                                 Task {
-                                    await SyncEngine.shared.syncAll(modelContext: modelContext)
+                                    guard !isOffline else { return }
+                                    await SyncEngine.shared.syncPromotions(modelContext)
                                 }
                             }
                         }) {
@@ -458,12 +756,12 @@ struct PromotionsManagementView: View {
             .padding(16)
             .background(Color.appSurface)
         }
-        .cornerRadius(16)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color.appBorderSubtle, lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(0.1), radius: 8, x: 0, y: 4)
+        .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: 6)
     }
 
     private func miniMetric(_ label: String, value: String) -> some View {
@@ -489,8 +787,7 @@ struct PromotionsManagementView: View {
     @ViewBuilder
     private func promotionMediaPreview(_ promo: Promotion) -> some View {
         if promo.mediaType == "video",
-           let base64 = promo.imageData,
-           let url = temporaryMediaURL(base64: base64, extension: "mp4") {
+           let url = PromotionMediaCodec.playableURL(from: promo.imageData, fileExtension: "mp4") {
             LoopingVideoPlayer(url: url)
                 .frame(height: 180)
                 .clipped()
@@ -510,8 +807,16 @@ struct PromotionsManagementView: View {
                         .padding(10)
                     }
                 )
-        } else if let base64 = promo.imageData,
-                  let data = Data(base64Encoded: base64),
+        } else if let remote = PromotionMediaCodec.remoteURL(from: promo.imageData) {
+            RemoteImageView(
+                imageUrl: remote.absoluteString,
+                imageData: nil,
+                fallbackColor: .appSurfaceHigh,
+                fallbackIcon: "photo"
+            )
+            .frame(height: 180)
+            .clipped()
+        } else if let data = PromotionMediaCodec.decodedData(from: promo.imageData),
                   let uiImage = UIImage(data: data) {
             Image(uiImage: uiImage)
                 .resizable()
@@ -528,17 +833,6 @@ struct PromotionsManagementView: View {
         }
     }
 
-    private func temporaryMediaURL(base64: String, extension fileExtension: String) -> URL? {
-        guard let data = Data(base64Encoded: base64) else { return nil }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("alphapos-promo-\(base64.hashValue)")
-            .appendingPathExtension(fileExtension)
-        if !FileManager.default.fileExists(atPath: url.path) {
-            try? data.write(to: url, options: .atomic)
-        }
-        return url
-    }
-
     private func promotionStatusText(_ promo: Promotion) -> String {
         if !promo.isActive { return "Inactive" }
         let now = Date()
@@ -547,10 +841,19 @@ struct PromotionsManagementView: View {
         return "Active"
     }
 
+    private func promotionStatusLocalized(_ promo: Promotion) -> String {
+        switch promotionStatusText(promo) {
+        case "Active": return "promo_status_active".t
+        case "Scheduled": return "promo_status_scheduled".t
+        case "Expired": return "promo_status_expired".t
+        default: return "promo_status_inactive".t
+        }
+    }
+
     private func promotionStatusColor(_ promo: Promotion) -> Color {
         switch promotionStatusText(promo) {
-        case "Active": return .appTeal
-        case "Scheduled": return .orange
+        case "Active": return Color(hex: "0F766E")
+        case "Scheduled": return Color(hex: "B45309")
         case "Expired": return .gray
         default: return .gray
         }
@@ -562,6 +865,8 @@ struct PromotionsManagementView: View {
             return "Discount \(promo.discountValue.formatted(.number.precision(.fractionLength(0...2))))%"
         case "fixed":
             return "Discount ฿\(promo.discountValue.formatted(.number.precision(.fractionLength(0...2))))"
+        case "fixed_per_item":
+            return "Discount ฿\(promo.discountValue.formatted(.number.precision(.fractionLength(0...2)))) per item"
         case "bundle_price":
             return "Buy \(promo.requiredQuantity) for ฿\(promo.discountValue.formatted(.number.precision(.fractionLength(0...2))))"
         case "buy_x_get_y":
@@ -607,7 +912,18 @@ struct PromotionsManagementView: View {
     }
 
     private func deletePromotion(_ promo: Promotion) {
+        guard sessionManager.can(.promotionsManage) else { return }
         guard !deletingPromotionIds.contains(promo.id) else { return }
+        if isOffline || !promo.isPublicPromotion {
+            promo.isDeleted = true
+            promo.isSynced = false
+            promo.updatedAt = Date()
+            modelContext.saveWithLogging(label: #function)
+            if !isOffline {
+                Task { await SyncEngine.shared.syncPromotions(modelContext) }
+            }
+            return
+        }
         deletingPromotionIds.insert(promo.id)
         let id = promo.id
         Task {
@@ -640,12 +956,18 @@ struct PromotionsManagementView: View {
 }
 
 struct PromotionFormSheet: View {
+    @AppStorage("offline_sync_mode") private var offlineMode = false
+    @State private var audience = "public"
+    private var isOffline: Bool { offlineMode || OfflineSyncModeController.isOfflineSubscriptionPlan }
+    private var showsWebMedia: Bool { !isOffline && audience == "public" }
+    @EnvironmentObject private var sessionManager: AppSessionManager
     @EnvironmentObject private var lm: LocalizationManager
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(filter: #Predicate<MenuItem> { $0.isDeleted == false }, sort: \MenuItem.name) private var menuItems: [MenuItem]
 
     let promotion: Promotion?
+    var draft: PromotionFormDraft? = nil
 
     @State private var title: String = ""
     @State private var promoDescription: String = ""
@@ -665,8 +987,32 @@ struct PromotionFormSheet: View {
 
     @State private var selectedMediaItem: PhotosPickerItem? = nil
     @State private var isProcessingMedia = false
+    @State private var mediaErrorMessage: String? = nil
+    @State private var limitToSpecificProduct = false
+    @State private var showingProductPicker = false
+    @State private var productSearch = ""
+    @State private var syncFeedback: String? = nil
+    @State private var isSaving = false
 
     var isNew: Bool { promotion == nil }
+
+    private var availableMenuItems: [MenuItem] {
+        menuItems.filter { $0.isAvailable || $0.id == appliesToMenuItemId }
+    }
+
+    private var filteredMenuItems: [MenuItem] {
+        let q = productSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return availableMenuItems }
+        return availableMenuItems.filter {
+            $0.name.lowercased().contains(q)
+                || ($0.sku?.lowercased().contains(q) ?? false)
+                || ($0.barcode?.lowercased().contains(q) ?? false)
+        }
+    }
+
+    private var selectedProduct: MenuItem? {
+        availableMenuItems.first { $0.id == appliesToMenuItemId }
+    }
 
     var body: some View {
         NavigationStack {
@@ -683,31 +1029,61 @@ struct PromotionFormSheet: View {
                         .tint(Color(hex: "10B981"))
                 }
 
+                Section("ช่องทางใช้งาน") {
+                    Picker("ใช้โปรโมชั่นสำหรับ", selection: $audience) {
+                        if !isOffline { Text("ลูกค้า · เผยแพร่บนเว็บ").tag("public") }
+                        Text("ลูกค้า · เฉพาะ POS").tag("pos")
+                        Text("พนักงาน · เฉพาะ POS").tag("staff")
+                    }
+                    Text(audience == "staff"
+                         ? "กำหนดส่วนลดเป็นจำนวนเงิน เปอร์เซ็นต์ หรือต่อสินค้าแต่ละชิ้น แล้วเลือกใช้ที่ POS สำหรับบิลพนักงาน ระบบไม่เลือกให้อัตโนมัติและไม่ส่งข้อมูลส่วนลดนี้ไปเว็บ"
+                         : (showsWebMedia ? "เผยแพร่โปรโมชั่นและแบนเนอร์ไปยังเว็บไซต์สั่งอาหาร" : "คำนวณส่วนลดในเครื่อง ไม่ต้องมีแบนเนอร์และไม่ส่งโปรโมชั่นนี้ไปเว็บ"))
+                        .font(.caption).foregroundStyle(.secondary)
+                    if promotion?.isPublicPromotion == true && (audience != "public" || isOffline) {
+                        Text("หากเคยเผยแพร่แล้ว แบนเนอร์เดิมจะถูกนำออกเมื่อเชื่อมต่อและซิงก์สำเร็จ")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                }
+
                 Section(header: Text("promo_type_label".t)) {
-                    promotionPresetButtons
+                    if audience != "staff" { promotionPresetButtons }
 
                     Picker("promo_type_label".t, selection: $discountType) {
-                        Text(L.Promos.typeNone.t).tag("none")
+                        if audience != "staff" && showsWebMedia { Text(L.Promos.typeNone.t).tag("none") }
                         Text(L.Promos.typePercentage.t).tag("percentage")
                         Text(L.Promos.typeFixed.t).tag("fixed")
+                        if audience == "staff" { Text("ส่วนลดคงที่ต่อสินค้า 1 ชิ้น").tag("fixed_per_item") }
+                        if audience != "staff" {
                         Text(L.Promos.typeBundle.t).tag("bundle_price")
                         Text("promo_type_buy_x_get_y".t).tag("buy_x_get_y")
                         Text("promo_type_buy_x_pay_y".t).tag("buy_x_pay_y")
+                        }
                     }
 
                     if discountType != "none" {
-                        if requiresProductRule {
-                            Picker("product_name_header".t, selection: $appliesToMenuItemId) {
-                                Text(L.Promos.selectProduct.t).tag("")
-                                ForEach(menuItems) { item in
-                                    Text(item.name).tag(item.id)
-                                }
+                        if discountType == "percentage" || discountType == "fixed" {
+                            Picker("ขอบเขตส่วนลด", selection: $limitToSpecificProduct) {
+                                Text("ทั้งออเดอร์ (Cart)").tag(false)
+                                Text("สินค้าเฉพาะรายการ (Item)").tag(true)
                             }
+                            .pickerStyle(.segmented)
 
-                            Stepper(requiredQuantityLabel, value: $requiredQuantity, in: 1...99)
+                            Text(limitToSpecificProduct
+                                 ? "มาตรฐานสากล: หักจากราคาสินค้าที่เลือกเท่านั้น"
+                                 : "มาตรฐานสากล: หักจากยอดออเดอร์ทั้งใบ (มีขั้นต่ำได้)")
+                                .font(.caption2)
+                                .foregroundColor(.textTertiary)
+                        }
 
-                            if discountType == "buy_x_get_y" || discountType == "buy_x_pay_y" {
-                                Stepper(rewardQuantityLabel, value: $rewardQuantity, in: 1...99)
+                        if requiresProductRule || limitToSpecificProduct {
+                            productPickerButton
+
+                            if requiresProductRule {
+                                Stepper(requiredQuantityLabel, value: $requiredQuantity, in: 1...99)
+
+                                if discountType == "buy_x_get_y" || discountType == "buy_x_pay_y" {
+                                    Stepper(rewardQuantityLabel, value: $rewardQuantity, in: 1...99)
+                                }
                             }
                         }
 
@@ -720,9 +1096,14 @@ struct PromotionFormSheet: View {
                                     .multilineTextAlignment(.trailing)
                                     .frame(maxWidth: 120)
                             }
+                            if let product = selectedProduct, discountType == "percentage" || discountType == "fixed" {
+                                Text(itemDiscountPreview(for: product))
+                                    .font(.caption)
+                                    .foregroundColor(.appTeal)
+                            }
                         }
 
-                        if !requiresProductRule {
+                        if (discountType == "percentage" || discountType == "fixed") && !limitToSpecificProduct {
                             HStack {
                                 Text("minimum_spend_lbl".t)
                                 Spacer()
@@ -731,6 +1112,20 @@ struct PromotionFormSheet: View {
                                     .multilineTextAlignment(.trailing)
                                     .frame(maxWidth: 120)
                             }
+                        }
+
+                        if discountType == "fixed_per_item" {
+                            HStack {
+                                Text("ราคาสินค้าขั้นต่ำต่อหน่วย (ต้องมากกว่า)")
+                                Spacer()
+                                TextField("50", value: $minimumSpend, format: .number)
+                                    .keyboardType(.decimalPad)
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(maxWidth: 120)
+                            }
+                            Text("ระบบคูณส่วนลดตามจำนวนชิ้น และใช้เฉพาะสินค้าที่ราคาต่อหน่วยสูงกว่าเกณฑ์นี้")
+                                .font(.caption2)
+                                .foregroundColor(.textTertiary)
                         }
                     }
                 }
@@ -749,17 +1144,24 @@ struct PromotionFormSheet: View {
                     }
                 }
 
+                if showsWebMedia {
                 Section(header: Text("banner_media_section".t)) {
                     VStack(spacing: 12) {
                         mediaGuidancePanel
+
+                        if let mediaErrorMessage {
+                            Text(mediaErrorMessage)
+                                .font(.caption)
+                                .foregroundColor(.appRose)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
 
                         if isProcessingMedia {
                             ProgressView("processing_media_lbl".t)
                                 .frame(maxWidth: .infinity)
                                 .padding()
                         } else if mediaType == "video",
-                                  let base64 = mediaDataBase64,
-                                  let url = temporaryMediaURL(base64: base64, extension: "mp4") {
+                                  let url = PromotionMediaCodec.playableURL(from: mediaDataBase64, fileExtension: "mp4") {
                             LoopingVideoPlayer(url: url)
                                 .frame(width: 432, height: 180)
                                 .cornerRadius(8)
@@ -774,8 +1176,18 @@ struct PromotionFormSheet: View {
                                         .cornerRadius(6)
                                         .padding(10)
                                 }
-                        } else if let base64 = mediaDataBase64,
-                                  let data = Data(base64Encoded: base64),
+                        } else if let remote = PromotionMediaCodec.remoteURL(from: mediaDataBase64) {
+                            RemoteImageView(
+                                imageUrl: remote.absoluteString,
+                                imageData: nil,
+                                fallbackColor: .appSurfaceHigh,
+                                fallbackIcon: "photo"
+                            )
+                            .frame(width: 432, height: 180)
+                            .clipped()
+                            .cornerRadius(8)
+                            .padding(.vertical, 4)
+                        } else if let data = PromotionMediaCodec.decodedData(from: mediaDataBase64),
                                   let uiImage = UIImage(data: data) {
                             Image(uiImage: uiImage)
                                 .resizable()
@@ -818,6 +1230,7 @@ struct PromotionFormSheet: View {
                     }
                     .frame(maxWidth: .infinity)
                 }
+                }
             }
             .navigationTitle(isNew ? L.Promos.addPromotion.t : L.Promos.editPromotion.t)
             .navigationBarTitleDisplayMode(.inline)
@@ -827,45 +1240,76 @@ struct PromotionFormSheet: View {
                         .foregroundColor(.textSecondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("save_btn".t) {
-                        savePromotion()
+                    if isSaving {
+                        ProgressView()
+                    } else {
+                        Button("save_btn".t) {
+                            savePromotion()
+                        }
+                        .disabled(isSaveDisabled)
+                        .foregroundColor(isSaveDisabled ? .textTertiary : Color(hex: "10B981"))
                     }
-                    .disabled(isSaveDisabled)
-                    .foregroundColor(isSaveDisabled ? .textTertiary : Color(hex: "10B981"))
                 }
+            }
+            .sheet(isPresented: $showingProductPicker) {
+                productPickerSheet
+            }
+            .alert("ผลซิงก์โปรโมชั่น", isPresented: Binding(
+                get: { syncFeedback != nil },
+                set: { if !$0 { syncFeedback = nil } }
+            )) {
+                Button("done".t, role: .cancel) { syncFeedback = nil }
+            } message: {
+                Text(syncFeedback ?? "")
             }
             .onChange(of: selectedMediaItem) { _, newItem in
                 Task {
                     guard let item = newItem else { return }
-                    await MainActor.run { isProcessingMedia = true }
+                    await MainActor.run {
+                        isProcessingMedia = true
+                        mediaErrorMessage = nil
+                    }
 
-                    if let data = try? await item.loadTransferable(type: Data.self) {
-                        if let image = UIImage(data: data) {
-                        // Downscale to max 800 width while maintaining aspect ratio
-                            let resized = resizeImage(image: image, targetSize: CGSize(width: 800, height: 400))
-                            if let jpeg = resized.jpegData(compressionQuality: 0.7) {
-                                let base64 = jpeg.base64EncodedString()
-                                await MainActor.run {
-                                    self.mediaDataBase64 = base64
-                                    self.mediaType = "image"
-                                    self.isProcessingMedia = false
-                                }
-                                return
+                    do {
+                        if let data = try? await item.loadTransferable(type: Data.self),
+                           let image = UIImage(data: data) {
+                            let resized = cropBannerImage(image)
+                            guard let jpeg = resized.jpegData(compressionQuality: 0.72) else {
+                                throw PromoMediaError.unreadableImage
                             }
-                        } else {
                             await MainActor.run {
-                                self.mediaDataBase64 = data.base64EncodedString()
-                                self.mediaType = "video"
+                                self.mediaDataBase64 = jpeg.base64EncodedString()
+                                self.mediaType = "image"
                                 self.isProcessingMedia = false
                             }
                             return
                         }
+
+                        // Compress to browser-safe H.264 MP4 (raw Photos Hevc/Mov often blacks out on web).
+                        let compressed = try await PromotionMediaCodec.compressBannerVideo(from: item)
+                        await MainActor.run {
+                            self.mediaDataBase64 = compressed.base64EncodedString()
+                            self.mediaType = "video"
+                            self.isProcessingMedia = false
+                        }
+                    } catch let error as PromoMediaError {
+                        await MainActor.run {
+                            self.selectedMediaItem = nil
+                            self.mediaErrorMessage = error.localizedDescription
+                            self.isProcessingMedia = false
+                        }
+                    } catch {
+                        await MainActor.run {
+                            self.selectedMediaItem = nil
+                            self.mediaErrorMessage = "ไม่สามารถประมวลผลไฟล์สื่อนี้ได้ กรุณาลองไฟล์อื่น"
+                            self.isProcessingMedia = false
+                        }
                     }
-                    await MainActor.run { isProcessingMedia = false }
                 }
             }
             .onAppear {
                 if let promo = promotion {
+                    audience = isOffline && promo.isPublicPromotion ? "pos" : promo.audience
                     title = promo.title
                     promoDescription = promo.promoDescription ?? ""
                     mediaDataBase64 = promo.imageData
@@ -875,6 +1319,8 @@ struct PromotionFormSheet: View {
                     discountValue = promo.discountValue
                     minimumSpend = promo.minimumSpend
                     appliesToMenuItemId = promo.appliesToMenuItemId ?? ""
+                    limitToSpecificProduct = !(promo.appliesToMenuItemId ?? "").isEmpty
+                        && (promo.discountType == "percentage" || promo.discountType == "fixed")
                     requiredQuantity = max(1, promo.requiredQuantity)
                     rewardQuantity = max(1, promo.rewardQuantity)
                     if let start = promo.startsAt {
@@ -885,9 +1331,142 @@ struct PromotionFormSheet: View {
                         hasEndDate = true
                         endsAt = end
                     }
+                } else if let draft {
+                    audience = draft.audience
+                    title = draft.title
+                    discountType = draft.discountType
+                    discountValue = draft.discountValue
+                    requiredQuantity = max(1, draft.requiredQuantity)
+                    rewardQuantity = max(1, draft.rewardQuantity)
+                    limitToSpecificProduct = draft.discountType == "bundle_price"
+                        || draft.discountType == "buy_x_get_y"
+                        || draft.discountType == "buy_x_pay_y"
+                    if draft.discountType == "fixed_per_item" { minimumSpend = 50 }
+                }
+                if isOffline && audience == "public" { audience = "pos" }
+                if !showsWebMedia && discountType == "none" { discountType = "percentage"; discountValue = 10 }
+                // Refresh menu so product picker is not empty after catalog sync lag.
+                Task {
+                    guard !isOffline else { return }
+                    await SyncEngine.shared.pullMenuItemsFromSupabase(modelContext)
+                }
+            }
+            .onChange(of: isOffline) { _, value in
+                if value && audience == "public" { audience = "pos" }
+            }
+            .onChange(of: audience) { _, value in
+                if (value == "staff" && !["percentage", "fixed", "fixed_per_item"].contains(discountType)) || (value != "public" && discountType == "none") {
+                    discountType = "percentage"
+                    discountValue = 10
+                }
+            }
+            .onChange(of: discountType) { _, newType in
+                if newType == "bundle_price" || newType == "buy_x_get_y" || newType == "buy_x_pay_y" {
+                    limitToSpecificProduct = true
                 }
             }
         }
+    }
+
+    private var productPickerButton: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                showingProductPicker = true
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("product_name_header".t)
+                            .font(.caption)
+                            .foregroundColor(.textSecondary)
+                        if let product = selectedProduct {
+                            Text(product.name)
+                                .font(.body.weight(.semibold))
+                                .foregroundColor(.textPrimary)
+                            Text("ราคาปกติ ฿\(product.price.formatted(.number.precision(.fractionLength(0...2))))")
+                                .font(.caption)
+                                .foregroundColor(.textTertiary)
+                        } else {
+                            Text(availableMenuItems.isEmpty
+                                  ? "ยังไม่มีเมนูในแคตตาล็อก — ไปเพิ่มที่ Inventory/Menu"
+                                  : L.Promos.selectProduct.t)
+                                .font(.body)
+                                .foregroundColor(.orange)
+                        }
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .foregroundColor(.textTertiary)
+                }
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+
+            if availableMenuItems.isEmpty {
+                Text("ต้องมี Menu Item ก่อน จึงจะตั้งโปรโมชั่นระดับสินค้าได้")
+                    .font(.caption2)
+                    .foregroundColor(.appRose)
+            }
+        }
+    }
+
+    private var productPickerSheet: some View {
+        NavigationStack {
+            Group {
+                if availableMenuItems.isEmpty {
+                    ContentUnavailableView(
+                        "ไม่มีสินค้าในเมนู",
+                        systemImage: "fork.knife.circle",
+                        description: Text("สร้างหรือซิงก์เมนูจาก Inventory ก่อน ระบบต้องดึง Menu Item เพื่อใช้เป็นรายการโปรโมชั่น")
+                    )
+                } else {
+                    List {
+                        ForEach(filteredMenuItems, id: \.id) { item in
+                            Button {
+                                appliesToMenuItemId = item.id
+                                showingProductPicker = false
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.name)
+                                            .foregroundColor(.textPrimary)
+                                        if let sku = item.sku, !sku.isEmpty {
+                                            Text("SKU \(sku)")
+                                                .font(.caption2)
+                                                .foregroundColor(.textTertiary)
+                                        }
+                                    }
+                                    Spacer()
+                                    Text("฿\(item.price.formatted(.number.precision(.fractionLength(0...2))))")
+                                        .foregroundColor(.textSecondary)
+                                    if item.id == appliesToMenuItemId {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.appTeal)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .searchable(text: $productSearch, prompt: "ค้นหาชื่อ / SKU / บาร์โค้ด")
+                }
+            }
+            .navigationTitle("เลือกสินค้าโปรโมชั่น")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("cancel_btn".t) { showingProductPicker = false }
+                }
+            }
+        }
+    }
+
+    private func itemDiscountPreview(for product: MenuItem) -> String {
+        if discountType == "percentage" {
+            let off = product.price * min(discountValue, 100) / 100
+            let final = max(0, product.price - off)
+            return "ตัวอย่าง: ฿\(product.price.formatted(.number.precision(.fractionLength(0...2)))) → ฿\(final.formatted(.number.precision(.fractionLength(0...2)))) (ลด ฿\(off.formatted(.number.precision(.fractionLength(0...2)))))"
+        }
+        let final = max(0, product.price - discountValue)
+        return "ตัวอย่าง: ฿\(product.price.formatted(.number.precision(.fractionLength(0...2)))) → ฿\(final.formatted(.number.precision(.fractionLength(0...2))))"
     }
 
     private var invalidSchedule: Bool {
@@ -895,11 +1474,16 @@ struct PromotionFormSheet: View {
     }
 
     private var isSaveDisabled: Bool {
-        title.isEmpty || isProcessingMedia || invalidSchedule || invalidPromotionRule
+        title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        isProcessingMedia || invalidSchedule || invalidPromotionRule
     }
 
     private var invalidPromotionRule: Bool {
-        if requiresProductRule && appliesToMenuItemId.isEmpty { return true }
+        if audience == "staff" && !["percentage", "fixed", "fixed_per_item"].contains(discountType) { return true }
+        if !showsWebMedia && discountType == "none" { return true }
+        let needsProduct = requiresProductRule || ((discountType == "percentage" || discountType == "fixed") && limitToSpecificProduct)
+        if needsProduct && appliesToMenuItemId.isEmpty { return true }
+        if ["percentage", "fixed", "fixed_per_item"].contains(discountType) && discountValue <= 0 { return true }
         if discountType == "bundle_price" && discountValue <= 0 { return true }
         if discountType == "buy_x_get_y" && rewardQuantity < 1 { return true }
         if discountType == "buy_x_pay_y" && (rewardQuantity < 1 || rewardQuantity >= requiredQuantity) { return true }
@@ -911,7 +1495,7 @@ struct PromotionFormSheet: View {
     }
 
     private var showsDiscountValue: Bool {
-        discountType == "percentage" || discountType == "fixed" || discountType == "bundle_price"
+        discountType == "percentage" || discountType == "fixed" || discountType == "fixed_per_item" || discountType == "bundle_price"
     }
 
     private var requiredQuantityLabel: String {
@@ -932,65 +1516,106 @@ struct PromotionFormSheet: View {
     private var discountValueLabel: String {
         switch discountType {
         case "percentage": return "discount_val_pct_lbl".t
+        case "fixed_per_item": return "ส่วนลดต่อสินค้า 1 ชิ้น"
         case "bundle_price": return "bundle_price_lbl".t
         default: return "discount_val_amt_lbl".t
         }
     }
 
     private func savePromotion() {
+        guard sessionManager.can(.promotionsManage), !isSaveDisabled, !isSaving else { return }
+        let needsProduct = requiresProductRule || ((discountType == "percentage" || discountType == "fixed") && limitToSpecificProduct)
+        let linkedItemId: String? = needsProduct ? appliesToMenuItemId : nil
+        let minSpend = discountType == "fixed_per_item"
+            ? max(0, minimumSpend)
+            : ((discountType == "percentage" || discountType == "fixed") && !limitToSpecificProduct
+                ? max(0, minimumSpend)
+                : 0)
+
+        let savedPromotion: Promotion
         if let promo = promotion {
-            // Edit existing
-            promo.title = title
+            promo.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
             promo.promoDescription = promoDescription
             promo.imageData = mediaDataBase64
             promo.mediaType = mediaType
             promo.isActive = isActive
             promo.discountType = discountType
             promo.discountValue = normalizedDiscountValue
-            promo.minimumSpend = requiresProductRule ? 0 : max(0, minimumSpend)
-            promo.appliesToMenuItemId = requiresProductRule ? appliesToMenuItemId : nil
+            promo.minimumSpend = minSpend
+            promo.appliesToMenuItemId = linkedItemId
             promo.requiredQuantity = requiresProductRule ? max(1, requiredQuantity) : 1
             promo.rewardQuantity = requiresProductRule ? normalizedRewardQuantity : 0
             promo.startsAt = hasStartDate ? startsAt : nil
             promo.endsAt = hasEndDate ? endsAt : nil
             promo.isSynced = false
             promo.updatedAt = Date()
+            savedPromotion = promo
         } else {
-            // Create new
             let newPromo = Promotion(
-                title: title,
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                 promoDescription: promoDescription,
                 imageData: mediaDataBase64,
                 mediaType: mediaType,
                 isActive: isActive,
                 discountType: discountType,
                 discountValue: normalizedDiscountValue,
-                minimumSpend: requiresProductRule ? 0 : max(0, minimumSpend),
-                appliesToMenuItemId: requiresProductRule ? appliesToMenuItemId : nil,
+                minimumSpend: minSpend,
+                appliesToMenuItemId: linkedItemId,
                 requiredQuantity: requiresProductRule ? max(1, requiredQuantity) : 1,
                 rewardQuantity: requiresProductRule ? normalizedRewardQuantity : 0,
                 startsAt: hasStartDate ? startsAt : nil,
                 endsAt: hasEndDate ? endsAt : nil
             )
             modelContext.insert(newPromo)
+            savedPromotion = newPromo
         }
 
-        modelContext.saveWithLogging(label: #function)
+        let effectiveAudience = isOffline && audience == "public" ? "pos" : audience
+        if promotion != nil && savedPromotion.isPublicPromotion && effectiveAudience != "public" {
+            savedPromotion.pendingWebRemoval = true
+        }
+        savedPromotion.audience = effectiveAudience
+        if !savedPromotion.isPublicPromotion {
+            savedPromotion.imageData = nil
+            savedPromotion.mediaType = "image"
+        } else {
+            savedPromotion.pendingWebRemoval = false
+        }
+        do {
+            try modelContext.save()
+        } catch {
+            syncFeedback = "บันทึกโปรโมชั่นไม่สำเร็จ: \(error.localizedDescription)"
+            return
+        }
+        if isOffline || (!savedPromotion.isPublicPromotion && !savedPromotion.pendingWebRemoval) {
+            dismiss()
+            return
+        }
+        isSaving = true
 
-        // Trigger sync in the background
+        // Push to Supabase immediately so customer web can show the campaign.
         let context = modelContext
         Task {
-            await SyncEngine.shared.syncAll(modelContext: context)
+            await SyncEngine.shared.syncPromotions(context)
+            let synced = savedPromotion.isPublicPromotion ? savedPromotion.isSynced : !savedPromotion.pendingWebRemoval
+            await MainActor.run {
+                isSaving = false
+                if synced {
+                    dismiss()
+                } else {
+                    syncFeedback = savedPromotion.pendingWebRemoval
+                        ? "บันทึกส่วนลดภายในเครื่องแล้ว แต่ยังนำโปรโมชั่นเดิมออกจากเว็บไม่สำเร็จ ระบบจะลองอีกครั้งเมื่อซิงก์ออนไลน์"
+                        : "บันทึกในเครื่องแล้ว แต่ยังเผยแพร่บนเว็บไม่สำเร็จ กรุณาตรวจการเชื่อมต่อแล้วลองอีกครั้ง"
+                }
+            }
         }
-
-        dismiss()
     }
 
     private var normalizedDiscountValue: Double {
         if discountType == "percentage" {
             return min(100, max(0, discountValue))
         }
-        if discountType == "fixed" {
+        if discountType == "fixed" || discountType == "fixed_per_item" {
             return max(0, discountValue)
         }
         if discountType == "bundle_price" {
@@ -1017,10 +1642,12 @@ struct PromotionFormSheet: View {
                 .foregroundColor(.textSecondary)
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                if showsWebMedia {
                 presetButton("Banner", systemImage: "megaphone") {
                     discountType = "none"
                     discountValue = 0
                     minimumSpend = 0
+                }
                 }
                 presetButton("10% Off", systemImage: "percent") {
                     discountType = "percentage"
@@ -1109,10 +1736,82 @@ struct PromotionFormSheet: View {
         .buttonStyle(.plain)
     }
 
-    private func temporaryMediaURL(base64: String, extension fileExtension: String) -> URL? {
-        guard let data = Data(base64Encoded: base64) else { return nil }
+    private func cropBannerImage(_ image: UIImage) -> UIImage {
+        let targetSize = CGSize(width: 1200, height: 500)
+        let sourceSize = image.size
+        guard sourceSize.width > 0, sourceSize.height > 0 else { return image }
+
+        let targetRatio = targetSize.width / targetSize.height
+        let sourceRatio = sourceSize.width / sourceSize.height
+        let cropSize: CGSize
+        if sourceRatio > targetRatio {
+            cropSize = CGSize(width: sourceSize.height * targetRatio, height: sourceSize.height)
+        } else {
+            cropSize = CGSize(width: sourceSize.width, height: sourceSize.width / targetRatio)
+        }
+
+        let cropOrigin = CGPoint(
+            x: (sourceSize.width - cropSize.width) / 2,
+            y: (sourceSize.height - cropSize.height) / 2
+        )
+        let drawRect = CGRect(
+            x: -cropOrigin.x * targetSize.width / cropSize.width,
+            y: -cropOrigin.y * targetSize.height / cropSize.height,
+            width: sourceSize.width * targetSize.width / cropSize.width,
+            height: sourceSize.height * targetSize.height / cropSize.height
+        )
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: targetSize, format: format).image { _ in
+            image.draw(in: drawRect)
+        }
+    }
+}
+
+// MARK: - Promotion banner media helpers
+
+private enum PromoMediaError: LocalizedError {
+    case unreadableImage
+    case unreadableVideo
+    case videoTooLong
+    case videoTooLarge
+    case exportFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .unreadableImage: return "อ่านไฟล์รูปภาพไม่สำเร็จ กรุณาเลือกรูปอื่น"
+        case .unreadableVideo: return "อ่านไฟล์วิดีโอไม่สำเร็จ กรุณาเลือกคลิปอื่น"
+        case .videoTooLong: return "วิดีโอบanner ต้องไม่เกิน 30 วินาที"
+        case .videoTooLarge: return "วิดีโอหลังบีบอัดต้องไม่เกิน 15 MB"
+        case .exportFailed: return "อุปกรณ์ไม่รองรับการแปลงวิดีโอนี้เป็น MP4 H.264"
+        }
+    }
+}
+
+private enum PromotionMediaCodec {
+    static func remoteURL(from value: String?) -> URL? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        guard value.hasPrefix("http://") || value.hasPrefix("https://") else { return nil }
+        return URL(string: value)
+    }
+
+    static func decodedData(from value: String?) -> Data? {
+        guard let raw = value?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        if raw.hasPrefix("http://") || raw.hasPrefix("https://") { return nil }
+        var base64 = raw
+        if raw.hasPrefix("data:"), let comma = raw.firstIndex(of: ",") {
+            base64 = String(raw[raw.index(after: comma)...])
+        }
+        return Data(base64Encoded: base64)
+    }
+
+    static func playableURL(from value: String?, fileExtension: String) -> URL? {
+        if let remote = remoteURL(from: value) { return remote }
+        guard let data = decodedData(from: value) else { return nil }
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("alphapos-promo-form-\(base64.hashValue)")
+            .appendingPathComponent("alphapos-promo-\(value.hashValue)")
             .appendingPathExtension(fileExtension)
         if !FileManager.default.fileExists(atPath: url.path) {
             try? data.write(to: url, options: .atomic)
@@ -1120,28 +1819,46 @@ struct PromotionFormSheet: View {
         return url
     }
 
-    private func resizeImage(image: UIImage, targetSize: CGSize) -> UIImage {
-        let size = image.size
+    static func compressBannerVideo(from item: PhotosPickerItem) async throws -> Data {
+        guard let movie = try await item.loadTransferable(type: PromotionMovie.self) else {
+            throw PromoMediaError.unreadableVideo
+        }
+        defer { try? FileManager.default.removeItem(at: movie.url) }
 
-        let widthRatio  = targetSize.width  / size.width
-        let heightRatio = targetSize.height / size.height
-
-        let newRatio = min(widthRatio, heightRatio)
-
-        // If image is already smaller, don't upscale it
-        if newRatio >= 1.0 {
-            return image
+        let asset = AVURLAsset(url: movie.url)
+        let duration = try await asset.load(.duration)
+        guard duration.seconds.isFinite, duration.seconds <= 30.05 else {
+            throw PromoMediaError.videoTooLong
         }
 
-        let newSize = CGSize(width: size.width * newRatio, height: size.height * newRatio)
-        let rect = CGRect(origin: .zero, size: newSize)
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("promo-banner-\(UUID().uuidString).mp4")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
 
-        UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
-        image.draw(in: rect)
-        let newImage = UIGraphicsGetImageFromCurrentImageContext()
-        UIGraphicsEndImageContext()
+        guard let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset1280x720) else {
+            throw PromoMediaError.exportFailed
+        }
+        try await exporter.export(to: outputURL, as: .mp4)
+        let compressed = try Data(contentsOf: outputURL, options: .mappedIfSafe)
+        guard compressed.count <= 15 * 1_024 * 1_024 else {
+            throw PromoMediaError.videoTooLarge
+        }
+        return compressed
+    }
+}
 
-        return newImage ?? image
+private struct PromotionMovie: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { movie in
+            SentTransferredFile(movie.url)
+        } importing: { received in
+            let copyURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("promo-selected-\(UUID().uuidString).\(received.file.pathExtension)")
+            try FileManager.default.copyItem(at: received.file, to: copyURL)
+            return PromotionMovie(url: copyURL)
+        }
     }
 }
 
@@ -1250,6 +1967,7 @@ struct CouponCodeSheet: View {
 // MARK: - New Coupon Form
 
 private struct NewCouponForm: View {
+    @EnvironmentObject private var sessionManager: AppSessionManager
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Promotion.title) private var promotions: [Promotion]
 
@@ -1297,35 +2015,38 @@ private struct NewCouponForm: View {
             Section {
                 Button(action: saveCoupon) {
                     Text("coupon_save_btn".t).frame(maxWidth: .infinity)
-                        .foregroundColor(couponCode.isEmpty ? .textTertiary : .white)
+                        .foregroundColor(canSaveCoupon ? .white : .textTertiary)
                 }
-                .listRowBackground(couponCode.isEmpty ? AnyView(Color.appSurfaceHigh) : AnyView(APGradient.accent.opacity(1)))
-                .disabled(couponCode.isEmpty)
+                .listRowBackground(canSaveCoupon ? AnyView(APGradient.accent.opacity(1)) : AnyView(Color.appSurfaceHigh))
+                .disabled(!canSaveCoupon)
+            } footer: {
+                Text("coupon_link_required_hint".t)
+                    .font(.caption)
+                    .foregroundColor(.textSecondary)
             }
         }
         .scrollContentBackground(.hidden)
         .background(Color.appBackground)
     }
 
+    private var canSaveCoupon: Bool {
+        !couponCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && selectedPromoId != nil
+    }
+
     private func saveCoupon() {
-        if let promoId = selectedPromoId,
-           let promo = promotions.first(where: { $0.id == promoId }) {
-            promo.couponCode = couponCode.uppercased()
-            promo.couponMaxRedemptions = Int(maxRedemptions)
-            promo.couponExpiresAt = hasExpiry ? expiresAt : nil
-            promo.isSynced = false; promo.updatedAt = Date()
-            modelContext.saveWithLogging(label: "CouponCodeSheet.saveCoupon")
-            Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
-        } else {
-            // Create a standalone coupon-only Promotion
-            let p = Promotion(title: couponCode.uppercased(), isActive: true)
-            p.couponCode = couponCode.uppercased()
-            p.couponMaxRedemptions = Int(maxRedemptions)
-            p.couponExpiresAt = hasExpiry ? expiresAt : nil
-            modelContext.insert(p)
-            modelContext.saveWithLogging(label: "CouponCodeSheet.saveCoupon")
-            Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
-        }
+        guard sessionManager.can(.promotionsManage) else { return }
+        let code = couponCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard let promoId = selectedPromoId,
+              let promo = promotions.first(where: { $0.id == promoId }),
+              !code.isEmpty else { return }
+
+        promo.couponCode = code
+        promo.couponMaxRedemptions = Int(maxRedemptions)
+        promo.couponExpiresAt = hasExpiry ? expiresAt : nil
+        promo.isSynced = false
+        promo.updatedAt = Date()
+        modelContext.saveWithLogging(label: "CouponCodeSheet.saveCoupon")
+        Task { await SyncEngine.shared.syncPromotions(modelContext) }
         onSave()
     }
 }

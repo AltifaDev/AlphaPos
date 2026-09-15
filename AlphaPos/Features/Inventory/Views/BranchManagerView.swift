@@ -5,14 +5,14 @@ struct BranchManagerView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     
-    @Query(sort: \Branch.name) private var branches: [Branch]
+    @Query(filter: #Predicate<Branch> { !$0.isDeleted }, sort: \Branch.name) private var branches: [Branch]
     
     @State private var showingAddSheet = false
     @State private var newName = ""
     @State private var newLocation = ""
     @State private var newPhone = ""
     
-    @AppStorage("active_branch_id") private var activeBranchId = ""
+    @AppStorage(BranchContext.storageKey) private var activeBranchId = ""
     
     var body: some View {
         NavigationStack {
@@ -45,7 +45,7 @@ struct BranchManagerView: View {
                     
                     // Branch List
                     ScrollView {
-                        VStack(spacing: APSpacing.md) {
+                        LazyVStack(spacing: APSpacing.md) {
                             ForEach(branches) { branch in
                                 branchCard(branch)
                             }
@@ -78,7 +78,7 @@ struct BranchManagerView: View {
     
     @ViewBuilder
     private func branchCard(_ branch: Branch) -> some View {
-        let isActive = activeBranchId == branch.id.uuidString
+        let isActive = UUID(uuidString: activeBranchId) == branch.id
         
         HStack(spacing: APSpacing.md) {
             VStack(alignment: .leading, spacing: APSpacing.xs) {
@@ -109,8 +109,9 @@ struct BranchManagerView: View {
             
             if !isActive {
                 Button(action: {
-                    activeBranchId = branch.id.uuidString
+                    BranchContext.shared.select(branch)
                     APHaptic.trigger()
+                    dismiss()
                 }) {
                     Text("branch_select_store_btn".t)
                         .font(.caption)

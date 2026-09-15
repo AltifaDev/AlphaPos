@@ -9,6 +9,7 @@ import SwiftData
 struct HeldOrdersView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("enable_table_system") private var tableSystemEnabled = true
     
     @Query(
         filter: #Predicate<Order> { order in
@@ -135,6 +136,7 @@ struct HeldOrdersView: View {
     // MARK: - Held Order Card
     
     private func heldOrderCard(order: Order, index: Int) -> some View {
+        let identity = OrderDisplayIdentity(order: order, tableSystemEnabled: tableSystemEnabled)
         let holdDuration = timeHeldString(since: order.createdAt)
         let activeItems = order.items.filter { !$0.isDeleted }
         let itemsSummary = activeItems.prefix(4).compactMap { item -> String? in
@@ -156,8 +158,11 @@ struct HeldOrdersView: View {
                             .font(.caption)
                             .foregroundColor(.appAmber)
                         
-                        if let table = order.tableSession?.table?.tableNumber {
-                            Label("Table \(table)", systemImage: "tablecells")
+                        if identity.isQuickService || identity.tableNumber != nil {
+                            Label(
+                                identity.primaryLabel,
+                                systemImage: identity.isQuickService ? "number.square.fill" : "tablecells"
+                            )
                                 .font(.caption)
                                 .foregroundColor(.textSecondary)
                         }

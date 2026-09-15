@@ -1,16 +1,17 @@
 import SwiftUI
-import CryptoKit
 import LocalAuthentication
 import AVFoundation
 
 struct LoginView: View {
     @Binding var loggedInEmployee: Employee?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("app_theme") private var appTheme = AppTheme.light.rawValue
     @AppStorage("active_merchant_id") private var activeMerchantId = ""
     @AppStorage("app_language") private var appLanguage = "en"
     
     @State private var employees: [Employee] = []
     @State private var selectedEmployee: Employee? = nil
+    @State private var pendingLoggedInEmployee: Employee? = nil
     @State private var pinDigits: String = ""
     @State private var pinSheetMode: PinSheetMode = .pin
     
@@ -19,17 +20,14 @@ struct LoginView: View {
         case biometrics
     }
     
-    @State private var showingLinkAlert = false
-    @State private var inputMerchantId = ""
-    
     // Pairing & Store Onboarding States
     @State private var showingScannerSheet = false
     @State private var showingManualInputSheet = false
     @State private var manualStoreId = ""
     @State private var isScanningQR = false
-    @State private var scanProgress: Double = 0.0
-    @State private var isSimulatingScan = false
     @State private var showingDisconnectAlert = false
+    // Entry animation for the pairing screen (fade + rise on appear).
+    @State private var pairingAppeared = false
     
     // Bio scan simulation states
     @State private var isBioScanning = false
@@ -38,7 +36,10 @@ struct LoginView: View {
     @State private var bioScannerMessage = "Ready to Scan"
     
     @State private var isLoading = false
+    @State private var pairingAwaitingApproval = false
     @State private var errorMessage: String? = nil
+    @State private var errorTitle = ""
+    @State private var errorSystemImage = "server.rack"
     @State private var isStoreIdCopied = false
 
     // ── Computed ─────────────────────────────────────────────────────────
@@ -62,14 +63,23 @@ struct LoginView: View {
             loadEmployees()
         }
         // PIN Pad & Biometrics Sheet
-        .sheet(item: $selectedEmployee) { emp in
+        .sheet(item: $selectedEmployee, onDismiss: {
+            // Build the dashboard only after UIKit finishes dismissing the PIN
+            // sheet. Starting both transitions together can block gesture gates.
+            if let employee = pendingLoggedInEmployee {
+                pendingLoggedInEmployee = nil
+                loggedInEmployee = employee
+            }
+        }) { emp in
             Group {
                 if pinSheetMode == .pin {
                     PinEntryView(
                         employee: emp,
                         pinDigits: $pinDigits,
                         onSuccess: {
-                            loggedInEmployee = emp
+                            // Associate this device's push token with the logged-in employee
+                            NetworkService.shared.associatePushToken(with: emp.id)
+                            pendingLoggedInEmployee = emp
                             selectedEmployee = nil
                         },
                         onTriggerBiometrics: {
@@ -86,9 +96,8 @@ struct LoginView: View {
             .presentationDragIndicator(.visible)
             .apColorScheme()
         }
-        // Scanner simulation sheet
         .sheet(isPresented: $showingScannerSheet) {
-            simulatedScannerView
+            pairingScannerView
                 .apColorScheme()
         }
         // Manual store input sheet
@@ -96,25 +105,13 @@ struct LoginView: View {
             manualInputView
                 .apColorScheme()
         }
-        .alert("link_shop".localized(for: appLanguage), isPresented: $showingLinkAlert) {
-            TextField("Merchant UUID", text: $inputMerchantId)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            Button("cancel".localized(for: appLanguage), role: .cancel) { }
-            Button("link_shop".localized(for: appLanguage)) {
-                let cleaned = inputMerchantId.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !cleaned.isEmpty {
-                    activeMerchantId = cleaned
-                    loadEmployees()
-                }
-            }
-        } message: {
-            Text("enter_store_id_sub".localized(for: appLanguage))
-        }
         .alert("unlink_store_title".localized(for: appLanguage), isPresented: $showingDisconnectAlert) {
             Button("cancel".localized(for: appLanguage), role: .cancel) { }
             Button("unlink_store_title".localized(for: appLanguage), role: .destructive) {
+                MerchantAuthManager.shared.logout()
                 activeMerchantId = ""
+                UserDefaults.standard.removeObject(forKey: "active_branch_id")
+                UserDefaults.standard.removeObject(forKey: "paired_device_id")
                 employees = []
             }
         } message: {
@@ -146,7 +143,7 @@ struct LoginView: View {
                     .font(.caption)
                     .fontWeight(.bold)
             }
-            .foregroundColor(.white)
+            .foregroundColor(.textPrimary)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .apLiquidGlass(interactive: true, in: Capsule())
@@ -166,7 +163,7 @@ struct LoginView: View {
         }) {
             Image(systemName: appTheme == AppTheme.dark.rawValue ? "sun.max.fill" : "moon.fill")
                 .font(.title3)
-                .foregroundColor(.white)
+                .foregroundColor(.textPrimary)
                 .padding(12)
                 .apLiquidGlass(interactive: true, in: Circle())
         }
@@ -181,15 +178,7 @@ struct LoginView: View {
                 .font(.title3)
                 .foregroundColor(.appAccent)
                 .padding(12)
-                .background(
-                    Circle()
-                        .fill(Color.appSurface)
-                        .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
-                )
-                .overlay(
-                    Circle()
-                        .stroke(Color.appBorderSubtle, lineWidth: 1)
-                )
+                .apLiquidGlass(interactive: true, in: Circle())
         }
     }
     
@@ -198,225 +187,171 @@ struct LoginView: View {
     private var pairingVideoBackground: some View {
         ZStack {
             StaffLoopingVideoPlayer(videoName: "LoginBG")
-            Color.black.opacity(appTheme == AppTheme.dark.rawValue ? 0.48 : 0.30)
+            // Lighter dim so the video reads clearly — just enough contrast for
+            // the few remaining elements. A soft bottom gradient keeps the
+            // button/title legible without hiding the footage.
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(appTheme == AppTheme.dark.rawValue ? 0.28 : 0.16),
+                    Color.black.opacity(appTheme == AppTheme.dark.rawValue ? 0.42 : 0.30)
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
         }
         .ignoresSafeArea()
     }
     
     private var storePairingView: some View {
+        // Ultra-minimal layout — let the background video dominate. Only three
+        // small elements: a compact title block near the top, a translucent
+        // floating QR glyph in the middle (no glass card), and a single primary
+        // button + a tiny "enter manually" link at the bottom.
         VStack(spacing: 0) {
-            // Header bar for pairing
+            // Header bar (language + theme)
             HStack {
                 Spacer()
-                
                 languageMenu
-                
                 themeToggleButton
             }
             .padding(.horizontal, APSpacing.md)
-            .padding(.top, APSpacing.md)
-            
-            ScrollView {
-                VStack(spacing: APSpacing.xl) {
-                    Spacer().frame(height: 20)
-                    
-                    // Welcome Header
-                    VStack(spacing: APSpacing.xs) {
-                        Image(systemName: "qrcode.viewfinder")
-                            .font(.system(size: 64))
-                            .foregroundStyle(.white)
-                            .padding(APSpacing.md)
-                            .apLiquidGlass(in: Circle())
-                            .padding(.bottom, APSpacing.sm)
-                        
-                        Text("link_store_title".localized(for: appLanguage))
-                            .font(.title).fontWeight(.black)
-                            .foregroundColor(.white)
-                        
-                        Text("link_store_sub".localized(for: appLanguage))
-                            .font(.subheadline)
-                            .foregroundColor(.white.opacity(0.82))
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.horizontal, APSpacing.lg)
-                    
-                    // Visual Pairing Card (Pulsing QR Code Mockup)
-                    ZStack {
-                        RoundedRectangle(cornerRadius: APRadius.lg)
-                            .fill(Color.clear)
-                            .frame(height: 240)
-                            .apLiquidGlass(in: RoundedRectangle(cornerRadius: APRadius.lg))
-                        
-                        VStack(spacing: APSpacing.md) {
-                            ZStack {
-                                Circle()
-                                    .stroke(APGradient.accent, lineWidth: 3)
-                                    .frame(width: 100, height: 100)
-                                    .scaleEffect(isScanningQR ? 1.1 : 1.0)
-                                    .opacity(isScanningQR ? 0.5 : 1.0)
-                                
-                                Image(systemName: "qrcode")
-                                    .font(.system(size: 48))
-                                    .foregroundStyle(APGradient.accent)
-                            }
-                            
-                            Text("scan_pairing_qr_desc".localized(for: appLanguage))
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.white.opacity(0.88))
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal)
-                        }
-                    }
-                    .padding(.horizontal, APSpacing.lg)
-                    .onAppear {
-                        withAnimation(Animation.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
-                            isScanningQR = true
-                        }
-                    }
-                    
-                    // Action Buttons
-                    VStack(spacing: APSpacing.md) {
-                        Button(action: {
-                            APHaptic.trigger()
-                            showingScannerSheet = true
-                        }) {
-                            Label("scan_qr_code".localized(for: appLanguage), systemImage: "camera.fill")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, APSpacing.md)
-                                .apLiquidGlass(
-                                    tint: .appAccent.opacity(0.72),
-                                    interactive: true,
-                                    in: RoundedRectangle(cornerRadius: APRadius.md)
-                                )
-                        }
-                        
-                        Button(action: {
-                            APHaptic.trigger()
-                            manualStoreId = ""
-                            showingManualInputSheet = true
-                        }) {
-                            Label("enter_manually".localized(for: appLanguage), systemImage: "keyboard")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, APSpacing.md)
-                                .apLiquidGlass(
-                                    interactive: true,
-                                    in: RoundedRectangle(cornerRadius: APRadius.md)
-                                )
-                        }
-                    }
-                    .padding(.horizontal, APSpacing.lg)
-                    
-                    Spacer()
-                    
-                    // Quick Demo Link for Developer testing
-                    Button(action: {
-                        APHaptic.trigger()
-                        activeMerchantId = "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
-                        loadEmployees()
-                    }) {
-                        Text("sandbox_demo".localized(for: appLanguage))
-                            .font(.caption)
-                            .fontWeight(.bold)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, APSpacing.md)
-                            .padding(.vertical, APSpacing.sm)
-                            .apLiquidGlass(
-                                interactive: true,
-                                in: Capsule()
-                            )
-                    }
-                    .padding(.bottom, APSpacing.lg)
+            .padding(.top, APSpacing.sm)
+
+            Spacer(minLength: 0)
+
+            // Floating QR glyph — no card, sits directly on the video with a
+            // sweeping scan-line so it reads as "scanner" while staying airy.
+            ZStack {
+                Image(systemName: "qrcode")
+                    .font(.system(size: 60, weight: .regular))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.35), radius: 10, y: 2)
+
+                // Sweeping scan line
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(
+                        LinearGradient(colors: [.clear, Color.appAccent, .clear],
+                                       startPoint: .leading, endPoint: .trailing)
+                    )
+                    .frame(width: 66, height: 2.5)
+                    .offset(y: isScanningQR ? 30 : -30)
+                    .opacity(0.9)
+            }
+            .scaleEffect(pairingAppeared ? 1 : 0.7)
+            .opacity(pairingAppeared ? 1 : 0)
+
+            Spacer().frame(height: 18)
+
+            // Compact title + subtitle
+            VStack(spacing: 5) {
+                Text("link_store_title".localized(for: appLanguage))
+                    .font(.system(size: 22, weight: .black))
+                    .foregroundColor(.white)
+                    .shadow(color: .black.opacity(0.3), radius: 6, y: 1)
+
+                Text("link_store_sub".localized(for: appLanguage))
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(.white.opacity(0.85))
+                    .multilineTextAlignment(.center)
+                    .shadow(color: .black.opacity(0.25), radius: 4, y: 1)
+            }
+            .padding(.horizontal, APSpacing.lg)
+            .opacity(pairingAppeared ? 1 : 0)
+            .offset(y: pairingAppeared ? 0 : 10)
+
+            Spacer(minLength: 0)
+
+            // Primary action + small manual link
+            VStack(spacing: 12) {
+                Button(action: {
+                    APHaptic.trigger()
+                    showingScannerSheet = true
+                }) {
+                    Label("scan_qr_code".localized(for: appLanguage), systemImage: "camera.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .apLiquidGlass(
+                            tint: .appAccent.opacity(0.78),
+                            interactive: true,
+                            in: RoundedRectangle(cornerRadius: APRadius.md)
+                        )
                 }
+
+                Button(action: {
+                    APHaptic.trigger()
+                    manualStoreId = ""
+                    showingManualInputSheet = true
+                }) {
+                    Text("enter_manually".localized(for: appLanguage))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                        .underline()
+                        .shadow(color: .black.opacity(0.3), radius: 4, y: 1)
+                }
+            }
+            .padding(.horizontal, APSpacing.lg)
+            .padding(.bottom, APSpacing.lg)
+            .opacity(pairingAppeared ? 1 : 0)
+            .offset(y: pairingAppeared ? 0 : 16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            withAnimation(Animation.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
+                isScanningQR = true
+            }
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.82)) {
+                pairingAppeared = true
             }
         }
     }
     
-    private var simulatedScannerView: some View {
-        VStack(spacing: APSpacing.xl) {
-            HStack {
-                Spacer()
-                Button("close".localized(for: appLanguage)) {
-                    showingScannerSheet = false
-                }
-                .foregroundColor(.appAccent)
-                .padding()
-            }
-            
-            Text("scan_pairing_qr_title".localized(for: appLanguage))
-                .font(.headline)
-                .foregroundColor(.textPrimary)
-            
-            // Camera viewfinder simulator
-            ZStack {
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(APGradient.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round, dash: [40, 20]))
-                    .frame(width: 250, height: 250)
-                
-                if isSimulatingScan {
-                    // Pulsing red scan line
-                    Rectangle()
-                        .fill(Color.appRose)
-                        .frame(width: 230, height: 2)
-                        .offset(y: scanProgress)
-                        .onAppear {
-                            withAnimation(Animation.easeInOut(duration: 2.0).repeatForever(autoreverses: true)) {
-                                scanProgress = 110
-                            }
-                        }
-                }
-            }
-            .frame(width: 260, height: 260)
-            .onAppear {
-                isSimulatingScan = true
-                scanProgress = -110
-            }
-            
-            if isLoading {
-                ProgressView("Pairing in progress...")
-                    .padding()
-            } else if let error = errorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundColor(.appRose)
-                    .multilineTextAlignment(.center)
-                    .padding()
-            }
-            
-            VStack(spacing: APSpacing.sm) {
-                Button(action: {
-                    simulateQRCodeScan()
-                }) {
-                    HStack {
-                        Image(systemName: "qrcode.viewfinder")
-                        Text("จำลองสแกน QR จาก iPad POS")
+    private var pairingScannerView: some View {
+        ZStack {
+            PairingQRScannerView(
+                onScan: handleScannedQRCode,
+                onError: { errorMessage = $0 }
+            )
+            .ignoresSafeArea()
+
+            RoundedRectangle(cornerRadius: 20)
+                .stroke(Color.white, lineWidth: 3)
+                .frame(width: 260, height: 260)
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Button {
+                        showingScannerSheet = false
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .padding(12)
+                            .background(.black.opacity(0.55), in: Circle())
                     }
-                    .font(.subheadline.weight(.bold))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.appAccent)
-                    .cornerRadius(12)
                 }
-                .disabled(isLoading)
-                
-                // Quick Sandbox Bypass
-                Button(action: {
-                    completePairing(with: "163350b0-056d-4d5e-b5d4-24e7aac5ab6d") // Demo
-                }) {
-                    Text("simulate_sandbox".localized(for: appLanguage))
-                        .font(.caption)
-                        .foregroundColor(.textSecondary)
+                .padding()
+
+                Spacer()
+
+                VStack(spacing: 10) {
+                    if isLoading {
+                        ProgressView().tint(.white)
+                        Text("Pairing in progress...")
+                    } else if let errorMessage {
+                        Text(errorMessage).foregroundColor(.red)
+                    } else {
+                        Text("Scan the one-time QR code shown on AlphaPos")
+                    }
                 }
-                .padding(.top, 8)
+                .font(.subheadline.weight(.semibold))
+                .multilineTextAlignment(.center)
+                .foregroundColor(.white)
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(.black.opacity(0.65))
             }
-            .padding(.horizontal, APSpacing.lg)
-            
-            Spacer()
         }
     }
     
@@ -468,8 +403,22 @@ struct LoginView: View {
                     }
                 
                 if isLoading {
-                    ProgressView("Pairing...")
-                        .padding(.top, 4)
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text(pairingAwaitingApproval
+                             ? "รออนุมัติจาก iPad POS..."
+                             : "Pairing...")
+                            .font(.caption)
+                            .foregroundColor(.textSecondary)
+                            .multilineTextAlignment(.center)
+                        if pairingAwaitingApproval {
+                            Text("เมื่อเครื่องแม่กด Approve การเชื่อมต่อจะเสร็จทันที")
+                                .font(.caption2)
+                                .foregroundColor(.textTertiary)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                    .padding(.top, 4)
                 } else if let error = errorMessage {
                     Text(error)
                         .font(.caption)
@@ -482,19 +431,25 @@ struct LoginView: View {
                 let cleaned = manualStoreId.replacingOccurrences(of: " ", with: "")
                 if pairingCodeIsValid {
                     isLoading = true
+                    pairingAwaitingApproval = false
                     errorMessage = nil
                     Task {
                         do {
+                            // Flip UI into waiting state shortly after submit.
+                            try await Task.sleep(nanoseconds: 400_000_000)
+                            await MainActor.run { self.pairingAwaitingApproval = true }
                             let resolvedMerchantId = try await NetworkService.shared.validatePairingCode(code: cleaned)
                             await MainActor.run {
                                 self.completePairing(with: resolvedMerchantId)
                                 self.showingManualInputSheet = false
                                 self.isLoading = false
+                                self.pairingAwaitingApproval = false
                             }
                         } catch {
                             await MainActor.run {
                                 self.errorMessage = error.localizedDescription
                                 self.isLoading = false
+                                self.pairingAwaitingApproval = false
                             }
                         }
                     }
@@ -510,36 +465,24 @@ struct LoginView: View {
         }
     }
     
-    private func simulateQRCodeScan() {
+    private func handleScannedQRCode(_ value: String) {
+        guard !isLoading else { return }
+        guard let components = URLComponents(string: value),
+              components.scheme?.lowercased() == "alphapos",
+              components.host?.lowercased() == "pair",
+              let token = components.queryItems?.first(where: { $0.name == "token" })?.value,
+              !token.isEmpty else {
+            errorMessage = "This is not an AlphaPos pairing QR code"
+            return
+        }
+
         isLoading = true
         errorMessage = nil
         Task {
             do {
-                let nowStr = ISO8601DateFormatter().string(from: Date())
-                let queryItems = [
-                    URLQueryItem(name: "is_used", value: "eq.false"),
-                    URLQueryItem(name: "expires_at", value: "gt.\(nowStr)"),
-                    URLQueryItem(name: "order", value: "created_at.desc"),
-                    URLQueryItem(name: "limit", value: "1")
-                ]
-                
-                let data = try await NetworkService.shared.sendSupabaseRequest(
-                    method: "GET",
-                    endpoint: "device_pairing_tokens",
-                    queryItems: queryItems
-                )
-                
-                let decoder = JSONDecoder()
-                let results = try decoder.decode([NetworkService.PairingResponse].self, from: data)
-                
-                guard let first = results.first else {
-                    throw NSError(domain: "NetworkService", code: 404, userInfo: [NSLocalizedDescriptionKey: "ไม่พบ QR Code ที่ใช้งานอยู่บน iPad POS กรุณาเปิด Add Device บน iPad POS ก่อน"])
-                }
-                
-                let resolvedMerchantId = try await NetworkService.shared.validatePairingToken(token: first.token)
+                let resolvedMerchantId = try await NetworkService.shared.validatePairingToken(token: token)
                 await MainActor.run {
                     self.completePairing(with: resolvedMerchantId)
-                    self.showingScannerSheet = false
                     self.isLoading = false
                 }
             } catch {
@@ -555,6 +498,7 @@ struct LoginView: View {
         APHaptic.trigger()
         activeMerchantId = uuid
         showingScannerSheet = false
+        NotificationManager.shared.requestAuthorization()
         loadEmployees()
     }
     
@@ -591,19 +535,11 @@ struct LoginView: View {
             VStack(spacing: 0) {
                 // Premium Animated Header
                 VStack(spacing: APSpacing.md) {
-                    // Grid icon with glow
-                    Image(systemName: "square.grid.3x3.fill")
-                        .font(.system(size: 36, weight: .semibold))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.18, green: 0.44, blue: 0.97),
-                                    Color(red: 0.36, green: 0.64, blue: 1.0)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
+                    Image("AppLogo")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 72, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .shadow(color: Color(red: 0.18, green: 0.44, blue: 0.97).opacity(0.4), radius: 12)
                         .opacity(headerAppeared ? 1 : 0)
                         .scaleEffect(headerAppeared ? 1 : 0.5)
@@ -640,37 +576,9 @@ struct LoginView: View {
                     }
                     .frame(maxHeight: .infinity)
                 } else if let err = errorMessage {
-                    VStack(spacing: APSpacing.md) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.title)
-                            .foregroundColor(Color(red: 0.99, green: 0.27, blue: 0.29))
-                        Text(err)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-
-                        Button(action: { loadEmployees() }) {
-                            Label("retry".localized(for: appLanguage), systemImage: "arrow.clockwise")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .frame(maxWidth: 200)
-                                .padding(.vertical, 14)
-                                .background(
-                                    Capsule(style: .continuous)
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [
-                                                    Color(red: 0.18, green: 0.44, blue: 0.97),
-                                                    Color(red: 0.36, green: 0.64, blue: 1.0)
-                                                ],
-                                                startPoint: .leading,
-                                                endPoint: .trailing
-                                            )
-                                        )
-                                )
-                        }
-                    }
-                    .frame(maxHeight: .infinity)
+                    connectionIssueView(message: err)
+                        .frame(maxHeight: .infinity)
+                        .transition(.scale(scale: 0.94).combined(with: .opacity))
                 } else if employees.isEmpty {
                     emptyEmployeesView
                         .frame(maxHeight: .infinity)
@@ -693,13 +601,68 @@ struct LoginView: View {
             }
         }
         .onAppear {
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.05)) {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.6, dampingFraction: 0.7).delay(0.05)) {
                 headerAppeared = true
             }
-            withAnimation(.spring(response: 0.7, dampingFraction: 0.65).delay(0.35)) {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.7, dampingFraction: 0.65).delay(0.35)) {
                 cardsAppeared = true
             }
         }
+    }
+
+    private func connectionIssueView(message: String) -> some View {
+        let networkAvailable = errorSystemImage != "wifi.slash"
+        return VStack(spacing: APSpacing.lg) {
+            ZStack {
+                Circle()
+                    .fill(Color.appRose.opacity(0.12))
+                    .frame(width: 76, height: 76)
+                Image(systemName: errorSystemImage)
+                    .font(.system(size: 31, weight: .semibold))
+                    .foregroundStyle(APGradient.accent)
+                    .symbolEffect(.pulse, options: reduceMotion ? .nonRepeating : .repeating)
+            }
+
+            VStack(spacing: APSpacing.sm) {
+                Text(errorTitle)
+                    .font(.title3.weight(.bold))
+                    .foregroundColor(.textPrimary)
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundColor(.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+            }
+
+            HStack(spacing: 7) {
+                Circle().fill(networkAvailable ? Color.appGreen : Color.appRose).frame(width: 7, height: 7)
+                Text(networkAvailable
+                     ? (appLanguage == "th" ? "อุปกรณ์เชื่อมต่อเครือข่ายแล้ว" : "Device network is connected")
+                     : (appLanguage == "th" ? "อุปกรณ์ยังไม่มีเครือข่าย" : "Device network is disconnected"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.textSecondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .apLiquidGlass(in: Capsule())
+
+            Button {
+                APHaptic.trigger()
+                loadEmployees()
+            } label: {
+                Label("retry".localized(for: appLanguage), systemImage: "arrow.clockwise")
+                    .font(.headline)
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(APGradient.accent, in: Capsule())
+            }
+            .buttonStyle(PressableButtonStyle())
+        }
+        .padding(24)
+        .frame(maxWidth: 350)
+        .apLiquidGlass(in: RoundedRectangle(cornerRadius: 32, style: .continuous))
+        .padding(.horizontal, APSpacing.lg)
     }
 
     private func premiumEmployeeCard(emp: Employee, index: Int) -> some View {
@@ -893,25 +856,6 @@ struct LoginView: View {
                             )
                     }
                     
-                    Button(action: {
-                        APHaptic.trigger()
-                        activeMerchantId = "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
-                        loadEmployees()
-                    }) {
-                        HStack(spacing: APSpacing.xs) {
-                            Image(systemName: "sparkles")
-                                .font(.footnote)
-                            Text("connect_demo_store".localized(for: appLanguage))
-                                .font(.caption)
-                                .fontWeight(.bold)
-                        }
-                        .foregroundColor(.appAccent)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(Color.appAccent.opacity(0.1))
-                        .clipShape(Capsule())
-                    }
-                    .padding(.top, 4)
                 }
                 .padding(.horizontal, APSpacing.md)
                 .padding(.bottom, APSpacing.lg)
@@ -965,43 +909,46 @@ struct LoginView: View {
     }
     
     private func loadEmployees() {
-        guard !activeMerchantId.isEmpty else { return }
+        guard !activeMerchantId.isEmpty else {
+            employees = []
+            return
+        }
+        guard !StaffSessionContext.branchId.isEmpty else {
+            employees = []
+            errorTitle = appLanguage == "th" ? "ต้องเชื่อมต่อสาขาใหม่" : "Branch pairing required"
+            errorSystemImage = "point.3.connected.trianglepath.dotted"
+            errorMessage = appLanguage == "th"
+                ? "ข้อมูลการเชื่อมต่อเดิมไม่มีรหัสสาขา กรุณายกเลิกการเชื่อมโยงแล้วจับคู่กับเครื่องหลักใหม่"
+                : "This pairing has no branch identity. Unlink and pair with the main register again."
+            return
+        }
+        // Never retain profiles from a previous request, merchant, or branch.
+        // The server response below is the complete authoritative login list.
+        employees = []
         isLoading = true
         errorMessage = nil
+        errorTitle = ""
+        errorSystemImage = "server.rack"
         Task {
             do {
                 let mId = activeMerchantId.trimmingCharacters(in: .whitespacesAndNewlines)
-                let isDemo = mId.lowercased() == "163350b0-056d-4d5e-b5d4-24e7aac5ab6d"
                 
-                // 1. Verify merchant subscription status from server
-                let subscription = try await NetworkService.shared.fetchMerchantSubscription(merchantId: mId)
-                
-                let tier = subscription.subscriptionTier ?? "offline_perpetual"
-                let status = subscription.subscriptionStatus ?? "active"
-                
-                // 2. Enforce active subscription
-                if status.lowercased() != "active" {
+                let access = try await NetworkService.shared.fetchStaffSubscriptionAccess()
+                guard access.merchantID.uuidString.lowercased() == mId.lowercased() else {
+                    throw NetworkError.invalidResponse
+                }
+                if !access.isAllowed {
                     await MainActor.run {
+                        let message = access.message(thai: appLanguage == "th")
                         self.isLoading = false
-                        self.errorMessage = appLanguage == "th"
-                            ? "สิทธิ์การใช้งานของร้านค้าหมดอายุแล้ว กรุณาเปิดบัญชีหลักเพื่ออัปเดตข้อมูลการชำระเงิน"
-                            : "The store's subscription has expired. Please open the main register to renew billing."
+                        self.errorTitle = message.title
+                        self.errorMessage = message.body
+                        self.errorSystemImage = "creditcard.trianglebadge.exclamationmark"
                     }
                     return
                 }
-                
-                // 3. Enforce Online Cloud Tier (bypass for Demo Store to support App Store reviews)
-                if tier != "online_subscription" && !isDemo {
-                    await MainActor.run {
-                        self.isLoading = false
-                        self.errorMessage = appLanguage == "th"
-                            ? "ร้านค้านี้ใช้แพ็กเกจแบบออฟไลน์ (เครื่องเดียว) การต่อพ่วงพนักงานหลายเครื่องจำเป็นต้องอัปเกรดเป็นแพ็กเกจออนไลน์คลาวด์"
-                            : "This store is on an Offline Plan (Single-Device). Accessing POS features from staff devices requires upgrading to the Online Cloud Plan."
-                    }
-                    return
-                }
-                
-                // 4. Load employee list if active and tier matches
+
+                // Load profiles only after the server grants staff-device access.
                 let list = try await NetworkService.shared.fetchEmployees()
                 await MainActor.run {
                     self.employees = list
@@ -1010,11 +957,54 @@ struct LoginView: View {
             } catch {
                 await MainActor.run {
                     self.isLoading = false
-                    self.errorMessage = appLanguage == "th"
-                        ? "ไม่สามารถเชื่อมต่อระบบออนไลน์ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต"
-                        : "Failed to connect to the cloud. AlphaPos Staff requires an active internet connection."
+                    self.presentLoadError(error)
                 }
             }
+        }
+    }
+
+    private func presentLoadError(_ error: Error) {
+        #if DEBUG
+        print("LoginView [Load Employees]: \(error)")
+        #endif
+
+        let urlCode = (error as? URLError)?.code
+        if urlCode == .notConnectedToInternet || urlCode == .networkConnectionLost {
+            errorTitle = appLanguage == "th" ? "เครือข่ายขาดการเชื่อมต่อ" : "Network disconnected"
+            errorSystemImage = "wifi.slash"
+            errorMessage = appLanguage == "th"
+                ? "อุปกรณ์ยังเข้าเครือข่ายไม่ได้ กรุณาตรวจสอบ Wi‑Fi หรือเครือข่ายมือถือแล้วลองใหม่"
+                : "This device cannot reach the network. Check Wi‑Fi or cellular data and try again."
+        } else if urlCode == .cannotConnectToHost || urlCode == .cannotFindHost || urlCode == .timedOut || urlCode == .secureConnectionFailed {
+            errorTitle = appLanguage == "th" ? "เซิร์ฟเวอร์ไม่ตอบสนอง" : "Server unavailable"
+            errorSystemImage = "server.rack"
+            errorMessage = appLanguage == "th"
+                ? "อินเทอร์เน็ตพร้อมใช้งาน แต่ยังติดต่อบริการ AlphaPos ไม่ได้ กรุณาลองใหม่หรือตรวจสอบเซิร์ฟเวอร์"
+                : "Internet is available, but AlphaPos cannot be reached. Try again or check the server."
+        } else if let authError = error as? AuthError, case .tokenExpired = authError {
+            errorTitle = appLanguage == "th" ? "เซสชันร้านค้าหมดอายุ" : "Store session expired"
+            errorSystemImage = "key.slash"
+            errorMessage = appLanguage == "th"
+                ? "ไม่สามารถต่ออายุสิทธิ์ของอุปกรณ์ได้ กรุณายกเลิกการเชื่อมโยงแล้วเชื่อมต่อร้านค้าอีกครั้ง"
+                : "This device could not renew its store access. Unlink and pair the store again."
+        } else if case NetworkError.invalidResponse = error {
+            errorTitle = appLanguage == "th" ? "ตรวจสอบข้อมูลไม่สำเร็จ" : "Unable to verify data"
+            errorSystemImage = "exclamationmark.icloud"
+            errorMessage = appLanguage == "th"
+                ? "ข้อมูลจากเซิร์ฟเวอร์ไม่ครบถ้วน กรุณาลองใหม่ หากยังพบปัญหาให้ติดต่อฝ่ายสนับสนุน"
+                : "The server returned incomplete data. Retry or contact support if the problem persists."
+        } else if (error as NSError).domain == "NetworkService", (error as NSError).code == 404 {
+            errorTitle = appLanguage == "th" ? "ไม่พบร้านค้านี้" : "Store not found"
+            errorSystemImage = "storefront"
+            errorMessage = appLanguage == "th"
+                ? "รหัสร้านค้าไม่ตรงกับข้อมูลบนเซิร์ฟเวอร์ กรุณาเชื่อมโยงร้านค้าอีกครั้ง"
+                : "This store ID does not match a store on the server. Pair the store again."
+        } else {
+            errorTitle = appLanguage == "th" ? "บริการออนไลน์ขัดข้อง" : "Cloud service error"
+            errorSystemImage = "exclamationmark.icloud"
+            errorMessage = appLanguage == "th"
+                ? "เชื่อมต่ออินเทอร์เน็ตแล้ว แต่บริการส่งข้อมูลกลับมาไม่สำเร็จ กรุณาลองใหม่ภายหลัง"
+                : "Internet is connected, but the service returned an error. Please try again later."
         }
     }
     
@@ -1080,48 +1070,12 @@ struct LoginView: View {
     }
     
     private func startBiometricScan(for employee: Employee) {
-        // faceEmbedding is no longer stored on the client — use faceRegisteredAt to indicate enrollment
-        guard employee.faceRegisteredAt != nil else {
-            bioScannerMessage = "No face registered. Log in with PIN first and register your face in the Timecard tab."
-            return
-        }
-        
-        let context = LAContext()
-        var error: NSError?
-        
-        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
-            bioScannerMessage = "Biometrics not available on this device"
-            return
-        }
-        
-        isBioScanning = true
-        bioScanProgress = 0.3
-        bioScannerMessage = "Verifying identity..."
-        
-        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics,
-                               localizedReason: "Verify your identity to clock in") { success, authError in
-            DispatchQueue.main.async {
-                if success {
-                    self.bioScanProgress = 1.0
-                    self.bioScanSuccess = true
-                    self.bioScannerMessage = "Biometric Match Confirmed!"
-                    APHaptic.trigger()
-                    
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        self.loggedInEmployee = employee
-                        self.isBioScanning = false
-                        self.bioScanSuccess = false
-                        self.bioScanProgress = 0.0
-                        self.selectedEmployee = nil
-                    }
-                } else {
-                    self.isBioScanning = false
-                    self.bioScanProgress = 0.0
-                    self.bioScannerMessage = "Biometric verification failed"
-                    APHaptic.trigger()
-                }
-            }
-        }
+        isBioScanning = false
+        bioScanSuccess = false
+        bioScanProgress = 0
+        bioScannerMessage = appLanguage == "th"
+            ? "ระบบจดจำใบหน้าพนักงานยังไม่พร้อม กรุณาเข้าสู่ระบบด้วย PIN"
+            : "Employee face recognition is not available. Please sign in with your PIN."
     }
 }
 
@@ -1136,6 +1090,8 @@ struct PinEntryView: View {
     
     @AppStorage("app_language") private var appLanguage = "en"
     @State private var showPinError = false
+    @State private var pinErrorMessage = ""
+    @State private var isVerifying = false
     @State private var failedAttempts = 0
     @State private var isLocked = false
     @State private var lockoutTimer: Timer?
@@ -1172,8 +1128,10 @@ struct PinEntryView: View {
                         .padding(.vertical, APSpacing.xs)
                         .shake(trigger: showPinError)
                         
-                        if showPinError {
-                            Text("pin_error".localized(for: appLanguage))
+                        if isVerifying {
+                            verificationIndicator
+                        } else if showPinError {
+                            Text(pinErrorMessage)
                                 .font(.caption)
                                 .foregroundColor(.appRose)
                                 .multilineTextAlignment(.center)
@@ -1207,8 +1165,10 @@ struct PinEntryView: View {
                     .padding(.vertical, APSpacing.sm)
                     .shake(trigger: showPinError)
                     
-                    if showPinError {
-                        Text("pin_error".localized(for: appLanguage))
+                    if isVerifying {
+                        verificationIndicator
+                    } else if showPinError {
+                        Text(pinErrorMessage)
                             .font(.caption)
                             .foregroundColor(.appRose)
                     }
@@ -1250,6 +1210,10 @@ struct PinEntryView: View {
                         .clipShape(Circle())
                         .overlay(Circle().stroke(Color.appBorderSubtle, lineWidth: 1))
                 }
+                .disabled(true)
+                .opacity(0.45)
+                .accessibilityLabel(appLanguage == "th" ? "ระบบจดจำใบหน้ายังไม่พร้อม" : "Face recognition unavailable")
+                .accessibilityHint(appLanguage == "th" ? "กรุณาใช้ PIN" : "Use your employee PIN")
                 
                 keypadButton(text: "0", size: buttonSize)
                 
@@ -1270,29 +1234,46 @@ struct PinEntryView: View {
                 }
             }
         }
+        .disabled(isVerifying)
+        .opacity(isVerifying ? 0.55 : 1)
+    }
+
+    private var verificationIndicator: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("pin_verifying".localized(for: appLanguage))
+                .font(.caption.weight(.semibold))
+        }
+        .foregroundColor(.appAccent)
+        .accessibilityElement(children: .combine)
     }
     
     private func keypadButton(text: String, size: CGFloat) -> some View {
         Button(action: {
-            guard !isLocked else { return }
+            guard !isLocked, !isVerifying else { return }
             APHaptic.trigger()
             showPinError = false
             if pinDigits.count < 4 {
                 pinDigits.append(text)
                 
                 if pinDigits.count == 4 {
+                    let submittedPin = pinDigits
+                    isVerifying = true
                     Task {
                         do {
-                            // SECURITY: do NOT pass expectedPinHash — employee.pinCode is no longer
-                            // fetched from the server. Verification always goes through the DB path.
-                            let verified = try await NetworkService.shared.verifyPin(employeeId: employee.id, pinDigits: pinDigits)
+                            // Credential hashes stay on the server; this is one RPC call.
+                            let verified = try await NetworkService.shared.verifyPin(employeeId: employee.id, pinDigits: submittedPin)
                             await MainActor.run {
+                                isVerifying = false
                                 if verified {
                                     failedAttempts = 0
+                                    pinDigits = ""
                                     onSuccess()
                                 } else {
                                     failedAttempts += 1
                                     showPinError = true
+                                    pinErrorMessage = "pin_error".localized(for: appLanguage)
                                     pinDigits = ""
                                     APHaptic.trigger()
                                     if failedAttempts >= maxFailedAttempts {
@@ -1306,17 +1287,11 @@ struct PinEntryView: View {
                             }
                         } catch {
                             await MainActor.run {
-                                failedAttempts += 1
+                                isVerifying = false
                                 showPinError = true
+                                pinErrorMessage = "pin_network_error".localized(for: appLanguage)
                                 pinDigits = ""
                                 APHaptic.trigger()
-                                if failedAttempts >= maxFailedAttempts {
-                                    isLocked = true
-                                    lockoutTimer = Timer.scheduledTimer(withTimeInterval: lockoutDuration, repeats: false) { _ in
-                                        isLocked = false
-                                        failedAttempts = 0
-                                    }
-                                }
                             }
                         }
                     }
@@ -1368,22 +1343,6 @@ struct ShakeModifier: ViewModifier {
     }
 }
 
-private extension View {
-    @ViewBuilder
-    func apLiquidGlass<S: Shape>(
-        tint: Color? = nil,
-        interactive: Bool = false,
-        in shape: S
-    ) -> some View {
-        if #available(iOS 26.0, *) {
-            glassEffect(.regular.tint(tint).interactive(interactive), in: shape)
-        } else {
-            background(.ultraThinMaterial, in: shape)
-                .overlay(shape.stroke(.white.opacity(0.22), lineWidth: 1))
-        }
-    }
-}
-
 private struct StaffLoopingVideoPlayer: UIViewRepresentable {
     let videoName: String
 
@@ -1406,9 +1365,22 @@ private struct StaffLoopingVideoPlayer: UIViewRepresentable {
         func play(_ url: URL, in view: PlayerView) {
             let player = AVQueuePlayer()
             player.isMuted = true
-            looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+            // Render at the highest quality the source allows (no artificial cap),
+            // so a 1080p LoginBG.mp4 shows crisp instead of being downscaled.
+            let asset = AVURLAsset(url: url, options: [
+                AVURLAssetPreferPreciseDurationAndTimingKey: true
+            ])
+            let item = AVPlayerItem(asset: asset)
+            item.preferredMaximumResolution = .zero          // .zero = no downscale cap
+            item.preferredPeakBitRate = 0                     // 0 = unlimited (use full quality)
+            if #available(iOS 14.0, *) {
+                item.appliesPerFrameHDRDisplayMetadata = true
+            }
+            looper = AVPlayerLooper(player: player, templateItem: item)
             self.player = player
             view.playerLayer.player = player
+            // Crisper scaling when the layer is larger than the video frame.
+            view.playerLayer.magnificationFilter = .trilinear
             player.play()
         }
     }

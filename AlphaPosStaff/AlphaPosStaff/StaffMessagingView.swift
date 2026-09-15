@@ -509,7 +509,7 @@ struct ChatDetailView: View {
                             .padding(.vertical, APSpacing.sm)
                         }
                         .onAppear { scrollProxy = proxy }
-                        .onChange(of: messages.count) { _ in
+                        .onChange(of: messages.count) { _, _ in
                             withAnimation(.easeOut(duration: 0.2)) {
                                 proxy.scrollTo(messages.last?.id, anchor: .bottom)
                             }
@@ -845,13 +845,11 @@ struct ChatDetailView: View {
     
     private func startPolling() {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
-            Task {
+            Task { @MainActor in
                 do {
                     let freshMessages = try await NetworkService.shared.fetchMessages(channelId: channel.id)
                     if freshMessages.count != messages.count {
-                        await MainActor.run {
-                            messages = freshMessages
-                        }
+                        messages = freshMessages
                     }
                 } catch {}
             }

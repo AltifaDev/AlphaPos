@@ -2,11 +2,12 @@
  * AlphaPos — Menu Image Parser (Edge Function)
  *
  * Accepts up to 5 menu images (multipart/form-data or base64 JSON)
- * and uses Google Gemini Vision API to extract product names, prices,
+ * and uses OpenRouter multimodal models to extract product names, prices,
  * and suggested categories from the menu photos.
  *
- * Environment Variables (set via `supabase secrets set`):
- *   GEMINI_API_KEY — Google AI Studio API key
+ * Environment Variables (set in the self-hosted edge-runtime container):
+ *   OPENROUTER_API_KEY — OpenRouter API key
+ *   OPENROUTER_MODEL   — Optional model override
  *
  * Request:
  *   POST /parse-menu-image
@@ -27,7 +28,7 @@
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-openrouter-api-key",
 };
 
 Deno.serve(async (req: Request) => {
@@ -44,12 +45,12 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const geminiApiKey = Deno.env.get("GEMINI_API_KEY") || req.headers.get("x-gemini-api-key") || req.headers.get("X-Gemini-API-Key");
-    if (!geminiApiKey) {
+    const openRouterApiKey = Deno.env.get("OPENROUTER_API_KEY") || req.headers.get("x-openrouter-api-key");
+    if (!openRouterApiKey) {
       return new Response(
         JSON.stringify({ 
-          error: "GEMINI_API_KEY_MISSING",
-          message: "Please configure GEMINI_API_KEY in Supabase secrets or provide it in the X-Gemini-API-Key header." 
+          error: "OPENROUTER_API_KEY_MISSING",
+          message: "Please configure OPENROUTER_API_KEY in Supabase secrets or provide it in the X-OpenRouter-API-Key header."
         }),
         {
           status: 400,
@@ -82,9 +83,8 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Build Gemini Vision API request
     const prompt = buildMenuExtractionPrompt();
-    const parts: GeminiPart[] = [{ text: prompt }];
+    const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
 
     for (const imageBase64 of images) {
       // Auto-detect MIME type from base64 header or default to JPEG
@@ -99,19 +99,16 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      parts.push({
-        inline_data: {
-          mime_type: mimeType,
-          data: cleanBase64,
-        },
+      content.push({
+        type: "image_url",
+        image_url: { url: `data:${mimeType};base64,${cleanBase64}` },
       });
     }
 
-    // Call Gemini API
-    const geminiResponse = await callGeminiVision(geminiApiKey, parts);
+    const openRouterResponse = await callOpenRouter(openRouterApiKey, content);
 
     // Parse the structured response
-    const result = parseGeminiResponse(geminiResponse);
+    const result = parseOpenRouterResponse(openRouterResponse);
 
     return new Response(JSON.stringify(result), {
       status: 200,
@@ -129,14 +126,6 @@ Deno.serve(async (req: Request) => {
 });
 
 // ── Types ──────────────────────────────────────────────────────────────
-
-interface GeminiPart {
-  text?: string;
-  inline_data?: {
-    mime_type: string;
-    data: string;
-  };
-}
 
 interface ExtractedItem {
   name: string;
@@ -191,63 +180,59 @@ CONFIDENCE SCORING:
 IMPORTANT: Return ONLY the JSON object, no additional text or markdown formatting.`;
 }
 
-// ── Gemini API Call ────────────────────────────────────────────────────
+// ── OpenRouter API Call ────────────────────────────────────────────────
 
-async function callGeminiVision(apiKey: string, parts: GeminiPart[]): Promise<string> {
-  const model = "gemini-2.0-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+async function callOpenRouter(apiKey: string, content: Array<Record<string, unknown>>): Promise<string> {
+  const model = Deno.env.get("OPENROUTER_MODEL") || "nvidia/nemotron-nano-12b-v2-vl:free";
+  const url = "https://openrouter.ai/api/v1/chat/completions";
 
   const requestBody = {
-    contents: [
+    model,
+    messages: [
       {
-        parts: parts,
+        role: "system",
+        content: "Extract structured menu data. Return exactly one valid JSON object and no safety label, explanation, or markdown.",
       },
+      { role: "user", content },
     ],
-    generationConfig: {
-      temperature: 0.1, // Low temperature for accurate extraction
-      topP: 0.8,
-      maxOutputTokens: 8192,
-      responseMimeType: "application/json",
-    },
-    safetySettings: [
-      { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-      { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-      { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-    ],
+    temperature: 0.1,
+    max_tokens: 8192,
   };
 
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://alphapos.app",
+      "X-Title": "AlphaPos Menu Scanner",
+    },
     body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
     const errorBody = await response.text();
-    console.error("Gemini API error:", response.status, errorBody);
-    throw new Error(`Gemini API error (${response.status}): ${errorBody}`);
+    console.error("OpenRouter API error:", response.status, errorBody);
+    throw new Error(`OpenRouter API error (${response.status}): ${errorBody}`);
   }
 
   const data = await response.json();
 
-  // Extract text from Gemini response
-  const candidates = data?.candidates;
-  if (!candidates || candidates.length === 0) {
-    throw new Error("No response from Gemini API");
+  const messageContent = data?.choices?.[0]?.message?.content;
+  const text = typeof messageContent === "string"
+    ? messageContent
+    : Array.isArray(messageContent)
+      ? messageContent.map((part: { text?: string }) => part.text || "").join("")
+      : "";
+  if (!text) {
+    throw new Error("Empty content from OpenRouter API");
   }
-
-  const content = candidates[0]?.content?.parts?.[0]?.text;
-  if (!content) {
-    throw new Error("Empty content from Gemini API");
-  }
-
-  return content;
+  return text;
 }
 
 // ── Response Parser ───────────────────────────────────────────────────
 
-function parseGeminiResponse(rawResponse: string): ParseResult {
+function parseOpenRouterResponse(rawResponse: string): ParseResult {
   // Clean up possible markdown code block wrapping
   let jsonStr = rawResponse.trim();
   if (jsonStr.startsWith("```json")) {
@@ -260,12 +245,18 @@ function parseGeminiResponse(rawResponse: string): ParseResult {
   }
   jsonStr = jsonStr.trim();
 
+  const objectStart = jsonStr.indexOf("{");
+  const objectEnd = jsonStr.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    jsonStr = jsonStr.slice(objectStart, objectEnd + 1);
+  }
+
   try {
     const parsed = JSON.parse(jsonStr);
 
     // Validate and normalize the response
     const items: ExtractedItem[] = (parsed.items || [])
-      .filter((item: Record<string, unknown>) => item.name && typeof item.price === "number" && item.price > 0)
+      .filter((item: Record<string, unknown>) => item.name && Number.isFinite(Number(item.price)) && Number(item.price) > 0)
       .map((item: Record<string, unknown>) => ({
         name: String(item.name).trim(),
         price: Number(item.price),
@@ -285,10 +276,10 @@ function parseGeminiResponse(rawResponse: string): ParseResult {
       items,
       suggested_categories: Array.from(categorySet),
       total_items_found: items.length,
-      confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.8,
+      confidence: Number.isFinite(Number(parsed.confidence)) ? Number(parsed.confidence) : 0.8,
     };
   } catch (parseError) {
-    console.error("Failed to parse Gemini response:", parseError, "Raw:", jsonStr.substring(0, 500));
+    console.error("Failed to parse OpenRouter response:", parseError, "Raw:", jsonStr.substring(0, 500));
     throw new Error("Failed to parse AI response. Please try again with a clearer image.");
   }
 }

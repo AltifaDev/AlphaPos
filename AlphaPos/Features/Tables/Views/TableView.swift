@@ -2,12 +2,16 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
+import CryptoKit
+import UIKit
 
 struct TableView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
     @EnvironmentObject private var sessionManager: AppSessionManager
     @Query(sort: \RestaurantTable.tableNumber) private var tables: [RestaurantTable]
+    @Query(sort: \FloorData.sortOrder) private var allFloors: [FloorData]
+    @Query(sort: \Branch.name) private var allBranches: [Branch]
 
     @Binding var selectedTab: MainDashboardView.DashboardTab
     @Binding var activeSession: TableSession?
@@ -25,224 +29,233 @@ struct TableView: View {
     @State private var zoomScale: CGFloat = 1.0
     @State private var panOffset: CGSize = .zero
     @State private var activePanOffset: CGSize = .zero
+    /// True while pan/pinch is in progress — freezes viewport culling & kills implicit animations for 60fps tracking.
+    @State private var isCanvasGesturing: Bool = false
     @State private var isMovementLocked: Bool = false
     @State private var gestureScale: CGFloat = 1.0
     @State private var focusTableId: UUID? = nil
     @State private var bounceTableId: UUID? = nil
+    @State private var gridFocusTableId: UUID? = nil
+    @State private var gridHighlightedTableId: UUID? = nil
     @State private var headerWidth: CGFloat = 0
     @State private var searchTablesList: [RestaurantTable] = []
+    /// Selected table while editing layout (shows resize bounding box + corner handles).
+    @State private var layoutSelectedTableId: UUID? = nil
+    @State private var layoutSelectedTableIds: Set<UUID> = []
+    @State private var activeResizeCorner: TableResizeCorner? = nil
+    @State private var liveLayoutScale: CGFloat? = nil
+    @State private var liveLayoutOriginDelta: CGSize = .zero
+
+    /// Must match the drawn floor-plan grid spacing (see Canvas grid below).
+    private static let layoutGridSize: CGFloat = 20
+    /// Soft magnet distance in canvas points (Canvas mode only).
+    private static let canvasSnapThreshold: CGFloat = 10
+    private static let minLayoutScale: CGFloat = 0.5
+    private static let maxLayoutScale: CGFloat = 2.5
     @ObservedObject private var syncEngine = SyncEngine.shared
 
     @Query(filter: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted })
     private var activeRegisterSessions: [RegisterSession]
     @State private var showNoActiveShiftAlert = false
+    /// Prevents multiple tap/accessibility events from opening the same table
+    /// concurrently while its SwiftData session is being created.
+    @State private var openingTableIds: Set<UUID> = []
+    @State private var tableOpenError: String?
 
-    @Query(sort: \FloorPlanImage.floor) private var floorPlanImages: [FloorPlanImage]
+    @Query(sort: \FloorPlanImage.updatedAt) private var floorPlanImages: [FloorPlanImage]
     @Query(sort: \TableLayoutPreset.name) private var layoutPresets: [TableLayoutPreset]
     @State private var showingSavePresetAlert = false
     @State private var presetNameInput = ""
+    @State private var presetOperationError: String?
+    @State private var isPresetOperationRunning = false
 
     @AppStorage("logged_in_email") private var loggedInEmail = "owner@alphapos.com"
+
+    private var activeCashierDisplayName: String {
+        let staffName = sessionManager.currentStaffSession?.displayName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !staffName.isEmpty { return staffName }
+        return UserDefaults.standard.string(forKey: "logged_in_name") ?? "Staff"
+    }
     /// Reads UserDefaults override first, then falls back to Config.plist LOCAL_SERVER_URL.
     private var customerWebBaseUrl: String {
         let ud = UserDefaults.standard.string(forKey: "dynamic_customer_web_url") ?? ""
-        return ud.isEmpty ? "https://alphapos.altifadev.workers.dev" : ud
+        return ud.isEmpty ? "https://sync.alphaposweb.com" : ud
     }
     @State private var isLayoutManagerAuthorized = false
     // MARK: - Layout & View Mode
     @AppStorage("table_layout_mode") private var layoutModeRaw: String = "canvas"
     @AppStorage("table_view_mode") private var tableViewModeRaw: String = "map"
     // MARK: - Dynamic Floors
-    @AppStorage("table_floors_json") private var floorsJson: String = FloorData.defaultFloors.jsonString
-    private var floors: [FloorData] { floorsJson.asFloorDataArray }
+    @AppStorage(BranchContext.storageKey) private var activeBranchId = ""
+    private var floors: [FloorData] {
+        let branchKey = activeBranchId.lowercased()
+        let candidates = allFloors
+            .filter { !$0.isDeleted && $0.isActive && $0.branchId.lowercased() == branchKey }
+            .sorted {
+                if $0.floorNumber == $1.floorNumber, $0.isSynced != $1.isSynced {
+                    return $0.isSynced
+                }
+                return $0.sortOrder == $1.sortOrder
+                    ? $0.floorNumber < $1.floorNumber
+                    : $0.sortOrder < $1.sortOrder
+            }
+
+        // UUID strings are case-insensitive. Older builds compared them as raw
+        // strings and could create a second local "Floor 1" for the same branch.
+        // Keep one canonical area per floor number, preferring the synced area.
+        var seenFloorNumbers = Set<Int>()
+        return candidates.filter { seenFloorNumbers.insert($0.floorNumber).inserted }
+    }
+    private var selectedDiningAreaId: UUID? {
+        floors.first(where: { $0.floorNumber == selectedFloor })?.uuid
+    }
+    private var activeDiningAreaIds: Set<UUID> { Set(floors.map(\.uuid)) }
+
+    private func tableBelongsToActiveBranch(_ table: RestaurantTable) -> Bool {
+        if !table.branchId.isEmpty { return table.branchId.caseInsensitiveCompare(activeBranchId) == .orderedSame }
+        if let floorId = table.floorId { return activeDiningAreaIds.contains(floorId) }
+        return true // one-release legacy bridge; repaired on the next sync
+    }
+
+    private func tableBelongsToSelectedArea(_ table: RestaurantTable) -> Bool {
+        guard let diningAreaId = selectedDiningAreaId else { return false }
+        if let floorId = table.floorId { return floorId == diningAreaId }
+        return tableBelongsToActiveBranch(table) && (table.floor ?? 1) == selectedFloor
+    }
     // Floor edit state
     @State private var showingAddFloorAlert = false
     @State private var showingRenameFloorAlert = false
     @State private var renamingFloorId: Int? = nil
     @State private var floorNameInput: String = ""
     @State private var showingRemoveFloorConfirm = false
+    @State private var showingDeleteTableConfirm = false
+    @State private var pendingDeletionTableIds: Set<UUID> = []
+    @State private var optimisticallyDeletedTableIds: Set<UUID> = []
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var cachedFloorPlanImage: UIImage? = nil
+    @State private var floorPlanLoadTask: Task<Void, Never>?
     @State private var showingManagerPinSheet = false
+    @State private var showingQuickClearPinSheet = false
+    @State private var pendingQuickClearTableId: UUID?
+    @State private var showingQuickClearReasonPrompt = false
+    @State private var quickClearReasonText = ""
+    @State private var quickClearError: String?
+    @State private var showingQuickClearVacantConfirm = false
+    @State private var pendingVacantClearTable: RestaurantTable? = nil
     @State private var showingBatchQRSheet = false
+    @State private var isOpeningBatchQR = false
     @State private var pendingAuthAction: AuthAction? = nil
     // L-1: Waitlist
     @State private var showingWaitlist = false
 
+    private var pendingVacantTableNumber: String {
+        (pendingVacantClearTable?.joinedParent ?? pendingVacantClearTable)?.tableNumber ?? ""
+    }
+
+    private var isTableOpenErrorPresented: Binding<Bool> {
+        Binding(
+            get: { tableOpenError != nil },
+            set: { if !$0 { tableOpenError = nil } }
+        )
+    }
+
+    private var isPresetOperationErrorPresented: Binding<Bool> {
+        Binding(
+            get: { presetOperationError != nil },
+            set: { if !$0 { presetOperationError = nil } }
+        )
+    }
+
+    @ViewBuilder
+    private var floorPlanMainContent: some View {
+        ZStack(alignment: .bottomTrailing) {
+            if isListView {
+                VStack(spacing: 0) {
+                    if isEditingLayout {
+                        gridEditToolbar
+                    }
+                    tableListView
+                }
+            } else if isGridMode {
+                VStack(spacing: 0) {
+                    if isEditingLayout {
+                        gridEditToolbar
+                    }
+                    tableGridView
+                }
+            } else {
+                VStack(spacing: 0) {
+                    if isEditingLayout {
+                        canvasEditToolbar
+                    }
+                    floorPlanCanvas
+                }
+            }
+
+            if !isListView && !isGridMode {
+                floatingControlsPanel
+                    .padding(20)
+            }
+
+            if !activeRequestsForSelectedArea.isEmpty {
+                activeRequestsOverlay
+            }
+        }
+    }
+
     enum AuthAction {
         case toggleEditLayout(Bool)
         case addTable
-        case resetTables
+        case deleteTable
     }
 
     var body: some View {
-        // Outer GeometryReader วัด available width ก่อน render header
+        // Outer GeometryReader measures available width before rendering header.
         GeometryReader { outerGeo in
-            let isLandscape = outerGeo.size.width > outerGeo.size.height
             ZStack {
                 Color.appBackground.ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    // Responsive Header — ใช้ outerGeo.size.width แทน headerWidth
-                    Group {
-                        if outerGeo.size.width < 960 {
-                            compactHeader(showsSidebarButton: isLandscape, width: outerGeo.size.width)
-                        } else {
-                            wideHeader(showsSidebarButton: isLandscape, width: outerGeo.size.width)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, isLandscape ? 6 : 10)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.appSurface)
-                    .overlay(
-                        Divider().background(Color.appDivider),
-                        alignment: .bottom
-                    )
-
-                    // Floor Plan Canvas with Floating Panel Overlaid
-                    ZStack(alignment: .bottomTrailing) {
-                        if isListView {
-                            tableListView
-                        } else {
-                            VStack(spacing: 0) {
-                                // Grid/Canvas + Add Table toolbar (only in edit mode, map view)
-                                if isEditingLayout {
-                                    HStack(spacing: 12) {
-                                        // Grid / Canvas segmented toggle
-                                        HStack(spacing: 2) {
-                                            ForEach([("square.grid.2x2", "grid", "table_layout_mode_grid"),
-                                                     ("rectangle.on.rectangle.angled", "canvas", "table_layout_mode_canvas")],
-                                                    id: \.1) { icon, mode, key in
-                                                Button(action: {
-                                                    withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
-                                                        layoutModeRaw = mode
-                                                        APHaptic.trigger()
-                                                    }
-                                                }) {
-                                                    Image(systemName: icon)
-                                                        .font(.system(size: 14, weight: .semibold))
-                                                        .foregroundColor(layoutModeRaw == mode ? .white : .textSecondary)
-                                                        .frame(width: 34, height: 30)
-                                                        .background(layoutModeRaw == mode ? Color.appAccent : Color.clear)
-                                                        .cornerRadius(6)
-                                                }
-                                                .buttonStyle(.plain)
-                                                .accessibilityLabel(key.t)
-                                            }
-                                        }
-                                        .padding(2)
-                                        .background(Color.appSurfaceHigh)
-                                        .cornerRadius(8)
-                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.appBorderSubtle, lineWidth: 1))
-
-                                        Divider()
-                                            .frame(width: 1, height: 20)
-                                            .background(Color.appDivider)
-
-                                        // Floor Management Actions
-                                        HStack(spacing: 8) {
-                                            // Add Floor
-                                            Button(action: { showingAddFloorAlert = true }) {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "plus")
-                                                        .font(.system(size: 10, weight: .bold))
-                                                    Text("table_floor_add_btn".t)
-                                                        .font(.system(size: 11, weight: .semibold))
-                                                }
-                                                .foregroundColor(.appAccent)
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 6)
-                                                .background(Color.appAccent.opacity(0.1))
-                                                .cornerRadius(8)
-                                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.appAccent.opacity(0.3), lineWidth: 1))
-                                            }
-                                            .buttonStyle(.plain)
-
-                                            // Remove Floor
-                                            if floors.count > 1 {
-                                                Button(action: { showingRemoveFloorConfirm = true }) {
-                                                    HStack(spacing: 4) {
-                                                        Image(systemName: "trash")
-                                                            .font(.system(size: 10, weight: .bold))
-                                                        Text("table_floor_remove_btn".t)
-                                                            .font(.system(size: 11, weight: .semibold))
-                                                    }
-                                                    .foregroundColor(.appRose)
-                                                    .padding(.horizontal, 10)
-                                                    .padding(.vertical, 6)
-                                                    .background(Color.appRose.opacity(0.08))
-                                                    .cornerRadius(8)
-                                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.appRose.opacity(0.3), lineWidth: 1))
-                                                }
-                                                .buttonStyle(.plain)
-                                            }
-                                        }
-
-                                        Divider()
-                                            .frame(width: 1, height: 20)
-                                            .background(Color.appDivider)
-
-                                        layoutPresetsToolbar
-
-                                        Spacer()
-
-                                        // Add Table button
-                                        Button(action: { checkManagerPermission(for: .addTable) }) {
-                                            HStack(spacing: 5) {
-                                                Image(systemName: "plus")
-                                                    .font(.system(size: 12, weight: .bold))
-                                                Text("table_add_new_title".t)
-                                                    .font(.system(size: 13, weight: .semibold))
-                                            }
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 14)
-                                            .padding(.vertical, 8)
-                                            .background(Color.appAccent)
-                                            .cornerRadius(9)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 8)
-                                    .background(Color.appSurface)
-                                    .overlay(Divider().background(Color.appDivider), alignment: .bottom)
-                                }
-                                floorPlanCanvas
-                            }
-                        }
-
-                        if !isListView {
-                            floatingControlsPanel
-                                .padding(20)
-                        }
-
-                        if !syncEngine.activeRequests.isEmpty {
-                            activeRequestsOverlay
-                        }
-                    }
+                    floorPlanMainContent
                 }
             }
-            .navigationTitle("tab_tables".t)
-        .apNavBar()
-        .onAppear {
-            loadCachedFloorPlanImage()
-            enforceTableLimit()
-            searchTablesList = tables
-        }
-        .onChange(of: tables) { _, newTables in
-            updateSearchTablesList(with: newTables)
-        }
-        .onChange(of: selectedFloor) { loadCachedFloorPlanImage() }
-        .onChange(of: floorPlanImages) { loadCachedFloorPlanImage() }
-            #if os(iOS) || os(visionOS)
-            // The custom controls already act as this screen's header. In
-            // landscape, hiding the duplicate navigation title recovers the
-            // vertical space while the safe area still protects system UI.
-            .toolbar(isLandscape ? .hidden : .visible, for: .navigationBar)
-            #endif
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("")
+            .apNavBar()
+            .onAppear(perform: handleTableViewAppear)
+            .onReceive(NotificationCenter.default.publisher(for: .openAddFirstTableNotification)) { _ in
+                presentPendingAddFirstTableIfNeeded()
+            }
+            .onChange(of: tables, tableDataDidChange)
+            .onChange(of: allBranches) { _, _ in resolveActiveBranchIfNeeded() }
+            .onChange(of: selectedFloor) { selectedFloorDidChange() }
+            .onChange(of: activeBranchId) { _, _ in activeBranchDidChange() }
+            .onChange(of: floorPlanImages) { loadCachedFloorPlanImage() }
+            .toolbar(.visible, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    tableContextBar
+                }
+
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if isEditingLayout {
+                        headerEditModeBadge
+                    } else {
+                        modernStatusWidget
+                            .layoutPriority(2)
+                    }
+                    tableActionsMenu
+                }
+            }
             .sheet(item: $selectedTable) { table in
-                TableDetailView(table: table, selectedTab: $selectedTab, posTableSession: $activeSession)
+                TableDetailView(
+                    table: table,
+                    selectedTab: $selectedTab,
+                    posTableSession: $activeSession,
+                    allowsDeletion: isEditingLayout
+                )
+                    .presentationDetents([.height(500), .large])
+                    .presentationDragIndicator(.visible)
             }
             .alert("Cash Drawer is Locked", isPresented: $showNoActiveShiftAlert) {
                 Button("go_to_cash_drawer".t) {
@@ -252,8 +265,28 @@ struct TableView: View {
             } message: {
                 Text("pos_shift_required_hint".t)
             }
-            .sheet(isPresented: $showingAddTableSheet) {
+            .alert("ไม่สามารถเปิดโต๊ะได้", isPresented: isTableOpenErrorPresented) {
+                Button("ok_btn".t) { tableOpenError = nil }
+            } message: {
+                Text(tableOpenError ?? "")
+            }
+            .alert("Template Error", isPresented: isPresetOperationErrorPresented) {
+                Button("ok_btn".t) { presetOperationError = nil }
+            } message: {
+                Text(presetOperationError ?? "")
+            }
+            .sheet(isPresented: $showingAddTableSheet, onDismiss: {
+                if !isEditingLayout { isLayoutManagerAuthorized = false }
+            }) {
                 AddTableSheet(isPresented: $showingAddTableSheet, modelContext: modelContext, defaultFloor: selectedFloor)
+            }
+            .confirmationDialog("table_delete_confirm".t, isPresented: $showingDeleteTableConfirm, titleVisibility: .visible) {
+                Button("table_delete_btn".t, role: .destructive) {
+                    checkManagerPermission(for: .deleteTable)
+                }
+                Button("cancel".t, role: .cancel) {
+                    pendingDeletionTableIds.removeAll()
+                }
             }
             .sheet(isPresented: $showingManagerPinSheet) {
                 ManagerPINVerificationSheet(
@@ -266,25 +299,88 @@ struct TableView: View {
                     },
                     onDismiss: {
                         pendingAuthAction = nil
+                        pendingDeletionTableIds.removeAll()
                     }
                 )
             }
-            .fullScreenCover(isPresented: $showingBatchQRSheet) {
+            .sheet(isPresented: $showingQuickClearPinSheet) {
+                ManagerPINVerificationSheet(
+                    isPresented: $showingQuickClearPinSheet,
+                    onSuccess: {
+                        guard pendingQuickClearTableId != nil else { return }
+                        quickClearReasonText = ""
+                        showingQuickClearReasonPrompt = true
+                    },
+                    onDismiss: {
+                        if !showingQuickClearReasonPrompt {
+                            pendingQuickClearTableId = nil
+                        }
+                    }
+                )
+            }
+            .modifier(QuickClearDialogsModifier(
+                isVacantConfirmPresented: $showingQuickClearVacantConfirm,
+                pendingVacantTableNumber: pendingVacantTableNumber,
+                onConfirmVacant: {
+                    if let table = pendingVacantClearTable {
+                        pendingVacantClearTable = nil
+                        performQuickClearVacant(table)
+                    }
+                },
+                onCancelVacant: {
+                    pendingVacantClearTable = nil
+                },
+                isReasonPresented: $showingQuickClearReasonPrompt,
+                reason: $quickClearReasonText,
+                error: $quickClearError,
+                onConfirmVoid: { reason in
+                    guard let id = pendingQuickClearTableId,
+                          let table = tables.first(where: { $0.id == id }) else { return }
+                    pendingQuickClearTableId = nil
+                    performQuickVoidAndClear(table, reason: reason)
+                },
+                onCancelVoid: {
+                    pendingQuickClearTableId = nil
+                }
+            ))
+            .fullScreenCover(isPresented: $showingBatchQRSheet, onDismiss: {
+                isOpeningBatchQR = false
+            }) {
                 BatchQRCodePrintView(tables: tables)
+            }
+            .overlay {
+                if isOpeningBatchQR && !showingBatchQRSheet {
+                    ZStack {
+                        Color.black.opacity(0.28)
+                            .ignoresSafeArea()
+                        VStack(spacing: 14) {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .scaleEffect(1.2)
+                                .tint(.appAccent)
+                            Text("table_qr_preparing_lbl".t)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(.textPrimary)
+                        }
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, 22)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
+                    }
+                    .transition(.opacity)
+                    .allowsHitTesting(true)
+                }
             }
             // L-1: Waitlist sheet
             .sheet(isPresented: $showingWaitlist) {
                 WaitlistView()
             }
-        } // end GeometryReader
+        }
     }
 
     @ViewBuilder
     private var floorPlanCanvas: some View {
-        let floorTables = tables.filter { table in
-            (table.floor ?? 1) == selectedFloor && !table.isDeleted
-            && (selectedZone == "All" || table.zone == selectedZone)
-        }
+        let floorTables = visibleTablesForSelection
         let canvasSize = getCanvasSize()
 
         GeometryReader { viewport in
@@ -310,7 +406,7 @@ struct TableView: View {
 
                     // Grid lines overlay on background
                     Canvas { context, size in
-                        let gridSize: CGFloat = 20
+                        let gridSize = Self.layoutGridSize
                         let path = Path { path in
                             for x in stride(from: 0, to: canvasSize.width, by: gridSize) {
                                 path.move(to: CGPoint(x: x, y: 0))
@@ -321,28 +417,29 @@ struct TableView: View {
                                 path.addLine(to: CGPoint(x: canvasSize.width, y: y))
                             }
                         }
-                        let gridOpacity: CGFloat = isGridMode ? 0.25 : 0.12
-                        context.stroke(path, with: .color(Color.appDivider.opacity(gridOpacity)), lineWidth: isGridMode ? 0.8 : 0.6)
+                        let gridColor = isEditingLayout ? Color.appAccent : Color.appDivider
+                        let gridOpacity: CGFloat = isEditingLayout ? 0.28 : (isGridMode ? 0.25 : 0.12)
+                        context.stroke(path, with: .color(gridColor.opacity(gridOpacity)), lineWidth: isEditingLayout ? 1 : (isGridMode ? 0.8 : 0.6))
                     }
                     .frame(width: canvasSize.width, height: canvasSize.height)
                     .allowsHitTesting(false)
 
-                    // Render filtered tables with Viewport Culling
-                    // C-9 FIX: Pre-compute visible tables outside ForEach identity.
-                    // Inline .filter{} inside ForEach runs on every parent re-render
-                    // (e.g. when any @Query table changes isSynced/updatedAt) causing
-                    // view identity thrashing for all table cards simultaneously.
-                    // Using a local let-binding forces SwiftUI to diff against a stable array.
-                    let visibleFloorTables = floorTables.filter { table in
-                        isTableVisible(
-                            table,
-                            viewportSize: viewport.size,
-                            zoomScale: zoomScale,
-                            gestureScale: gestureScale,
-                            panOffset: panOffset,
-                            activePanOffset: activePanOffset
-                        )
-                    }
+                    // Render filtered tables with Viewport Culling.
+                    // During pan/pinch, skip culling so ForEach does not insert/remove
+                    // complex table cards mid-gesture (that churn tanks frame rate).
+                    let visibleFloorTables: [RestaurantTable] = {
+                        if isCanvasGesturing { return floorTables }
+                        return floorTables.filter { table in
+                            isTableVisible(
+                                table,
+                                viewportSize: viewport.size,
+                                zoomScale: zoomScale,
+                                gestureScale: gestureScale,
+                                panOffset: panOffset,
+                                activePanOffset: activePanOffset
+                            )
+                        }
+                    }()
                     // C-1 FIX: Wrap each card in .equatable() so SwiftUI skips body
                     // evaluation when InteractiveTableCardWrapper's == returns true.
                     // This means @Query re-renders only reach cards whose data changed.
@@ -352,107 +449,83 @@ struct TableView: View {
                             isEditingLayout: isEditingLayout,
                             activeDraggingTableId: activeDraggingTableId,
                             selectedTableId: selectedTable?.id,
+                            layoutSelectedTableId: layoutSelectedTableId,
+                            isMultiSelected: layoutSelectedTableIds.contains(table.id),
                             dragTranslation: dragTranslation,
-                            zoomScale: zoomScale,
+                            liveLayoutScale: liveLayoutScale,
+                            liveLayoutOriginDelta: liveLayoutOriginDelta,
+                            activeResizeCorner: activeResizeCorner,
+                            canvasZoom: totalCanvasZoom,
                             isBouncing: bounceTableId == table.id,
                             onTap: {
-                                if !isEditingLayout {
-                                    if activeRegisterSessions.isEmpty {
-                                        showNoActiveShiftAlert = true
-                                        return
-                                    }
-                                    let leader = table.joinedParent ?? table
-                                    if let session = leader.sessions.first(where: { $0.isActive }) {
-                                        if Calendar.current.isDateInToday(session.startedAt) {
-                                            activeSession = session
-                                            selectedTab = .pos
-                                            APHaptic.trigger()
-                                        } else {
-                                            // Close stale session
-                                            session.isActive = false
-                                            session.endedAt = Date()
-                                            session.isSynced = false
-                                            session.updatedAt = Date()
-
-                                            let tNum = leader.tableNumber
-                                            Task {
-                                                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: tNum)
-                                            }
-
-                                            // Auto-start vacant table session
-                                            let newSession = TableSession(sessionToken: UUID().uuidString, startedAt: Date(), isActive: true, table: leader, guestCount: leader.capacity)
-                                            modelContext.insert(newSession)
-                                            leader.sessions.append(newSession)
-                                            leader.status = "occupied"
-                                            leader.isSynced = false
-                                            for child in leader.joinedChildren {
-                                                child.status = "occupied"
-                                                child.isSynced = false
-                                            }
-                                            leader.updatedAt = Date()
-                                            for child in leader.joinedChildren {
-                                                child.updatedAt = Date()
-                                            }
-                                            modelContext.saveWithLogging(label: #function)
-
-                                            activeSession = newSession
-                                            selectedTab = .pos
-                                            APHaptic.trigger()
-
-                                            Task {
-                                                await SyncEngine.shared.syncAll(modelContext: modelContext)
-                                            }
+                                if isEditingLayout {
+                                    if layoutSelectedTableIds.contains(table.id) {
+                                        layoutSelectedTableIds.remove(table.id)
+                                        if layoutSelectedTableId == table.id {
+                                            layoutSelectedTableId = layoutSelectedTableIds.first
                                         }
                                     } else {
-                                        // Auto-start vacant table session
-                                        let newSession = TableSession(sessionToken: UUID().uuidString, startedAt: Date(), isActive: true, table: leader, guestCount: leader.capacity)
-                                        modelContext.insert(newSession)
-                                        leader.sessions.append(newSession)
-                                        leader.status = "occupied"
-                                        leader.isSynced = false
-                                        for child in leader.joinedChildren {
-                                            child.status = "occupied"
-                                            child.isSynced = false
-                                        }
-                                        leader.updatedAt = Date()
-                                        for child in leader.joinedChildren {
-                                            child.updatedAt = Date()
-                                        }
-                                        modelContext.saveWithLogging(label: #function)
-
-                                        activeSession = newSession
-                                        selectedTab = .pos
-                                        APHaptic.trigger()
-
-                                        Task {
-                                            await SyncEngine.shared.syncAll(modelContext: modelContext)
-                                        }
+                                        layoutSelectedTableIds.insert(table.id)
+                                        layoutSelectedTableId = table.id
                                     }
+                                    APHaptic.trigger()
+                                    return
                                 }
+                                openTableForOrdering(table)
                             },
                             onLongPress: {
                                 if !isEditingLayout {
-                                    selectedTable = table
+                                    selectedTable = table.joinedParent ?? table
                                     showingDetailSheet = true
                                     APHaptic.trigger()
                                 }
                             },
+                            onClear: { requestQuickClear(table) },
                             onDragChanged: { val in handleDragChanged(value: val, for: table) },
-                            onDragEnded: { val in handleDragEnded(value: val, for: table) }
+                            onDragEnded: { val in handleDragEnded(value: val, for: table) },
+                            onResizeChanged: { corner, val in handleResizeChanged(corner: corner, value: val, for: table) },
+                            onResizeEnded: { corner, val in handleResizeEnded(corner: corner, value: val, for: table) }
                         )
                         .equatable()
                     }
                 }
                 .frame(width: canvasSize.width, height: canvasSize.height)
-                .background(Color.appSurface) // Unified workspace board background
+                .background(isEditingLayout ? Color(red: 0.925, green: 0.95, blue: 1.0) : Color.appSurface)
                 .scaleEffect(zoomScale * gestureScale, anchor: .topLeading)
                 .offset(CGSize(width: panOffset.width + activePanOffset.width, height: panOffset.height + activePanOffset.height))
+                // Kill implicit animations on transform so pan/pinch tracks the finger 1:1.
+                .transaction { txn in
+                    if isCanvasGesturing || activeDraggingTableId != nil {
+                        txn.animation = nil
+                    }
+                }
             }
             .frame(width: viewport.size.width, height: viewport.size.height, alignment: .topLeading)
-            .background(Color.appSurface) // Matches canvas surface and creates a seamless infinite board look
+            .background(isEditingLayout ? Color(red: 0.925, green: 0.95, blue: 1.0) : Color.appSurface)
+            .overlay(alignment: .topTrailing) {
+                if isEditingLayout {
+                    Label("กำลังแก้ไขผัง", systemImage: "cursorarrow.motionlines")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.appAccent)
+                        .padding(.horizontal, 12)
+                        .frame(height: 34)
+                        .apLiquidGlass(tint: Color.appAccent.opacity(0.14), in: Capsule())
+                        .padding(14)
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay {
+                if isEditingLayout {
+                    Rectangle()
+                        .stroke(Color.appAccent.opacity(0.34), lineWidth: 1.5)
+                        .allowsHitTesting(false)
+                }
+            }
             .contentShape(Rectangle()) // Confine touch gestures strictly to the visible viewport
             .onTapGesture {
-                withAnimation {
+                var txn = Transaction()
+                txn.animation = nil
+                withTransaction(txn) {
                     selectedTable = nil
                 }
             }
@@ -460,12 +533,22 @@ struct TableView: View {
                 (!isMovementLocked && activeDraggingTableId == nil) ?
                 DragGesture(minimumDistance: 8) // Keep minimum distance threshold to allow taps to pass through
                     .onChanged { value in
-                        activePanOffset = value.translation
+                        var txn = Transaction()
+                        txn.animation = nil
+                        withTransaction(txn) {
+                            isCanvasGesturing = true
+                            activePanOffset = value.translation
+                        }
                     }
                     .onEnded { value in
-                        panOffset.width += value.translation.width
-                        panOffset.height += value.translation.height
-                        activePanOffset = .zero
+                        var txn = Transaction()
+                        txn.animation = nil
+                        withTransaction(txn) {
+                            panOffset.width += value.translation.width
+                            panOffset.height += value.translation.height
+                            activePanOffset = .zero
+                            isCanvasGesturing = false
+                        }
                     }
                 : nil
             )
@@ -473,11 +556,21 @@ struct TableView: View {
                 !isMovementLocked ?
                 MagnificationGesture()
                     .onChanged { value in
-                        gestureScale = value
+                        var txn = Transaction()
+                        txn.animation = nil
+                        withTransaction(txn) {
+                            isCanvasGesturing = true
+                            gestureScale = value
+                        }
                     }
                     .onEnded { value in
-                        zoomScale = min(1.5, max(0.5, zoomScale * value))
-                        gestureScale = 1.0
+                        var txn = Transaction()
+                        txn.animation = nil
+                        withTransaction(txn) {
+                            zoomScale = min(1.5, max(0.5, zoomScale * value))
+                            gestureScale = 1.0
+                            isCanvasGesturing = false
+                        }
                     }
                 : nil
             )
@@ -539,7 +632,9 @@ struct TableView: View {
             .overlay(
                 Group {
                     if floorTables.isEmpty {
-                        EmptyCanvasOverlayView()
+                        EmptyCanvasOverlayView {
+                            checkManagerPermission(for: .addTable)
+                        }
                     }
                 }
             )
@@ -621,46 +716,135 @@ struct TableView: View {
                     .stroke(Color.appBorderSubtle, lineWidth: 1)
             )
 
-            // Action buttons
-            VStack(spacing: 0) {
-                // Add Table
-                Button(action: { checkManagerPermission(for: .addTable) }) {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundColor(.white)
-                        .frame(width: 44, height: 44)
-                        .background(APGradient.positive)
-                        .clipShape(Circle())
-                        .padding(4)
-                }
-                .accessibilityLabel("Add new table")
+        }
+    }
 
-                Divider()
-                    .background(Color.appDivider)
-                    .frame(width: 32)
+    // MARK: - Table Grid View
+    private var tableGridView: some View {
+        let gridTables = visibleTablesForSelection
+            .sorted { $0.tableNumber.localizedStandardCompare($1.tableNumber) == .orderedAscending }
 
-                // Reset/Seed Button
-                Button(action: { checkManagerPermission(for: .resetTables) }) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.textSecondary)
-                        .frame(width: 44, height: 44)
+        return ScrollViewReader { proxy in
+            ScrollView {
+                if gridTables.isEmpty {
+                    EmptyCanvasOverlayView {
+                        checkManagerPermission(for: .addTable)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 480)
+                } else {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 16)],
+                        spacing: 16
+                    ) {
+                        ForEach(gridTables) { table in
+                            Button {
+                                if isEditingLayout {
+                                    toggleLayoutSelection(table)
+                                } else {
+                                    openTableForOrdering(table)
+                                }
+                                APHaptic.trigger()
+                            } label: {
+                                gridTableCard(
+                                    table,
+                                    isHighlighted: gridHighlightedTableId == table.id
+                                        || layoutSelectedTableIds.contains(table.id)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                tableQuickActions(table)
+                            }
+                            .id(table.id)
+                            .accessibilityLabel("Table \(table.tableNumber), \(table.status), \(table.capacity) guests")
+                        }
+                    }
+                    .padding(20)
                 }
             }
-            .background(Color.appSurface.opacity(0.88))
-            .cornerRadius(12)
-            .shadow(color: Color.black.opacity(0.12), radius: 8, x: 0, y: 4)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.appBorderSubtle, lineWidth: 1)
-            )
+            .onChange(of: gridFocusTableId) { _, id in
+                guard let id, gridTables.contains(where: { $0.id == id }) else { return }
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
+                    proxy.scrollTo(id, anchor: .center)
+                    gridHighlightedTableId = id
+                }
+                APHaptic.trigger()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        if gridHighlightedTableId == id {
+                            gridHighlightedTableId = nil
+                        }
+                    }
+                }
+                gridFocusTableId = nil
+            }
+            .background(isEditingLayout ? Color.appAccent.opacity(0.07) : Color.appBackground)
         }
+    }
+
+    private func gridTableCard(_ table: RestaurantTable, isHighlighted: Bool) -> some View {
+        let leader = table.joinedParent ?? table
+        let effectiveStatus = leader.status
+        let color = statusColor(effectiveStatus)
+        let activeSession = leader.sessions.last(where: { $0.isActive })
+        let zoneName = table.zone.flatMap { $0.isEmpty ? nil : $0 } ?? "table_zone_all".t
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(table.tableNumber)
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.textPrimary)
+                Spacer()
+                if isEditingLayout && layoutSelectedTableIds.contains(table.id) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(Color.appAccent)
+                }
+                listStatusBadge(status: effectiveStatus)
+            }
+
+            HStack(spacing: 14) {
+                Label("\(table.capacity)", systemImage: "person.2.fill")
+                if effectiveStatus.lowercased() == "occupied" {
+                    ElapsedTimeView(table: leader)
+                }
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Color.textSecondary)
+
+            Divider().background(Color.appDivider)
+
+            HStack {
+                Text(zoneName)
+                    .font(.caption)
+                    .foregroundStyle(Color.textSecondary)
+                Spacer()
+                Text(activeSession.map { String(format: "%.0f", $0.totalAmount) } ?? "—")
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(activeSession == nil ? Color.textTertiary : Color.appAccent)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 142, alignment: .topLeading)
+        .background(
+            isEditingLayout && layoutSelectedTableIds.contains(table.id)
+                ? Color.appAccent.opacity(0.08)
+                : Color.appSurface,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(
+                    isHighlighted ? Color.appAccent : color.opacity(0.28),
+                    lineWidth: isHighlighted ? 3 : 1
+                )
+        )
     }
 
     // MARK: - Table List View
     @ViewBuilder
     private var tableListView: some View {
-        let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
+        let floorTables = visibleTablesForSelection
         let sortedTables = floorTables.sorted { $0.tableNumber < $1.tableNumber }
         let availableCount  = floorTables.filter { $0.status.lowercased() == "vacant" }.count
         let occupiedCount   = floorTables.filter { $0.status.lowercased() == "occupied" }.count
@@ -669,7 +853,8 @@ struct TableView: View {
         let totalSeats      = floorTables.reduce(0) { $0 + $1.capacity }
 
         ZStack {
-            Color.appBackground.ignoresSafeArea()
+            (isEditingLayout ? Color.appAccent.opacity(0.07) : Color.appBackground)
+                .ignoresSafeArea()
             VStack(spacing: 0) {
 
                 // ── Floor underline tabs ──
@@ -678,7 +863,7 @@ struct TableView: View {
                         ForEach(floors) { floor in
                             Button(action: {
                                 withAnimation(.easeInOut(duration: 0.2)) {
-                                    selectedFloor = floor.id
+                                    selectFloor(floor.id)
                                     APHaptic.trigger()
                                 }
                             }) {
@@ -718,13 +903,8 @@ struct TableView: View {
 
                 if floorTables.isEmpty {
                     Spacer()
-                    VStack(spacing: 12) {
-                        Image(systemName: "tablecells")
-                            .font(.system(size: 48))
-                            .foregroundColor(.textTertiary)
-                        Text("table_empty_canvas_title".t)
-                            .font(.headline)
-                            .foregroundColor(.textSecondary)
+                    EmptyCanvasOverlayView {
+                        checkManagerPermission(for: .addTable)
                     }
                     Spacer()
                 } else {
@@ -733,7 +913,9 @@ struct TableView: View {
                         Image(systemName: "info.circle")
                             .font(.caption)
                             .foregroundColor(.textTertiary)
-                        Text("table_list_tip".t)
+                        Text(isEditingLayout
+                             ? "แตะแถวเพื่อเลือกหลายโต๊ะสำหรับจัดการ"
+                             : "table_list_tip".t)
                             .font(.caption)
                             .foregroundColor(.textTertiary)
                         Spacer()
@@ -757,6 +939,8 @@ struct TableView: View {
                         Text("table_list_col_total".t)
                             .frame(width: 80, alignment: .trailing)
                     }
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.textTertiary)
@@ -794,20 +978,33 @@ struct TableView: View {
 
     @ViewBuilder
     private func listTableRow(_ table: RestaurantTable) -> some View {
-        let activeSession = table.sessions.last(where: { $0.isActive })
+        let activeSession = (table.joinedParent ?? table).sessions.last(where: { $0.isActive })
         Button(action: {
-            selectedTable = table
-            showingDetailSheet = true
+            if isEditingLayout {
+                toggleLayoutSelection(table)
+            } else {
+                openTableForOrdering(table)
+            }
         }) {
             HStack(spacing: 0) {
                 // Icon
                 ZStack {
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.appSurfaceHigh)
+                        .fill(
+                            isEditingLayout && layoutSelectedTableIds.contains(table.id)
+                                ? Color.appAccent.opacity(0.14)
+                                : Color.appSurfaceHigh
+                        )
                         .frame(width: 32, height: 32)
-                    Image(systemName: "chair.lounge")
+                    Image(systemName: isEditingLayout && layoutSelectedTableIds.contains(table.id)
+                          ? "checkmark.circle.fill"
+                          : "chair.lounge")
                         .font(.system(size: 14))
-                        .foregroundColor(.textSecondary)
+                        .foregroundColor(
+                            isEditingLayout && layoutSelectedTableIds.contains(table.id)
+                                ? .appAccent
+                                : .textSecondary
+                        )
                 }
                 .frame(width: 48, alignment: .center)
 
@@ -816,6 +1013,8 @@ struct TableView: View {
                     Text(table.tableNumber)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.textPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -829,23 +1028,9 @@ struct TableView: View {
                 Text(shapeLabel(table.tableShape))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.textSecondary)
-        .padding(.horizontal, 8)
-
-        // L-1: Waitlist button
-        Divider()
-            .frame(width: 1, height: 16)
-            .background(Color.appBorderSubtle)
-            .padding(.horizontal, 2)
-
-        Button(action: { showingWaitlist = true; APHaptic.trigger() }) {
-            Image(systemName: "person.3.fill")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(.appAmber)
-                .frame(width: 28, height: 28)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("waitlist_title".t)
-
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(Color.appSurfaceHigh)
                     .cornerRadius(12)
@@ -853,7 +1038,7 @@ struct TableView: View {
                     .frame(width: 100, alignment: .center)
 
                 // Status badge
-                listStatusBadge(status: table.status)
+                listStatusBadge(status: (table.joinedParent ?? table).status)
                     .frame(width: 110, alignment: .center)
 
                 // QR actions
@@ -882,10 +1067,451 @@ struct TableView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(Color.appSurface)
+            .background(
+                isEditingLayout && layoutSelectedTableIds.contains(table.id)
+                    ? Color.appAccent.opacity(0.06)
+                    : Color.appSurface
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .fixedSize(horizontal: true, vertical: false)
+        .contextMenu {
+            tableQuickActions(table)
+        }
+    }
+
+    private func openTableForOrdering(_ table: RestaurantTable) {
+        guard !activeRegisterSessions.isEmpty else {
+            showNoActiveShiftAlert = true
+            return
+        }
+
+        let leader = table.joinedParent ?? table
+        let group = [leader] + leader.joinedChildren
+
+        // An active session is the source of truth. A delayed table-status pull
+        // can temporarily leave the table marked vacant; refusing to reuse its
+        // session here allowed a second tap to create a competing session.
+        if let session = group
+            .flatMap(\.sessions)
+            .filter({
+                $0.isActive
+                    && !$0.isDeleted
+                    && Calendar.current.isDateInToday($0.startedAt)
+            })
+            .sorted(by: { $0.startedAt > $1.startedAt })
+            .first {
+            if leader.status != "occupied" {
+                for member in group {
+                    member.status = "occupied"
+                    member.isSynced = false
+                    member.updatedAt = Date()
+                }
+                guard modelContext.saveWithLogging(label: "\(Self.self).openTableForOrdering.repairStatus") else {
+                    tableOpenError = "ไม่สามารถบันทึกสถานะโต๊ะ \(leader.tableNumber) ได้ กรุณาลองใหม่"
+                    return
+                }
+            }
+            activeSession = session
+            selectedTab = .pos
+            APHaptic.trigger()
+            return
+        }
+
+        // SwiftUI can deliver both a gesture and an accessibility activation
+        // before the first MainActor task has inserted its session.
+        guard openingTableIds.insert(leader.id).inserted else { return }
+
+        Task { @MainActor in
+            defer { openingTableIds.remove(leader.id) }
+
+            // Re-check after entering the task. This closes the small scheduling
+            // window between the synchronous guard above and session insertion.
+            if let existingSession = group
+                .flatMap(\.sessions)
+                .filter({
+                    $0.isActive
+                        && !$0.isDeleted
+                        && Calendar.current.isDateInToday($0.startedAt)
+                })
+                .sorted(by: { $0.startedAt > $1.startedAt })
+                .first {
+                activeSession = existingSession
+                selectedTab = .pos
+                APHaptic.trigger()
+                return
+            }
+
+            // Local state may say "vacant" even though the server still owns
+            // an active session with open orders. The database correctly
+            // refuses both closing that session and creating a second active
+            // one. Rehydrate and reuse the remote session before attempting a
+            // new open.
+            if let remoteSessions = try? await NetworkManager.shared.fetchActiveSessions(),
+               let remoteSession = remoteSessions.first(where: { row in
+                   guard let remoteNumber = row["tableNumber"] as? String else { return false }
+                   return SyncEngine.shared.canonicalTableNumber(remoteNumber)
+                       == SyncEngine.shared.canonicalTableNumber(leader.tableNumber)
+               }) {
+                await SyncEngine.shared.pullActiveSessions(modelContext)
+                if let restoredSession = group
+                    .flatMap(\.sessions)
+                    .filter({ $0.isActive && !$0.isDeleted })
+                    .sorted(by: { $0.startedAt > $1.startedAt })
+                    .first {
+                    activeSession = restoredSession
+                    selectedTab = .pos
+                    APHaptic.trigger()
+                    return
+                }
+
+                // pullActiveSessions may intentionally reject an old session
+                // based on its date, while the database still keeps it active
+                // because it owns open orders. Reattach that authoritative
+                // token so the cashier can finish and settle those orders.
+                let remoteToken = remoteSession["sessionToken"] as? String
+                    ?? remoteSession["session_token"] as? String
+                    ?? ""
+                guard !remoteToken.isEmpty else {
+                    tableOpenError = "พบ session ที่ยังเปิดอยู่ของโต๊ะ \(leader.tableNumber) แต่ไม่มี session token"
+                    return
+                }
+
+                let restoredSession: TableSession
+                if let localMatch = group
+                    .flatMap(\.sessions)
+                    .first(where: { $0.sessionToken == remoteToken }) {
+                    restoredSession = localMatch
+                    restoredSession.isActive = true
+                    restoredSession.isDeleted = false
+                    restoredSession.endedAt = nil
+                    restoredSession.isSynced = true
+                    restoredSession.updatedAt = Date()
+                } else {
+                    let remoteId = (remoteSession["id"] as? String)
+                        .flatMap(UUID.init(uuidString:)) ?? UUID()
+                    let startedAtString = remoteSession["created_at"] as? String
+                        ?? remoteSession["started_at"] as? String
+                        ?? ""
+                    let startedAt = NetworkManager.iso8601.date(from: startedAtString) ?? Date()
+                    restoredSession = TableSession(
+                        id: remoteId,
+                        sessionToken: remoteToken,
+                        startedAt: startedAt,
+                        isActive: true,
+                        table: leader,
+                        guestCount: remoteSession["guest_count"] as? Int ?? leader.capacity,
+                        cashierName: remoteSession["cashier_name"] as? String ?? activeCashierDisplayName,
+                        isSynced: true
+                    )
+                    modelContext.insert(restoredSession)
+                }
+
+                for member in group {
+                    member.status = "occupied"
+                    member.isSynced = true
+                    member.updatedAt = Date()
+                }
+                guard modelContext.saveWithLogging(label: "\(Self.self).openTableForOrdering.restoreRemote") else {
+                    tableOpenError = "ไม่สามารถบันทึก session ที่กู้คืนของโต๊ะ \(leader.tableNumber) ได้"
+                    return
+                }
+
+                await SyncEngine.shared.pullCustomerOrders(modelContext)
+                activeSession = restoredSession
+                selectedTab = .pos
+                APHaptic.trigger()
+                return
+            }
+
+            let staleSessions = group
+                .flatMap(\.sessions)
+                .filter { $0.isActive }
+            for session in staleSessions {
+                session.isActive = false
+                session.endedAt = Date()
+                session.isSynced = false
+                session.updatedAt = Date()
+            }
+            if !staleSessions.isEmpty,
+               !modelContext.saveWithLogging(label: "\(Self.self).openTableForOrdering.closeStale") {
+                tableOpenError = "ไม่สามารถปิด session เดิมของโต๊ะ \(leader.tableNumber) ได้ กรุณาลองใหม่"
+                return
+            }
+
+            // The device can have no active local session while the server
+            // still retains one (for example after an interrupted close).
+            // Opening a table that is visibly vacant must close that remote
+            // ghost first, otherwise the server's one-active-session-per-table
+            // constraint rejects the new session and the KDS ticket vanishes.
+            let shouldResetRemoteSession = !staleSessions.isEmpty
+                || leader.status.lowercased() == "vacant"
+            if shouldResetRemoteSession, !leader.tableNumber.isEmpty {
+                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: leader.tableNumber)
+            }
+
+            let newSession = TableSession(
+                sessionToken: UUID().uuidString,
+                startedAt: Date(),
+                isActive: true,
+                table: leader,
+                guestCount: leader.capacity,
+                cashierName: activeCashierDisplayName
+            )
+            modelContext.insert(newSession)
+            leader.sessions.append(newSession)
+            for member in group {
+                member.status = "occupied"
+                member.isSynced = false
+                member.updatedAt = Date()
+            }
+            guard modelContext.saveWithLogging(label: "\(Self.self).openTableForOrdering.create") else {
+                tableOpenError = "ไม่สามารถสร้าง session สำหรับโต๊ะ \(leader.tableNumber) ได้ กรุณาลองใหม่"
+                return
+            }
+
+            activeSession = newSession
+            selectedTab = .pos
+            APHaptic.trigger()
+
+            // Publish the newly-created session immediately. A full sync can
+            // spend several seconds pushing unrelated records first; during
+            // that window a realtime table pull could still see the server's
+            // old vacant state and close this optimistic local session.
+            do {
+                if try await NetworkManager.shared.uploadTableSession(session: newSession) {
+                    newSession.isSynced = true
+                    newSession.updatedAt = Date()
+                    modelContext.saveWithLogging(label: "\(Self.self).openTableForOrdering.publish")
+                }
+            } catch {
+                // Keep the local session dirty for the regular offline-first
+                // sync retry. The cashier can continue taking the order.
+                #if DEBUG
+                print("TableView [Open Session Publish Error]: \(error.localizedDescription)")
+                #endif
+            }
+
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
+    }
+
+    @ViewBuilder
+    private func tableQuickActions(_ table: RestaurantTable) -> some View {
+        let leader = table.joinedParent ?? table
+        if leader.status.lowercased() != "vacant"
+            || leader.sessions.contains(where: { $0.isActive }) {
+            Button {
+                requestQuickClear(table)
+            } label: {
+                Label("เคลียร์โต๊ะ", systemImage: "eraser.fill")
+            }
+        }
+
+        Divider()
+
+        Button {
+            selectedTable = table.joinedParent ?? table
+            showingDetailSheet = true
+        } label: {
+            Label("table_details_title".t, systemImage: "info.circle")
+        }
+    }
+
+    private func requestQuickClear(_ table: RestaurantTable) {
+        let leader = table.joinedParent ?? table
+        let group = [leader] + leader.joinedChildren
+        let hasPayment = group.contains { member in
+            member.sessions.contains { session in
+                session.isActive && session.orders.contains { order in
+                    !order.isDeleted && order.payments.contains {
+                        !$0.isDeleted && $0.amount > 0.005
+                    }
+                }
+            }
+        }
+        guard !hasPayment else {
+            quickClearError = "โต๊ะนี้มีรายการชำระเงินแล้ว ไม่สามารถลบออเดอร์ด้วยการเคลียร์โต๊ะได้ กรุณาใช้กระบวนการคืนเงินก่อน"
+            APHaptic.trigger()
+            return
+        }
+
+        let hasTransaction = group.contains { member in
+            member.sessions.contains { session in
+                session.isActive && session.orders.contains { order in
+                    guard !order.isDeleted else { return false }
+                    let hasItems = order.items.contains {
+                        !$0.isDeleted && $0.status != "cancelled"
+                    }
+                    let hasPayment = order.payments.contains { !$0.isDeleted }
+                    return hasItems || hasPayment || order.total > 0.005
+                }
+            }
+        }
+
+        if hasTransaction {
+            pendingQuickClearTableId = table.id
+            showingQuickClearPinSheet = true
+            APHaptic.trigger()
+        } else {
+            pendingVacantClearTable = table
+            showingQuickClearVacantConfirm = true
+            APHaptic.trigger()
+        }
+    }
+
+    private func performQuickClearVacant(_ table: RestaurantTable) {
+        let leader = table.joinedParent ?? table
+        let tableNo = leader.tableNumber
+        let oldStatus = leader.status
+        let employeeId = sessionManager.currentStaffSession?.employeeId
+        let staffName = sessionManager.currentStaffSession?.displayName ?? "Staff"
+
+        quickSetStatus("vacant", for: table)
+
+        let log = AuditLog(
+            employeeId: employeeId,
+            actionType: "table_clear",
+            details: "Table \(tableNo) cleared to vacant (previous status: \(oldStatus)) by \(staffName)",
+            originalValue: 0,
+            newValue: 0
+        )
+        modelContext.insert(log)
+        _ = modelContext.saveWithLogging(label: #function)
+
+        InAppNotificationManager.shared.post(
+            InAppNotification(
+                type: .serviceRequest,
+                title: LocalizationManager.shared.t("table_cleared_ready_title", tableNo),
+                body: LocalizationManager.shared.t("table_cleared_ready_body"),
+                tableNumber: tableNo,
+                dedupeKey: "table_clear_\(leader.id.uuidString)_\(Int(Date().timeIntervalSince1970))"
+            )
+        )
+    }
+
+    private func performQuickVoidAndClear(_ table: RestaurantTable, reason: String) {
+        let leader = table.joinedParent ?? table
+        let group = [leader] + leader.joinedChildren
+        let employeeId = sessionManager.currentStaffSession?.employeeId
+        let staffName = sessionManager.currentStaffSession?.displayName ?? "Manager"
+
+        // Re-check after the PIN/reason sheets. A payment may have arrived
+        // from another device while the confirmation UI was open.
+        let hasPayment = group.contains { member in
+            member.sessions.contains { session in
+                session.isActive && session.orders.contains { order in
+                    !order.isDeleted && order.payments.contains {
+                        !$0.isDeleted && $0.amount > 0.005
+                    }
+                }
+            }
+        }
+        guard !hasPayment else {
+            quickClearError = "พบการชำระเงินระหว่างดำเนินการ กรุณาคืนเงินก่อนเคลียร์โต๊ะ"
+            return
+        }
+
+        for member in group {
+            for session in member.sessions where session.isActive {
+                for order in session.orders {
+                    _ = order.voidUnsettledForTableClear(
+                        reason: reason,
+                        employeeId: employeeId,
+                        in: modelContext
+                    )
+                }
+                session.isActive = false
+                session.endedAt = Date()
+                session.isSynced = false
+                session.updatedAt = Date()
+            }
+            member.status = "vacant"
+            member.isSynced = false
+            member.updatedAt = Date()
+        }
+
+        if let current = activeSession,
+           group.contains(where: { current.table?.id == $0.id }) {
+            activeSession = nil
+        }
+
+        guard modelContext.saveWithLogging(label: #function) else {
+            quickClearError = "ไม่สามารถบันทึกการยกเลิกออเดอร์ได้ โต๊ะยังไม่ถูกเคลียร์"
+            return
+        }
+        APHaptic.trigger()
+
+        let leaderNo = leader.tableNumber
+        InAppNotificationManager.shared.post(
+            InAppNotification(
+                type: .cookingAlert,
+                title: LocalizationManager.shared.t("table_void_cleared_title", leaderNo),
+                body: "\(reason) · \(staffName)",
+                tableNumber: leaderNo,
+                dedupeKey: "table_void_\(leader.id.uuidString)_\(Int(Date().timeIntervalSince1970))"
+            )
+        )
+
+        NotificationStore.shared.postAlert(
+            priority: .high,
+            category: .orders,
+            title: LocalizationManager.shared.t("table_void_cleared_title", leaderNo),
+            message: "\(reason) · \(staffName)",
+            device: UIDevice.current.name,
+            tableNumber: leaderNo
+        )
+
+        // syncAll pushes cancelled orders/items before closing table_sessions.
+        // This ordering satisfies the server guard that rejects closing a
+        // session while it still owns open kitchen orders.
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
+    }
+
+    private func quickSetStatus(_ status: String, for table: RestaurantTable) {
+        let leader = table.joinedParent ?? table
+        let group = [leader] + leader.joinedChildren
+
+        // Keep the existing kitchen-ticket guard for the exceptional path.
+        guard !group.contains(where: {
+            $0.sessions.contains(where: { $0.isActive && $0.hasPendingKitchenTickets })
+        }) else {
+            selectedTable = table.joinedParent ?? table
+            showingDetailSheet = true
+            return
+        }
+
+        for member in group {
+            member.status = status
+            member.isSynced = false
+            member.updatedAt = Date()
+            for session in member.sessions where session.isActive {
+                session.terminalizeOpenOrders(.serve, in: modelContext)
+                session.isActive = false
+                session.endedAt = Date()
+                session.isSynced = false
+                session.updatedAt = Date()
+            }
+        }
+        if let current = activeSession,
+           group.contains(where: { member in
+               current.table?.id == member.id
+           }) {
+            activeSession = nil
+        }
+        modelContext.saveWithLogging(label: #function)
+        APHaptic.trigger()
+
+        let tableNumbers = group.map(\.tableNumber)
+        Task {
+            for number in tableNumbers where !number.isEmpty {
+                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: number)
+            }
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
     }
 
     private func shapeLabel(_ shape: String) -> String {
@@ -935,35 +1561,10 @@ struct TableView: View {
                 }
                 .onChange(of: selectedPhotoItem) { _, newItem in
                     guard let newItem else { return }
-                    Task {
-                        if let data = try? await newItem.loadTransferable(type: Data.self),
-                           let uiImage = UIImage(data: data) {
-                            let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-                            let filename = "floor_plan_\(selectedFloor)_\(Int(Date().timeIntervalSince1970)).jpg"
-                            let fileURL = docsURL.appendingPathComponent(filename)
-                            if let jpegData = uiImage.jpegData(compressionQuality: 0.85) {
-                                try? jpegData.write(to: fileURL)
-                                saveFloorPlanImage(filename: filename)
-
-                                // Upload to Storage in background
-                                Task.detached {
-                                    do {
-                                        _ = try await NetworkManager.shared.uploadFloorPlanMedia(data: jpegData, fileName: filename)
-                                    } catch {
-                                        print("Failed to upload floor plan image to storage: \(error)")
-                                    }
-                                }
-
-                                await MainActor.run {
-                                    cachedFloorPlanImage = uiImage
-                                    selectedPhotoItem = nil
-                                }
-                            }
-                        }
-                    }
+                    Task { await importFloorPlanPhoto(newItem) }
                 }
 
-                if floorPlanImages.first(where: { $0.floor == selectedFloor && !$0.isDeleted }) != nil {
+                if floorPlanImages.first(where: { $0.diningAreaId == selectedDiningAreaId && !$0.isDeleted }) != nil {
                     Divider().background(Color.appDivider).frame(width: 32)
                     Button(action: { removeFloorPlanImage() }) {
                         Image(systemName: "xmark.circle")
@@ -998,13 +1599,159 @@ struct TableView: View {
     }
 
     private var zones: [String] {
-        let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
-        let uniqueZones = Set(floorTables.compactMap { $0.zone }).filter { !$0.isEmpty }
+        let uniqueZones = Set(tablesOnSelectedFloor.compactMap { normalizedZone($0.zone) })
         return ["All"] + Array(uniqueZones).sorted()
     }
 
+    /// Shared by map, grid and list so the same selection always produces the
+    /// same set of tables in every presentation mode.
+    private var tablesOnSelectedFloor: [RestaurantTable] {
+        tables.filter {
+            tableBelongsToSelectedArea($0)
+            && !$0.isDeleted
+            && !optimisticallyDeletedTableIds.contains($0.id)
+        }
+    }
+
+    private var visibleTablesForSelection: [RestaurantTable] {
+        guard selectedZone != "All" else { return tablesOnSelectedFloor }
+        return tablesOnSelectedFloor.filter { normalizedZone($0.zone) == selectedZone }
+    }
+
+    /// The table canvas is dining-area scoped. Never place a branch-wide or
+    /// stale request over an empty/different area because it implies that the
+    /// referenced table exists in the area currently on screen.
+    private var activeRequestsForSelectedArea: [ServiceRequest] {
+        guard let areaId = selectedDiningAreaId?.uuidString.lowercased() else { return [] }
+        let tableIds = Set(tablesOnSelectedFloor.map { $0.id.uuidString.lowercased() })
+        return syncEngine.activeRequests.filter { request in
+            if let requestAreaId = request.diningAreaId?.lowercased() {
+                return requestAreaId == areaId
+            }
+            if let tableId = request.restaurantTableId?.lowercased() {
+                return tableIds.contains(tableId)
+            }
+            // Legacy unscoped requests remain available in Notification Center,
+            // but are unsafe to render on a specific floor plan.
+            return false
+        }
+    }
+
+    private func normalizedZone(_ zone: String?) -> String? {
+        guard let value = zone?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    private func selectFloor(_ floorId: Int) {
+        selectedZone = "All"
+        selectedFloor = floorId
+    }
+
+    private func handleTableViewAppear() {
+        resolveActiveBranchIfNeeded()
+        ensureDefaultFloorExists()
+        normalizeTableSelection()
+        loadCachedFloorPlanImage()
+        enforceTableLimit()
+        searchTablesList = tables
+        presentPendingAddFirstTableIfNeeded()
+    }
+
+    /// A freshly onboarded merchant can already have a branch in SwiftData while
+    /// `active_branch_id` is still empty. Resolve that state before creating the
+    /// default dining area; otherwise newly created tables receive an empty branch
+    /// and immediately disappear from the branch-scoped canvas.
+    private func resolveActiveBranchIfNeeded() {
+        _ = try? BranchContext.shared.bootstrap(in: modelContext, createDefaultIfEmpty: true)
+    }
+
+    private func ensureDefaultFloorExists() {
+        guard UUID(uuidString: activeBranchId) != nil, floors.isEmpty else { return }
+        modelContext.insert(FloorData(
+            floorNumber: 1,
+            name: lm.languageCode == "th" ? "พื้นที่หลัก" : "Main Area",
+            branchId: activeBranchId,
+            sortOrder: 0
+        ))
+        modelContext.saveWithLogging(label: #function)
+    }
+
+    private func tableDataDidChange(_ oldTables: [RestaurantTable], _ newTables: [RestaurantTable]) {
+        _ = oldTables
+        updateSearchTablesList(with: newTables)
+        normalizeTableSelection()
+    }
+
+    private func selectedFloorDidChange() {
+        // A zone belongs to the current floor. Keeping the previous floor's
+        // zone can make every table appear to vanish.
+        selectedZone = "All"
+        zoomScale = 1
+        gestureScale = 1
+        panOffset = .zero
+        activePanOffset = .zero
+        focusTableId = nil
+        layoutSelectedTableId = nil
+        layoutSelectedTableIds.removeAll()
+        loadCachedFloorPlanImage()
+    }
+
+    private func activeBranchDidChange() {
+        // Clear the previous branch synchronously; a slow/offline refresh must
+        // never leave its operational queue visible in the new workspace.
+        syncEngine.resetNotificationRuntimeState()
+        ensureDefaultFloorExists()
+        if let firstFloor = floors.first?.floorNumber { selectedFloor = firstFloor }
+        normalizeTableSelection()
+        loadCachedFloorPlanImage()
+        Task { await syncEngine.syncServiceRequests() }
+    }
+
+    private func normalizeTableSelection() {
+        if !floors.contains(where: { $0.id == selectedFloor }) {
+            selectedFloor = floors.first?.id ?? 1
+            selectedZone = "All"
+            return
+        }
+
+        if selectedZone != "All" && !zones.contains(selectedZone) {
+            selectedZone = "All"
+        }
+    }
+
+    private func deleteSelectedDiningArea() {
+        guard let diningAreaId = selectedDiningAreaId,
+              let floor = floors.first(where: { $0.uuid == diningAreaId }) else { return }
+        let scopedTables = tables.filter { tableBelongsToSelectedArea($0) && !$0.isDeleted }
+        guard !scopedTables.contains(where: \.joinedGroupHasActiveSession) else {
+            presetOperationError = "ไม่สามารถลบพื้นที่ที่มีโต๊ะกำลังใช้งาน กรุณาเคลียร์โต๊ะก่อน"
+            return
+        }
+
+        let now = Date()
+        let nextFloorNumber = floors.first(where: { $0.uuid != diningAreaId })?.floorNumber ?? 1
+        scopedTables.forEach { $0.prepareForDeletion(at: now) }
+        floorPlanImages.filter { $0.diningAreaId == diningAreaId && !$0.isDeleted }.forEach {
+            $0.isDeleted = true; $0.isSynced = false; $0.updatedAt = now
+        }
+        layoutPresets.filter { $0.diningAreaId == diningAreaId && !$0.isDeleted }.forEach {
+            $0.isDeleted = true; $0.isSynced = false; $0.updatedAt = now
+        }
+        floor.isDeleted = true
+        floor.isActive = false
+        floor.isSynced = false
+        floor.updatedAt = now
+        modelContext.saveWithLogging(label: #function)
+
+        layoutSelectedTableId = nil
+        layoutSelectedTableIds.removeAll()
+        selectFloor(nextFloorNumber)
+        Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+    }
+
     private func countTables(status: String) -> Int {
-        tables.filter { ($0.floor ?? 1) == selectedFloor && $0.status.lowercased() == status.lowercased() && !$0.isDeleted }.count
+        visibleTablesForSelection.filter { $0.status.lowercased() == status.lowercased() }.count
     }
 
     private func statusColor(_ status: String) -> Color {
@@ -1018,7 +1765,7 @@ struct TableView: View {
     }
 
     private func getCanvasSize() -> CGSize {
-        let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
+        let floorTables = tables.filter { tableBelongsToSelectedArea($0) && !$0.isDeleted }
         let maxX = floorTables.map { CGFloat($0.positionX) }.max() ?? 1500
         let maxY = floorTables.map { CGFloat($0.positionY) }.max() ?? 1200
         return CGSize(width: max(1500, maxX + 250), height: max(1200, maxY + 250))
@@ -1059,7 +1806,7 @@ struct TableView: View {
         )
         guard let allTables = try? modelContext.fetch(descriptor) else { return }
 
-        if allTables.count > 40 {
+        if allTables.count > 80 {
             // Sort tables: real tables first, then test tables
             let sortedTables = allTables.sorted { t1, t2 in
                 let t1IsTest = t1.tableNumber.hasPrefix("LT-") || t1.tableNumber.hasPrefix("LoadTest-")
@@ -1081,8 +1828,8 @@ struct TableView: View {
                 return t1.tableNumber.localizedCompare(t2.tableNumber) == .orderedAscending
             }
 
-            // Keep the first 40 tables, mark the rest as deleted
-            let tablesToDelete = sortedTables.suffix(from: min(40, sortedTables.count))
+            // Keep the first 80 tables, mark the rest as deleted
+            let tablesToDelete = sortedTables.suffix(from: min(80, sortedTables.count))
 
             var didChange = false
             for table in tablesToDelete {
@@ -1117,61 +1864,105 @@ struct TableView: View {
         draggedTableId = nil
     }
 
+    /// Effective zoom applied to the canvas (committed zoom × live pinch).
+    private var totalCanvasZoom: CGFloat {
+        max(0.01, zoomScale * gestureScale)
+    }
+
+    /// Snap position onto the drawn grid.
+    /// Grid mode = hard lock. Canvas mode = soft magnet within threshold.
+    private func snapToLayoutGrid(_ point: CGPoint) -> CGPoint {
+        let g = Self.layoutGridSize
+        let nearest = CGPoint(
+            x: (point.x / g).rounded() * g,
+            y: (point.y / g).rounded() * g
+        )
+        if isGridMode {
+            return nearest
+        }
+        let threshold = Self.canvasSnapThreshold
+        return CGPoint(
+            x: abs(point.x - nearest.x) <= threshold ? nearest.x : point.x,
+            y: abs(point.y - nearest.y) <= threshold ? nearest.y : point.y
+        )
+    }
+
+    private func clampedTableOrigin(
+        proposedX: CGFloat,
+        proposedY: CGFloat,
+        tableSize: CGSize,
+        canvasSize: CGSize
+    ) -> CGPoint {
+        let minX: CGFloat = 16
+        let maxX: CGFloat = max(minX, canvasSize.width - tableSize.width - 16)
+        let minY: CGFloat = 16
+        let maxY: CGFloat = max(minY, canvasSize.height - tableSize.height - 16)
+        return CGPoint(
+            x: min(max(proposedX, minX), maxX),
+            y: min(max(proposedY, minY), maxY)
+        )
+    }
+
     private func handleDragChanged(value: DragGesture.Value, for table: RestaurantTable) {
+        if activeResizeCorner != nil { return }
         if activeDraggingTableId != table.id {
             activeDraggingTableId = table.id
             draggedTableId = table.id
+            layoutSelectedTableId = table.id
+            layoutSelectedTableIds.insert(table.id)
             APHaptic.trigger()
         }
-        let tableSize = getTableSize(capacity: table.capacity)
+        let tableSize = getTableCardSize(for: table)
         let posX = CGFloat(table.positionX)
         let posY = CGFloat(table.positionY)
-        let newX = posX + value.translation.width / zoomScale
-        let newY = posY + value.translation.height / zoomScale
-
+        let zoom = totalCanvasZoom
+        let proposed = CGPoint(
+            x: posX + value.translation.width / zoom,
+            y: posY + value.translation.height / zoom
+        )
         let canvasSize = getCanvasSize()
-        let minX: CGFloat = 16
-        let maxX: CGFloat = canvasSize.width - tableSize.width - 16
-        let minY: CGFloat = 16
-        let maxY: CGFloat = canvasSize.height - tableSize.height - 16
+        let clamped = clampedTableOrigin(
+            proposedX: proposed.x,
+            proposedY: proposed.y,
+            tableSize: tableSize,
+            canvasSize: canvasSize
+        )
+        let live = snapToLayoutGrid(clamped)
 
-        let clampedX = min(max(newX, minX), maxX)
-        let clampedY = min(max(newY, minY), maxY)
-
-        let dragW = (clampedX - posX) * zoomScale
-        let dragH = (clampedY - posY) * zoomScale
-
-        withAnimation(.interactiveSpring(response: 0.22, dampingFraction: 0.82, blendDuration: 0)) {
-            dragTranslation = CGSize(width: dragW, height: dragH)
+        var txn = Transaction()
+        txn.animation = nil
+        withTransaction(txn) {
+            dragTranslation = CGSize(width: live.x - posX, height: live.y - posY)
         }
     }
 
     private func handleDragEnded(value: DragGesture.Value, for table: RestaurantTable) {
-        let tableSize = getTableSize(capacity: table.capacity)
+        if activeResizeCorner != nil { return }
+        let tableSize = getTableCardSize(for: table)
         let posX = CGFloat(table.positionX)
         let posY = CGFloat(table.positionY)
-        let newX = posX + value.translation.width / zoomScale
-        let newY = posY + value.translation.height / zoomScale
-
+        let zoom = totalCanvasZoom
+        let proposed = CGPoint(
+            x: posX + value.translation.width / zoom,
+            y: posY + value.translation.height / zoom
+        )
         let canvasSize = getCanvasSize()
-        let minX: CGFloat = 16
-        let maxX: CGFloat = canvasSize.width - tableSize.width - 16
-        let minY: CGFloat = 16
-        let maxY: CGFloat = canvasSize.height - tableSize.height - 16
+        let clamped = clampedTableOrigin(
+            proposedX: proposed.x,
+            proposedY: proposed.y,
+            tableSize: tableSize,
+            canvasSize: canvasSize
+        )
+        let finalPosition = snapToLayoutGrid(clamped)
 
-        let clampedX = min(max(newX, minX), maxX)
-        let clampedY = min(max(newY, minY), maxY)
-
-        let finalPosition = CGPoint(x: clampedX, y: clampedY)
-
-        // Reset dragging state completely before updating position
-        // to avoid visual jump caused by animating dragTranslation to zero
-        // while the base offset changes simultaneously
-        activeDraggingTableId = nil
-        draggedTableId = nil
-        dragTranslation = .zero
-
-        updateTablePosition(table, newPosition: finalPosition)
+        var txn = Transaction()
+        txn.animation = nil
+        withTransaction(txn) {
+            updateTablePosition(table, newPosition: finalPosition)
+            activeDraggingTableId = nil
+            draggedTableId = nil
+            dragTranslation = .zero
+        }
         APHaptic.trigger()
 
         Task {
@@ -1179,16 +1970,125 @@ struct TableView: View {
         }
     }
 
-    private func seedSampleTables() {
-        SampleDataSeeder.seedTables(modelContext: modelContext)
+    private func computeResize(
+        corner: TableResizeCorner,
+        translation: CGSize,
+        table: RestaurantTable
+    ) -> (scale: CGFloat, originDelta: CGSize) {
+        let zoom = totalCanvasZoom
+        let startScale = CGFloat(table.resolvedLayoutScale)
+        let base = getUnscaledCardSize(capacity: table.capacity)
+        let dx = translation.width / zoom
+        let dy = translation.height / zoom
+
+        // Uniform scale from the opposite corner (standard image-editor behavior).
+        let signedGrowth: CGFloat
+        switch corner {
+        case .se: signedGrowth = (dx + dy) * 0.5
+        case .nw: signedGrowth = (-dx - dy) * 0.5
+        case .ne: signedGrowth = (dx - dy) * 0.5
+        case .sw: signedGrowth = (-dx + dy) * 0.5
+        }
+
+        let startWidth = max(1, base.width * startScale)
+        let rawScale = (startWidth + signedGrowth) / base.width
+        let newScale = min(Self.maxLayoutScale, max(Self.minLayoutScale, rawScale))
+
+        // Keep opposite corner locked by shifting top-leading origin when scale changes.
+        let originDelta: CGSize
+        switch corner {
+        case .se:
+            originDelta = .zero
+        case .nw:
+            originDelta = CGSize(
+                width: base.width * (startScale - newScale),
+                height: base.height * (startScale - newScale)
+            )
+        case .ne:
+            originDelta = CGSize(
+                width: 0,
+                height: base.height * (startScale - newScale)
+            )
+        case .sw:
+            originDelta = CGSize(
+                width: base.width * (startScale - newScale),
+                height: 0
+            )
+        }
+        return (newScale, originDelta)
+    }
+
+    private func handleResizeChanged(corner: TableResizeCorner, value: DragGesture.Value, for table: RestaurantTable) {
+        if activeResizeCorner != corner {
+            activeResizeCorner = corner
+            activeDraggingTableId = nil
+            layoutSelectedTableId = table.id
+            layoutSelectedTableIds.insert(table.id)
+            APHaptic.trigger()
+        }
+        let result = computeResize(corner: corner, translation: value.translation, table: table)
+        var txn = Transaction()
+        txn.animation = nil
+        withTransaction(txn) {
+            liveLayoutScale = result.scale
+            liveLayoutOriginDelta = result.originDelta
+        }
+    }
+
+    private func handleResizeEnded(corner: TableResizeCorner, value: DragGesture.Value, for table: RestaurantTable) {
+        let result = computeResize(corner: corner, translation: value.translation, table: table)
+        let newOrigin = CGPoint(
+            x: CGFloat(table.positionX) + result.originDelta.width,
+            y: CGFloat(table.positionY) + result.originDelta.height
+        )
+        let canvasSize = getCanvasSize()
+        let sized = CGSize(
+            width: getUnscaledCardSize(capacity: table.capacity).width * result.scale,
+            height: getUnscaledCardSize(capacity: table.capacity).height * result.scale
+        )
+        let clamped = clampedTableOrigin(
+            proposedX: newOrigin.x,
+            proposedY: newOrigin.y,
+            tableSize: sized,
+            canvasSize: canvasSize
+        )
+        let snapped = snapToLayoutGrid(clamped)
+
+        var txn = Transaction()
+        txn.animation = nil
+        withTransaction(txn) {
+            table.layoutScale = Double(result.scale)
+            table.positionX = Double(snapped.x)
+            table.positionY = Double(snapped.y)
+            table.isSynced = false
+            table.updatedAt = Date()
+            modelContext.saveWithLogging(label: #function)
+
+            activeResizeCorner = nil
+            liveLayoutScale = nil
+            liveLayoutOriginDelta = .zero
+        }
+        APHaptic.trigger()
+
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
     }
 
     private func checkManagerPermission(for action: AuthAction) {
-        if sessionManager.can(.managerOverride) || isLayoutManagerAuthorized {
+        if isLayoutManagerAuthorized {
             performAuthAction(action)
         } else {
             pendingAuthAction = action
             showingManagerPinSheet = true
+        }
+    }
+
+    /// Checklist / first-product next step: open Add Table for an empty floor.
+    private func presentPendingAddFirstTableIfNeeded() {
+        guard StoreSetupChecklist.consumePendingAddFirstTable() else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            checkManagerPermission(for: .addTable)
         }
     }
 
@@ -1200,13 +2100,111 @@ struct TableView: View {
         case .addTable:
             isLayoutManagerAuthorized = true
             showingAddTableSheet = true
-        case .resetTables:
+        case .deleteTable:
             isLayoutManagerAuthorized = true
-            seedSampleTables()
-            Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
+            deleteSelectedLayoutTable()
+        }
+    }
+
+    private func requestSelectedTableDeletion() {
+        guard !layoutSelectedTableIds.isEmpty else { return }
+        pendingDeletionTableIds = layoutSelectedTableIds
+        showingDeleteTableConfirm = true
+    }
+
+    /// Soft-delete all layout-selected tables in one guarded transaction.
+    private func deleteSelectedLayoutTable() {
+        let idsToDelete = pendingDeletionTableIds.isEmpty
+            ? layoutSelectedTableIds
+            : pendingDeletionTableIds
+        let selectedTables = tables.filter {
+            idsToDelete.contains($0.id) && !$0.isDeleted
+        }
+        guard !selectedTables.isEmpty else {
+            pendingDeletionTableIds.removeAll()
+            presetOperationError = "ไม่พบโต๊ะที่เลือก กรุณาเลือกโต๊ะแล้วลองอีกครั้ง"
+            return
+        }
+
+        guard !selectedTables.contains(where: \.joinedGroupHasActiveSession) else {
+            pendingDeletionTableIds.removeAll()
+            presetOperationError = "ไม่สามารถลบชุดโต๊ะได้ เนื่องจากมีโต๊ะที่กำลังใช้งาน กรุณาเคลียร์โต๊ะก่อน"
+            return
+        }
+
+        let tableIds = selectedTables.map(\.id)
+        optimisticallyDeletedTableIds.formUnion(tableIds)
+        for table in selectedTables {
+            table.prepareForDeletion()
+        }
+        modelContext.saveWithLogging(label: #function)
+
+        layoutSelectedTableId = nil
+        layoutSelectedTableIds.removeAll()
+        pendingDeletionTableIds.removeAll()
+        activeResizeCorner = nil
+        liveLayoutScale = nil
+        liveLayoutOriginDelta = .zero
+
+        Task {
+            do {
+                let deletedCount = try await NetworkManager.shared.deleteRestaurantTablesOnServer(ids: tableIds)
+                guard deletedCount == tableIds.count else {
+                    throw NetworkError.invalidResponse
+                }
+                for table in selectedTables where table.isDeleted {
+                    table.isSynced = true
+                }
+                modelContext.saveWithLogging(label: #function)
+            } catch {
+                var deletionConfirmed = false
+                // A timeout/decoding failure does not prove that the atomic RPC
+                // failed; the server may already have committed the deletion.
+                // Reconcile the selected rows before changing the optimistic UI.
+                if let remoteTables = try? await NetworkManager.shared.fetchRestaurantTables() {
+                    let remoteDeletionById: [UUID: Bool] = Dictionary(
+                        uniqueKeysWithValues: remoteTables.compactMap { remote in
+                            guard
+                                let idString = remote["id"] as? String,
+                                let id = UUID(uuidString: idString)
+                            else { return nil }
+                            return (id, remote["is_deleted"] as? Bool ?? false)
+                        }
+                    )
+
+                    for table in selectedTables {
+                        if let isDeletedOnServer = remoteDeletionById[table.id] {
+                            table.isDeleted = isDeletedOnServer
+                            table.isSynced = true
+                            table.updatedAt = Date()
+                            if !isDeletedOnServer {
+                                optimisticallyDeletedTableIds.remove(table.id)
+                            }
+                        } else {
+                            // No matching server row: keep the local tombstone so
+                            // a stale-only local table cannot reappear.
+                            table.isDeleted = true
+                            table.isSynced = true
+                        }
+                    }
+                    deletionConfirmed = selectedTables.allSatisfy {
+                        remoteDeletionById[$0.id] != false
+                    }
+                } else {
+                    // Preserve the pending tombstone for a later retry instead of
+                    // resurrecting tables after an ambiguous network failure.
+                    for table in selectedTables {
+                        table.isDeleted = true
+                        table.isSynced = false
+                    }
+                }
+                modelContext.saveWithLogging(label: #function)
+                if !deletionConfirmed {
+                    presetOperationError = "ลบโต๊ะไม่สำเร็จ: \(error.localizedDescription)"
+                }
             }
         }
+        APHaptic.trigger()
     }
 
     private var editLayoutBinding: Binding<Bool> {
@@ -1217,6 +2215,12 @@ struct TableView: View {
                     checkManagerPermission(for: .toggleEditLayout(true))
                 } else {
                     isEditingLayout = false
+                    isLayoutManagerAuthorized = false
+                    layoutSelectedTableId = nil
+                    layoutSelectedTableIds.removeAll()
+                    activeResizeCorner = nil
+                    liveLayoutScale = nil
+                    liveLayoutOriginDelta = .zero
                     Task {
                         await SyncEngine.shared.syncAll(modelContext: modelContext)
                     }
@@ -1237,21 +2241,254 @@ struct TableView: View {
         return CGSize(width: tableWidth, height: tableHeight)
     }
 
+    /// Padded card frame before layoutScale (matches InteractiveTableCard `.padding(16)`).
+    private func getUnscaledCardSize(capacity: Int) -> CGSize {
+        let core = getTableSize(capacity: capacity)
+        return CGSize(width: core.width + 32, height: core.height + 32)
+    }
+
+    /// Current on-canvas footprint including live resize preview when active.
+    private func getTableCardSize(for table: RestaurantTable) -> CGSize {
+        let base = getUnscaledCardSize(capacity: table.capacity)
+        let scale: CGFloat
+        if layoutSelectedTableId == table.id, let live = liveLayoutScale {
+            scale = live
+        } else {
+            scale = CGFloat(table.resolvedLayoutScale)
+        }
+        return CGSize(width: base.width * scale, height: base.height * scale)
+    }
+
     // MARK: - Header Layout Components
 
     // MARK: - Premium Redesigned Header Elements
+
+    private var tableContextBar: some View {
+        HStack(spacing: 4) {
+            backToLoginButton(isCompact: true)
+
+            Divider()
+                .frame(height: 18)
+
+            headerTitleView
+
+            Divider()
+                .frame(height: 18)
+
+            customFloorPicker
+        }
+        .padding(.horizontal, 4)
+        .apLiquidGlass(
+            tint: isEditingLayout ? Color.appAccent.opacity(0.14) : Color.appAccent.opacity(0.045),
+            in: Capsule()
+        )
+    }
 
     // MARK: - Computed Mode Helpers
     private var isGridMode: Bool { layoutModeRaw == "grid" }
     private var isListView: Bool { tableViewModeRaw == "list" }
 
+    private var editModeIndicator: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "square.and.pencil")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundColor(.appAccent)
+                .frame(width: 36, height: 36)
+                .apLiquidGlass(tint: Color.appAccent.opacity(0.18), in: Circle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("โหมดแก้ไขผังโต๊ะ")
+                    .font(.system(size: 14, weight: .bold))
+                Text("ลากเพื่อย้าย · แตะเพื่อเลือก · ใช้จุดจับเพื่อปรับขนาด")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.textSecondary)
+            }
+            if !layoutSelectedTableIds.isEmpty {
+                Label("\(layoutSelectedTableIds.count) โต๊ะ", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.appAccent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .apLiquidGlass(tint: Color.appAccent.opacity(0.12), in: Capsule())
+            }
+        }
+        .foregroundColor(.textPrimary)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var canvasEditToolbar: some View {
+        Group {
+            if #available(iOS 26.0, *) {
+                GlassEffectContainer(spacing: 12) {
+                    editToolbarContent
+                }
+            } else {
+                editToolbarContent
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial)
+        .overlay(Rectangle().fill(Color.appBorderSubtle).frame(height: 1), alignment: .bottom)
+    }
+
+    private var editToolbarContent: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                editModeIndicator
+                Spacer(minLength: 16)
+                deleteSelectedTablesButton
+                addTableButton
+                finishEditingButton
+            }
+
+            HStack(spacing: 10) {
+                Label("มุมมอง", systemImage: "rectangle.3.group")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.textSecondary)
+                layoutModePicker
+
+                Divider()
+                    .frame(height: 28)
+
+                floorManagementActions
+                layoutPresetsToolbar
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var deleteSelectedTablesButton: some View {
+        if !layoutSelectedTableIds.isEmpty {
+            Button(action: requestSelectedTableDeletion) {
+                Label("ลบโต๊ะ (\(layoutSelectedTableIds.count))", systemImage: "trash")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(height: 34)
+            }
+            .apGlassButton(tint: .appRose)
+            .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private var addTableButton: some View {
+        Button(action: { checkManagerPermission(for: .addTable) }) {
+            Label("table_add_new_title".t, systemImage: "plus")
+                .font(.system(size: 13, weight: .semibold))
+                .frame(height: 34)
+        }
+        .apGlassButton(prominent: true, tint: .appAccent)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var gridEditToolbar: some View {
+        canvasEditToolbar
+    }
+
+    private func toggleLayoutSelection(_ table: RestaurantTable) {
+        if layoutSelectedTableIds.contains(table.id) {
+            layoutSelectedTableIds.remove(table.id)
+            if layoutSelectedTableId == table.id {
+                layoutSelectedTableId = layoutSelectedTableIds.first
+            }
+        } else {
+            layoutSelectedTableIds.insert(table.id)
+            layoutSelectedTableId = table.id
+        }
+    }
+
+    private var finishEditingButton: some View {
+        Button {
+            isEditingLayout = false
+            isLayoutManagerAuthorized = false
+            layoutSelectedTableId = nil
+            layoutSelectedTableIds.removeAll()
+            activeResizeCorner = nil
+            liveLayoutScale = nil
+            liveLayoutOriginDelta = .zero
+            APHaptic.trigger()
+        } label: {
+            Label("เสร็จสิ้น", systemImage: "checkmark")
+                .font(.system(size: 13, weight: .bold))
+                .frame(height: 34)
+        }
+        .apGlassButton(prominent: true, tint: .appTeal)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var floorManagementActions: some View {
+        Menu {
+            Button(action: { showingAddFloorAlert = true }) {
+                Label("table_floor_add_btn".t, systemImage: "plus")
+            }
+
+            if floors.count > 1 {
+                Button(role: .destructive, action: { showingRemoveFloorConfirm = true }) {
+                    Label("table_floor_remove_btn".t, systemImage: "trash")
+                }
+            }
+        } label: {
+            Label("จัดการชั้น", systemImage: "building.2")
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .apChromeSurface(tint: Color.appAccent.opacity(0.06), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var layoutModePicker: some View {
+        HStack(spacing: 2) {
+            layoutModeButton(icon: "square.grid.2x2", mode: "grid", label: "table_layout_mode_grid".t)
+            layoutModeButton(
+                icon: "rectangle.on.rectangle.angled",
+                mode: "canvas",
+                label: "table_layout_mode_canvas".t
+            )
+        }
+        .padding(2)
+        .apLiquidGlass(tint: Color.appAccent.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func layoutModeButton(icon: String, mode: String, label: String) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                setLayoutMode(mode)
+                APHaptic.trigger()
+            }
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(layoutModeRaw == mode ? .white : .textSecondary)
+                .frame(width: 34, height: 30)
+                .background(layoutModeRaw == mode ? Color.appAccent : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private func setLayoutMode(_ mode: String) {
+        layoutModeRaw = mode
+        guard mode == "grid" else { return }
+        activeResizeCorner = nil
+        liveLayoutScale = nil
+        liveLayoutOriginDelta = .zero
+    }
+
     private var currentFloorPlanImagePath: String {
-        floorPlanImages.first(where: { $0.floor == selectedFloor && !$0.isDeleted })?.resolvedImagePath ?? ""
+        activeFloorPlanImage?.resolvedImagePath ?? ""
     }
 
     private func saveFloorPlanImage(filename: String) {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? "unknown"
-        if let existing = floorPlanImages.first(where: { $0.floor == selectedFloor }) {
+        guard let diningAreaId = selectedDiningAreaId else { return }
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = BranchContext.shared.activeBranchIDString
+        if let existing = floorPlanImages.first(where: {
+            $0.diningAreaId == diningAreaId && ($0.branchId == branchId || $0.branchId.isEmpty)
+        }) {
+            existing.branchId = branchId
             existing.imageFilename = filename
             existing.isDeleted = false
             existing.isSynced = false
@@ -1259,7 +2496,8 @@ struct TableView: View {
         } else {
             let newItem = FloorPlanImage(
                 merchantId: merchantId,
-                floor: selectedFloor,
+                branchId: branchId,
+                diningAreaId: diningAreaId,
                 imageFilename: filename
             )
             modelContext.insert(newItem)
@@ -1268,48 +2506,65 @@ struct TableView: View {
         Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
     }
 
+    @MainActor
+    private func importFloorPlanPhoto(_ item: PhotosPickerItem) async {
+        guard let diningAreaId = selectedDiningAreaId else {
+            presetOperationError = "กรุณาเลือกพื้นที่ก่อนอัปโหลด Floor Plan"
+            selectedPhotoItem = nil
+            return
+        }
+        do {
+            guard let sourceData = try await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: sourceData),
+                  let jpegData = image.jpegData(compressionQuality: 0.85) else {
+                throw NSError(domain: "FloorPlan", code: 1, userInfo: [NSLocalizedDescriptionKey: "ไม่สามารถอ่านไฟล์ภาพได้"])
+            }
+            let filename = "floor_plan_\(diningAreaId.uuidString.lowercased())_\(Int(Date().timeIntervalSince1970)).jpg"
+
+            // Media must exist before metadata is published; otherwise another
+            // device can pull a filename that still returns 404.
+            _ = try await NetworkManager.shared.uploadFloorPlanMedia(data: jpegData, fileName: filename)
+            guard selectedDiningAreaId == diningAreaId else { return }
+
+            let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            try jpegData.write(to: docsURL.appendingPathComponent(filename), options: .atomic)
+            saveFloorPlanImage(filename: filename)
+            cachedFloorPlanImage = image
+        } catch {
+            presetOperationError = "อัปโหลด Floor Plan ไม่สำเร็จ: \(error.localizedDescription)"
+        }
+        selectedPhotoItem = nil
+    }
+
     private func removeFloorPlanImage() {
-        guard let existing = floorPlanImages.first(where: { $0.floor == selectedFloor }) else { return }
+        guard let existing = activeFloorPlanImage else { return }
 
-        // 1. Remove local file from disk if it exists
-        if let path = existing.resolvedImagePath, FileManager.default.fileExists(atPath: path) {
-            try? FileManager.default.removeItem(atPath: path)
-        }
-
-        // 2. Clear in-memory cached image
+        // Keep both the tombstone and local file until the server confirms the
+        // deletion so an offline failure can retry without resurrecting it.
         cachedFloorPlanImage = nil
-
-        // 3. Create unmanaged copy for background remote deletion sync
-        let unmanagedCopy = FloorPlanImage(
-            id: existing.id,
-            merchantId: existing.merchantId,
-            floor: existing.floor,
-            imageFilename: existing.imageFilename,
-            updatedAt: Date(),
-            isSynced: false,
-            isDeleted: true
-        )
-
-        // 4. Delete from local database context immediately
-        modelContext.delete(existing)
+        existing.isDeleted = true
+        existing.isSynced = false
+        existing.updatedAt = Date()
         modelContext.saveWithLogging(label: #function)
-
-        // 5. Sync deletion to remote database
-        Task {
-            _ = try? await NetworkManager.shared.uploadFloorPlanImage(floorPlan: unmanagedCopy)
-        }
+        Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
     }
 
 
     private func loadCachedFloorPlanImage() {
+        floorPlanLoadTask?.cancel()
+        guard let requestedAreaId = selectedDiningAreaId else {
+            cachedFloorPlanImage = nil
+            return
+        }
         if let floorPlan = activeFloorPlanImage, !floorPlan.imageFilename.isEmpty {
             if let path = floorPlan.resolvedImagePath, let uiImage = UIImage(contentsOfFile: path) {
                 cachedFloorPlanImage = uiImage
             } else {
                 // If not found locally, try to download from Storage
-                Task {
+                floorPlanLoadTask = Task {
                     do {
                         let data = try await NetworkManager.shared.downloadFloorPlanMedia(fileName: floorPlan.imageFilename)
+                        guard !Task.isCancelled, selectedDiningAreaId == requestedAreaId else { return }
                         if let downloadedImage = UIImage(data: data) {
                             // Save locally for future use
                             let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -1317,13 +2572,14 @@ struct TableView: View {
                             try? data.write(to: fileURL)
 
                             await MainActor.run {
+                                guard self.selectedDiningAreaId == requestedAreaId else { return }
                                 self.cachedFloorPlanImage = downloadedImage
                             }
                         }
                     } catch {
                         print("Failed to download floor plan image: \(error)")
                         await MainActor.run {
-                            self.cachedFloorPlanImage = nil
+                            if self.selectedDiningAreaId == requestedAreaId { self.cachedFloorPlanImage = nil }
                         }
                     }
                 }
@@ -1335,7 +2591,12 @@ struct TableView: View {
 
     // MARK: - Floor Plan Background Adjustments Helpers
     private var activeFloorPlanImage: FloorPlanImage? {
-        floorPlanImages.first(where: { $0.floor == selectedFloor && !$0.isDeleted })
+        let branchId = BranchContext.shared.activeBranchIDString
+        guard let diningAreaId = selectedDiningAreaId else { return nil }
+        return floorPlanImages.first(where: {
+            $0.diningAreaId == diningAreaId && !$0.isDeleted
+                && ($0.branchId == branchId || $0.branchId.isEmpty)
+        })
     }
 
     private var bgScaleBinding: Binding<Double> {
@@ -1381,11 +2642,41 @@ struct TableView: View {
     }
 
     // MARK: - Table Layout Presets (Templates) Operations
-    private func saveLayoutPreset(name: String) {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? "default_merchant"
-        let branchId = UserDefaults.standard.string(forKey: "active_branch_id") ?? "default_branch"
+    private static let layoutPresetSchemaVersion = 1
 
-        let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
+    private func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func verifiedBackgroundData(filename: String, expectedChecksum: String? = nil) async throws -> Data {
+        let fileURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            .appendingPathComponent(filename)
+        let data: Data
+        if let local = try? Data(contentsOf: fileURL) {
+            data = local
+        } else {
+            data = try await NetworkManager.shared.downloadFloorPlanMedia(fileName: filename)
+            try data.write(to: fileURL, options: .atomic)
+        }
+        if let expectedChecksum, sha256(data) != expectedChecksum {
+            throw NSError(domain: "TableLayoutPreset", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Background image failed integrity verification."
+            ])
+        }
+        return data
+    }
+
+    @MainActor
+    private func saveLayoutPreset(name: String) async {
+        guard !isPresetOperationRunning else { return }
+        isPresetOperationRunning = true
+        defer { isPresetOperationRunning = false }
+
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = BranchContext.shared.activeBranchIDString
+        guard let diningAreaId = selectedDiningAreaId else { return }
+
+        let floorTables = tables.filter { tableBelongsToSelectedArea($0) && !$0.isDeleted }
         let items = floorTables.map { table in
             TableLayoutItem(
                 id: table.id,
@@ -1394,6 +2685,7 @@ struct TableView: View {
                 tableShape: table.tableShape,
                 positionX: table.positionX,
                 positionY: table.positionY,
+                layoutScale: table.resolvedLayoutScale,
                 zone: table.zone
             )
         }
@@ -1403,12 +2695,23 @@ struct TableView: View {
 
         let bgImage = activeFloorPlanImage
         let bgFilename = bgImage?.imageFilename
+        var bgChecksum: String?
+        if let bgFilename {
+            do {
+                let imageData = try await verifiedBackgroundData(filename: bgFilename)
+                _ = try await NetworkManager.shared.uploadFloorPlanMedia(data: imageData, fileName: bgFilename)
+                bgChecksum = sha256(imageData)
+            } catch {
+                presetOperationError = "Template was not saved because its background image could not be verified or uploaded: \(error.localizedDescription)"
+                return
+            }
+        }
         let bgScale = bgImage?.scale ?? 1.0
         let bgOffsetX = bgImage?.offsetX ?? 0.0
         let bgOffsetY = bgImage?.offsetY ?? 0.0
 
         if let existing = layoutPresets.first(where: {
-            $0.floor == selectedFloor &&
+            $0.diningAreaId == diningAreaId &&
             $0.name.lowercased() == name.lowercased() &&
             $0.branchId == branchId &&
             $0.merchantId == merchantId &&
@@ -1416,6 +2719,8 @@ struct TableView: View {
         }) {
             existing.tableLayoutJson = json
             existing.bgImageFilename = bgFilename
+            existing.bgImageChecksum = bgChecksum
+            existing.schemaVersion = Self.layoutPresetSchemaVersion
             existing.bgImageScale = bgScale
             existing.bgImageOffsetX = bgOffsetX
             existing.bgImageOffsetY = bgOffsetY
@@ -1425,13 +2730,15 @@ struct TableView: View {
             let preset = TableLayoutPreset(
                 merchantId: merchantId,
                 branchId: branchId,
-                floor: selectedFloor,
+                diningAreaId: diningAreaId,
                 name: name,
                 bgImageFilename: bgFilename,
+                bgImageChecksum: bgChecksum,
                 bgImageScale: bgScale,
                 bgImageOffsetX: bgOffsetX,
                 bgImageOffsetY: bgOffsetY,
-                tableLayoutJson: json
+                tableLayoutJson: json,
+                schemaVersion: Self.layoutPresetSchemaVersion
             )
             modelContext.insert(preset)
         }
@@ -1444,18 +2751,59 @@ struct TableView: View {
         }
     }
 
-    private func applyLayoutPreset(_ preset: TableLayoutPreset) {
-        let currentMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? "default_merchant"
-        let currentBranchId = UserDefaults.standard.string(forKey: "active_branch_id") ?? "default_branch"
+    @MainActor
+    private func applyLayoutPreset(_ preset: TableLayoutPreset) async {
+        guard !isPresetOperationRunning else { return }
+        isPresetOperationRunning = true
+        defer { isPresetOperationRunning = false }
+
+        let currentMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let currentBranchId = BranchContext.shared.activeBranchIDString
+        guard let diningAreaId = selectedDiningAreaId, preset.diningAreaId == diningAreaId else { return }
 
         // Security check
         guard preset.merchantId == currentMerchantId && preset.branchId == currentBranchId else {
             print("Security boundary breach: layout preset merchant/branch mismatch")
             return
         }
+        guard preset.schemaVersion <= Self.layoutPresetSchemaVersion else {
+            presetOperationError = "This template was created by a newer app version and cannot be applied safely."
+            return
+        }
 
         guard let data = preset.tableLayoutJson.data(using: .utf8),
-              let items = try? JSONDecoder().decode([TableLayoutItem].self, from: data) else { return }
+              let items = try? JSONDecoder().decode([TableLayoutItem].self, from: data) else {
+            presetOperationError = "The template data is damaged or incomplete."
+            return
+        }
+
+        let otherFloorsTablesCount = tables.filter {
+            tableBelongsToActiveBranch($0) && !tableBelongsToSelectedArea($0) && !$0.isDeleted
+        }.count
+        let availableSlots = 80 - otherFloorsTablesCount
+        guard items.count <= availableSlots else {
+            presetOperationError = "This template needs \(items.count) tables, but only \(max(0, availableSlots)) slots are available."
+            return
+        }
+
+        let floorTables = tables.filter { tableBelongsToSelectedArea($0) && !$0.isDeleted }
+        guard !floorTables.contains(where: { $0.status.lowercased() == "occupied" || $0.sessions.contains(where: { $0.isActive }) }) else {
+            presetOperationError = "Close active table sessions before applying a template."
+            return
+        }
+
+        var downloadedBackground: Data?
+        if let newFilename = preset.bgImageFilename {
+            do {
+                downloadedBackground = try await verifiedBackgroundData(
+                    filename: newFilename,
+                    expectedChecksum: preset.bgImageChecksum
+                )
+            } catch {
+                presetOperationError = "The template was not applied because its background image is unavailable or invalid."
+                return
+            }
+        }
 
         // Apply background image transform
         let currentBg = activeFloorPlanImage
@@ -1470,7 +2818,8 @@ struct TableView: View {
             } else {
                 let newBg = FloorPlanImage(
                     merchantId: currentMerchantId,
-                    floor: selectedFloor,
+                    branchId: currentBranchId,
+                    diningAreaId: diningAreaId,
                     imageFilename: newFilename,
                     scale: preset.bgImageScale,
                     offsetX: preset.bgImageOffsetX,
@@ -1486,49 +2835,53 @@ struct TableView: View {
             }
         }
 
-        loadCachedFloorPlanImage()
+        if let downloadedBackground, let image = UIImage(data: downloadedBackground) {
+            cachedFloorPlanImage = image
+        } else {
+            loadCachedFloorPlanImage()
+        }
 
-        // Rearrange tables with 40-table system limit enforcement
-        let otherFloorsTablesCount = tables.filter { ($0.floor ?? 1) != selectedFloor && !$0.isDeleted }.count
-        let availableSlots = 40 - otherFloorsTablesCount
-
-        let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
-        var matchedTableNumbers = Set<String>()
-        var processedCount = 0
+        var matchedTableIds = Set<UUID>()
 
         for item in items {
-            if processedCount >= availableSlots {
-                break
-            }
-
-            matchedTableNumbers.insert(item.tableNumber)
-            if let existingTable = floorTables.first(where: { $0.tableNumber == item.tableNumber }) {
+            if let existingTable = tables.first(where: { $0.id == item.id })
+                ?? floorTables.first(where: { $0.tableNumber == item.tableNumber }) {
+                matchedTableIds.insert(existingTable.id)
+                existingTable.tableNumber = item.tableNumber
+                existingTable.floor = selectedFloor
+                existingTable.floorId = floors.first(where: { $0.id == selectedFloor })?.uuid
+                existingTable.branchId = currentBranchId
+                existingTable.isDeleted = false
                 existingTable.positionX = item.positionX
                 existingTable.positionY = item.positionY
+                existingTable.layoutScale = item.layoutScale.flatMap { $0 > 0 ? $0 : nil } ?? 1.0
                 existingTable.capacity = item.capacity
                 existingTable.tableShape = item.tableShape
                 existingTable.isRound = item.tableShape == "circle" || item.tableShape == "oval"
                 existingTable.zone = item.zone
                 existingTable.updatedAt = Date()
                 existingTable.isSynced = false
-                processedCount += 1
             } else {
                 let newTable = RestaurantTable(
+                    id: item.id,
                     tableNumber: item.tableNumber,
                     capacity: item.capacity,
                     tableShape: item.tableShape,
                     positionX: item.positionX,
                     positionY: item.positionY,
+                    layoutScale: item.layoutScale.flatMap { $0 > 0 ? $0 : nil } ?? 1.0,
                     floor: selectedFloor,
+                    floorId: floors.first(where: { $0.id == selectedFloor })?.uuid,
+                    branchId: currentBranchId,
                     zone: item.zone
                 )
                 modelContext.insert(newTable)
-                processedCount += 1
+                matchedTableIds.insert(newTable.id)
             }
         }
 
         for table in floorTables {
-            if !matchedTableNumbers.contains(table.tableNumber) {
+            if !matchedTableIds.contains(table.id) {
                 table.isDeleted = true
                 table.isSynced = false
                 table.updatedAt = Date()
@@ -1544,8 +2897,8 @@ struct TableView: View {
     }
 
     private func deleteLayoutPreset(_ preset: TableLayoutPreset) {
-        let currentMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? "default_merchant"
-        let currentBranchId = UserDefaults.standard.string(forKey: "active_branch_id") ?? "default_branch"
+        let currentMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let currentBranchId = BranchContext.shared.activeBranchIDString
 
         // Security check
         guard preset.merchantId == currentMerchantId && preset.branchId == currentBranchId else { return }
@@ -1562,45 +2915,55 @@ struct TableView: View {
         }
     }
 
-    @ViewBuilder
-    private func modernStatusWidget(showLabels: Bool) -> some View {
-        HStack(spacing: showLabels ? 14 : 8) {
-            modernStatusDot(color: .appTeal, label: "table_status_vacant".t, count: countTables(status: "vacant"), showLabel: showLabels)
-            modernStatusDot(color: .appRose, label: "table_status_occupied".t, count: countTables(status: "occupied"), showLabel: showLabels)
-            modernStatusDot(color: .appAmber, label: "table_status_reserved".t, count: countTables(status: "reserved"), showLabel: showLabels)
-            modernStatusDot(color: .appAccent, label: "table_status_cleaning".t, count: countTables(status: "cleaning"), showLabel: showLabels)
+    private var modernStatusWidget: some View {
+        HStack(spacing: 6) {
+            modernStatusDot(color: .appTeal, label: "table_status_vacant".t, count: countTables(status: "vacant"))
+            modernStatusDot(color: .appRose, label: "table_status_occupied".t, count: countTables(status: "occupied"))
+            modernStatusDot(color: .appAmber, label: "table_status_reserved".t, count: countTables(status: "reserved"))
+            modernStatusDot(color: .appAccent, label: "table_status_cleaning_short".t, count: countTables(status: "cleaning"))
         }
-        .padding(.horizontal, showLabels ? 16 : 10)
-        .padding(.vertical, 7)
-        .background(Color.appSurfaceHigh.opacity(0.6))
-        .clipShape(Capsule())
-        .overlay(
-            Capsule()
-                .stroke(Color.appBorderSubtle, lineWidth: 1)
-        )
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .apLiquidGlass(tint: Color.appTeal.opacity(0.045), in: Capsule())
     }
 
-    private func modernStatusDot(color: Color, label: String, count: Int, showLabel: Bool) -> some View {
-        HStack(spacing: 4) {
+    private var headerEditModeBadge: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(Color.appAccent)
+                .frame(width: 7, height: 7)
+            Text("กำลังแก้ไข")
+                .font(.system(size: 11, weight: .bold))
+            Text(floors.first(where: { $0.id == selectedFloor })?.name ?? "Floor \(selectedFloor)")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.textSecondary)
+        }
+        .foregroundColor(.appAccent)
+        .padding(.horizontal, 12)
+        .frame(height: 36)
+        .apLiquidGlass(tint: Color.appAccent.opacity(0.14), in: Capsule())
+    }
+
+    private func modernStatusDot(color: Color, label: String, count: Int) -> some View {
+        HStack(spacing: 3) {
             Text("\(count)")
-                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .font(.system(size: 9, weight: .bold, design: .rounded))
                 .foregroundColor(.white)
-                .padding(.horizontal, 6)
+                .frame(minWidth: 12)
+                .padding(.horizontal, 5)
                 .padding(.vertical, 2)
                 .background(color)
                 .clipShape(Capsule())
                 .scaleEffect(count > 0 ? 1.08 : 1.0)
                 .animation(.spring(response: 0.25, dampingFraction: 0.6), value: count)
 
-            if showLabel {
-                Text(label)
-                    .font(.caption2)
-                    .fontWeight(.bold)
-                    .foregroundColor(.textSecondary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
+            Text(label)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(.textSecondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     // MARK: - Floor Pill Tabs + Management Buttons
@@ -1630,10 +2993,10 @@ struct TableView: View {
                 let name = floorNameInput.isEmpty
                     ? String(format: "table_floor_new_name".t, nextId)
                     : floorNameInput
-                var updated = floors
-                updated.append(FloorData(id: nextId, name: name))
-                floorsJson = updated.jsonString
-                selectedFloor = nextId
+                modelContext.insert(FloorData(floorNumber: nextId, name: name, branchId: activeBranchId, sortOrder: floors.count))
+                modelContext.saveWithLogging(label: #function)
+                Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+                selectFloor(nextId)
                 floorNameInput = ""
                 APHaptic.trigger()
             }
@@ -1641,18 +3004,7 @@ struct TableView: View {
         }
         .confirmationDialog("table_floor_remove_confirm".t, isPresented: $showingRemoveFloorConfirm, titleVisibility: .visible) {
             Button("table_floor_remove_btn".t, role: .destructive) {
-                // soft-delete tables on this floor
-                let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
-                for t in floorTables {
-                    t.isDeleted = true
-                    t.isSynced = false
-                    t.updatedAt = Date()
-                }
-                modelContext.saveWithLogging(label: #function)
-                // remove floor from list
-                let updated = floors.filter { $0.id != selectedFloor }
-                floorsJson = updated.jsonString
-                selectedFloor = updated.first?.id ?? 1
+                deleteSelectedDiningArea()
             }
             Button("cancel".t, role: .cancel) { }
         }
@@ -1661,10 +3013,10 @@ struct TableView: View {
             TextField("", text: $floorNameInput)
             Button("ok_btn".t) {
                 if let fid = renamingFloorId, !floorNameInput.isEmpty {
-                    var updated = floors
-                    if let idx = updated.firstIndex(where: { $0.id == fid }) {
-                        updated[idx].name = floorNameInput
-                        floorsJson = updated.jsonString
+                    if let floor = floors.first(where: { $0.id == fid }) {
+                        floor.name = floorNameInput; floor.isSynced = false; floor.updatedAt = Date()
+                        modelContext.saveWithLogging(label: #function)
+                        Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
                     }
                 }
                 renamingFloorId = nil
@@ -1678,8 +3030,7 @@ struct TableView: View {
         let isSelected = selectedFloor == floor.id
         return Button(action: {
             withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
-                selectedFloor = floor.id
-                selectedZone = "All"
+                selectFloor(floor.id)
                 APHaptic.trigger()
             }
         }) {
@@ -1720,10 +3071,11 @@ struct TableView: View {
 
     // MARK: - Table Layout Presets UI Components
     private var activePresets: [TableLayoutPreset] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? "default_merchant"
-        let branchId = UserDefaults.standard.string(forKey: "active_branch_id") ?? "default_branch"
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = BranchContext.shared.activeBranchIDString
+        guard let diningAreaId = selectedDiningAreaId else { return [] }
         return layoutPresets.filter {
-            $0.floor == selectedFloor &&
+            $0.diningAreaId == diningAreaId &&
             $0.merchantId == merchantId &&
             $0.branchId == branchId &&
             !$0.isDeleted
@@ -1732,91 +3084,58 @@ struct TableView: View {
 
     @ViewBuilder
     private var layoutPresetsToolbar: some View {
-        HStack(spacing: 8) {
-            Text("table_presets_title".t)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(.textSecondary)
-
-            // Dropdown menu to select a preset
-            Menu {
+        Menu {
+            Section("เลือกรูปแบบผัง") {
                 if activePresets.isEmpty {
                     Text("No templates saved")
                 } else {
                     ForEach(activePresets) { preset in
                         Button(action: {
-                            applyLayoutPreset(preset)
+                            Task { await applyLayoutPreset(preset) }
                         }) {
-                            Text(preset.name)
+                            Label(preset.name, systemImage: "square.stack.3d.up")
                         }
                     }
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Text("Select Template...")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.textPrimary)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 8))
-                        .foregroundColor(.textSecondary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.appSurfaceHigh)
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(Color.appBorderSubtle, lineWidth: 1))
             }
-            .buttonStyle(.plain)
 
-            // Save layout preset button
-            Button(action: {
-                showingSavePresetAlert = true
-            }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 9, weight: .bold))
-                    Text("table_presets_save_alert".t)
-                        .font(.system(size: 10, weight: .bold))
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.appAccent)
-                .clipShape(Capsule())
+            Button(action: { showingSavePresetAlert = true }) {
+                Label("table_presets_save_alert".t, systemImage: "square.and.arrow.down")
             }
-            .buttonStyle(.plain)
 
-            // Delete active presets (if any exist, let them delete)
             if !activePresets.isEmpty {
                 Menu {
                     ForEach(activePresets) { preset in
                         Button(role: .destructive, action: {
                             deleteLayoutPreset(preset)
                         }) {
-                            Label("Delete \(preset.name)", systemImage: "trash")
+                            Label("ลบรูปแบบ “\(preset.name)”", systemImage: "trash")
                         }
                     }
                 } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.appRose)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
-                        .background(Color.appRose.opacity(0.1))
-                        .clipShape(Capsule())
+                    Label("จัดการรูปแบบที่บันทึก", systemImage: "ellipsis.circle")
                 }
-                .buttonStyle(.plain)
             }
+        } label: {
+            Label("รูปแบบผัง", systemImage: "square.stack.3d.up")
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .apChromeSurface(tint: Color.appAccent.opacity(0.06), in: Capsule())
         }
+        .buttonStyle(.plain)
         .alert("table_presets_save_alert".t, isPresented: $showingSavePresetAlert) {
             TextField("table_presets_enter_name".t, text: $presetNameInput)
             Button("ok_btn".t) {
                 if !presetNameInput.isEmpty {
-                    saveLayoutPreset(name: presetNameInput)
+                    let name = presetNameInput
+                    Task { await saveLayoutPreset(name: name) }
                 }
                 presetNameInput = ""
             }
             Button("cancel".t, role: .cancel) { presetNameInput = "" }
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     // MARK: - Resizable Background Adjustments Panel UI
@@ -1913,98 +3232,25 @@ struct TableView: View {
     private var customFloorPicker: some View {
         let currentFloorName = floors.first(where: { $0.id == selectedFloor })?.name ?? "Floor \(selectedFloor)"
         Menu {
-            ForEach(floors) { floor in
-                Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        selectedFloor = floor.id
-                        selectedZone = "All"
-                        APHaptic.trigger()
-                    }
-                } label: {
-                    if selectedFloor == floor.id {
-                        Label(floor.name, systemImage: "checkmark")
-                    } else {
-                        Text(floor.name)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "building.2")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.appAccent)
-                Text(currentFloorName)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.textPrimary)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(.textSecondary)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(Color.appSurfaceHigh.opacity(0.6))
-            .clipShape(Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(Color.appBorderSubtle, lineWidth: 1)
-            )
-        }
-        .alert("table_floor_add_btn".t, isPresented: $showingAddFloorAlert) {
-            TextField("table_floor_new_name".t, text: $floorNameInput)
-            Button("table_create_btn".t) {
-                let nextId = (floors.map(\.id).max() ?? 0) + 1
-                let name = floorNameInput.isEmpty
-                    ? String(format: "table_floor_new_name".t, nextId)
-                    : floorNameInput
-                var updated = floors
-                updated.append(FloorData(id: nextId, name: name))
-                floorsJson = updated.jsonString
-                selectedFloor = nextId
-                floorNameInput = ""
-                APHaptic.trigger()
-            }
-            Button("cancel".t, role: .cancel) { floorNameInput = "" }
-        }
-        .confirmationDialog("table_floor_remove_confirm".t, isPresented: $showingRemoveFloorConfirm, titleVisibility: .visible) {
-            Button("table_floor_remove_btn".t, role: .destructive) {
-                // soft-delete tables on this floor
-                let floorTables = tables.filter { ($0.floor ?? 1) == selectedFloor && !$0.isDeleted }
-                for t in floorTables {
-                    t.isDeleted = true
-                    t.isSynced = false
-                    t.updatedAt = Date()
-                }
-                modelContext.saveWithLogging(label: #function)
-                // remove floor from list
-                let updated = floors.filter { $0.id != selectedFloor }
-                floorsJson = updated.jsonString
-                selectedFloor = updated.first?.id ?? 1
-            }
-            Button("cancel".t, role: .cancel) { }
-        }
-        .alert("table_floor_rename_title".t, isPresented: $showingRenameFloorAlert) {
-            TextField("", text: $floorNameInput)
-            Button("ok_btn".t) {
-                if let fid = renamingFloorId, !floorNameInput.isEmpty {
-                    var updated = floors
-                    if let idx = updated.firstIndex(where: { $0.id == fid }) {
-                        updated[idx].name = floorNameInput
-                        floorsJson = updated.jsonString
+            Section("table_floor_level_lbl".t) {
+                ForEach(floors) { floor in
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            selectFloor(floor.id)
+                            APHaptic.trigger()
+                        }
+                    } label: {
+                        if selectedFloor == floor.id {
+                            Label(floor.name, systemImage: "checkmark")
+                        } else {
+                            Text(floor.name)
+                        }
                     }
                 }
-                renamingFloorId = nil
-                floorNameInput = ""
             }
-            Button("cancel".t, role: .cancel) { renamingFloorId = nil; floorNameInput = "" }
-        }
-    }
 
-    @ViewBuilder
-    private var customZonePicker: some View {
-        let activeZones = zones
-        if activeZones.count > 1 {
-            Menu {
-                ForEach(activeZones, id: \.self) { zone in
+            Section("table_zone_lbl".t) {
+                ForEach(zones, id: \.self) { zone in
                     Button {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                             selectedZone = zone
@@ -2018,60 +3264,179 @@ struct TableView: View {
                         }
                     }
                 }
-            } label: {
-                HStack(spacing: 6) {
-                    Text("table_zone_\(selectedZone.lowercased())".t)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.textPrimary)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(.textSecondary)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(Color.appSurfaceHigh.opacity(0.6))
-                .clipShape(Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(Color.appBorderSubtle, lineWidth: 1)
-                )
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("table_zone_\(selectedZone.lowercased())".t)
-            .transition(.opacity.combined(with: .scale))
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "building.2.crop.circle")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.appAccent)
+                Text("\(currentFloorName) · \("table_zone_\(selectedZone.lowercased())".t)")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.textPrimary)
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.textSecondary)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 40)
         }
+        .alert("table_floor_add_btn".t, isPresented: $showingAddFloorAlert) {
+            TextField("table_floor_new_name".t, text: $floorNameInput)
+            Button("table_create_btn".t) {
+                let nextId = (floors.map(\.id).max() ?? 0) + 1
+                let name = floorNameInput.isEmpty
+                    ? String(format: "table_floor_new_name".t, nextId)
+                    : floorNameInput
+                modelContext.insert(FloorData(floorNumber: nextId, name: name, branchId: activeBranchId, sortOrder: floors.count))
+                modelContext.saveWithLogging(label: #function)
+                Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+                selectFloor(nextId)
+                floorNameInput = ""
+                APHaptic.trigger()
+            }
+            Button("cancel".t, role: .cancel) { floorNameInput = "" }
+        }
+        .confirmationDialog("table_floor_remove_confirm".t, isPresented: $showingRemoveFloorConfirm, titleVisibility: .visible) {
+            Button("table_floor_remove_btn".t, role: .destructive) {
+                deleteSelectedDiningArea()
+            }
+            Button("cancel".t, role: .cancel) { }
+        }
+        .alert("table_floor_rename_title".t, isPresented: $showingRenameFloorAlert) {
+            TextField("", text: $floorNameInput)
+            Button("ok_btn".t) {
+                if let fid = renamingFloorId, !floorNameInput.isEmpty {
+                    if let floor = floors.first(where: { $0.id == fid }) {
+                        floor.name = floorNameInput; floor.isSynced = false; floor.updatedAt = Date()
+                        modelContext.saveWithLogging(label: #function)
+                        Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+                    }
+                }
+                renamingFloorId = nil
+                floorNameInput = ""
+            }
+            Button("cancel".t, role: .cancel) { renamingFloorId = nil; floorNameInput = "" }
+        }
+    }
+
+    private var tableActionsMenu: some View {
+        Menu {
+            Section {
+                Button {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                        tableViewModeRaw = isListView ? "map" : "list"
+                        APHaptic.trigger()
+                    }
+                } label: {
+                    Label(
+                        isListView ? "table_view_mode_map".t : "table_view_mode_list".t,
+                        systemImage: isListView ? "map" : "list.bullet"
+                    )
+                }
+
+                if !isListView {
+                    Button {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                            setLayoutMode(isGridMode ? "canvas" : "grid")
+                            APHaptic.trigger()
+                        }
+                    } label: {
+                        Label(
+                            isGridMode ? "table_layout_mode_canvas".t : "table_layout_mode_grid".t,
+                            systemImage: isGridMode ? "rectangle.on.rectangle.angled" : "square.grid.2x2"
+                        )
+                    }
+                }
+            }
+
+            Section {
+                Button {
+                    if isEditingLayout {
+                        isEditingLayout = false
+                        isLayoutManagerAuthorized = false
+                        layoutSelectedTableId = nil
+                        layoutSelectedTableIds.removeAll()
+                    } else {
+                        checkManagerPermission(for: .toggleEditLayout(true))
+                    }
+                    APHaptic.trigger()
+                } label: {
+                    Label(
+                        isEditingLayout ? "table_exit_edit_mode_acc".t : "table_enter_edit_mode_acc".t,
+                        systemImage: isEditingLayout ? "pencil.slash" : "pencil"
+                    )
+                }
+
+                Button {
+                    isMovementLocked.toggle()
+                    APHaptic.trigger()
+                } label: {
+                    Label(
+                        isMovementLocked ? "Unlock canvas" : "Lock canvas",
+                        systemImage: isMovementLocked ? "lock.open.fill" : "lock.fill"
+                    )
+                }
+            }
+
+            Section {
+                Button {
+                    guard !isOpeningBatchQR, !showingBatchQRSheet else { return }
+                    isOpeningBatchQR = true
+                    DispatchQueue.main.async { showingBatchQRSheet = true }
+                } label: {
+                    Label("table_qr_all_codes_title".t, systemImage: "qrcode")
+                }
+
+                let activeTables = searchTablesList.filter { !$0.isDeleted && tableBelongsToSelectedArea($0) }
+                if !activeTables.isEmpty {
+                    Menu {
+                        ForEach(activeTables) { table in
+                            Button {
+                                findTable(table)
+                            } label: {
+                                Text(LocalizationManager.shared.t("table_find_item_template", table.tableNumber, table.capacity))
+                            }
+                        }
+                    } label: {
+                        Label("search".t, systemImage: "magnifyingglass")
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 40, height: 40)
+        }
+        .accessibilityLabel("more_actions".t)
     }
 
     @ViewBuilder
     private var quickActionsBar: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             findTableCompactButton
 
             Divider()
                 .frame(width: 1, height: 16)
                 .background(Color.appBorderSubtle)
-                .padding(.horizontal, 2)
 
             printQRCodesCompactButton
 
             Divider()
                 .frame(width: 1, height: 16)
                 .background(Color.appBorderSubtle)
-                .padding(.horizontal, 2)
 
             lockPanZoomCompactButton
 
             Divider()
                 .frame(width: 1, height: 16)
                 .background(Color.appBorderSubtle)
-                .padding(.horizontal, 2)
 
             editLayoutSwitchCompactButton
 
             Divider()
                 .frame(width: 1, height: 16)
                 .background(Color.appBorderSubtle)
-                .padding(.horizontal, 2)
 
             // List / Map toggle
             Button(action: {
@@ -2083,7 +3448,7 @@ struct TableView: View {
                 Image(systemName: tableViewModeRaw == "map" ? "list.bullet" : "map")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundColor(.textPrimary)
-                    .frame(width: 28, height: 28)
+                    .frame(width: 40, height: 40)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(tableViewModeRaw == "map" ? "table_view_mode_list".t : "table_view_mode_map".t)
@@ -2091,51 +3456,37 @@ struct TableView: View {
             Divider()
                 .frame(width: 1, height: 16)
                 .background(Color.appBorderSubtle)
-                .padding(.horizontal, 2)
 
             // Grid / Canvas toggle (only in map view)
             if !isListView {
                 Button(action: {
                     withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
-                        layoutModeRaw = isGridMode ? "canvas" : "grid"
+                        setLayoutMode(isGridMode ? "canvas" : "grid")
                         APHaptic.trigger()
                     }
                 }) {
                     Image(systemName: isGridMode ? "rectangle.on.rectangle.angled" : "square.grid.2x2")
                         .font(.system(size: 13, weight: .bold))
                         .foregroundColor(isGridMode ? .appAccent : .textPrimary)
-                        .frame(width: 28, height: 28)
+                        .frame(width: 40, height: 40)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isGridMode ? "table_layout_mode_canvas".t : "table_layout_mode_grid".t)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(Color.appSurfaceHigh.opacity(0.6))
-        .clipShape(Capsule())
-        .overlay(
-            Capsule()
-                .stroke(Color.appBorderSubtle, lineWidth: 1)
-        )
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .apLiquidGlass(tint: Color.appAccent.opacity(0.035), in: Capsule())
     }
 
     @ViewBuilder
     private var findTableCompactButton: some View {
-        let activeTables = searchTablesList.filter { !$0.isDeleted && ($0.floor ?? 1) == selectedFloor }
+        let activeTables = searchTablesList.filter { !$0.isDeleted && tableBelongsToSelectedArea($0) }
         if !activeTables.isEmpty {
             Menu {
                 ForEach(activeTables) { table in
                     Button(action: {
-                        let tableFloor = table.floor ?? 1
-                        if tableFloor != selectedFloor {
-                            selectedFloor = tableFloor
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                focusTableId = table.id
-                            }
-                        } else {
-                            focusTableId = table.id
-                        }
+                        findTable(table)
                     }) {
                         Text(LocalizationManager.shared.t("table_find_item_template", table.tableNumber, table.capacity))
                     }
@@ -2144,7 +3495,7 @@ struct TableView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(isMovementLocked ? .textSecondary.opacity(0.4) : .appAccent)
-                    .frame(width: 32, height: 32)
+                    .frame(width: 40, height: 40)
                     .background(Color.clear)
                     .contentShape(Rectangle())
             }
@@ -2155,16 +3506,32 @@ struct TableView: View {
     @ViewBuilder
     private var printQRCodesCompactButton: some View {
         Button(action: {
-            showingBatchQRSheet = true
+            guard !isOpeningBatchQR, !showingBatchQRSheet else { return }
             APHaptic.trigger()
+            withAnimation(.easeOut(duration: 0.15)) {
+                isOpeningBatchQR = true
+            }
+            // Yield a runloop so the loading overlay paints before the heavy cover mounts.
+            DispatchQueue.main.async {
+                showingBatchQRSheet = true
+            }
         }) {
-            Image(systemName: "qrcode")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundColor(.textPrimary)
-                .frame(width: 32, height: 32)
-                .background(Color.clear)
+            ZStack {
+                if isOpeningBatchQR && !showingBatchQRSheet {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.appAccent)
+                } else {
+                    Image(systemName: "qrcode")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.textPrimary)
+                }
+            }
+            .frame(width: 40, height: 40)
+            .background(Color.clear)
         }
         .buttonStyle(.plain)
+        .disabled(isOpeningBatchQR)
     }
 
     @ViewBuilder
@@ -2176,7 +3543,7 @@ struct TableView: View {
             Image(systemName: isMovementLocked ? "lock.fill" : "lock.open.fill")
                 .font(.system(size: 14, weight: .bold))
                 .foregroundColor(isMovementLocked ? .appRose : .textSecondary)
-                .frame(width: 32, height: 32)
+                .frame(width: 40, height: 40)
                 .background(isMovementLocked ? Color.appRose.opacity(0.12) : Color.clear)
                 .cornerRadius(6)
                 .scaleEffect(isMovementLocked ? 1.05 : 1.0)
@@ -2193,6 +3560,7 @@ struct TableView: View {
                 checkManagerPermission(for: .toggleEditLayout(true))
             } else {
                 isEditingLayout = false
+                isLayoutManagerAuthorized = false
                 Task {
                     await SyncEngine.shared.syncAll(modelContext: modelContext)
                 }
@@ -2202,7 +3570,7 @@ struct TableView: View {
             Image(systemName: isEditingLayout ? "pencil.and.outline" : "pencil")
                 .font(.system(size: 14, weight: .bold))
                 .foregroundColor(isEditingLayout ? .appAccent : .textSecondary)
-                .frame(width: 32, height: 32)
+                .frame(width: 40, height: 40)
                 .background(isEditingLayout ? Color.appAccent.opacity(0.12) : Color.clear)
                 .cornerRadius(6)
                 .scaleEffect(isEditingLayout ? 1.05 : 1.0)
@@ -2226,165 +3594,31 @@ struct TableView: View {
                 }
             }
             .foregroundColor(.textPrimary)
-            .frame(height: 34)
-            .padding(.horizontal, isCompact ? 11 : 12)
-            .background(Color.appSurfaceHigh.opacity(0.6))
-            .clipShape(Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(Color.appBorderSubtle, lineWidth: 1)
-            )
+            .frame(width: isCompact ? 38 : nil, height: 40)
+            .padding(.horizontal, isCompact ? 0 : 8)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("table_back_to_login".t)
     }
 
-    @ViewBuilder
-    private func compactHeader(showsSidebarButton: Bool, width: CGFloat) -> some View {
-        VStack(spacing: 8) {
-            if width < 600 {
-                // iPhone Layout:
-                // Row 1: Sidebar Toggle + Back Button (compact) + Status Badges (no labels) + Quick Actions
-                HStack(spacing: 0) {
-                    if showsSidebarButton {
-                        sidebarToggleButton
-                        Spacer(minLength: 8)
-                    }
-
-                    backToLoginButton(isCompact: true)
-
-                    Spacer(minLength: 8)
-
-                    modernStatusWidget(showLabels: false)
-                        .layoutPriority(1)
-
-                    Spacer(minLength: 8)
-
-                    quickActionsBar
-                        .layoutPriority(1)
-                }
-
-                // Row 2: Floor & Zone Pickers (Horizontal Scroll)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        customFloorPicker
-                        customZonePicker
-                    }
-                    .padding(.horizontal, 2)
-                    .padding(.vertical, 1)
-                }
-            } else {
-                // iPad Portrait / Landscape with Sidebar Open Layout:
-                // Row 1: Sidebar Toggle + Back Button + Title ── Spacer ── Quick Actions
-                HStack(alignment: .center, spacing: 10) {
-                    if showsSidebarButton {
-                        sidebarToggleButton
-                    }
-
-                    backToLoginButton(isCompact: false)
-
-                    headerTitleView
-                        .layoutPriority(3)
-
-                    Spacer()
-
-                    quickActionsBar
-                        .layoutPriority(1)
-                }
-
-                // Row 2: Floor & Zone Pickers ── Spacer ── Status Badges (Responsive Labels)
-                HStack(alignment: .center, spacing: 12) {
-                    HStack(spacing: 12) {
-                        customFloorPicker
-                        customZonePicker
-                    }
-
-                    Spacer()
-
-                    modernStatusWidget(showLabels: width >= 768)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func wideHeader(showsSidebarButton: Bool, width: CGFloat) -> some View {
-        VStack(spacing: 6) {
-            // Row 1: Sidebar Toggle + Back Button + Title ── Spacer ── Quick Actions
-            HStack(alignment: .center, spacing: 10) {
-                if showsSidebarButton {
-                    sidebarToggleButton
-                }
-
-                backToLoginButton(isCompact: false)
-
-                headerTitleView
-
-                Spacer()
-
-                quickActionsBar
-            }
-
-            // Row 2: Floor & Zone Pickers ── Spacer ── Status Badges
-            HStack(alignment: .center, spacing: 12) {
-                HStack(spacing: 12) {
-                    customFloorPicker
-                    customZonePicker
-                }
-
-                Spacer()
-
-                modernStatusWidget(showLabels: true)
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private var sidebarToggleButton: some View {
-        Button {
-            APHaptic.trigger()
-            withAnimation(.easeInOut(duration: 0.2)) {
-                columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-            }
-        } label: {
-            Image(systemName: "sidebar.left")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundColor(.textPrimary)
-                .frame(width: 34, height: 34)
-                .background(Color.appSurfaceHigh.opacity(0.6))
-                .clipShape(Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(Color.appBorderSubtle, lineWidth: 1)
-                )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(columnVisibility == .detailOnly ? "Show sidebar" : "Hide sidebar")
-    }
-
     private var headerTitleView: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             ZStack {
                 Circle()
-                    .fill(Color.appAccent.opacity(0.15))
-                    .frame(width: 28, height: 28)
-                Image(systemName: "tablecells.fill")
-                    .font(.system(size: 12, weight: .bold))
+                    .fill(Color.appAccent.opacity(isEditingLayout ? 0.24 : 0.15))
+                    .frame(width: 24, height: 24)
+                Image(systemName: isEditingLayout ? "square.and.pencil" : "tablecells.fill")
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.appAccent)
             }
-            Text("table_management_title".t)
-                .font(.system(size: 14, weight: .bold))
+            Text(isEditingLayout ? "แก้ไขผังโต๊ะ" : "table_management_title".t)
+                .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.textPrimary)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Color.appAccent.opacity(0.06))
-        .clipShape(Capsule())
-        .overlay(
-            Capsule()
-                .stroke(Color.appAccent.opacity(0.15), lineWidth: 1)
-        )
+        .padding(.horizontal, 6)
+        .frame(height: 40)
     }
 
     // MARK: - Active Service Requests Overlay
@@ -2404,7 +3638,7 @@ struct TableView: View {
 
                 ScrollView {
                     VStack(spacing: 8) {
-                        ForEach(syncEngine.activeRequests) { request in
+                        ForEach(activeRequestsForSelectedArea) { request in
                             serviceRequestRow(request)
                         }
                     }
@@ -2465,25 +3699,77 @@ struct TableView: View {
     }
 
     private func updateSearchTablesList(with newTables: [RestaurantTable]) {
-        let activeNew = newTables.filter { !$0.isDeleted }
-        let activeOld = searchTablesList.filter { !$0.isDeleted }
+        // SwiftData models are reference types, so comparing the old and new arrays can
+        // miss in-place status/area changes. Keep this lightweight presentation cache fresh.
+        searchTablesList = newTables.filter { !$0.isDeleted && tableBelongsToActiveBranch($0) }
+    }
 
-        guard activeNew.count == activeOld.count else {
-            searchTablesList = newTables
-            return
-        }
-
-        for i in 0..<activeNew.count {
-            let tNew = activeNew[i]
-            let tOld = activeOld[i]
-            if tNew.id != tOld.id ||
-               tNew.tableNumber != tOld.tableNumber ||
-               tNew.capacity != tOld.capacity ||
-               tNew.floor != tOld.floor {
-                searchTablesList = newTables
+    private func findTable(_ table: RestaurantTable) {
+        if isGridMode {
+            guard selectedZone == "All" || table.zone == selectedZone else {
+                selectedZone = "All"
+                DispatchQueue.main.async { gridFocusTableId = table.id }
                 return
             }
+            gridFocusTableId = table.id
+        } else {
+            focusTableId = table.id
         }
+    }
+}
+
+private struct QuickClearDialogsModifier: ViewModifier {
+    @Binding var isVacantConfirmPresented: Bool
+    let pendingVacantTableNumber: String
+    let onConfirmVacant: () -> Void
+    let onCancelVacant: () -> Void
+
+    @Binding var isReasonPresented: Bool
+    @Binding var reason: String
+    @Binding var error: String?
+    let onConfirmVoid: (String) -> Void
+    let onCancelVoid: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .alert(
+                LocalizationManager.shared.t("confirm_clear_table_title", pendingVacantTableNumber),
+                isPresented: $isVacantConfirmPresented
+            ) {
+                Button("cancel_btn".t, role: .cancel) {
+                    onCancelVacant()
+                }
+                Button("confirm_clear_table_btn".t, role: .destructive) {
+                    onConfirmVacant()
+                }
+            } message: {
+                Text("confirm_clear_table_msg".t)
+            }
+            .alert("ยกเลิกออเดอร์และเคลียร์โต๊ะ", isPresented: $isReasonPresented) {
+                TextField("เหตุผลที่ยกเลิกออเดอร์", text: $reason)
+                Button("ยืนยันการยกเลิก", role: .destructive) {
+                    let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                    reason = ""
+                    onConfirmVoid(trimmed.isEmpty ? "Table cleared by manager" : trimmed)
+                }
+                Button("cancel_btn".t, role: .cancel) {
+                    reason = ""
+                    onCancelVoid()
+                }
+            } message: {
+                Text("ออเดอร์ที่ยังไม่ชำระจะถูกยกเลิก คืนสต็อก และบันทึกประวัติผู้อนุมัติก่อนเคลียร์โต๊ะ")
+            }
+            .alert(
+                "ไม่สามารถเคลียร์โต๊ะได้",
+                isPresented: Binding(
+                    get: { error != nil },
+                    set: { if !$0 { error = nil } }
+                )
+            ) {
+                Button("ok_btn".t) { error = nil }
+            } message: {
+                Text(error ?? "")
+            }
     }
 }
 
@@ -2491,6 +3777,7 @@ struct TableView: View {
 
 struct TableDetailView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var lm: LocalizationManager
     @EnvironmentObject private var sessionManager: AppSessionManager
     @Bindable var table: RestaurantTable
@@ -2498,6 +3785,7 @@ struct TableDetailView: View {
 
     @Binding var selectedTab: MainDashboardView.DashboardTab
     @Binding var posTableSession: TableSession?
+    let allowsDeletion: Bool
 
     @Query(sort: \RestaurantTable.tableNumber) private var allTables: [RestaurantTable]
     @Query(filter: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted })
@@ -2517,9 +3805,25 @@ struct TableDetailView: View {
     /// Reads UserDefaults override first, then falls back to Config.plist LOCAL_SERVER_URL.
     private var customerWebBaseUrl: String {
         let ud = UserDefaults.standard.string(forKey: "dynamic_customer_web_url") ?? ""
-        return ud.isEmpty ? "https://alphapos.altifadev.workers.dev" : ud
+        return ud.isEmpty ? "https://sync.alphaposweb.com" : ud
+    }
+    /// Returns the active staff display name, or falls back to the logged-in owner name.
+    private var activeCashierDisplayName: String {
+        let staffName = sessionManager.currentStaffSession?.displayName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !staffName.isEmpty { return staffName }
+        return UserDefaults.standard.string(forKey: "logged_in_name") ?? "Staff"
     }
     @State private var showingManagerPinSheet = false
+    @State private var deletionErrorMessage = ""
+    @State private var showingDeletionError = false
+
+    // Guard rail: block clearing a table that still has live kitchen tickets.
+    @State private var showPendingTicketDialog = false
+    @State private var pendingClearStatus: String? = nil   // "vacant" | "cleaning" | "reserved"
+    @State private var showVoidReasonPrompt = false
+    @State private var showingManagerPinSheetForVoid = false
+    @State private var voidReasonText = ""
+    @State private var contentPresented = false
 
     private func deleteTableWithAuth() {
         if sessionManager.can(.managerOverride) {
@@ -2530,8 +3834,15 @@ struct TableDetailView: View {
     }
 
     private func performDelete() {
-        modelContext.delete(table)
+        guard !table.joinedGroupHasActiveSession else {
+            deletionErrorMessage = "ไม่สามารถลบโต๊ะที่กำลังใช้งาน กรุณาเคลียร์โต๊ะก่อน"
+            showingDeletionError = true
+            return
+        }
+
+        table.prepareForDeletion()
         modelContext.saveWithLogging(label: #function)
+
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
@@ -2558,6 +3869,10 @@ struct TableDetailView: View {
         return nil
     }
 
+    private var canReserveTable: Bool {
+        (table.joinedParent ?? table).status.lowercased() == "vacant"
+    }
+
     private func updateGroupStatus(_ newStatus: String) {
         let leader = table.joinedParent ?? table
         leader.status = newStatus
@@ -2571,502 +3886,147 @@ struct TableDetailView: View {
             child.updatedAt = Date()
         }
 
-        if newStatus == "vacant" {
-            // Close any active sessions
-            if let activeSession = leader.sessions.first(where: { $0.isActive }) {
+        if newStatus != "occupied" {
+            // DEFENSIVE NET: never strand a live kitchen ticket when a table is
+            // freed. Any open order still gets terminalized (served) before the
+            // session closes, so the KDS can't keep showing a ghost ticket.
+            // (The UI offers an explicit Serve/Void choice up front; this is the
+            // last-line guarantee for every code path that clears a table.)
+            for activeSession in leader.sessions.filter({ $0.isActive }) {
+                activeSession.terminalizeOpenOrders(.serve, in: modelContext)
                 activeSession.isActive = false
                 activeSession.endedAt = Date()
                 activeSession.isSynced = false
                 activeSession.updatedAt = Date()
             }
             for child in leader.joinedChildren {
-                if let activeSession = child.sessions.first(where: { $0.isActive }) {
+                for activeSession in child.sessions.filter({ $0.isActive }) {
+                    activeSession.terminalizeOpenOrders(.serve, in: modelContext)
                     activeSession.isActive = false
                     activeSession.endedAt = Date()
                     activeSession.isSynced = false
                     activeSession.updatedAt = Date()
                 }
             }
+            if let current = posTableSession,
+               ([leader] + leader.joinedChildren).contains(where: {
+                   current.table?.id == $0.id
+               }) {
+                posTableSession = nil
+            }
         }
 
         modelContext.saveWithLogging(label: #function)
     }
+
+    // MARK: - Guard-railed table clearing
+    //
+    // Standards-based flow: a cashier may not silently free a table that still
+    // has food live at the kitchen. `requestClear` checks for pending tickets
+    // and, if found, forces an explicit choice (Serve vs Void) before the table
+    // status changes. This is what prevents the "table vacant but ticket still
+    // on the KDS" divergence at the source.
+
+    /// Entry point for the Vacant / Cleaning / Reserved buttons.
+    private func requestClear(_ newStatus: String) {
+        guard newStatus != "reserved" || canReserveTable else { return }
+
+        let leader = table.joinedParent ?? table
+        let hasPending = leader.sessions.contains { $0.isActive && $0.hasPendingKitchenTickets }
+            || leader.joinedChildren.contains { child in
+                child.sessions.contains { $0.isActive && $0.hasPendingKitchenTickets }
+            }
+
+        if hasPending {
+            // Block and ask the operator how to resolve the open ticket(s).
+            pendingClearStatus = newStatus
+            showPendingTicketDialog = true
+            APHaptic.trigger()
+        } else {
+            applyClear(newStatus)
+        }
+    }
+
+    /// Actually change the table status and sync. `updateGroupStatus` already
+    /// terminalizes any lingering orders as a defensive net.
+    ///
+    /// Always PATCH-close remote sessions first. Vacant/cleaning uploads alone
+    /// are rejected by the DB guard while any `table_sessions.is_active = 1`
+    /// remains — without this, the next pull resurrects the old occupied state
+    /// (e.g. multi-day elapsed timers like T4 @ 4,565 min).
+    private func applyClear(_ newStatus: String) {
+        let leader = table.joinedParent ?? table
+        let tableNumbers = ([leader] + leader.joinedChildren).map(\.tableNumber)
+        updateGroupStatus(newStatus)
+        Task {
+            for number in tableNumbers where !number.isEmpty {
+                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: number)
+            }
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
+        dismiss()
+    }
+
+    /// Resolution 1: the food really was delivered — mark served, then clear.
+    private func resolvePendingAsServed() {
+        let leader = table.joinedParent ?? table
+        for session in leader.sessions.filter({ $0.isActive }) {
+            session.terminalizeOpenOrders(.serve, in: modelContext)
+        }
+        for child in leader.joinedChildren {
+            for session in child.sessions.filter({ $0.isActive }) {
+                session.terminalizeOpenOrders(.serve, in: modelContext)
+            }
+        }
+        if let status = pendingClearStatus { applyClear(status) }
+        pendingClearStatus = nil
+    }
+
+    /// Resolution 2: the order is abandoned — void it (with reason + audit),
+    /// then clear.
+    private func resolvePendingAsVoid(reason: String) {
+        let employeeId = sessionManager.currentStaffSession?.employeeId
+        let leader = table.joinedParent ?? table
+        let resolution: TableClearResolution = .void(reason: reason, employeeId: employeeId)
+        for session in leader.sessions.filter({ $0.isActive }) {
+            session.terminalizeOpenOrders(resolution, in: modelContext)
+        }
+        for child in leader.joinedChildren {
+            for session in child.sessions.filter({ $0.isActive }) {
+                session.terminalizeOpenOrders(resolution, in: modelContext)
+            }
+        }
+        if let status = pendingClearStatus { applyClear(status) }
+        pendingClearStatus = nil
+        voidReasonText = ""
+    }
+
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    HStack(alignment: .top, spacing: 0) {
+                ScrollView {
+                    VStack(spacing: 12) {
+                        identityHeaderSection
+                            .opacity(contentPresented ? 1 : 0)
+                            .offset(y: contentPresented ? 0 : -16)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.55), value: contentPresented)
 
-                        // LEFT PANEL: Visual Table Preview
-                        VStack(spacing: 16) {
-                            let leader = table.joinedParent ?? table
-                            let activeSession = leader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
-                            let itemCount = activeSession?.orders.reduce(0) { total, order in
-                                total + order.items.reduce(0) { subtotal, item in subtotal + item.quantity }
-                            } ?? 0
+                        groupingSection
+                            .opacity(contentPresented ? 1 : 0)
+                            .offset(y: contentPresented ? 0 : 12)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.55).delay(0.06), value: contentPresented)
 
-                            DynamicTableLayoutView(
-                                tableNumber: table.tableNumber,
-                                capacity: table.capacity,
-                                status: table.status,
-                                isEditingLayout: false,
-                                isDragging: false,
-                                isSelected: false,
-                                statusColor: statusColor(table.status),
-                                itemCount: itemCount
-                            )
-                            .padding(16)
-                            .frame(height: 140)
-
-                            Text(LocalizationManager.shared.t("table_number_template", table.tableNumber))
-                                .font(.title2)
-                                .fontWeight(.bold)
-                                .foregroundColor(.textPrimary)
-
-                            HStack(spacing: 12) {
-                                Label("table_capacity_lbl".t, systemImage: "chair.lounge.fill")
-                                    .font(.subheadline)
-                                    .foregroundColor(.textSecondary)
-
-                                if editingCapacity {
-                                    HStack(spacing: 0) {
-                                        Button(action: {
-                                            if table.capacity > 1 {
-                                                table.capacity -= 1
-                                                table.isSynced = false
-                                                table.updatedAt = Date()
-                                                modelContext.saveWithLogging(label: #function)
-                                                Task {
-                                                    await SyncEngine.shared.syncAll(modelContext: modelContext)
-                                                }
-                                            }
-                                        }) {
-                                            Image(systemName: "minus.circle.fill")
-                                                .font(.system(size: 18))
-                                                .foregroundColor(.appAccent)
-                                        }
-
-                                        Text("\(table.capacity)")
-                                            .font(.headline)
-                                            .foregroundColor(.textPrimary)
-                                            .frame(width: 30)
-
-                                        Button(action: {
-                                            if table.capacity < 20 {
-                                                table.capacity += 1
-                                                table.isSynced = false
-                                                table.updatedAt = Date()
-                                                modelContext.saveWithLogging(label: #function)
-                                                Task {
-                                                    await SyncEngine.shared.syncAll(modelContext: modelContext)
-                                                }
-                                            }
-                                        }) {
-                                            Image(systemName: "plus.circle.fill")
-                                                .font(.system(size: 18))
-                                                .foregroundColor(.appAccent)
-                                        }
-                                    }
-
-                                    Button("done".t) { editingCapacity = false }
-                                        .font(.caption)
-                                        .foregroundColor(.appAccent)
-                                } else {
-                                    Text("\(table.capacity) \("table_seats_sub".t.lowercased())")
-                                        .font(.subheadline)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(.textPrimary)
-
-                                    Button(action: { editingCapacity = true }) {
-                                        Image(systemName: "pencil.circle.fill")
-                                            .font(.system(size: 16))
-                                            .foregroundColor(.appAccent)
-                                    }
-                                }
-                            }
-
-                            HStack(spacing: 12) {
-                                Label("table_zone_lbl".t, systemImage: "rectangle.3.group")
-                                    .font(.subheadline)
-                                    .foregroundColor(.textSecondary)
-
-                                Menu {
-                                    Button("table_zone_indoor".t) { updateTableZone("Indoor") }
-                                    Button("table_zone_outdoor".t) { updateTableZone("Outdoor") }
-                                    Button("table_zone_rooftop".t) { updateTableZone("Rooftop") }
-                                } label: {
-                                    HStack(spacing: 4) {
-                                        Text("table_zone_\((table.zone ?? "Indoor").lowercased())".t)
-                                            .font(.subheadline)
-                                            .fontWeight(.semibold)
-                                            .foregroundColor(.appAccent)
-                                        Image(systemName: "chevron.down")
-                                            .font(.caption2)
-                                            .foregroundColor(.appAccent)
-                                    }
-                                }
-                            }
-                        }
-                        .padding(.vertical, 24)
-                        .padding(.horizontal, 16)
-                        .frame(width: 250)
-
-                        // VERTICAL DIVIDER
-                        Divider()
-                            .background(Color.appBorderSubtle)
-                            .padding(.vertical, 16)
-
-                        // RIGHT PANEL: Actions & Grouping
-                        VStack(spacing: 16) {
-
-                            // 1. Table Grouping Section
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("table_grouping_title".t)
-                                    .font(.caption)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.appAccent)
-                                    .tracking(1.0)
-
-                                if let parent = table.joinedParent {
-                                    HStack {
-                                        Label(LocalizationManager.shared.t("table_combined_with_template", parent.tableNumber), systemImage: "link")
-                                            .font(.subheadline)
-                                            .foregroundColor(.textPrimary)
-                                        Spacer()
-                                        Button(action: {
-                                            table.joinedParent = nil
-                                            table.isSynced = false
-                                            table.status = "vacant"
-                                            table.updatedAt = Date()
-                                            modelContext.saveWithLogging(label: #function)
-                                            Task {
-                                                await SyncEngine.shared.syncAll(modelContext: modelContext)
-                                            }
-                                        }) {
-                                            Text("table_split_btn".t)
-                                                .font(.caption)
-                                                .fontWeight(.bold)
-                                                .foregroundColor(.appRose)
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 6)
-                                                .background(Color.appRose.opacity(0.12))
-                                                .cornerRadius(8)
-                                        }
-                                        .buttonStyle(PlainButtonStyle())
-                                    }
-                                    .padding(8)
-                                    .background(Color.appSurfaceHigh)
-                                    .cornerRadius(APRadius.md)
-                                } else {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        if !table.joinedChildren.isEmpty {
-                                            Text(LocalizationManager.shared.t("table_combined_group_template", table.tableNumber) + " + " + table.joinedChildren.map { "T\($0.tableNumber)" }.joined(separator: ", "))
-                                                .font(.caption)
-                                                .foregroundColor(.textPrimary)
-
-                                            ForEach(table.joinedChildren) { child in
-                                                HStack {
-                                                    Label(LocalizationManager.shared.t("table_number_template", child.tableNumber), systemImage: "link")
-                                                        .font(.caption)
-                                                        .foregroundColor(.textSecondary)
-                                                    Spacer()
-                                                    Button("table_split_btn".t) {
-                                                        child.joinedParent = nil
-                                                        child.status = "vacant"
-                                                        child.isSynced = false
-                                                        child.updatedAt = Date()
-                                                        modelContext.saveWithLogging(label: #function)
-                                                        Task {
-                                                            await SyncEngine.shared.syncAll(modelContext: modelContext)
-                                                        }
-                                                    }
-                                                    .font(.caption)
-                                                    .foregroundColor(.appRose)
-                                                }
-                                            }
-                                            Divider().background(Color.appDivider).padding(.vertical, 2)
-                                        }
-
-                                        let floorTables = allTables.filter { ($0.floor ?? 1) == (table.floor ?? 1) && !$0.isDeleted && $0.id != table.id }
-                                        let availableToJoin = floorTables.filter { $0.joinedParent == nil && $0.joinedChildren.isEmpty && $0.status == "vacant" }
-
-                                        if !availableToJoin.isEmpty {
-                                            Menu {
-                                                ForEach(availableToJoin) { targetTable in
-                                                    Button(action: {
-                                                        targetTable.joinedParent = table
-                                                        targetTable.status = table.status
-                                                        targetTable.isSynced = false
-                                                        targetTable.updatedAt = Date()
-                                                        modelContext.saveWithLogging(label: #function)
-                                                        Task {
-                                                            await SyncEngine.shared.syncAll(modelContext: modelContext)
-                                                        }
-                                                    }) {
-                                                        Text(LocalizationManager.shared.t("table_find_item_template", targetTable.tableNumber, targetTable.capacity))
-                                                    }
-                                                }
-                                            } label: {
-                                                HStack {
-                                                    Image(systemName: "plus.circle")
-                                                    Text("table_combine_with_btn".t)
-                                                    Spacer()
-                                                    Image(systemName: "chevron.down").font(.caption)
-                                                }
-                                                .font(.subheadline)
-                                                .foregroundColor(.appAccent)
-                                                .padding(10)
-                                                .background(Color.appSurfaceHigh)
-                                                .cornerRadius(APRadius.md)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: APRadius.md)
-                                                        .stroke(Color.appBorderSubtle, lineWidth: 1)
-                                                )
-                                            }
-                                        } else {
-                                            Text("table_no_vacant_combine_hint".t)
-                                                .font(.caption2)
-                                                .foregroundColor(.textTertiary)
-                                                .padding(.vertical, 2)
-                                        }
-                                    }
-                                }
-                            }
-
-                            Divider().background(Color.appDivider).padding(.vertical, 2)
-
-                            // 2. Active Session / Status Actions Panel
-                            VStack(alignment: .leading, spacing: 8) {
-                                if let session = activeSession {
-                                    Text("table_active_dining_session".t)
-                                        .font(.caption)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(.appAccent)
-                                        .tracking(1.0)
-
-                                    HStack(spacing: 12) {
-                                        Label("table_started_at_lbl".t, systemImage: "clock")
-                                            .font(.subheadline)
-                                            .foregroundColor(.textSecondary)
-                                        Spacer()
-                                        Text(session.startedAt, style: .time)
-                                            .font(.subheadline)
-                                            .fontWeight(.semibold)
-                                            .foregroundColor(.textPrimary)
-                                    }
-                                    .padding(8)
-                                    .background(Color.appSurfaceHigh)
-                                    .cornerRadius(APRadius.sm)
-
-                                    if enableWebOrdering && !offlineSyncMode {
-                                        // QR Code Link Row
-                                        HStack(spacing: 8) {
-                                            let encodedTable = table.tableNumber.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? table.tableNumber
-                                            Text("\(customerWebBaseUrl)/?table=\(encodedTable)&token=\(session.sessionToken.prefix(8))")
-                                                .font(.system(.caption2, design: .monospaced))
-                                                .foregroundColor(.appAccent)
-                                                .lineLimit(1)
-                                                .truncationMode(.middle)
-                                                .padding(8)
-                                                .background(Color.appSurfaceHigh)
-                                                .cornerRadius(APRadius.sm)
-
-                                            Button(action: {
-                                                let encodedTable = table.tableNumber.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? table.tableNumber
-                                                dynamicQRUrl = "\(customerWebBaseUrl)/?table=\(encodedTable)&token=\(session.sessionToken)"
-                                                showingQRPopover = true
-                                            }) {
-                                                Image(systemName: "qrcode")
-                                                    .font(.subheadline)
-                                                    .padding(8)
-                                                    .background(Color.appAccent)
-                                                    .foregroundColor(.white)
-                                                    .cornerRadius(APRadius.sm)
-                                            }
-                                            .buttonStyle(PlainButtonStyle())
-                                        }
-                                    }
-
-                                    // Session Action Buttons (Placed Side-by-Side to Fit Height)
-                                    HStack(spacing: 12) {
-                                        Button(action: {
-                                            if activeRegisterSessions.isEmpty {
-                                                showNoActiveShiftAlert = true
-                                                return
-                                            }
-                                            posTableSession = session
-                                            selectedTab = .pos
-                                            dismiss()
-                                        }) {
-                                            Text("table_place_order_btn".t)
-                                                .frame(maxWidth: .infinity)
-                                        }
-                                        .apGradientButton(gradient: APGradient.accent, shadow: APShadow.glow)
-
-                                        Button(action: {
-                                            let tableNum = table.tableNumber
-                                            Task {
-                                                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: tableNum)
-                                            }
-
-                                            // Mark preparing/ready orders and cooking items as served when checked out
-                                            for order in session.orders {
-                                                if order.status == "preparing" || order.status == "ready" {
-                                                    order.status = "served"
-                                                    order.isSynced = false
-                                                    order.updatedAt = Date()
-
-                                                    for item in order.items {
-                                                        if item.status == "cooking" {
-                                                            item.status = "served"
-                                                            item.isSynced = false
-                                                            item.updatedAt = Date()
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            session.isActive = false
-                                            session.endedAt = Date()
-                                            updateGroupStatus("cleaning")
-                                            dismiss()
-                                        }) {
-                                            Text("table_checkout_btn".t)
-                                                .frame(maxWidth: .infinity)
-                                        }
-                                        .apGradientButton(gradient: APGradient.destructive, shadow: APShadow.destructiveGlow)
-                                    }
-                                    .padding(.top, 4)
-
-                                    // H-2: Table Transfer Button
-                                    Button(action: {
-                                        showTransferSheet = true
-                                        APHaptic.trigger()
-                                    }) {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "arrow.triangle.swap")
-                                                .font(.system(size: 13, weight: .semibold))
-                                            Text("table_transfer_btn".t)
-                                                .font(.system(size: 13, weight: .bold))
-                                        }
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                        .background(Color.appSurfaceHigh)
-                                        .foregroundColor(.textPrimary)
-                                        .cornerRadius(APRadius.md)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: APRadius.md)
-                                                .stroke(Color.appBorderSubtle, lineWidth: 1)
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                    .sheet(isPresented: $showTransferSheet) {
-                                        TableTransferSheet(
-                                            fromTable: table,
-                                            session: session,
-                                            allTables: allTables,
-                                            modelContext: modelContext,
-                                            onTransferComplete: { dismiss() }
-                                        )
-                                    }
-
-                                } else {
-                                    Text("table_actions_title".t)
-                                        .font(.caption)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(.appAccent)
-                                        .tracking(1.0)
-
-                                    VStack(spacing: 10) {
-                                        Button(action: {
-                                            if activeRegisterSessions.isEmpty {
-                                                showNoActiveShiftAlert = true
-                                                return
-                                            }
-                                            startNewSession()
-                                        }) {
-                                            Text("table_start_session_btn".t)
-                                                .frame(maxWidth: .infinity)
-                                        }
-                                        .apGradientButton(gradient: APGradient.positive, shadow: APShadow.positiveGlow)
-
-                                        HStack(spacing: 12) {
-                                            Button(action: {
-                                                updateGroupStatus("reserved")
-                                                Task {
-                                                    await SyncEngine.shared.syncAll(modelContext: modelContext)
-                                                }
-                                                dismiss()
-                                            }) {
-                                                Text("table_reserve_btn".t)
-                                                    .font(.headline)
-                                                    .foregroundColor(.textPrimary)
-                                                    .frame(maxWidth: .infinity)
-                                                    .padding(.vertical, 12)
-                                                    .background(Color.appSurfaceHigh)
-                                                    .cornerRadius(APRadius.md)
-                                                    .overlay(
-                                                        RoundedRectangle(cornerRadius: APRadius.md)
-                                                            .stroke(Color.appBorderSubtle, lineWidth: 1)
-                                                    )
-                                            }
-                                            .buttonStyle(PlainButtonStyle())
-
-                                            Button(action: {
-                                                updateGroupStatus("vacant")
-                                                Task {
-                                                    await SyncEngine.shared.syncAll(modelContext: modelContext)
-                                                }
-                                                dismiss()
-                                            }) {
-                                                Text("table_vacant_btn".t)
-                                                    .font(.headline)
-                                                    .foregroundColor(.textPrimary)
-                                                    .frame(maxWidth: .infinity)
-                                                    .padding(.vertical, 12)
-                                                    .background(Color.appSurfaceHigh)
-                                                    .cornerRadius(APRadius.md)
-                                                    .overlay(
-                                                        RoundedRectangle(cornerRadius: APRadius.md)
-                                                            .stroke(Color.appBorderSubtle, lineWidth: 1)
-                                                    )
-                                            }
-                                        }
-
-                                        Button(action: {
-                                            deleteTableWithAuth()
-                                        }) {
-                                            HStack {
-                                                Image(systemName: "trash.fill")
-                                                Text("table_delete_btn".t)
-                                            }
-                                            .font(.headline)
-                                            .foregroundColor(.white)
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 12)
-                                            .background(Color.appRose)
-                                            .cornerRadius(APRadius.md)
-                                            .shadow(color: Color.appRose.opacity(0.3), radius: 6, x: 0, y: 3)
-                                        }
-                                        .buttonStyle(PlainButtonStyle())
-                                        .padding(.top, 8)
-                                    }
-                                }
-                            }
-                        }
-                        .padding(24)
-                        .frame(maxWidth: .infinity)
+                        actionsSection
+                            .opacity(contentPresented ? 1 : 0)
+                            .offset(y: contentPresented ? 0 : 18)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.55).delay(0.12), value: contentPresented)
                     }
-                    .background(Color.appSurface)
-                    .cornerRadius(APRadius.lg)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: APRadius.lg)
-                            .stroke(Color.appBorderSubtle, lineWidth: 1)
-                    )
-                    .padding(24)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
+                    .padding(.bottom, 16)
                 }
             }
             .navigationTitle("table_details_title".t)
@@ -3075,6 +4035,16 @@ struct TableDetailView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("close_btn".t) { dismiss() }
                         .foregroundColor(.textPrimary)
+                }
+            }
+            .onAppear {
+                if reduceMotion {
+                    contentPresented = true
+                } else {
+                    contentPresented = false
+                    DispatchQueue.main.async {
+                        contentPresented = true
+                    }
                 }
             }
             .alert("table_qr_sim_title".t, isPresented: $showingQRPopover) {
@@ -3099,12 +4069,510 @@ struct TableDetailView: View {
             } message: {
                 Text("pos_shift_required_hint".t)
             }
+            .alert("ไม่สามารถลบโต๊ะ", isPresented: $showingDeletionError) {
+                Button("ok_btn".t, role: .cancel) {}
+            } message: {
+                Text(deletionErrorMessage)
+            }
+            // GUARD RAIL: pending kitchen tickets block a silent table clear.
+            .confirmationDialog(
+                "table_pending_ticket_title".t,
+                isPresented: $showPendingTicketDialog,
+                titleVisibility: .visible
+            ) {
+                Button("table_pending_ticket_served".t) {
+                    resolvePendingAsServed()
+                }
+                Button("table_pending_ticket_void".t, role: .destructive) {
+                    if sessionManager.can(.managerOverride) {
+                        showVoidReasonPrompt = true
+                    } else {
+                        showingManagerPinSheetForVoid = true
+                    }
+                }
+                Button("cancel".t, role: .cancel) { pendingClearStatus = nil }
+            } message: {
+                Text("table_pending_ticket_message".t)
+            }
+            // Manager PIN gate for the void path (parity with other voids).
+            .sheet(isPresented: $showingManagerPinSheetForVoid) {
+                ManagerPINVerificationSheet(
+                    isPresented: $showingManagerPinSheetForVoid,
+                    onSuccess: { showVoidReasonPrompt = true }
+                )
+            }
+            // Capture a void reason for the audit log.
+            .alert("table_pending_ticket_void".t, isPresented: $showVoidReasonPrompt) {
+                TextField("table_void_reason_placeholder".t, text: $voidReasonText)
+                Button("confirm".t, role: .destructive) {
+                    let reason = voidReasonText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    resolvePendingAsVoid(reason: reason.isEmpty ? "No reason given" : reason)
+                }
+                Button("cancel".t, role: .cancel) { pendingClearStatus = nil; voidReasonText = "" }
+            } message: {
+                Text("table_void_reason_prompt".t)
+            }
         }
+    }
+
+    // MARK: - Identity Header
+
+    private var identityHeaderSection: some View {
+        let leader = table.joinedParent ?? table
+        let previewSession = leader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
+        let itemCount = previewSession?.itemCount ?? 0
+        let status = statusColor(table.status)
+
+        return HStack(alignment: .center, spacing: 14) {
+            DynamicTableLayoutView(
+                tableNumber: table.tableNumber,
+                capacity: table.capacity,
+                status: table.status,
+                isEditingLayout: false,
+                isDragging: false,
+                isSelected: false,
+                statusColor: status,
+                itemCount: itemCount
+            )
+            // Keep the original layout canvas so chairs are not clipped; only
+            // scale the rendered preview to preserve the compact modal.
+            .frame(width: 120, height: 120)
+            .scaleEffect(0.78)
+            .frame(width: 96, height: 96)
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(LocalizationManager.shared.t("table_number_template", table.tableNumber))
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.textPrimary)
+                        .lineLimit(1)
+
+                    Text("table_status_\(table.status.lowercased())".t)
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundColor(status)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(status.opacity(0.12), in: Capsule())
+                }
+
+                capacityEditorRow
+
+                zonePickerRow
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(14)
+        .background(
+            Color.appSurface.opacity(0.72),
+            in: RoundedRectangle(cornerRadius: APRadius.xl, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: APRadius.xl, style: .continuous)
+                .stroke(status.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private var capacityEditorRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "chair.lounge.fill")
+                .font(.subheadline)
+                .foregroundColor(.textSecondary)
+                .frame(width: 18)
+
+            Text("table_capacity_lbl".t)
+                .font(.subheadline)
+                .foregroundColor(.textSecondary)
+
+            if editingCapacity {
+                HStack(spacing: 0) {
+                    Button {
+                        if table.capacity > 1 {
+                            table.capacity -= 1
+                            table.isSynced = false
+                            table.updatedAt = Date()
+                            modelContext.saveWithLogging(label: #function)
+                            Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+                        }
+                    } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.appAccent)
+                    }
+
+                    Text("\(table.capacity)")
+                        .font(.headline)
+                        .foregroundColor(.textPrimary)
+                        .frame(width: 30)
+
+                    Button {
+                        if table.capacity < 20 {
+                            table.capacity += 1
+                            table.isSynced = false
+                            table.updatedAt = Date()
+                            modelContext.saveWithLogging(label: #function)
+                            Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+                        }
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.appAccent)
+                    }
+                }
+
+                Button("done".t) { editingCapacity = false }
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.appAccent)
+            } else {
+                Text("\(table.capacity)")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.textPrimary)
+
+                Button { editingCapacity = true } label: {
+                    Image(systemName: "pencil.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(.appAccent)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var zonePickerRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "rectangle.3.group")
+                .font(.subheadline)
+                .foregroundColor(.textSecondary)
+                .frame(width: 18)
+
+            Text("table_zone_lbl".t)
+                .font(.subheadline)
+                .foregroundColor(.textSecondary)
+
+            Menu {
+                Button("table_zone_indoor".t) { updateTableZone("Indoor") }
+                Button("table_zone_outdoor".t) { updateTableZone("Outdoor") }
+                Button("table_zone_rooftop".t) { updateTableZone("Rooftop") }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("table_zone_\((table.zone ?? "Indoor").lowercased())".t)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.appAccent)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                        .foregroundColor(.appAccent)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    // MARK: - Grouping
+
+    private var groupingSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("table_grouping_title".t)
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.appAccent)
+                .tracking(1.0)
+
+            if let parent = table.joinedParent {
+                HStack {
+                    Label(LocalizationManager.shared.t("table_combined_with_template", parent.tableNumber), systemImage: "link")
+                        .font(.subheadline)
+                        .foregroundColor(.textPrimary)
+                    Spacer()
+                    Button {
+                        table.joinedParent = nil
+                        table.isSynced = false
+                        table.status = "vacant"
+                        table.updatedAt = Date()
+                        modelContext.saveWithLogging(label: #function)
+                        Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+                    } label: {
+                        Text("table_split_btn".t)
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.appRose)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.appRose.opacity(0.12))
+                            .cornerRadius(8)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+                .padding(10)
+                .background(Color.appSurfaceHigh, in: RoundedRectangle(cornerRadius: APRadius.md, style: .continuous))
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !table.joinedChildren.isEmpty {
+                        Text(combinedGroupText)
+                            .font(.caption)
+                            .foregroundColor(.textPrimary)
+
+                        ForEach(table.joinedChildren) { child in
+                            HStack {
+                                Label(LocalizationManager.shared.t("table_number_template", child.tableNumber), systemImage: "link")
+                                    .font(.caption)
+                                    .foregroundColor(.textSecondary)
+                                Spacer()
+                                Button("table_split_btn".t) {
+                                    child.joinedParent = nil
+                                    child.status = "vacant"
+                                    child.isSynced = false
+                                    child.updatedAt = Date()
+                                    modelContext.saveWithLogging(label: #function)
+                                    Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+                                }
+                                .font(.caption)
+                                .foregroundColor(.appRose)
+                            }
+                        }
+                        Divider().background(Color.appDivider)
+                    }
+
+                    let floorTables = allTables.filter {
+                        !$0.isDeleted && $0.id != table.id
+                            && $0.branchId == table.branchId
+                            && $0.floorId == table.floorId
+                    }
+                    let availableToJoin = floorTables.filter { $0.joinedParent == nil && $0.joinedChildren.isEmpty && $0.status == "vacant" }
+
+                    if !availableToJoin.isEmpty {
+                        Menu {
+                            ForEach(availableToJoin) { targetTable in
+                                Button {
+                                    targetTable.joinedParent = table
+                                    targetTable.status = table.status
+                                    targetTable.isSynced = false
+                                    targetTable.updatedAt = Date()
+                                    modelContext.saveWithLogging(label: #function)
+                                    Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+                                } label: {
+                                    Text(LocalizationManager.shared.t("table_find_item_template", targetTable.tableNumber, targetTable.capacity))
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "plus.circle")
+                                Text("table_combine_with_btn".t)
+                                Spacer()
+                                Image(systemName: "chevron.down").font(.caption)
+                            }
+                            .font(.subheadline)
+                            .foregroundColor(.appAccent)
+                            .padding(10)
+                            .apLiquidGlass(
+                                tint: Color.appAccent.opacity(0.07),
+                                interactive: true,
+                                in: RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                            )
+                        }
+                    } else {
+                        Text("table_no_vacant_combine_hint".t)
+                            .font(.caption2)
+                            .foregroundColor(.textTertiary)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color.appSurface.opacity(0.62),
+            in: RoundedRectangle(cornerRadius: APRadius.xl, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: APRadius.xl, style: .continuous)
+                .stroke(Color.appBorderSubtle, lineWidth: 1)
+        )
+    }
+
+    private var combinedGroupText: String {
+        let heading = LocalizationManager.shared.t("table_combined_group_template", table.tableNumber)
+        let children = table.joinedChildren.map { "T\($0.tableNumber)" }.joined(separator: ", ")
+        return heading + " + " + children
+    }
+
+    // MARK: - Actions
+
+    private var actionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let session = activeSession {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("table_active_dining_session".t)
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.textSecondary)
+                        Label {
+                            Text(session.startedAt, style: .time)
+                        } icon: {
+                            Image(systemName: "clock")
+                        }
+                        .font(.headline)
+                        .foregroundColor(.textPrimary)
+                    }
+
+                    Spacer()
+
+                    if enableWebOrdering && !offlineSyncMode {
+                        Button {
+                            let encodedTable = table.tableNumber.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? table.tableNumber
+                            let merchantQ = UserDefaults.standard.string(forKey: "active_merchant_id").flatMap { $0.isEmpty ? nil : "&merchant=\($0)" } ?? ""
+                            dynamicQRUrl = "\(customerWebBaseUrl)/?table=\(encodedTable)\(merchantQ)&token=\(session.sessionToken)"
+                            showingQRPopover = true
+                        } label: {
+                            Label("QR Code", systemImage: "qrcode")
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .foregroundColor(.appAccent)
+                                .background(Color.appAccent.opacity(0.1))
+                                .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(10)
+                .background(Color.appSurfaceHigh, in: RoundedRectangle(cornerRadius: APRadius.md))
+
+                placeOrderButton(session)
+
+                Button {
+                    showTransferSheet = true
+                    APHaptic.trigger()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.triangle.swap")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("table_transfer_btn".t)
+                            .font(.system(size: 13, weight: .bold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 2)
+                    .foregroundColor(.textPrimary)
+                }
+                .apGlassButton(tint: Color.appAccent.opacity(0.08))
+                .sheet(isPresented: $showTransferSheet) {
+                    TableTransferSheet(
+                        fromTable: table,
+                        session: session,
+                        allTables: allTables,
+                        modelContext: modelContext,
+                        onTransferComplete: { dismiss() }
+                    )
+                }
+            } else {
+                Text("table_actions_title".t)
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.appAccent)
+                    .tracking(1.0)
+
+                vacantTableActions
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color.appSurface.opacity(0.62),
+            in: RoundedRectangle(cornerRadius: APRadius.xl, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: APRadius.xl, style: .continuous)
+                .stroke(Color.appBorderSubtle, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private var vacantTableActions: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 10) { vacantTableActionsLayout }
+        } else {
+            vacantTableActionsLayout
+        }
+    }
+
+    private var vacantTableActionsLayout: some View {
+        VStack(spacing: 10) {
+            Button {
+                guard !activeRegisterSessions.isEmpty else {
+                    showNoActiveShiftAlert = true
+                    return
+                }
+                startNewSession()
+            } label: {
+                Label("table_start_session_btn".t, systemImage: "play.fill")
+                    .lineLimit(1)
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+            }
+            .apGlassButton(prominent: true, tint: .appAccent)
+
+            HStack(spacing: 10) {
+                Button { requestClear("reserved") } label: {
+                    Label("table_reserve_btn".t, systemImage: "calendar.badge.clock")
+                        .lineLimit(1)
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 2)
+                }
+                .apGlassButton()
+                .disabled(!canReserveTable)
+
+                Button { requestClear("vacant") } label: {
+                    Label("table_vacant_btn".t, systemImage: "checkmark.circle")
+                        .lineLimit(1)
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 2)
+                }
+                .apGlassButton()
+            }
+
+            if allowsDeletion {
+                Button(role: .destructive) { deleteTableWithAuth() } label: {
+                    Label("table_delete_btn".t, systemImage: "trash")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.appRose)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func placeOrderButton(_ session: TableSession) -> some View {
+        Button {
+            guard !activeRegisterSessions.isEmpty else {
+                showNoActiveShiftAlert = true
+                return
+            }
+            posTableSession = session
+            selectedTab = .pos
+            dismiss()
+        } label: {
+            Label("table_place_order_btn".t, systemImage: "fork.knife")
+                .lineLimit(1)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 3)
+        }
+        .apGlassButton(prominent: true, tint: .appAccent)
     }
 
     private func startNewSession() {
         let leader = table.joinedParent ?? table
-        let newSession = TableSession(sessionToken: UUID().uuidString, startedAt: Date(), isActive: true, table: leader, guestCount: leader.capacity)
+        let newSession = TableSession(sessionToken: UUID().uuidString, startedAt: Date(), isActive: true, table: leader, guestCount: leader.capacity, cashierName: activeCashierDisplayName)
         leader.sessions.append(newSession)
 
         leader.status = "occupied"
@@ -3118,6 +4586,10 @@ struct TableDetailView: View {
             child.updatedAt = Date()
         }
         modelContext.saveWithLogging(label: #function)
+
+        posTableSession = newSession
+        selectedTab = .pos
+        dismiss()
 
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -3137,7 +4609,7 @@ struct TableDetailView: View {
 
 #Preview {
     TableView(selectedTab: .constant(.tables), activeSession: .constant(nil), columnVisibility: .constant(.all))
-        .modelContainer(for: [RestaurantTable.self, TableSession.self], inMemory: true)
+        .modelContainer(for: [RestaurantTable.self, TableSession.self, FloorData.self], inMemory: true)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3427,6 +4899,7 @@ struct InteractiveTableCard: View {
     let isSelected: Bool
     let onTap: () -> Void
     let onLongPress: () -> Void
+    let onClear: () -> Void
 
     private func statusColor(_ status: String) -> Color {
         switch status.lowercased() {
@@ -3439,18 +4912,17 @@ struct InteractiveTableCard: View {
     }
 
     var body: some View {
-        let statusCol = statusColor(table.status)
         let leader = table.joinedParent ?? table
+        let effectiveStatus = leader.status
+        let statusCol = statusColor(effectiveStatus)
         let activeSession = leader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
-        let itemCount = activeSession?.orders.reduce(0) { total, order in
-            total + order.items.reduce(0) { subtotal, item in subtotal + item.quantity }
-        } ?? 0
+        let itemCount = activeSession?.itemCount ?? 0
 
         DynamicTableLayoutView(
             tableNumber: table.tableNumber,
             capacity: table.capacity,
             isRound: table.isRound,
-            status: table.status,
+            status: effectiveStatus,
             isEditingLayout: isEditingLayout,
             isDragging: isDragging,
             isSelected: isSelected,
@@ -3466,11 +4938,26 @@ struct InteractiveTableCard: View {
         .onTapGesture {
             onTap()
         }
-        .onLongPressGesture {
-            onLongPress()
+        .contextMenu {
+            if !isEditingLayout {
+                if leader.status.lowercased() != "vacant"
+                    || leader.sessions.contains(where: { $0.isActive }) {
+                    Button(action: onClear) {
+                        Label("เคลียร์โต๊ะ", systemImage: "eraser.fill")
+                    }
+                }
+                Divider()
+                Button(action: onLongPress) {
+                    Label("table_details_title".t, systemImage: "info.circle")
+                }
+            }
         }
-        .accessibilityLabel("Table \(table.tableNumber), \(table.status), \(table.capacity) guests")
+        .accessibilityLabel("Table \(table.tableNumber), \(effectiveStatus), \(table.capacity) guests")
         .accessibilityHint("Double-tap to open table")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction {
+            onTap()
+        }
     }
 }
 
@@ -3479,16 +4966,24 @@ struct InteractiveTableCardWrapper: View, Equatable {
     let isEditingLayout: Bool
     let activeDraggingTableId: UUID?
     let selectedTableId: UUID?
+    let layoutSelectedTableId: UUID?
+    let isMultiSelected: Bool
+    /// Canvas-space delta while dragging (already zoom-compensated by the parent).
     let dragTranslation: CGSize
-    let zoomScale: CGFloat
+    let liveLayoutScale: CGFloat?
+    let liveLayoutOriginDelta: CGSize
+    let activeResizeCorner: TableResizeCorner?
+    let canvasZoom: CGFloat
     let isBouncing: Bool
     let onTap: () -> Void
     let onLongPress: () -> Void
+    let onClear: () -> Void
     let onDragChanged: (DragGesture.Value) -> Void
     let onDragEnded: (DragGesture.Value) -> Void
+    let onResizeChanged: (TableResizeCorner, DragGesture.Value) -> Void
+    let onResizeEnded: (TableResizeCorner, DragGesture.Value) -> Void
 
     static func == (lhs: InteractiveTableCardWrapper, rhs: InteractiveTableCardWrapper) -> Bool {
-        // 1. Basic properties
         guard lhs.table.id == rhs.table.id,
               lhs.table.tableNumber == rhs.table.tableNumber,
               lhs.table.status == rhs.table.status,
@@ -3496,18 +4991,30 @@ struct InteractiveTableCardWrapper: View, Equatable {
               lhs.table.isRound == rhs.table.isRound,
               lhs.table.positionX == rhs.table.positionX,
               lhs.table.positionY == rhs.table.positionY,
+              lhs.table.layoutScale == rhs.table.layoutScale,
               lhs.table.zone == rhs.table.zone,
               lhs.table.floor == rhs.table.floor,
+              lhs.table.floorId == rhs.table.floorId,
+              lhs.table.branchId == rhs.table.branchId,
               lhs.table.isDeleted == rhs.table.isDeleted,
               lhs.table.joinedParent?.id == rhs.table.joinedParent?.id,
               lhs.table.joinedChildren.count == rhs.table.joinedChildren.count,
               lhs.isEditingLayout == rhs.isEditingLayout,
-              lhs.zoomScale == rhs.zoomScale,
+              lhs.layoutSelectedTableId == rhs.layoutSelectedTableId,
+              lhs.isMultiSelected == rhs.isMultiSelected,
               lhs.isBouncing == rhs.isBouncing else {
             return false
         }
 
-        // 2. Dragging state
+        let lhsLayoutSelected = lhs.layoutSelectedTableId == lhs.table.id
+        let rhsLayoutSelected = rhs.layoutSelectedTableId == rhs.table.id
+        if lhsLayoutSelected || rhsLayoutSelected {
+            guard lhs.liveLayoutScale == rhs.liveLayoutScale,
+                  lhs.liveLayoutOriginDelta == rhs.liveLayoutOriginDelta,
+                  lhs.activeResizeCorner == rhs.activeResizeCorner,
+                  lhs.canvasZoom == rhs.canvasZoom else { return false }
+        }
+
         let lhsIsDragging = lhs.activeDraggingTableId == lhs.table.id
         let rhsIsDragging = rhs.activeDraggingTableId == rhs.table.id
         guard lhsIsDragging == rhsIsDragging else { return false }
@@ -3515,68 +5022,146 @@ struct InteractiveTableCardWrapper: View, Equatable {
             guard lhs.dragTranslation == rhs.dragTranslation else { return false }
         }
 
-        // 3. Selection state
         let lhsIsSelected = lhs.selectedTableId == lhs.table.id
         let rhsIsSelected = rhs.selectedTableId == rhs.table.id
         guard lhsIsSelected == rhsIsSelected else { return false }
 
-        // 4. Item counts (badge)
         let lhsLeader = lhs.table.joinedParent ?? lhs.table
         let lhsActiveSession = lhsLeader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
-        let lhsItemCount = lhsActiveSession?.orders.reduce(0) { total, order in
-            total + order.items.reduce(0) { subtotal, item in subtotal + item.quantity }
-        } ?? 0
+        let lhsItemCount = lhsActiveSession?.itemCount ?? 0
 
         let rhsLeader = rhs.table.joinedParent ?? rhs.table
         let rhsActiveSession = rhsLeader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
-        let rhsItemCount = rhsActiveSession?.orders.reduce(0) { total, order in
-            total + order.items.reduce(0) { subtotal, item in subtotal + item.quantity }
-        } ?? 0
+        let rhsItemCount = rhsActiveSession?.itemCount ?? 0
 
         guard lhsItemCount == rhsItemCount else { return false }
 
         return true
     }
 
+    private var isLayoutSelected: Bool {
+        isEditingLayout && layoutSelectedTableId == table.id
+    }
+
+    private var effectiveScale: CGFloat {
+        if isLayoutSelected, let live = liveLayoutScale {
+            return live
+        }
+        return CGFloat(table.resolvedLayoutScale)
+    }
+
+    private var originDelta: CGSize {
+        isLayoutSelected ? liveLayoutOriginDelta : .zero
+    }
+
     var body: some View {
         let isDragging = activeDraggingTableId == table.id
-        let isSelected = selectedTableId == table.id
-        let offset = isDragging ? dragTranslation : .zero
-        let scaledOffset = CGSize(
-            width: offset.width / zoomScale,
-            height: offset.height / zoomScale
-        )
-        let posX = CGFloat(table.positionX)
-        let posY = CGFloat(table.positionY)
-
-        let offsetX = posX + scaledOffset.width
-        let offsetY = posY + scaledOffset.height
-        let scale = isDragging ? 1.06 : (isBouncing ? 1.15 : 1.0)
-        let rotationDegrees = isDragging ? 3.0 : 0.0
-        let zIndexVal = isDragging ? 100.0 : (isBouncing ? 50.0 : 1.0)
+        let isSelected = selectedTableId == table.id || isLayoutSelected || isMultiSelected
+        let offsetX = CGFloat(table.positionX) + (isDragging ? dragTranslation.width : 0) + originDelta.width
+        let offsetY = CGFloat(table.positionY) + (isDragging ? dragTranslation.height : 0) + originDelta.height
+        let feedbackScale: CGFloat = isDragging ? 1.02 : (isBouncing ? 1.12 : 1.0)
+        let zIndexVal = (isDragging || (activeResizeCorner != nil && isLayoutSelected)) ? 100.0 : (isBouncing || isLayoutSelected ? 50.0 : 1.0)
 
         let tableDragGesture = DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged(onDragChanged)
             .onEnded(onDragEnded)
 
-        InteractiveTableCard(
-            table: table,
-            isEditingLayout: isEditingLayout,
-            isDragging: isDragging,
-            isSelected: isSelected,
-            onTap: onTap,
-            onLongPress: onLongPress
-        )
+        ZStack(alignment: .topLeading) {
+            InteractiveTableCard(
+                table: table,
+                isEditingLayout: isEditingLayout,
+                isDragging: isDragging || (activeResizeCorner != nil && isLayoutSelected),
+                isSelected: isSelected,
+                onTap: onTap,
+                onLongPress: onLongPress,
+                onClear: onClear
+            )
+            .scaleEffect(effectiveScale * feedbackScale, anchor: .topLeading)
+            .tableDragGesture(isEditing: isEditingLayout && activeResizeCorner == nil, gesture: AnyGesture(tableDragGesture))
+
+            if isLayoutSelected {
+                tableResizeChrome
+                    .zIndex(2)
+            }
+        }
         .offset(x: offsetX, y: offsetY)
-        .scaleEffect(scale)
-        .rotationEffect(.degrees(rotationDegrees))
         .zIndex(zIndexVal)
-        .tableDragGesture(isEditing: isEditingLayout, gesture: AnyGesture(tableDragGesture))
+        .transaction { txn in
+            if isDragging || activeResizeCorner != nil { txn.animation = nil }
+        }
+    }
+
+    /// Bounding-box + 4 corner handles (NW/NE/SW/SE), inverse-scaled so handle size stays ~constant on screen.
+    @ViewBuilder
+    private var tableResizeChrome: some View {
+        let base = unscaledCardSize
+        let boxW = base.width * effectiveScale
+        let boxH = base.height * effectiveScale
+        let zoom = max(0.01, canvasZoom)
+        let handle: CGFloat = 12 / zoom
+        let stroke: CGFloat = 1.2 / zoom
+
+        ZStack(alignment: .topLeading) {
+            Rectangle()
+                .stroke(Color.appAccent, lineWidth: stroke)
+                .frame(width: boxW, height: boxH)
+                .allowsHitTesting(false)
+
+            ForEach(TableResizeCorner.allCases) { corner in
+                resizeHandle(corner: corner, size: handle)
+                    .position(corner.point(in: CGSize(width: boxW, height: boxH)))
+            }
+        }
+        .frame(width: boxW, height: boxH, alignment: .topLeading)
+    }
+
+    private var unscaledCardSize: CGSize {
+        let leftCount = table.capacity >= 3 ? 1 : 0
+        let rightCount = table.capacity >= 4 ? 1 : 0
+        let remaining = table.capacity - leftCount - rightCount
+        let topCount = (remaining + 1) / 2
+        let bottomCount = remaining / 2
+        let tableWidth = max(76, CGFloat(max(topCount, bottomCount)) * 40 + 20)
+        let tableHeight: CGFloat = 70
+        return CGSize(width: tableWidth + 32, height: tableHeight + 32)
+    }
+
+    private func resizeHandle(corner: TableResizeCorner, size: CGFloat) -> some View {
+        let hit = max(size, 28 / max(0.01, canvasZoom))
+        return Rectangle()
+            .fill(Color.appSurface)
+            .frame(width: size, height: size)
+            .overlay(Rectangle().stroke(Color.appAccent, lineWidth: max(1, 1.2 / max(0.01, canvasZoom))))
+            .frame(width: hit, height: hit)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .onChanged { onResizeChanged(corner, $0) }
+                    .onEnded { onResizeEnded(corner, $0) }
+            )
+    }
+}
+
+/// Standard image-editor style corner handles for proportional resize.
+enum TableResizeCorner: String, CaseIterable, Identifiable, Equatable {
+    case nw, ne, sw, se
+
+    var id: String { rawValue }
+
+    func point(in size: CGSize) -> CGPoint {
+        switch self {
+        case .nw: return CGPoint(x: 0, y: 0)
+        case .ne: return CGPoint(x: size.width, y: 0)
+        case .sw: return CGPoint(x: 0, y: size.height)
+        case .se: return CGPoint(x: size.width, y: size.height)
+        }
     }
 }
 
 struct EmptyCanvasOverlayView: View {
     @EnvironmentObject private var lm: LocalizationManager
+    var onAddTable: (() -> Void)? = nil
+
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "square.grid.3x3.fill")
@@ -3589,6 +5174,18 @@ struct EmptyCanvasOverlayView: View {
                 .font(.caption)
                 .foregroundColor(.textTertiary)
                 .multilineTextAlignment(.center)
+            if let onAddTable {
+                Button(action: onAddTable) {
+                    Label("table_empty_add_cta".t, systemImage: "plus.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(APGradient.accent)
+                        .foregroundColor(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
         }
         .frame(width: 300)
         .padding(24)
@@ -3637,7 +5234,8 @@ struct TableTransferSheet: View {
             !$0.isDeleted
             && $0.id != fromTable.id
             && $0.joinedParent == nil
-            && ($0.floor ?? 1) == (fromTable.floor ?? 1)
+            && $0.branchId == fromTable.branchId
+            && $0.floorId == fromTable.floorId
         }
         .sorted { ($0.tableNumber) < ($1.tableNumber) }
     }
@@ -3817,8 +5415,17 @@ struct TableTransferSheet: View {
 
         modelContext.saveWithLogging(label: "TableTransferSheet.performTransfer")
 
-        // Trigger remote sync
-        Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+        let sourceTableNumber = oldTable.tableNumber
+        let isMerge = !targetSessions.isEmpty
+        Task {
+            // Merge closes the source session remotely; transfer relocates the
+            // session so close-all on source would kill the moved session if
+            // table_number hadn't updated yet — only PATCH-close on merge.
+            if isMerge {
+                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: sourceTableNumber)
+            }
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
 
         onTransferComplete()
         dismiss()

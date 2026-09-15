@@ -33,7 +33,8 @@ private enum InventoryCalculator {
     /// Returns the resulting quantity, floored at 0.
     static func applyTransactions(
         starting: Double,
-        transactions: [InventoryEntry]
+        transactions: [InventoryEntry],
+        allowNegativeSales: Bool = false
     ) -> Double {
         let result = transactions.reduce(starting) { qty, tx in
             switch tx.type {
@@ -45,7 +46,7 @@ private enum InventoryCalculator {
                 return tx.quantity          // absolute override
             }
         }
-        return max(0.0, result)
+        return allowNegativeSales ? result : max(0.0, result)
     }
 
     /// Returns true when stock has fallen to or below the reorder level.
@@ -77,14 +78,75 @@ enum InventoryTests {
             test_adjustStock_setsAbsoluteQuantity(),
             test_sellDeduction_decreasesQuantity(),
             test_quantityFlooredAtZero(),
+            test_allowNegativeSale_tracksBackorder(),
+            test_receivingStock_offsetsNegativeBalance(),
             test_reorderAlert_triggersWhenAtOrBelowLevel(),
             test_reorderAlert_notTriggeredAboveLevel(),
             test_multipleTransactions_correctRunningTotal(),
             test_adjustAfterReceive_overridesTotal(),
             test_stockValue_calculation(),
             test_stockValue_zeroQuantity(),
-            test_stockValue_zeroCost()
+            test_stockValue_zeroCost(),
+            test_packagePricing_totalPrice_convertsToBaseUnit(),
+            test_packagePricing_perPackPrice_convertsToBaseUnit(),
+            test_packagePricing_rejectsIncompatibleUnits(),
+            test_smartUnitFormatter_scaling(),
+            test_multiTierPackaging_cratePackPieceConversion(),
+            test_multiTierPackaging_packPieceConversion()
         ]
+    }
+
+    private static func test_packagePricing_totalPrice_convertsToBaseUnit() -> TestResult {
+        let name = #function
+        let result = StockPackagePricing.calculate(
+            packCount: 7,
+            quantityPerPack: 1.5,
+            packageUnit: .kg,
+            inventoryUnit: .g,
+            enteredPrice: 693,
+            priceMode: .total
+        )
+        guard let result else { return .failure(name, "Expected a valid package calculation") }
+        guard approxEqual(result.receivedQuantity, 10_500) else {
+            return .failure(name, "Expected 10,500 g, got \(result.receivedQuantity)")
+        }
+        return approxEqual(result.unitCost, 0.066)
+            ? .success(name)
+            : .failure(name, "Expected 0.066/g, got \(result.unitCost)")
+    }
+
+    private static func test_packagePricing_perPackPrice_convertsToBaseUnit() -> TestResult {
+        let name = #function
+        let result = StockPackagePricing.calculate(
+            packCount: 3,
+            quantityPerPack: 720,
+            packageUnit: .ml,
+            inventoryUnit: .ml,
+            enteredPrice: 83,
+            priceMode: .perPack
+        )
+        guard let result else { return .failure(name, "Expected a valid package calculation") }
+        guard approxEqual(result.totalCost, 249) else {
+            return .failure(name, "Expected total cost 249, got \(result.totalCost)")
+        }
+        return approxEqual(result.unitCost, 249.0 / 2160.0)
+            ? .success(name)
+            : .failure(name, "Unexpected unit cost \(result.unitCost)")
+    }
+
+    private static func test_packagePricing_rejectsIncompatibleUnits() -> TestResult {
+        let name = #function
+        let result = StockPackagePricing.calculate(
+            packCount: 1,
+            quantityPerPack: 1,
+            packageUnit: .kg,
+            inventoryUnit: .ml,
+            enteredPrice: 100,
+            priceMode: .total
+        )
+        return result == nil
+            ? .success(name)
+            : .failure(name, "Mass must not convert to volume")
     }
 
     // MARK: - Receive
@@ -152,6 +214,30 @@ enum InventoryTests {
         return result >= 0.0
             ? .success(name)
             : .failure(name, "Quantity must be ≥ 0 after oversell, got \(result)")
+    }
+
+    private static func test_allowNegativeSale_tracksBackorder() -> TestResult {
+        let name = #function
+        let result = InventoryCalculator.applyTransactions(
+            starting: 2.0,
+            transactions: [InventoryEntry(type: .sell, quantity: 5.0)],
+            allowNegativeSales: true
+        )
+        return approxEqual(result, -3.0)
+            ? .success(name)
+            : .failure(name, "Expected -3.0 after an allowed oversell, got \(result)")
+    }
+
+    private static func test_receivingStock_offsetsNegativeBalance() -> TestResult {
+        let name = #function
+        let result = InventoryCalculator.applyTransactions(
+            starting: -5.0,
+            transactions: [InventoryEntry(type: .receive, quantity: 10.0)],
+            allowNegativeSales: true
+        )
+        return approxEqual(result, 5.0)
+            ? .success(name)
+            : .failure(name, "Expected receipt to offset the negative balance to 5.0, got \(result)")
     }
 
     // MARK: - Reorder alerts
@@ -228,5 +314,105 @@ enum InventoryTests {
         return approxEqual(value, 0.0)
             ? .success(name)
             : .failure(name, "Zero cost price should yield 0 stock value, got \(value)")
+    }
+
+    private static func test_smartUnitFormatter_scaling() -> TestResult {
+        let name = #function
+
+        // Test 1: 20,000 grams should format to 20 kg with (20,000 g) secondary
+        let formatted20kg = SmartUnitFormatter.format(quantity: 20000.0, unit: "g")
+        guard formatted20kg.primaryText == "20 kg" else {
+            return .failure(name, "Expected '20 kg', got '\(formatted20kg.primaryText)'")
+        }
+        guard formatted20kg.secondaryText != nil else {
+            return .failure(name, "Expected secondary text for 20000 g")
+        }
+
+        // Test 2: 500 grams should format to 500 g without secondary
+        let formatted500g = SmartUnitFormatter.format(quantity: 500.0, unit: "g")
+        guard formatted500g.primaryText == "500 g", formatted500g.secondaryText == nil else {
+            return .failure(name, "Expected '500 g' without secondary, got '\(formatted500g.fullText)'")
+        }
+
+        // Test 3: 5,500 ml should format to 5.5 L
+        let formatted5L = SmartUnitFormatter.format(quantity: 5500.0, unit: "ml")
+        guard formatted5L.primaryText == "5.5 L" else {
+            return .failure(name, "Expected '5.5 L', got '\(formatted5L.primaryText)'")
+        }
+
+        return .success(name)
+    }
+
+    private static func test_multiTierPackaging_cratePackPieceConversion() -> TestResult {
+        let name = #function
+
+        // 2 Crates, where 1 Crate = 12 Packs, 1 Pack = 3 Bags, 1 Bag = 500g, Total Price = 1800 Baht
+        // Total pieces = 2 * 12 * 3 = 72 bags
+        // Total grams = 72 * 500 = 36,000 g
+        // Cost per gram = 1,800 / 36,000 = 0.05 ฿/g
+        let calc = MultiTierPackagingCalculation.calculate(
+            level: .crate,
+            enteredCount: 2,
+            packsPerCrate: 12,
+            piecesPerPack: 3,
+            pieceSize: 500,
+            pieceUnit: .g,
+            inventoryUnit: .g,
+            enteredPrice: 1800,
+            priceMode: .total,
+            isThai: true
+        )
+
+        guard let calc else {
+            return .failure(name, "Expected valid calculation result")
+        }
+        guard approxEqual(calc.totalBaseQuantity, 36000.0) else {
+            return .failure(name, "Expected 36000 g, got \(calc.totalBaseQuantity)")
+        }
+        guard approxEqual(calc.unitCost, 0.05) else {
+            return .failure(name, "Expected 0.05 ฿/g, got \(calc.unitCost)")
+        }
+        guard approxEqual(calc.totalCost, 1800.0) else {
+            return .failure(name, "Expected 1800 total cost, got \(calc.totalCost)")
+        }
+
+        return .success(name)
+    }
+
+    private static func test_multiTierPackaging_packPieceConversion() -> TestResult {
+        let name = #function
+
+        // 5 Packs, where 1 Pack = 3 Bags, 1 Bag = 500g, Price per pack = 75 Baht
+        // Total pieces = 5 * 3 = 15 bags
+        // Total grams = 15 * 500 = 7,500 g
+        // Total cost = 5 * 75 = 375 Baht
+        // Cost per gram = 375 / 7500 = 0.05 ฿/g
+        let calc = MultiTierPackagingCalculation.calculate(
+            level: .pack,
+            enteredCount: 5,
+            packsPerCrate: 12,
+            piecesPerPack: 3,
+            pieceSize: 500,
+            pieceUnit: .g,
+            inventoryUnit: .g,
+            enteredPrice: 75,
+            priceMode: .perPack,
+            isThai: true
+        )
+
+        guard let calc else {
+            return .failure(name, "Expected valid calculation result")
+        }
+        guard approxEqual(calc.totalBaseQuantity, 7500.0) else {
+            return .failure(name, "Expected 7500 g, got \(calc.totalBaseQuantity)")
+        }
+        guard approxEqual(calc.totalCost, 375.0) else {
+            return .failure(name, "Expected 375 total cost, got \(calc.totalCost)")
+        }
+        guard approxEqual(calc.unitCost, 0.05) else {
+            return .failure(name, "Expected 0.05 ฿/g, got \(calc.unitCost)")
+        }
+
+        return .success(name)
     }
 }

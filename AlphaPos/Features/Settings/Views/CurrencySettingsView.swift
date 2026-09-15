@@ -17,9 +17,24 @@ struct CurrencySettingsView: View {
     // Live Calculator State
     @State private var calculatorInput = "100"
     @State private var compactSection = "rates"
+    @State private var validationMessage: String?
     
     private var activeRates: [CurrencyExchangeRate] {
         rates.filter { !$0.isDeleted }
+    }
+
+    private var normalizedCurrency: String {
+        targetCurrency.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    }
+
+    private var rateFormIsValid: Bool {
+        guard normalizedCurrency.count == 3,
+              normalizedCurrency.allSatisfy(\.isLetter),
+              let value = Double(exchangeRate), value > 0 else { return false }
+        return !activeRates.contains {
+            $0.targetCurrency.caseInsensitiveCompare(normalizedCurrency) == .orderedSame
+                && $0.id != selectedRate?.id
+        }
     }
     
     var body: some View {
@@ -45,6 +60,14 @@ struct CurrencySettingsView: View {
                 setupNewRateForm()
             }
         }
+        .alert("ไม่สามารถบันทึกอัตราแลกเปลี่ยน", isPresented: Binding(
+            get: { validationMessage != nil },
+            set: { if !$0 { validationMessage = nil } }
+        )) {
+            Button("ตกลง", role: .cancel) { validationMessage = nil }
+        } message: {
+            Text(validationMessage ?? "")
+        }
     }
 
     private var regularLayout: some View {
@@ -60,9 +83,9 @@ struct CurrencySettingsView: View {
 
     private var compactLayout: some View {
         VStack(spacing: 12) {
-            Picker("Currency Section", selection: $compactSection) {
-                Text("Rates").tag("rates")
-                Text("Calculator").tag("calculator")
+            Picker("currency_section_picker".t, selection: $compactSection) {
+                Text("currency_section_rates".t).tag("rates")
+                Text("currency_section_calculator".t).tag("calculator")
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
@@ -82,9 +105,15 @@ struct CurrencySettingsView: View {
 
     private func exchangeRatesPanel(compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: 20) {
+            Label("อัตราแลกเปลี่ยนส่วนนี้ใช้สำหรับคำนวณและเตรียมข้อมูลเท่านั้น การรับชำระเงินจริงยังบันทึกเป็น THB", systemImage: "info.circle.fill")
+                .font(.caption)
+                .foregroundStyle(Color.orange)
+                .padding(10)
+                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+
             HStack {
                 Text("currencies_exchange_section".t)
-                    .font(.headline)
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.textPrimary)
                 Spacer()
 
@@ -92,7 +121,7 @@ struct CurrencySettingsView: View {
                     setupNewRateForm()
                 } label: {
                     Label("add_rate_btn".t, systemImage: "plus")
-                        .font(.subheadline.weight(.bold))
+                        .font(.system(size: 12, weight: .bold))
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.appAccent)
@@ -127,10 +156,10 @@ struct CurrencySettingsView: View {
             if activeRates.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "dollarsign.circle")
-                        .font(.largeTitle)
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.textTertiary)
                     Text("no_rates_placeholder".t)
-                        .font(.caption)
+                        .font(.system(size: 12))
                         .foregroundColor(.textSecondary)
                         .multilineTextAlignment(.center)
                 }
@@ -149,7 +178,7 @@ struct CurrencySettingsView: View {
     private var rateEditor: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text(isCreatingNew ? "add_exchange_rate_header".t : "edit_exchange_rate_header".t)
-                .font(.caption)
+                .font(.system(size: 12))
                 .fontWeight(.bold)
                 .foregroundColor(.appAccent)
                 .tracking(1.0)
@@ -157,7 +186,7 @@ struct CurrencySettingsView: View {
             VStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("target_currency_lbl".t)
-                        .font(.caption).bold().foregroundColor(.textSecondary)
+                        .font(.system(size: 12)).bold().foregroundColor(.textSecondary)
                     TextField("e.g. USD, EUR", text: $targetCurrency)
                         .textFieldStyle(PlainTextFieldStyle())
                         .textInputAutocapitalization(.characters)
@@ -166,7 +195,7 @@ struct CurrencySettingsView: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("exchange_rate_lbl".t)
-                        .font(.caption).bold().foregroundColor(.textSecondary)
+                        .font(.system(size: 12)).bold().foregroundColor(.textSecondary)
                     TextField("e.g. 0.0272", text: $exchangeRate)
                         .keyboardType(.decimalPad)
                         .textFieldStyle(PlainTextFieldStyle())
@@ -176,11 +205,11 @@ struct CurrencySettingsView: View {
                 Toggle(isOn: $isActive) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("active_status_lbl".t)
-                            .font(.body)
+                            .font(.system(size: 12))
                             .foregroundColor(.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                         Text("active_status_desc".t)
-                            .font(.caption2)
+                            .font(.system(size: 12))
                             .foregroundColor(.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -197,8 +226,8 @@ struct CurrencySettingsView: View {
                     Text(isCreatingNew ? "save_rate_btn".t : "save_changes_btn".t)
                         .fontWeight(.bold)
                 }
-                .apGradientButton(gradient: APGradient.accent, shadow: APShadow.glow, disabled: targetCurrency.isEmpty || Double(exchangeRate) == nil)
-                .disabled(targetCurrency.isEmpty || Double(exchangeRate) == nil)
+                .apGradientButton(gradient: APGradient.accent, shadow: APShadow.glow, disabled: !rateFormIsValid)
+                .disabled(!rateFormIsValid)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -213,7 +242,7 @@ struct CurrencySettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(rate.targetCurrency)
-                        .font(.body)
+                        .font(.system(size: 12))
                         .fontWeight(.bold)
                         .foregroundColor(selected ? .white : .textPrimary)
 
@@ -225,7 +254,7 @@ struct CurrencySettingsView: View {
                 }
 
                 Text("1 THB = \(String(format: "%.4f", rate.exchangeRate)) \(rate.targetCurrency)")
-                    .font(.caption2)
+                    .font(.system(size: 12))
                     .foregroundColor(selected ? .white.opacity(0.8) : .textSecondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -269,11 +298,14 @@ struct CurrencySettingsView: View {
     }
     
     private func saveRate() {
-        let rateVal = Double(exchangeRate) ?? 1.0
+        guard rateFormIsValid, let rateVal = Double(exchangeRate) else {
+            validationMessage = "กรุณาระบุรหัสสกุลเงิน 3 ตัวที่ไม่ซ้ำ และอัตราแลกเปลี่ยนที่มากกว่า 0"
+            return
+        }
         
         if isCreatingNew {
             let newRate = CurrencyExchangeRate(
-                targetCurrency: targetCurrency.uppercased(),
+                targetCurrency: normalizedCurrency,
                 exchangeRate: rateVal,
                 isActive: isActive
             )
@@ -281,7 +313,7 @@ struct CurrencySettingsView: View {
             selectedRate = newRate
             isCreatingNew = false
         } else if let rate = selectedRate {
-            rate.targetCurrency = targetCurrency.uppercased()
+            rate.targetCurrency = normalizedCurrency
             rate.exchangeRate = rateVal
             rate.isActive = isActive
         }
@@ -307,7 +339,7 @@ struct CurrencySettingsView: View {
     private var exchangeCalculatorPanel: some View {
         VStack(spacing: 16) {
             Text("exchange_calculator_title".t)
-                .font(.caption)
+                .font(.system(size: 12))
                 .fontWeight(.bold)
                 .foregroundColor(.textSecondary)
                 .tracking(1.0)
@@ -321,14 +353,14 @@ struct CurrencySettingsView: View {
                             .frame(width: 44, height: 44)
                         Image(systemName: "arrow.left.and.right.circle.fill")
                             .foregroundColor(.appAccent)
-                            .font(.title2)
+                            .font(.system(size: 12, weight: .bold))
                     }
                     
                     VStack(alignment: .leading, spacing: 2) {
                         let target = targetCurrency.isEmpty ? "USD" : targetCurrency.uppercased()
                         let rateVal = Double(exchangeRate) ?? 0.0272
                         Text("base_currency_display".t)
-                            .font(.caption2)
+                            .font(.system(size: 12))
                             .foregroundColor(.textTertiary)
                         Text("1 THB = \(String(format: "%.6f", rateVal)) \(target)")
                             .font(.system(.subheadline, design: .monospaced))
@@ -345,9 +377,9 @@ struct CurrencySettingsView: View {
                 // Input Amount in THB
                 VStack(alignment: .leading, spacing: 6) {
                     Text("amount_in_thb_lbl".t)
-                        .font(.caption2).bold().foregroundColor(.textSecondary)
+                        .font(.system(size: 12)).bold().foregroundColor(.textSecondary)
                     HStack {
-                        Text("฿").foregroundColor(.textTertiary).font(.headline)
+                        Text("฿").foregroundColor(.textTertiary).font(.system(size: 12, weight: .semibold))
                         TextField("100", text: $calculatorInput)
                             .keyboardType(.decimalPad)
                             .textFieldStyle(PlainTextFieldStyle())
@@ -368,7 +400,7 @@ struct CurrencySettingsView: View {
                 
                 VStack(spacing: 6) {
                     Text("converted_amount_lbl".t)
-                        .font(.caption2)
+                        .font(.system(size: 12))
                         .foregroundColor(.textSecondary)
                         .bold()
                     

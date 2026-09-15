@@ -22,7 +22,7 @@ export const options = {
 };
 
 // Set fallback configs (can be overridden with environment variables)
-const SUPABASE_URL = __ENV.SUPABASE_URL || 'https://your-project-id.supabase.co';
+const SUPABASE_URL = __ENV.SUPABASE_URL || 'https://api.alphaposweb.com';
 const SUPABASE_ANON_KEY = __ENV.SUPABASE_ANON_KEY || 'your-anon-key';
 
 export default function () {

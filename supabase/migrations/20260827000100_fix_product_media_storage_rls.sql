@@ -8,33 +8,40 @@ DROP POLICY IF EXISTS "product_media_update" ON storage.objects;
 DROP POLICY IF EXISTS "product_media_delete" ON storage.objects;
 
 CREATE POLICY "product_media_select"
-ON storage.objects FOR SELECT TO authenticated
+ON storage.objects FOR SELECT TO public
 USING (
     bucket_id = 'product-media'
-    AND (storage.foldername(name))[1] = public.get_active_merchant_id()::text
+    AND (
+        (storage.foldername(name))[1] = public.get_active_merchant_id()::text
+        OR public.get_active_merchant_id() IS NULL
+    )
 );
 
 CREATE POLICY "product_media_insert"
-ON storage.objects FOR INSERT TO authenticated
+ON storage.objects FOR INSERT TO public
 WITH CHECK (
     bucket_id = 'product-media'
+    AND public.get_active_merchant_id() IS NOT NULL
     AND (storage.foldername(name))[1] = public.get_active_merchant_id()::text
 );
 
 CREATE POLICY "product_media_update"
-ON storage.objects FOR UPDATE TO authenticated
+ON storage.objects FOR UPDATE TO public
 USING (
     bucket_id = 'product-media'
+    AND public.get_active_merchant_id() IS NOT NULL
     AND (storage.foldername(name))[1] = public.get_active_merchant_id()::text
 )
 WITH CHECK (
     bucket_id = 'product-media'
+    AND public.get_active_merchant_id() IS NOT NULL
     AND (storage.foldername(name))[1] = public.get_active_merchant_id()::text
 );
 
 CREATE POLICY "product_media_delete"
-ON storage.objects FOR DELETE TO authenticated
+ON storage.objects FOR DELETE TO public
 USING (
     bucket_id = 'product-media'
+    AND public.get_active_merchant_id() IS NOT NULL
     AND (storage.foldername(name))[1] = public.get_active_merchant_id()::text
 );

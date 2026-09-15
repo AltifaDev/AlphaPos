@@ -70,6 +70,8 @@ CREATE TABLE menu_items (
     emoji VARCHAR(10),
     img_class VARCHAR(50),
     image_url TEXT,
+    sales_role TEXT NOT NULL DEFAULT 'main' CHECK (sales_role IN ('main', 'addon')),
+    sales_role_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -98,6 +100,7 @@ CREATE TABLE orders (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     delivery_brand VARCHAR(50),
+    platform_order_number VARCHAR(80),
     delivery_gp DECIMAL(5,2) DEFAULT 0.00,
     delivery_ad_fee DECIMAL(10,2) DEFAULT 0.00,
     delivery_ad_fee_is_pct BOOLEAN DEFAULT false,
@@ -112,6 +115,7 @@ CREATE TABLE order_items (
     item_name VARCHAR(100) NOT NULL,
     quantity INTEGER NOT NULL CHECK (quantity > 0),
     price DECIMAL(10,2) NOT NULL,
+    line_type TEXT NOT NULL DEFAULT 'main' CHECK (line_type IN ('main', 'addon', 'bundle_component', 'promotion_reward')),
     status VARCHAR(20) DEFAULT 'cooking', -- 'cooking', 'preparing', 'ready', 'served'
     item_id TEXT, -- References menu_items(id) loosely
     branch_id UUID,

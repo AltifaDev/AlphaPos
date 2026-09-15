@@ -206,8 +206,8 @@ final class SafetyStockManager {
         // Filter: this item, sell/waste types, within lookback window
         let usageTxns = allTxns.filter { txn in
             guard txn.item?.id == item.id,
-                  txn.branch?.id == item.branch?.id,
-                  txn.updatedAt >= cutoff else { return false }
+                  txn.branch.id == item.branch?.id,
+                  txn.createdAt >= cutoff else { return false }
             return txn.transactionType == InventoryMovementType.sell.rawValue || txn.transactionType == InventoryMovementType.waste.rawValue
         }
 
@@ -217,11 +217,13 @@ final class SafetyStockManager {
         let calendar = Calendar.current
         var dailyUsage: [String: Double] = [:]
         for txn in usageTxns {
-            let dayKey = calendar.startOfDay(for: txn.updatedAt).ISO8601Format()
-            dailyUsage[dayKey, default: 0] += txn.quantity
+            let dayKey = calendar.startOfDay(for: txn.createdAt).ISO8601Format()
+            // Outbound movements store quantity negative — use magnitude so usage
+            // (and the safety-stock / reorder-point derived from it) stays positive.
+            dailyUsage[dayKey, default: 0] += abs(txn.quantity)
         }
 
-        let totalUsed = usageTxns.reduce(0) { $0 + $1.quantity }
+        let totalUsed = usageTxns.reduce(0) { $0 + abs($1.quantity) }
         let avg = totalUsed / Double(lookbackDays)   // denominator = full period (incl. zero-usage days)
         let maxDaily = dailyUsage.values.max() ?? 0
 

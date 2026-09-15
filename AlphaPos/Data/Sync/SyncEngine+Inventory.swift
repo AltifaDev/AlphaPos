@@ -31,9 +31,20 @@ extension SyncEngine {
         descriptor.fetchLimit = 500
         guard let lots = try? modelContext.fetch(descriptor), !lots.isEmpty else { return }
 
-        // Separate deletes from upserts
+        // Server-side movement triggers own remainingQuantity for existing lots.
+        // Uploading a locally consumed existing lot would overwrite a newer FEFO result.
         let toDelete = lots.filter { $0.isDeleted }
-        let toUpsert = lots.filter { !$0.isDeleted }
+        let remoteIds: Set<UUID>
+        do {
+            remoteIds = try await fetchRemoteInventoryLotIds()
+        } catch {
+            encounteredSyncError = true
+            print("SyncEngine [InventoryLot Identity Fetch Error]: \(error.localizedDescription)")
+            return
+        }
+        let toUpsert = lots.filter { !$0.isDeleted && !remoteIds.contains($0.id) }
+        lots.filter { !$0.isDeleted && remoteIds.contains($0.id) }
+            .forEach { $0.isSynced = true }
 
         // ── Batch upsert (active lots) ──────────────────────────────────────
         if !toUpsert.isEmpty {
@@ -73,14 +84,14 @@ extension SyncEngine {
 
     /// Fetches all lots from Supabase and merges into local SwiftData store.
     /// Conflict resolution: server wins when server.updated_at > local.updatedAt.
-    func pullInventoryLotsFromSupabase(_ modelContext: ModelContext) async {
+    @discardableResult
+    func pullInventoryLotsFromSupabase(_ modelContext: ModelContext) async -> Bool {
         do {
             let remoteLots = try await NetworkManager.shared.fetchInventoryLotsFromSupabase()
-            guard !remoteLots.isEmpty else { return }
+            guard !remoteLots.isEmpty else { return true }
 
             // Pre-fetch all local lots and items once (avoid N+1 queries)
-            var descLots = FetchDescriptor<InventoryLot>()
-            descLots.fetchLimit = 2000
+            let descLots = FetchDescriptor<InventoryLot>()
             let localLots = (try? modelContext.fetch(descLots)) ?? []
             var localById: [String: InventoryLot] = Dictionary(
                 uniqueKeysWithValues: localLots.map { ($0.id.uuidString.lowercased(), $0) }
@@ -100,9 +111,13 @@ extension SyncEngine {
                 uniqueKeysWithValues: localBranches.map { ($0.id.uuidString.lowercased(), $0) }
             )
 
+            var remoteIds = Set<UUID>()
+            var remoteFingerprints = Set<String>()
+
             for remote in remoteLots {
                 guard let idStr = remote["id"] as? String,
-                      UUID(uuidString: idStr) != nil else { continue }
+                      let remoteId = UUID(uuidString: idStr) else { continue }
+                remoteIds.insert(remoteId)
 
                 let isDeletedRemote = remoteBool(remote["is_deleted"])
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
@@ -123,11 +138,19 @@ extension SyncEngine {
                 let costPrice    = remoteDouble(remote["lot_cost_price"])
                 let lotNumber    = remote["lot_number"] as? String
                 let srcTxnId: UUID? = (remote["source_transaction_id"] as? String).flatMap { UUID(uuidString: $0) }
+                let fingerprint = [
+                    remote["inventory_item_id"] as? String ?? "",
+                    remote["branch_id"] as? String ?? "",
+                    lotNumber ?? "",
+                    String(initialQty),
+                    String(costPrice),
+                    NetworkManager.iso8601.string(from: receivedDate)
+                ].joined(separator: "|")
+                remoteFingerprints.insert(fingerprint)
 
                 if let local = localById[idStr.lowercased()] {
-                    // Merge: skip if local is newer or unsynced (local changes win)
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
-
+                    // Lot balances are a server-owned projection of the immutable ledger.
+                    // Always accept them; device clocks and offline FEFO must not win here.
                     if isDeletedRemote {
                         local.isDeleted = true
                         local.isSynced = true
@@ -147,6 +170,7 @@ extension SyncEngine {
                 } else {
                     guard !isDeletedRemote else { continue }  // don't create locally-deleted remote lots
                     let lot = InventoryLot(
+                        id: remoteId,
                         inventoryItem:     inventoryItem,
                         branch:            branch,
                         lotNumber:         lotNumber,
@@ -164,15 +188,43 @@ extension SyncEngine {
                 }
             }
 
+            // Remove historical clones created by the old pull path, which generated
+            // a fresh local UUID for the same server lot on every sync.
+            for lot in localLots where lot.isSynced && !remoteIds.contains(lot.id) {
+                let fingerprint = [
+                    lot.inventoryItem?.id.uuidString.lowercased() ?? "",
+                    lot.branch?.id.uuidString.lowercased() ?? "",
+                    lot.lotNumber ?? "",
+                    String(lot.initialQuantity),
+                    String(lot.lotCostPrice),
+                    NetworkManager.iso8601.string(from: lot.receivedDate)
+                ].joined(separator: "|")
+                if remoteFingerprints.contains(fingerprint) {
+                    modelContext.delete(lot)
+                }
+            }
+
             do {
                 try modelContext.save()
             } catch {
                 print("SyncEngine [InventoryLot Pull Save Error]: \(error.localizedDescription)")
+                return false
             }
+            return true
         } catch {
             encounteredSyncError = true
             print("SyncEngine [InventoryLot Pull Error]: \(error.localizedDescription)")
+            return false
         }
+    }
+
+    /// Returns the complete server identity set. If this lookup fails, lot pushes stop
+    /// rather than risking an absolute-quantity overwrite of an existing server lot.
+    func fetchRemoteInventoryLotIds() async throws -> Set<UUID> {
+        let rows = try await NetworkManager.shared.fetchInventoryLotsFromSupabase()
+        return Set(rows.compactMap { row in
+            (row["id"] as? String).flatMap(UUID.init(uuidString:))
+        })
     }
 
     // MARK: - Safety Stock Fields: Upload patch for existing InventoryItems
@@ -189,7 +241,7 @@ extension SyncEngine {
         descriptor.fetchLimit = 1000
         guard let items = try? modelContext.fetch(descriptor), !items.isEmpty else { return }
 
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
 
         // Batch PATCH is not supported cleanly via Supabase REST for multiple rows with
         // different values — use individual PATCHes, but rate-limit with a short sleep.

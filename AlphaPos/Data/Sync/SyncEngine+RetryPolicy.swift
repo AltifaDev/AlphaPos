@@ -48,7 +48,7 @@ extension SyncEngine {
             }
             if success { onSuccess() }
         } catch {
-            encounteredSyncError = true
+            reportSyncFailure("\(label) push: \(error.localizedDescription)", soft: false)
             AppLogger.sync.error("[\(label) \(entityId.uuidString.prefix(8))] Permanent failure: \(error.localizedDescription)")
             // Enqueue for retry on next performSync call
             OfflineWriteQueue.shared.enqueue(
@@ -66,12 +66,41 @@ extension SyncEngine {
     /// Wire this call inside performSync by replacing `await syncInventoryItems(modelContext)`.
     func syncInventoryItemsWithRetry(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<InventoryItem>(
-            predicate: #Predicate<InventoryItem> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<InventoryItem> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let items = try? modelContext.fetch(descriptor), !items.isEmpty else { return }
 
+        var remoteBranchIds: Set<UUID>
+        do {
+            remoteBranchIds = Set(try await NetworkManager.shared.fetchBranchesFromSupabase().compactMap {
+                ($0["id"] as? String).flatMap(UUID.init(uuidString:))
+            })
+        } catch {
+            reportSyncFailure("Inventory parent-branch verification: \(error.localizedDescription)", soft: false)
+            return
+        }
+
         for item in items {
+            guard let branch = item.branch else {
+                reportSyncFailure("InventoryItem \(item.id) has no branch", soft: false)
+                continue
+            }
+            if !remoteBranchIds.contains(branch.id) {
+                do {
+                    guard try await NetworkManager.shared.uploadBranch(branch) else {
+                        reportSyncFailure("Inventory parent branch \(branch.id) was not accepted", soft: false)
+                        continue
+                    }
+                    branch.isSynced = true
+                    branch.updatedAt = Date()
+                    remoteBranchIds.insert(branch.id)
+                    modelContext.saveWithLogging(label: "repairInventoryParentBranch")
+                } catch {
+                    reportSyncFailure("Inventory parent branch \(branch.id): \(error.localizedDescription)", soft: false)
+                    continue
+                }
+            }
             if item.isDeleted {
                 await syncWithRetry(
                     label: "InventoryItem.delete",
@@ -103,7 +132,45 @@ extension SyncEngine {
         descriptor.fetchLimit = 500
         guard let txns = try? modelContext.fetch(descriptor), !txns.isEmpty else { return }
 
+        var atomicTransferIds = Set<UUID>()
+        let transfers = Dictionary(grouping: txns.filter {
+            ($0.movementType == .transferOut || $0.movementType == .transferIn) && $0.referenceId != nil
+        }, by: { $0.referenceId! })
+        for (transferId, pair) in transfers {
+            guard let outbound = pair.first(where: { $0.movementType == .transferOut }),
+                  let inbound = pair.first(where: { $0.movementType == .transferIn }),
+                  let sourceId = outbound.item?.id,
+                  let targetId = inbound.item?.id else { continue }
+            await syncWithRetry(
+                label: "InventoryTransfer",
+                entityId: transferId,
+                upload: {
+                    try await NetworkManager.shared.transferInventoryAtomic(
+                        transferId: transferId,
+                        sourceItemId: sourceId,
+                        targetItemId: targetId,
+                        quantity: abs(outbound.quantity),
+                        notes: outbound.notes,
+                        createdAt: outbound.createdAt,
+                        businessDateKey: outbound.businessDateKey,
+                        registerSessionId: outbound.registerSessionId
+                    )
+                },
+                onSuccess: {
+                    pair.forEach {
+                        $0.isSynced = true
+                        $0.updatedAt = Date()
+                        atomicTransferIds.insert($0.id)
+                    }
+                }
+            )
+        }
+
         for txn in txns {
+            if atomicTransferIds.contains(txn.id) { continue }
+            if txn.movementType == .transferOut || txn.movementType == .transferIn {
+                continue // Never upload one side of a transfer.
+            }
             if txn.isDeleted {
                 modelContext.delete(txn)
                 continue
@@ -122,9 +189,14 @@ extension SyncEngine {
                         costPrice: txn.costPrice,
                         referenceId: txn.referenceId,
                         notes: txn.notes,
-                        branchId: txn.branch?.id,
+                        branchId: txn.branch.id,
+                        createdAt: txn.createdAt,
+                        businessDateKey: txn.businessDateKey,
+                        registerSessionId: txn.registerSessionId,
                         isDeleted: txn.isDeleted,
-                        updatedAt: txn.updatedAt
+                        updatedAt: txn.updatedAt,
+                        reasonCode: txn.reasonCode,
+                        auditSignature: txn.auditSignature
                     )
                 },
                 onSuccess: {
@@ -146,7 +218,19 @@ extension SyncEngine {
         guard let lots = try? modelContext.fetch(descriptor), !lots.isEmpty else { return }
 
         let toDelete = lots.filter { $0.isDeleted }
-        let toUpsert = lots.filter { !$0.isDeleted }
+        let remoteIds: Set<UUID>
+        do {
+            remoteIds = try await withRetry(label: "InventoryLot.fetchRemoteIds") {
+                try await self.fetchRemoteInventoryLotIds()
+            }
+        } catch {
+            encounteredSyncError = true
+            AppLogger.sync.error("[InventoryLot fetchRemoteIds] Permanent failure: \(error.localizedDescription)")
+            return
+        }
+        let toUpsert = lots.filter { !$0.isDeleted && !remoteIds.contains($0.id) }
+        lots.filter { !$0.isDeleted && remoteIds.contains($0.id) }
+            .forEach { $0.isSynced = true }
 
         // Batch upload (preferred — single HTTP call for up to 200 lots)
         if !toUpsert.isEmpty {

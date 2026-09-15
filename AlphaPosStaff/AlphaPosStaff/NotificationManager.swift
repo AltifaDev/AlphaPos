@@ -24,6 +24,11 @@ import UIKit
     
     func requestAuthorization() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+            if granted {
+                DispatchQueue.main.async {
+                    UIApplication.shared.registerForRemoteNotifications()
+                }
+            }
             #if DEBUG
             if granted {
                 print("NotificationManager: Permission granted")
@@ -120,6 +125,48 @@ import UIKit
         }
     }
     
+    // MARK: - Remote Push → In-App Banner Bridge
+    
+    /// Called when a remote push arrives while the app is in the foreground.
+    /// Converts the APNs payload into an in-app banner so users don't miss it.
+    func handleRemotePush(userInfo: [AnyHashable: Any]) {
+        let pushType = userInfo["type"] as? String ?? "system"
+        
+        // Check per-category preference
+        let prefs = NetworkService.PushNotificationPreferences.current
+        guard prefs.shouldShow(for: pushType) else { return }
+        
+        // Extract title/body from aps.alert or top-level keys
+        let apsAlert = (userInfo["aps"] as? [String: Any])?["alert"] as? [String: Any]
+        let title = apsAlert?["title"] as? String
+                 ?? userInfo["title"] as? String
+                 ?? "AlphaPos Staff"
+        let body  = apsAlert?["body"] as? String
+                 ?? userInfo["body"] as? String
+                 ?? ""
+        
+        let notifType = mapPushTypeToNotificationType(pushType)
+        
+        notify(title: title, body: body, type: notifType, deduplicationKey: nil, userInfo: userInfo as? [String: Any])
+    }
+    
+    private func mapPushTypeToNotificationType(_ pushType: String) -> NotificationType {
+        switch pushType {
+        case "new_order", "order_new", "web_order":
+            return .order
+        case "order_ready":
+            return .order
+        case "service_request":
+            return .request
+        case "table_status", "table_occupied", "table_vacant":
+            return .tableStatus
+        case "timecard", "timecard_reminder", "schedule", "shift_reminder":
+            return .system
+        default:
+            return .system
+        }
+    }
+    
     // MARK: - UNUserNotificationCenterDelegate
     
     func userNotificationCenter(
@@ -127,15 +174,22 @@ import UIKit
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        // If this delegate fires while the app is active, it means a system notification
-        // was somehow scheduled. Suppress it completely — the In-App banner handles everything.
+        let userInfo = notification.request.content.userInfo
+        let pushType = userInfo["type"] as? String ?? "system"
+        
         DispatchQueue.main.async {
             if UIApplication.shared.applicationState == .active {
-                // Suppress everything in foreground — In-App banner is already showing
+                // Foreground: convert to in-app banner and suppress system banner
+                self.handleRemotePush(userInfo: userInfo)
                 completionHandler([])
             } else {
-                // Background: show native banner, sound, and badge
-                completionHandler([.banner, .sound, .badge])
+                // Background: check user preference before showing system banner
+                let prefs = NetworkService.PushNotificationPreferences.current
+                if prefs.shouldShow(for: pushType) {
+                    completionHandler([.banner, .sound, .badge])
+                } else {
+                    completionHandler([])
+                }
             }
         }
     }
@@ -155,13 +209,13 @@ import UIKit
         } else {
             // Fallback: legacy behavior for unrecognized payloads
             let type = userInfo["type"] as? String
-            if type == "order" || type == "service_request" {
+            if type == "order" || type == "order_ready" || type == "new_order" || type == "service_request" {
                 NotificationCenter.default.post(
                     name: .openAlertsNotification,
                     object: nil,
                     userInfo: userInfo
                 )
-            } else if type == "table_status" {
+            } else if type == "table_status" || type == "table_occupied" || type == "table_vacant" {
                 if let tableNumber = userInfo["table_number"] as? String {
                     NotificationCenter.default.post(
                         name: .openTableNotification,
@@ -171,6 +225,9 @@ import UIKit
                 }
             }
         }
+        
+        // Trigger a fresh sync whenever a push is tapped
+        Task { await NetworkService.shared.refreshAll() }
         
         completionHandler()
     }
@@ -195,4 +252,5 @@ import UIKit
 extension Notification.Name {
     static let openAlertsNotification = Notification.Name("openAlertsNotification")
     static let openTableNotification = Notification.Name("openTableNotification")
+    static let checkoutCompleted = Notification.Name("checkoutCompleted")
 }

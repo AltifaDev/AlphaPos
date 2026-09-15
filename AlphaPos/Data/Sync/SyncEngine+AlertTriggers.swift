@@ -12,17 +12,51 @@ import SwiftData
 
 extension SyncEngine {
     
+    // MARK: - Live Notification Center queue
+
+    /// Rebuild sidebar badge + NC live rows from local SwiftData orders.
+    /// Called after order/service-request pulls so unreadCount updates even when
+    /// NotificationCenterView is not on screen.
+    func refreshLiveOperationalAlerts(
+        modelContext: ModelContext? = nil,
+        includeCloudRequests: Bool = true
+    ) {
+        guard let modelContext = modelContext ?? cachedModelContext else { return }
+        let descriptor = FetchDescriptor<Order>(
+            predicate: #Predicate<Order> { !$0.isDeleted }
+        )
+        let orders = (try? modelContext.fetch(descriptor)) ?? []
+        let activeBranchId = (BranchContext.shared.activeBranchIDString)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let scopedOrders: [Order]
+        if activeBranchId.isEmpty {
+            scopedOrders = orders
+        } else {
+            scopedOrders = orders.filter { order in
+                order.branch.id.uuidString.lowercased() == activeBranchId
+            }
+        }
+        NotificationStore.shared.rebuildLiveOperationalAlerts(
+            orders: scopedOrders,
+            serviceRequests: includeCloudRequests ? activeRequests : []
+        )
+    }
+
     // MARK: - Sync Status Alerts
     
     /// Post alert when sync fails after multiple retries
     func alertSyncFailed(error: Error, attempt: Int) {
         guard attempt == 3 else { return } // Only alert exactly on the 3rd failure of a streak
         Task { @MainActor in
-            NotificationStore.shared.postAlert(
-                priority: .high,
+            // Technical diagnostics stay in Sync Health/logs. Store staff only
+            // need the impact, data-safety promise, and recovery behavior.
+            NotificationStore.shared.upsertConditionAlert(
+                key: "system-sync-failed",
+                priority: .medium,
                 category: .system,
                 title: "alert_sync_failed_title".t,
-                message: "alert_sync_failed_msg".t + " (\(error.localizedDescription))",
+                message: "alert_sync_failed_msg".t,
                 device: "Master iPad"
             )
         }
@@ -31,6 +65,8 @@ extension SyncEngine {
     /// Post alert when connection is restored after offline period
     func alertConnectionRestored() {
         Task { @MainActor in
+            NotificationStore.shared.resolveConditionAlert(key: "system-sync-failed")
+            NotificationStore.shared.resolveConditionAlert(key: "system-offline")
             NotificationStore.shared.postAlert(
                 priority: .low,
                 category: .system,
@@ -44,7 +80,8 @@ extension SyncEngine {
     /// Post alert when going offline
     func alertWentOffline() {
         Task { @MainActor in
-            NotificationStore.shared.postAlert(
+            NotificationStore.shared.upsertConditionAlert(
+                key: "system-offline",
                 priority: .medium,
                 category: .system,
                 title: "alert_offline_title".t,
@@ -56,16 +93,21 @@ extension SyncEngine {
     
     // MARK: - Order Alerts
     
-    /// Post alert for a new customer order (from QR web ordering)
+    /// Post alert for a new customer order (from QR web ordering, Staff iPhone, or Quick order)
     func alertNewCustomerOrder(orderNumber: String, tableNumber: String, itemCount: Int) {
         Task { @MainActor in
+            // แยก label และ device ตาม source
+            let isQuickOrder = tableNumber.uppercased() == "QUICK"
+            let displayTable = isQuickOrder ? "Quick Order" : "\("table".t) \(tableNumber)"
+            let device = isQuickOrder ? "Staff iPhone" : "Customer Web / Staff"
+            let itemSuffix = itemCount > 0 ? " — \(itemCount) " + "alert_items_suffix".t : ""
             NotificationStore.shared.postAlert(
                 priority: .high,
                 category: .orders,
                 title: "alert_new_order_title".t + " #\(orderNumber)",
-                message: "\("table".t) \(tableNumber) — \(itemCount) " + "alert_items_suffix".t,
-                device: "Customer Web",
-                tableNumber: tableNumber,
+                message: "\(displayTable)\(itemSuffix)",
+                device: device,
+                tableNumber: isQuickOrder ? nil : tableNumber,  // Quick orders ไม่มี table ให้ navigate
                 orderNumber: orderNumber
             )
         }
@@ -74,13 +116,15 @@ extension SyncEngine {
     /// Post alert when an order has been waiting too long in kitchen
     func alertOrderWaitingTooLong(orderNumber: String, tableNumber: String, minutesWaiting: Int) {
         Task { @MainActor in
+            let isQuickOrder = tableNumber.uppercased() == "QUICK" || tableNumber.isEmpty
+            let location = isQuickOrder ? "Quick Order" : "\("table".t) \(tableNumber)"
             NotificationStore.shared.postAlert(
                 priority: .critical,
                 category: .kitchen,
                 title: "alert_order_delayed_title".t,
-                message: "#\(orderNumber) — \("table".t) \(tableNumber) — \(minutesWaiting) " + "alert_min_waiting".t,
+                message: "#\(orderNumber) — \(location) — \(minutesWaiting) " + "alert_min_waiting".t,
                 device: "Kitchen Display",
-                tableNumber: tableNumber,
+                tableNumber: isQuickOrder ? nil : tableNumber,
                 orderNumber: orderNumber
             )
         }
@@ -146,7 +190,7 @@ extension SyncEngine {
                 category: .staff,
                 title: "alert_staff_clock_in_title".t,
                 message: name + " " + "alert_staff_clock_in_msg".t,
-                device: "Staff iPhone"
+                device: "iPad POS"
             )
         }
     }
@@ -159,7 +203,7 @@ extension SyncEngine {
                 category: .staff,
                 title: "alert_staff_clock_out_title".t,
                 message: name + " — \(String(format: "%.1f", hoursWorked)) " + "alert_hours_worked".t,
-                device: "Staff iPhone"
+                device: "iPad POS"
             )
         }
     }
@@ -180,14 +224,44 @@ extension SyncEngine {
     // MARK: - Inventory Alerts
     
     /// Post alert when inventory falls below reorder level
-    func alertLowStock(itemName: String, currentQty: Double, reorderLevel: Double) {
+    func alertLowStock(itemName: String, currentQty: Double, reorderLevel: Double, itemId: String? = nil) {
         Task { @MainActor in
             NotificationStore.shared.postAlert(
                 priority: .medium,
-                category: .system,
+                category: .inventory,
                 title: "alert_low_stock_title".t,
                 message: "\(itemName) — \(Int(currentQty))/\(Int(reorderLevel)) " + "alert_low_stock_suffix".t,
-                device: "System"
+                device: "Inventory",
+                inventoryItemId: itemId
+            )
+        }
+    }
+
+    /// Post alert when an inventory SKU hits zero (history pulse)
+    func alertOutOfStock(itemName: String, currentQty: Double, itemId: String? = nil) {
+        Task { @MainActor in
+            NotificationStore.shared.postAlert(
+                priority: .critical,
+                category: .inventory,
+                title: "alert_out_of_stock_title".t,
+                message: "\(itemName) — \(String(format: "%.1f", currentQty))",
+                device: "Inventory",
+                inventoryItemId: itemId
+            )
+        }
+    }
+
+    /// Push inventory alert to Staff devices (manager preference on device).
+    func pushInventoryAlertToStaff(itemName: String, itemId: String, isOut: Bool) {
+        let enabled = UserDefaults.standard.object(forKey: "enable_inventory_staff_push") as? Bool ?? true
+        guard enabled else { return }
+        Task {
+            _ = await NetworkManager.shared.sendStaffPush(
+                eventType: "inventory_alert",
+                title: isOut ? "alert_out_of_stock_title".t : "alert_low_stock_title".t,
+                message: itemName,
+                inventoryItemId: itemId,
+                inventoryItemName: itemName
             )
         }
     }

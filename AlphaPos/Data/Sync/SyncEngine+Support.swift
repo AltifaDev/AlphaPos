@@ -15,7 +15,7 @@ extension SyncEngine {
 
     func syncSuppliers(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<Supplier>(
-            predicate: #Predicate<Supplier> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<Supplier> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let suppliers = try? modelContext.fetch(descriptor), !suppliers.isEmpty else { return }
@@ -55,7 +55,8 @@ extension SyncEngine {
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.name = name
                     local.contactName = remote["contact_name"] as? String
@@ -93,7 +94,7 @@ extension SyncEngine {
 
     func syncTaxRates(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<TaxRate>(
-            predicate: #Predicate<TaxRate> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<TaxRate> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let taxRates = try? modelContext.fetch(descriptor), !taxRates.isEmpty else { return }
@@ -133,7 +134,8 @@ extension SyncEngine {
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.name = name
                     local.ratePercentage = remoteDouble(remote["rate_percentage"])
@@ -172,7 +174,7 @@ extension SyncEngine {
 
     func syncRecipes(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<Recipe>(
-            predicate: #Predicate<Recipe> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<Recipe> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let recipes = try? modelContext.fetch(descriptor), !recipes.isEmpty else { return }
@@ -220,11 +222,14 @@ extension SyncEngine {
                 }
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.menuItem = menuItem
                     local.inventoryItem = inventoryItem
                     local.quantityRequired = remoteDouble(remote["quantity_required"], fallback: 1.0)
+                    local.quantityUnit = remote["quantity_unit"] as? String
+                    local.yieldPercentage = remoteDouble(remote["yield_percentage"], fallback: 100)
                     local.updatedAt = updatedAt
                     local.isSynced = true
                 } else {
@@ -233,6 +238,8 @@ extension SyncEngine {
                         menuItem: menuItem,
                         inventoryItem: inventoryItem,
                         quantityRequired: remoteDouble(remote["quantity_required"], fallback: 1.0),
+                        quantityUnit: remote["quantity_unit"] as? String,
+                        yieldPercentage: remoteDouble(remote["yield_percentage"], fallback: 100),
                         isSynced: true,
                         isDeleted: false,
                         updatedAt: updatedAt == .distantPast ? Date() : updatedAt
@@ -254,7 +261,7 @@ extension SyncEngine {
 
     func syncCurrencyExchangeRates(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<CurrencyExchangeRate>(
-            predicate: #Predicate<CurrencyExchangeRate> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<CurrencyExchangeRate> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let rates = try? modelContext.fetch(descriptor), !rates.isEmpty else { return }
@@ -293,7 +300,8 @@ extension SyncEngine {
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.baseCurrency = remote["base_currency"] as? String ?? local.baseCurrency
                     local.targetCurrency = remote["target_currency"] as? String ?? local.targetCurrency
@@ -332,12 +340,14 @@ extension SyncEngine {
 
     func syncRoles(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<Role>(
-            predicate: #Predicate<Role> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<Role> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let roles = try? modelContext.fetch(descriptor), !roles.isEmpty else { return }
 
-        for role in roles {
+        // Remove superseded duplicates before uploading a canonical rename;
+        // otherwise the server-side active-name unique index can reject it.
+        for role in roles.sorted(by: { $0.isDeleted && !$1.isDeleted }) {
             do {
                 if role.isDeleted {
                     if try await NetworkManager.shared.deleteRoleOnServer(id: role.id) {
@@ -385,7 +395,10 @@ extension SyncEngine {
                 modelContext.saveWithLogging(label: #function)
             }
 
-            guard !remoteRoles.isEmpty else { return }
+            guard !remoteRoles.isEmpty else {
+                RoleBootstrap.ensureDefaultRoles(modelContext: modelContext)
+                return
+            }
 
             // Fetch remote role permissions to align permissionKeys local cache
             let remotePermissions = (try? await NetworkManager.shared.fetchRolePermissionsFromSupabase()) ?? []
@@ -405,7 +418,8 @@ extension SyncEngine {
                 let permissionKeysStr = permissionsByRole[name]?.sorted().joined(separator: ",") ?? ""
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.name = name
                     local.roleDescription = remote["description"] as? String
@@ -427,6 +441,7 @@ extension SyncEngine {
                 }
             }
             modelContext.saveWithLogging(label: #function)
+            RoleBootstrap.ensureDefaultRoles(modelContext: modelContext)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Role Pull Error]: \(error.localizedDescription)")
@@ -438,7 +453,7 @@ extension SyncEngine {
 
     func syncUsers(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<User>(
-            predicate: #Predicate<User> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<User> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let users = try? modelContext.fetch(descriptor), !users.isEmpty else { return }
@@ -474,17 +489,29 @@ extension SyncEngine {
             __desclocals.fetchLimit = 500
             let locals = (try? modelContext.fetch(__desclocals)) ?? []
 
-            // Deduplicate: If any local user has the same username but a different ID, delete it.
+            // Deduplicate authentication identities without deleting HR history.
+            // User.employeeProfile used to be cascade-delete, so deleting the
+            // temporary local User here also deleted Employee -> Timecard. That
+            // made a successful clock-in disappear a few seconds later when the
+            // full sync reconciled the canonical cloud User.
             for remote in remoteUsers {
                 guard let idStr = remote["id"] as? String,
                       let id = UUID(uuidString: idStr),
                       let username = remote["username"] as? String else { continue }
                 if let conflict = locals.first(where: { $0.id != id && $0.username.lowercased() == username.lowercased() }) {
+                    if let employee = conflict.employeeProfile {
+                        employee.user = nil
+                        conflict.employeeProfile = nil
+                    }
                     modelContext.delete(conflict)
                 }
             }
-            try? modelContext.save()
-            var localById = Dictionary(uniqueKeysWithValues: locals.map { ($0.id.uuidString.lowercased(), $0) })
+            modelContext.saveWithLogging(label: "pullUsersFromSupabase.deduplicate")
+
+            // Re-fetch after deletion. Keeping deleted model references in this
+            // lookup can resurrect a stale identity or access invalid backing data.
+            let reconciledLocals = (try? modelContext.fetch(__desclocals)) ?? []
+            var localById = Dictionary(uniqueKeysWithValues: reconciledLocals.map { ($0.id.uuidString.lowercased(), $0) })
 
             // Pre-fetch roles
             let allRoles = (try? modelContext.fetch(FetchDescriptor<Role>())) ?? []
@@ -500,7 +527,8 @@ extension SyncEngine {
                 if let rid = remote["role_id"] as? String { role = roleMap[rid.lowercased()] }
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.username = username
                     local.email = remote["email"] as? String

@@ -27,6 +27,8 @@ final class MerchantAuthManager {
     private let keychainExpiryKey = "alphapos_merchant_jwt_expiry"
     private let keychainMerchantIdKey = "alphapos_merchant_id"
     private let keychainDeviceSecretKey = "alphapos_device_secret"
+    private let keychainDeviceIdKey = "alphapos_auth_device_id"
+    private let keychainUserAccessTokenKey = "alphapos_user_access_token"
     private let keychainSubscriptionTierKey = "alphapos_subscription_tier"
     private let keychainSubscriptionStatusKey = "alphapos_subscription_status"
     private let keychainSubscriptionExpiryKey = "alphapos_subscription_expiry"
@@ -45,15 +47,25 @@ final class MerchantAuthManager {
     var currentToken: String? {
         KeychainManager.shared.retrieve(forKey: keychainTokenKey)
     }
+
+    /// JWT safe to send to Supabase. Expired or cross-merchant credentials must
+    /// never be used for REST or Realtime; callers may fall back to the anon key.
+    var authorizationToken: String? {
+        guard isAuthenticated, let token = currentToken else { return nil }
+        let activeMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id")
+        guard activeMerchantId == nil || merchantId?.lowercased() == activeMerchantId?.lowercased() else {
+            return nil
+        }
+        return token
+    }
     
-    /// Whether a valid (non-expired) JWT is available.
-    /// In offline mode, expiration is bypassed to allow indefinite single-device offline usage.
+    /// Whether a valid online JWT or a verified local offline entitlement exists.
     var isAuthenticated: Bool {
         guard let _ = currentToken else {
             return false
         }
         if UserDefaults.standard.bool(forKey: "offline_sync_mode") {
-            return true
+            return OfflineEntitlementStore.validated(merchantId: merchantId, deviceId: deviceId) != nil
         }
         guard let expiryStr = KeychainManager.shared.retrieve(forKey: keychainExpiryKey),
               let expiry = Double(expiryStr) else {
@@ -65,6 +77,18 @@ final class MerchantAuthManager {
     /// The authenticated merchant ID, if available.
     var merchantId: String? {
         KeychainManager.shared.retrieve(forKey: keychainMerchantIdKey)
+    }
+
+    var deviceId: String? {
+        KeychainManager.shared.retrieve(forKey: keychainDeviceIdKey)
+    }
+
+    var userAccessToken: String? {
+        KeychainManager.shared.retrieve(forKey: keychainUserAccessTokenKey)
+    }
+
+    func saveUserAccessToken(_ token: String) {
+        KeychainManager.shared.save(token, forKey: keychainUserAccessTokenKey)
     }
 
     var subscriptionTier: String? {
@@ -88,9 +112,27 @@ final class MerchantAuthManager {
         } else {
             KeychainManager.shared.delete(forKey: keychainSubscriptionExpiryKey)
         }
+        if let merchantId, let deviceId, status == "active" {
+            _ = OfflineEntitlementStore.issue(merchantId: merchantId, deviceId: deviceId, subscriptionTier: tier, subscriptionExpiry: expiry)
+        }
     }
     
     private init() {
+        // One-time migration for installs that completed an online login before
+        // signed offline entitlements were introduced. Only a still-valid JWT
+        // may mint the migration entitlement.
+        if UserDefaults.standard.bool(forKey: "offline_sync_mode"),
+           OfflineEntitlementStore.validated(merchantId: merchantId, deviceId: deviceId) == nil,
+           let expiryString = KeychainManager.shared.retrieve(forKey: keychainExpiryKey),
+           let expiry = Double(expiryString), expiry > Date().timeIntervalSince1970,
+           let merchantId, let deviceId {
+            _ = OfflineEntitlementStore.issue(
+                merchantId: merchantId,
+                deviceId: deviceId,
+                subscriptionTier: subscriptionTier ?? "online_subscription",
+                subscriptionExpiry: subscriptionExpiry
+            )
+        }
         // Schedule auto-refresh if we already have a token at launch
         if isAuthenticated {
             scheduleAutoRefresh()
@@ -107,7 +149,12 @@ final class MerchantAuthManager {
     /// - Returns: The JWT access token string.
     /// - Throws: `AuthError` if authentication fails.
     @discardableResult
-    func authenticate(merchantId: String, deviceSecret: String) async throws -> String {
+    func authenticate(
+        merchantId: String,
+        deviceId: String,
+        deviceSecret: String,
+        verifiedUserMerchantId: String? = nil
+    ) async throws -> String {
         let config = AppConfig.shared
         let edgeFunctionURL = URL(string: config.supabaseURL.absoluteString + "/functions/v1/issue-merchant-token")!
         
@@ -121,11 +168,12 @@ final class MerchantAuthManager {
         
         let payload: [String: String] = [
             "merchant_id": merchantId,
+            "device_id": deviceId,
             "device_secret": deviceSecret
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await AppNetworkTransport.data(for: request, purpose: .interactiveAuthentication)
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AuthError.invalidResponse
@@ -144,22 +192,49 @@ final class MerchantAuthManager {
               let expiresIn = json["expires_in"] as? Int else {
             throw AuthError.invalidResponse
         }
+
+        // Enforce tenant isolation before binding the new merchant. A conflicting
+        // offline workspace is quarantined and never erased by authentication.
+        let normalizedMerchantId = merchantId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        try TenantWorkspaceGuard.prepareForIncomingMerchant(
+            normalizedMerchantId,
+            verifiedUserMerchantId: verifiedUserMerchantId
+        )
         
         // Store token and metadata in Keychain
         let expiryTimestamp = Date().timeIntervalSince1970 + Double(expiresIn)
-        KeychainManager.shared.save(accessToken, forKey: keychainTokenKey)
-        KeychainManager.shared.save(String(expiryTimestamp), forKey: keychainExpiryKey)
-        KeychainManager.shared.save(merchantId, forKey: keychainMerchantIdKey)
-        KeychainManager.shared.save(deviceSecret, forKey: keychainDeviceSecretKey)
+        let credentials: [(key: String, value: String)] = [
+            (keychainTokenKey, accessToken),
+            (keychainExpiryKey, String(expiryTimestamp)),
+            (keychainMerchantIdKey, normalizedMerchantId),
+            (keychainDeviceIdKey, deviceId),
+            (keychainDeviceSecretKey, deviceSecret),
+        ]
+        let credentialsPersisted = credentials.allSatisfy { credential in
+            KeychainManager.shared.save(credential.value, forKey: credential.key)
+                && KeychainManager.shared.retrieve(forKey: credential.key) == credential.value
+        }
+        guard credentialsPersisted else {
+            // Never leave a partially authenticated credential set behind.
+            credentials.forEach { KeychainManager.shared.delete(forKey: $0.key) }
+            throw AuthError.secureStorageFailed
+        }
 
         // Cache merchant_id in UserDefaults so NetworkManager can read it without Keychain lookup on every call.
         // NOTE: This is a NON-SENSITIVE cache. The authoritative auth state is the Keychain JWT above.
         //       Do NOT use UserDefaults "active_merchant_id" as an auth gate — it can be tampered.
         //       Auth gate must always use MerchantAuthManager.shared.isAuthenticated (Keychain-backed).
-        UserDefaults.standard.set(merchantId, forKey: "active_merchant_id")
+        UserDefaults.standard.set(normalizedMerchantId, forKey: "active_merchant_id")
+        TenantWorkspaceGuard.bindWorkspace(to: normalizedMerchantId)
+        _ = OfflineEntitlementStore.issue(
+            merchantId: normalizedMerchantId,
+            deviceId: deviceId,
+            subscriptionTier: subscriptionTier ?? "online_subscription",
+            subscriptionExpiry: subscriptionExpiry
+        )
         
         #if DEBUG
-        print("MerchantAuthManager: Successfully authenticated merchant \(merchantId)")
+        print("MerchantAuthManager: Successfully authenticated merchant \(normalizedMerchantId)")
         print("MerchantAuthManager: Token expires at \(Date(timeIntervalSince1970: expiryTimestamp))")
         #endif
         
@@ -174,6 +249,7 @@ final class MerchantAuthManager {
     /// Refresh the current token using the refresh-token Edge Function.
     /// Falls back to full re-authentication if refresh fails.
     func refreshTokenIfNeeded() async {
+        guard NetworkPolicy.shared.allows(.authRefresh) else { return }
         guard let token = currentToken else { return }
         
         // Check if refresh is needed (within margin of expiry)
@@ -209,7 +285,7 @@ final class MerchantAuthManager {
             request.setValue(token, forHTTPHeaderField: "X-Merchant-Token")
             request.timeoutInterval = 10.0
             
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await AppNetworkTransport.data(for: request, purpose: .authRefresh)
             
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode),
@@ -237,6 +313,7 @@ final class MerchantAuthManager {
             
             // Fallback: re-authenticate with stored credentials
             guard let storedMerchantId = KeychainManager.shared.retrieve(forKey: keychainMerchantIdKey),
+                  let storedDeviceId = KeychainManager.shared.retrieve(forKey: keychainDeviceIdKey),
                   let storedDeviceSecret = KeychainManager.shared.retrieve(forKey: keychainDeviceSecretKey) else {
                 #if DEBUG
                 print("MerchantAuthManager: No stored credentials for re-authentication")
@@ -245,7 +322,7 @@ final class MerchantAuthManager {
             }
             
             do {
-                try await authenticate(merchantId: storedMerchantId, deviceSecret: storedDeviceSecret)
+                try await authenticate(merchantId: storedMerchantId, deviceId: storedDeviceId, deviceSecret: storedDeviceSecret)
                 NotificationCenter.default.post(name: .merchantTokenDidRefresh, object: nil)
             } catch {
                 #if DEBUG
@@ -257,21 +334,37 @@ final class MerchantAuthManager {
     
     // MARK: - Logout
     
-    /// Clear all stored credentials and cancel refresh timer.
-    func logout() {
+    /// Clear stored credentials and optionally remove this device's local workspace.
+    /// Clears authentication credentials. Local POS data is preserved by
+    /// default; destructive workspace removal must always be explicit.
+    func logout(removeLocalData: Bool = false) {
         refreshTimer?.invalidate()
         refreshTimer = nil
+
+        let previousMerchantId = KeychainManager.shared.retrieve(forKey: keychainMerchantIdKey)
+            ?? UserDefaults.standard.string(forKey: "active_merchant_id")
+
+        if removeLocalData {
+            TenantWorkspaceGuard.wipeOnLogout(previousMerchantId: previousMerchantId)
+        }
         
         KeychainManager.shared.delete(forKey: keychainTokenKey)
         KeychainManager.shared.delete(forKey: keychainExpiryKey)
         KeychainManager.shared.delete(forKey: keychainMerchantIdKey)
+        KeychainManager.shared.delete(forKey: keychainDeviceIdKey)
         KeychainManager.shared.delete(forKey: keychainDeviceSecretKey)
+        KeychainManager.shared.delete(forKey: keychainUserAccessTokenKey)
         KeychainManager.shared.delete(forKey: keychainSubscriptionTierKey)
         KeychainManager.shared.delete(forKey: keychainSubscriptionStatusKey)
         KeychainManager.shared.delete(forKey: keychainSubscriptionExpiryKey)
+        OfflineEntitlementStore.clear()
+
+        if removeLocalData {
+            UserDefaults.standard.removeObject(forKey: "active_merchant_id")
+        }
         
         #if DEBUG
-        print("MerchantAuthManager: Logged out and cleared credentials")
+        print("MerchantAuthManager: Logged out, localDataRemoved=\(removeLocalData)")
         #endif
     }
     
@@ -281,14 +374,16 @@ final class MerchantAuthManager {
     /// to recover in-flight requests without logging the user out.
     @discardableResult
     func tryRefresh() async -> Bool {
+        guard NetworkPolicy.shared.allows(.authRefresh) else { return false }
         let config = AppConfig.shared
         guard let token = currentToken ?? KeychainManager.shared.retrieve(forKey: keychainTokenKey) else {
             // No token at all — try re-auth with stored credentials
             guard let mid = KeychainManager.shared.retrieve(forKey: keychainMerchantIdKey),
+                  let did = KeychainManager.shared.retrieve(forKey: keychainDeviceIdKey),
                   let sec = KeychainManager.shared.retrieve(forKey: keychainDeviceSecretKey) else {
                 return false
             }
-            return (try? await authenticate(merchantId: mid, deviceSecret: sec)) != nil
+            return (try? await authenticate(merchantId: mid, deviceId: did, deviceSecret: sec)) != nil
         }
 
         // Attempt token refresh via Edge Function
@@ -301,7 +396,7 @@ final class MerchantAuthManager {
         req.setValue(token, forHTTPHeaderField: "X-Merchant-Token")
         req.timeoutInterval = 10.0
 
-        if let (data, resp) = try? await URLSession.shared.data(for: req),
+        if let (data, resp) = try? await AppNetworkTransport.data(for: req, purpose: .authRefresh),
            let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let newToken = json["access_token"] as? String,
@@ -315,10 +410,11 @@ final class MerchantAuthManager {
 
         // Refresh failed — fall back to re-auth with stored credentials
         guard let mid = KeychainManager.shared.retrieve(forKey: keychainMerchantIdKey),
+              let did = KeychainManager.shared.retrieve(forKey: keychainDeviceIdKey),
               let sec = KeychainManager.shared.retrieve(forKey: keychainDeviceSecretKey) else {
             return false
         }
-        return (try? await authenticate(merchantId: mid, deviceSecret: sec)) != nil
+        return (try? await authenticate(merchantId: mid, deviceId: did, deviceSecret: sec)) != nil
     }
 
     /// Schedule a timer to auto-refresh the token before it expires.
@@ -355,6 +451,7 @@ enum AuthError: Error, LocalizedError {
     case invalidResponse
     case serverError(Int, String)
     case tokenExpired
+    case secureStorageFailed
     
     var errorDescription: String? {
         switch self {
@@ -362,6 +459,8 @@ enum AuthError: Error, LocalizedError {
         case .invalidResponse: return "Received invalid response from auth server."
         case .serverError(let code, let msg): return "Auth server error (\(code)): \(msg)"
         case .tokenExpired: return "Authentication token has expired."
+        case .secureStorageFailed:
+            return "ยืนยันรหัสสำเร็จ แต่ไม่สามารถบันทึกข้อมูลเข้าสู่ระบบบนอุปกรณ์ได้ กรุณาลองใหม่"
         }
     }
 }

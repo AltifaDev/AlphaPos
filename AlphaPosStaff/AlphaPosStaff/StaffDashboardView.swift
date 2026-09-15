@@ -65,6 +65,7 @@ struct StaffDashboardView: View {
                     }
                     ScrollView {
                         VStack(spacing: APSpacing.lg) {
+                            readOnlyNotice
                             
                             // Profile Card
                             VStack(spacing: APSpacing.sm) {
@@ -100,6 +101,7 @@ struct StaffDashboardView: View {
                             .frame(maxWidth: .infinity)
                             .apCard()
                             
+                            sectionHeader("ภาพรวมการทำงาน", icon: "chart.bar.fill")
                             // Today's Summary Card — Quick access to DailySummaryView
                             NavigationLink {
                                 DailySummaryView(employee: employee)
@@ -135,6 +137,7 @@ struct StaffDashboardView: View {
                                 .apCard()
             }
                             
+                            sectionHeader("รายได้เพิ่มเติม", icon: "banknote.fill")
                             // Tip Tracker Card
                             NavigationLink {
                                 TipTrackerView(employee: employee)
@@ -170,6 +173,7 @@ struct StaffDashboardView: View {
                                 .apCard()
                             }
                             
+                            sectionHeader("ชั่วโมงและค่าจ้างสะสม", icon: "clock.badge.checkmark")
                             // Earnings & Hours Widgets
                             HStack(spacing: APSpacing.md) {
                                 // Hours Card
@@ -197,6 +201,7 @@ struct StaffDashboardView: View {
                                 .apCard()
                             }
                             
+                            sectionHeader("รายละเอียดการจ้างงาน", icon: "doc.text.fill")
                             // Payroll Details
                             VStack(alignment: .leading, spacing: APSpacing.sm) {
                                 Text("contract_details".localized(for: appLanguage))
@@ -220,6 +225,7 @@ struct StaffDashboardView: View {
                             .padding()
                             .apCard()
                             
+                            sectionHeader("การตั้งค่าส่วนตัว", icon: "gearshape.fill")
                             // Settings
                             VStack(alignment: .leading, spacing: APSpacing.sm) {
                                 Text("settings_section".localized(for: appLanguage))
@@ -250,6 +256,9 @@ struct StaffDashboardView: View {
                             .padding()
                             .apCard()
                             
+                            // Diagnostics and server controls are intentionally not part of
+                            // the employee history screen. They belong to the owner app.
+                            if false {
                             // Diagnostics & System Status
                             VStack(alignment: .leading, spacing: APSpacing.sm) {
                                 Text("diagnostics_system_status".localized(for: appLanguage).uppercased())
@@ -372,7 +381,7 @@ struct StaffDashboardView: View {
                                     .font(.caption)
                                     .foregroundColor(.textSecondary)
                                 
-                                TextField("http://119.59.99.163", text: Binding(
+                                TextField("https://sync.alphaposweb.com", text: Binding(
                                     get: { UserDefaults.standard.string(forKey: "dynamic_supabase_url") ?? AppConfig.supabaseURL.absoluteString },
                                     set: { UserDefaults.standard.set($0, forKey: "dynamic_supabase_url") }
                                 ))
@@ -410,12 +419,13 @@ struct StaffDashboardView: View {
                                 )
                                 .shadow(color: Color(hex: "FC4A4A").opacity(0.35), radius: 16, x: 0, y: 0)
                             }
+                            }
                         }
                         .padding()
                     }
                 }
             }
-            .navigationTitle("staff_space".localized(for: appLanguage))
+            .navigationTitle("ประวัติการทำงาน")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     languageMenu
@@ -467,6 +477,21 @@ struct StaffDashboardView: View {
             }
         }
     }
+
+    private var readOnlyNotice: some View {
+        HStack(alignment: .top, spacing: APSpacing.sm) {
+            Image(systemName: "lock.fill")
+                .foregroundColor(.appTeal)
+            Text("ประวัติการทำงาน วันลา ชั่วโมง และค่าจ้างคำนวณจาก AlphaPos เปิดให้ดูอย่างเดียว หากข้อมูลไม่ถูกต้องให้ติดต่อผู้จัดการร้าน")
+                .font(.caption)
+                .foregroundColor(.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(APSpacing.md)
+        .apCard(padding: 0)
+        .accessibilityElement(children: .combine)
+    }
     
     private var languageMenu: some View {
         Menu {
@@ -503,6 +528,19 @@ struct StaffDashboardView: View {
                     .stroke(Color.appBorderSubtle, lineWidth: 1)
             )
         }
+    }
+
+    private func sectionHeader(_ title: String, icon: String) -> some View {
+        HStack(spacing: APSpacing.sm) {
+            Image(systemName: icon)
+                .foregroundColor(.appAccent)
+            Text(title)
+                .font(.headline.weight(.bold))
+                .foregroundColor(.textPrimary)
+            Spacer()
+        }
+        .padding(.top, APSpacing.sm)
+        .accessibilityAddTraits(.isHeader)
     }
     
     private func profileRow(label: String, value: String) -> some View {

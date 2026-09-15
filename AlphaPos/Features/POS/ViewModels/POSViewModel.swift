@@ -1,6 +1,8 @@
 import Foundation
+import OSLog
 import SwiftData
 import SwiftUI
+import UIKit
 
 // MARK: - Cart Items View Representation Struct
 
@@ -11,20 +13,53 @@ struct CartItem: Identifiable {
     var quantity: Int = 1
     var notes: String = ""
 
+    // ── Snapshot of display/pricing values, captured at construction ─────────
+    // SwiftData @Model objects can be invalidated when a background sync deletes
+    // the underlying row (e.g. menu dedup / hard-delete reconcile). Any later
+    // access to `item.name`, `item.price`, etc. on an invalidated model crashes
+    // with "backing data could no longer be found". We snapshot the scalar
+    // values here so the cart UI never dereferences a deleted model. The live
+    // `item` reference is only used at checkout (recipe deduction), guarded
+    // separately.
+    let snapshotItemId: String
+    let snapshotName: String
+    let snapshotLocalizedName: String
+    let snapshotPrice: Double
+    let snapshotPriceDecimal: Decimal
+    let snapshotImageURL: String?
+    let snapshotImageData: Data?
+    let snapshotColorHex: String?
+
+    init(item: MenuItem, selectedModifiers: [Modifier], quantity: Int = 1, notes: String = "", unitPrice: Double? = nil) {
+        self.item = item
+        self.selectedModifiers = selectedModifiers
+        self.quantity = quantity
+        self.notes = notes
+        // Capture display/pricing scalars now, while the model is valid.
+        self.snapshotItemId = item.id
+        self.snapshotName = item.name
+        self.snapshotLocalizedName = item.localizedName
+        self.snapshotPrice = unitPrice ?? item.price
+        self.snapshotPriceDecimal = Decimal(unitPrice ?? item.price)
+        self.snapshotImageURL = item.imageUrl
+        self.snapshotImageData = item.imageData
+        self.snapshotColorHex = item.colorHex
+    }
+
     /// Use totalPriceDecimal for accurate currency calculations (avoids floating-point errors).
     /// totalPrice is kept for backward compatibility but may lose precision.
     var totalPrice: Double {
         let modifierCost = selectedModifiers.reduce(0.0) { $0 + $1.extraPrice }
-        return (item.price + modifierCost) * Double(quantity)
+        return (snapshotPrice + modifierCost) * Double(quantity)
     }
 
     var totalPriceDecimal: Decimal {
         let modifierCost = selectedModifiers.reduce(Decimal.zero) { $0 + ($1.extraPriceDecimal) }
-        return (item.priceDecimal + modifierCost) * Decimal(quantity)
+        return (snapshotPriceDecimal + modifierCost) * Decimal(quantity)
     }
 
     func isEqual(to other: CartItem) -> Bool {
-        guard item.id == other.item.id else { return false }
+        guard snapshotItemId == other.snapshotItemId else { return false }
         let selfIds = selectedModifiers.map { $0.id }.sorted()
         let otherIds = other.selectedModifiers.map { $0.id }.sorted()
         return selfIds == otherIds && notes == other.notes
@@ -40,26 +75,129 @@ struct FocusTarget: Equatable {
     }
 }
 
+struct POSAlert: Identifiable, Equatable {
+    let id = UUID()
+    let message: String
+}
+
 // MARK: - POS View Model
 
 @Observable
 @MainActor
 final class POSViewModel {
     var modelContext: ModelContext?
+    private let legacyMockCashierName = "Alex M."
+
+    /// SwiftUI asks for the same totals many times while building one frame.  Those
+    /// totals used to re-fetch promotions (and customer redemption history) on
+    /// every access.  Keep a snapshot until an input that can affect pricing
+    /// changes; the key also covers settings that may be edited elsewhere.
+    private struct PricingCacheKey: Equatable {
+        struct Line: Equatable {
+            let id: UUID
+            let quantity: Int
+            let totalPrice: Double
+        }
+
+        let lines: [Line]
+        let orderType: String
+        let customerId: UUID?
+        let customerPoints: Int
+        let customerTaxExempt: Bool
+        let useLoyaltyPoints: Bool
+        let redeemLoyaltyPoints: Int
+        let couponPromotionId: UUID?
+        let manualPromotionId: UUID?
+        let suppressAutomaticPromotion: Bool
+        let settings: String
+    }
+
+    @ObservationIgnored private var cachedSettingsFingerprint: String? = nil
+    @ObservationIgnored private var lastSettingsCheck: TimeInterval = 0
+
+    private func currentSettingsFingerprint() -> String {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let cached = cachedSettingsFingerprint, now - lastSettingsCheck < 1.0 {
+            return cached
+        }
+        let defaults = UserDefaults.standard
+        let settingKeys = [
+            "enable_tax", "tax_price_basis", "store_tax_rate", "store_tax_type",
+            "tax_allow_item_exemptions", "tax_rounding_mode", "enable_service_charge",
+            "store_service_charge_rate", "tax_service_charge_taxable",
+            "tax_apply_\(selectedOrderType)", "service_charge_apply_\(selectedOrderType)",
+            "promotions_auto_apply", "loyalty_redeem_value_per_point"
+        ]
+        let fingerprint = settingKeys.map { key in
+            "\(key)=\(defaults.object(forKey: key).map(String.init(describing:)) ?? "nil")"
+        }.joined(separator: ";")
+        cachedSettingsFingerprint = fingerprint
+        lastSettingsCheck = now
+        return fingerprint
+    }
+
+    @ObservationIgnored private var cachedPromotion: (PricingCacheKey, Promotion?)?
+    @ObservationIgnored private var cachedCheckoutCalculation: (PricingCacheKey, ReceiptCalculationEngine.Result)?
+    @ObservationIgnored private var pricingCacheClearScheduled = false
+
+    private func clearPricingCacheAfterCurrentUpdate() {
+        guard !pricingCacheClearScheduled else { return }
+        pricingCacheClearScheduled = true
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.cachedPromotion = nil
+            self?.cachedCheckoutCalculation = nil
+            self?.pricingCacheClearScheduled = false
+        }
+    }
 
     // Cart and configuration states
-    var cart: [CartItem] = []
+    var cart: [CartItem] = [] {
+        didSet {
+            // Protect in-cart menu items from being deleted by a background sync,
+            // which would invalidate the model and crash the cart UI.
+            SyncEngine.shared.protectedMenuItemIds = Set(cart.map { $0.snapshotItemId })
+        }
+    }
     var lastAddedItem: FocusTarget? = nil
     var selectedCategory: Category?
     var selectedItemForCustomization: MenuItem?
     var selectedPaymentMethod = "QR PromptPay"
+    var selectedSupportProgram: String? = nil
+
+    func activateThaiChuaThaiPlus() {
+        guard UserDefaults.standard.bool(forKey: GovernmentSupportProgram.enabledSettingsKey) else {
+            selectedSupportProgram = nil
+            return
+        }
+        selectedSupportProgram = GovernmentSupportProgram.thaiChuaThaiPlus
+    }
+
+    func clearSupportProgram() { selectedSupportProgram = nil }
+
+    var citizenPayableAmount: Double {
+        guard UserDefaults.standard.bool(forKey: GovernmentSupportProgram.enabledSettingsKey),
+              selectedSupportProgram == GovernmentSupportProgram.thaiChuaThaiPlus else { return cartTotal }
+        return GovernmentSupportProgram.split(total: cartTotal).citizen
+    }
     var selectedTableNumber = "1"
     var selectedOrderType = "dine_in"
     var guestCount: Int = 2
-    var cashierName: String = "Alex M."
+    var cashierName: String = "Staff"
     var selectedCustomer: Customer? = nil
     var useLoyaltyPoints: Bool = false
     var redeemLoyaltyPoints: Int = 0
+
+    /// Normalized code currently applied at checkout (nil = auto-apply path).
+    var appliedCouponCode: String? = nil
+    /// Promotion resolved from `appliedCouponCode`. Cleared with the coupon.
+    var appliedCouponPromotion: Promotion? = nil
+    /// Explicit non-coupon promotion selected by the cashier from POS.
+    var manuallySelectedPromotion: Promotion? = nil
+    var suppressAutomaticPromotion = false
+    /// Localized feedback after apply/clear (success or error).
+    var couponFeedbackMessage: String? = nil
+    var couponFeedbackIsError: Bool = false
 
     var loyaltyPointsDiscount: Double {
         guard useLoyaltyPoints, let customer = selectedCustomer else { return 0.0 }
@@ -69,6 +207,7 @@ final class POSViewModel {
     }
 
     var currentQueueNumber: String = ""
+    var currentReceiptNumber: String = ""
     var currentBillNumber: String = ""
 
     // C-1: Gift Card at checkout
@@ -77,16 +216,49 @@ final class POSViewModel {
 
     var currentOrderDateString: String = ""
     var recentlySubmittedTableOrder: Order?
+    /// Source ticket currently recalled into the cart. It is retired only in
+    /// the same SwiftData transaction that saves its replacement order.
+    private(set) var recalledHeldOrder: Order?
+    private var activeCheckoutSession: CheckoutSession?
 
     // L6: Checkout error state — nil means no error, non-nil contains error description
     var lastCheckoutError: String? = nil
-    var alertMessage: String? = nil
+    var activeAlert: POSAlert? = nil
+    private(set) var stockWarningMessage: String? = nil
+
+    /// Presents at most one POS alert at a time. Repeated stock callbacks can
+    /// arrive in the same run-loop pass; dropping them prevents UIKit from
+    /// queueing identical alert controllers behind the one already visible.
+    func presentAlert(_ message: String?) {
+        guard activeAlert == nil, let message, !message.isEmpty else { return }
+        activeAlert = POSAlert(message: message)
+    }
 
     var deliveryBrand: String? = nil
-    var deliveryGP: Double = 0.0
-    var deliveryAdFee: Double = 0.0
-    var deliveryAdFeeIsPct: Bool = false
-    var deliveryOtherFee: Double = 0.0
+    /// External platform order id (Grab / LINE MAN / …) — typed or pasted.
+    var platformOrderNumber: String = ""
+    // Delivery fee fields — persisted per-brand via UserDefaults
+    var deliveryGP: Double = 0.0 {
+        didSet { if let b = deliveryBrand { UserDefaults.standard.set(deliveryGP,     forKey: "delivery_gp_\(b)") } }
+    }
+    var deliveryAdFee: Double = 0.0 {
+        didSet { if let b = deliveryBrand { UserDefaults.standard.set(deliveryAdFee,  forKey: "delivery_adFee_\(b)") } }
+    }
+    var deliveryAdFeeIsPct: Bool = false {
+        didSet { if let b = deliveryBrand { UserDefaults.standard.set(deliveryAdFeeIsPct, forKey: "delivery_adFeeIsPct_\(b)") } }
+    }
+    var deliveryOtherFee: Double = 0.0 {
+        didSet { if let b = deliveryBrand { UserDefaults.standard.set(deliveryOtherFee, forKey: "delivery_otherFee_\(b)") } }
+    }
+
+    /// Call this whenever deliveryBrand changes to restore saved fees for the selected brand.
+    func loadDeliveryFees(for brand: String) {
+        let ud = UserDefaults.standard
+        deliveryGP          = ud.double(forKey: "delivery_gp_\(brand)")
+        deliveryAdFee       = ud.double(forKey: "delivery_adFee_\(brand)")
+        deliveryAdFeeIsPct  = ud.bool(forKey:   "delivery_adFeeIsPct_\(brand)")
+        deliveryOtherFee    = ud.double(forKey: "delivery_otherFee_\(brand)")
+    }
 
     init(modelContext: ModelContext? = nil) {
         self.modelContext = modelContext
@@ -94,33 +266,101 @@ final class POSViewModel {
 
     // MARK: - POS Session Synchronization
 
-    func syncFromSession(_ session: TableSession?) {
+    private func normalizedCashierName(_ name: String?) -> String? {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    func syncFromSession(_ session: TableSession?, activeCashierName: String? = nil) {
+        let activeCashier = normalizedCashierName(activeCashierName)
+
         if let session = session {
             if recentlySubmittedTableOrder?.tableSession?.id != session.id {
                 recentlySubmittedTableOrder = nil
             }
             guestCount = session.guestCount
-            cashierName = session.cashierName
+            if let activeCashier,
+               session.cashierName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                session.cashierName == legacyMockCashierName {
+                session.cashierName = activeCashier
+                session.isSynced = false
+                session.updatedAt = Date()
+                try? modelContext?.save()
+                Task { _ = try? await NetworkManager.shared.uploadTableSession(session: session) }
+            }
+            let sessionCashier = session.cashierName.trimmingCharacters(in: .whitespacesAndNewlines)
+            cashierName = sessionCashier.isEmpty ? (activeCashier ?? "Staff") : sessionCashier
             selectedOrderType = "dine_in"
             currentBillNumber = "AP-\(session.id.uuidString.prefix(6).uppercased())"
-            if let q = session.queueNumber {
-                currentQueueNumber = q
+            let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+            if let q = session.queueNumber, let sanitized = NetworkManager.sanitizeQueueNumber(q), !q.contains("-") {
+                currentQueueNumber = sanitized
+                if session.queueNumber != sanitized {
+                    session.queueNumber = sanitized
+                    session.isSynced = false
+                    session.updatedAt = Date()
+                    try? modelContext?.save()
+                }
             } else {
-                let tableNum = session.table?.tableNumber ?? "0"
-                let newQ = "Q-\(tableNum)-\(session.id.uuidString.prefix(3).uppercased())"
-                session.queueNumber = newQ
-                currentQueueNumber = newQ
+                let seqQ = NetworkManager.localFallbackQueueNumber(merchantId: merchantId)
+                session.queueNumber = seqQ
+                currentQueueNumber = seqQ
+                session.isSynced = false
+                session.updatedAt = Date()
                 try? modelContext?.save()
+                Task { [weak self] in
+                    if let seq = try? await NetworkManager.shared.generateQueueNumber() {
+                        let formatted = NetworkManager.formatQueueNumber(seq)
+                        await MainActor.run {
+                            session.queueNumber = formatted
+                            self?.currentQueueNumber = formatted
+                            session.isSynced = false
+                            session.updatedAt = Date()
+                            try? self?.modelContext?.save()
+                        }
+                    }
+                    _ = try? await NetworkManager.shared.uploadTableSession(session: session)
+                }
             }
             currentOrderDateString = DateFormatter.shortDateTimeFormat().string(from: session.startedAt)
         } else {
             recentlySubmittedTableOrder = nil
             selectedOrderType = "take_out"
-            currentBillNumber = "AP-NEW"
-            if currentQueueNumber.isEmpty {
-                currentQueueNumber = "Q-\(Int.random(in: 100...999))"
+            if let activeCashier {
+                cashierName = activeCashier
+            } else if cashierName == legacyMockCashierName || cashierName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                cashierName = "Staff"
             }
+            currentBillNumber = "AP-NEW"
+            // Queue / receipt are allocated at submit time (sequential RPC), not randomly here.
+            currentQueueNumber = ""
+            currentReceiptNumber = ""
             currentOrderDateString = DateFormatter.shortDateTimeFormat().string(from: Date())
+        }
+    }
+
+    /// Allocates sequential queue (+ receipt when paying) for counter / quick-sale orders.
+    @MainActor
+    func allocateCounterServiceIdentifiersIfNeeded(includeReceipt: Bool = true) async {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        if currentQueueNumber.isEmpty {
+            if let seq = try? await NetworkManager.shared.generateQueueNumber() {
+                currentQueueNumber = NetworkManager.formatQueueNumber(seq)
+            } else {
+                currentQueueNumber = NetworkManager.localFallbackQueueNumber(merchantId: merchantId)
+            }
+        }
+        if includeReceipt, currentReceiptNumber.isEmpty {
+            if let remote = try? await NetworkManager.shared.generateReceiptNumber() {
+                currentReceiptNumber = remote
+            } else {
+                currentReceiptNumber = NetworkManager.localFallbackReceiptNumber(merchantId: merchantId)
+            }
+        }
+        if currentBillNumber.isEmpty || currentBillNumber == "AP-NEW" {
+            let day = DateFormatter.orderDateFormat().string(from: Date())
+            let suffix = String(UUID().uuidString.prefix(6)).uppercased()
+            currentBillNumber = "QO-\(day)-\(suffix)"
         }
     }
 
@@ -143,11 +383,84 @@ final class POSViewModel {
         }
     }
 
+    /// Determines the fallback order type after completing or resetting a delivery order.
+    /// Reads from user configuration `delivery_post_payment_order_type` (default: "take_out").
+    var postDeliveryOrderType: String {
+        let preferred = UserDefaults.standard.string(forKey: "delivery_post_payment_order_type") ?? "take_out"
+        if preferred == "dine_in" {
+            let enableTableSystem = UserDefaults.standard.object(forKey: "enable_table_system") as? Bool ?? true
+            return enableTableSystem ? "dine_in" : "walk_in"
+        }
+        return "take_out"
+    }
+
     func updateOrderType(_ type: String) {
         selectedOrderType = type
+        if type == "delivery" {
+            setDeliveryBrand(deliveryBrand ?? "GrabFood")
+            if platformOrderNumber.isEmpty {
+                platformOrderNumber = PlatformOrderNumber.prefix(for: deliveryBrand) ?? ""
+            }
+        } else {
+            repriceCart()
+        }
+    }
+
+    func setDeliveryBrand(_ brand: String) {
+        deliveryBrand = brand
+        loadDeliveryFees(for: brand)
+        platformOrderNumber = PlatformOrderNumber.rebrand(platformOrderNumber, to: brand)
+        repriceCart()
+    }
+
+    /// Apply clipboard contents into `platformOrderNumber` when usable.
+    @discardableResult
+    func pastePlatformOrderNumberFromClipboard() -> Bool {
+        guard let value = PlatformOrderNumber.fromPasteboard(brand: deliveryBrand) else { return false }
+        platformOrderNumber = value
+        return true
+    }
+
+    func setPlatformOrderNumberFromRaw(_ raw: String) {
+        platformOrderNumber = PlatformOrderNumber.applyBrandPrefixWhileEditing(raw, brand: deliveryBrand)
+    }
+
+    func salesChannelUnitPrice(for item: MenuItem) -> Double {
+        guard selectedOrderType == "delivery", let brand = deliveryBrand else { return item.price }
+        return item.deliveryPrices.first {
+            !$0.isDeleted && $0.brandName.caseInsensitiveCompare(brand) == .orderedSame
+        }?.price ?? item.price
+    }
+
+    private func repriceCart() {
+        cart = cart.map {
+            CartItem(
+                item: $0.item,
+                selectedModifiers: $0.selectedModifiers,
+                quantity: $0.quantity,
+                notes: $0.notes,
+                unitPrice: salesChannelUnitPrice(for: $0.item)
+            )
+        }
     }
 
     // MARK: - Financial Calculations
+
+    private var pricingCacheKey: PricingCacheKey {
+        PricingCacheKey(
+            lines: cart.map { .init(id: $0.id, quantity: $0.quantity, totalPrice: $0.totalPrice) },
+            orderType: selectedOrderType,
+            customerId: selectedCustomer?.id,
+            customerPoints: selectedCustomer?.loyaltyPoints ?? 0,
+            customerTaxExempt: selectedCustomer?.isTaxExempt ?? false,
+            useLoyaltyPoints: useLoyaltyPoints,
+            redeemLoyaltyPoints: redeemLoyaltyPoints,
+            couponPromotionId: appliedCouponPromotion?.id,
+            manualPromotionId: manuallySelectedPromotion?.id,
+            suppressAutomaticPromotion: suppressAutomaticPromotion,
+            settings: currentSettingsFingerprint()
+        )
+    }
 
     var cartSubtotal: Double {
         cart.reduce(0.0) { $0 + $1.totalPrice }
@@ -163,13 +476,26 @@ final class POSViewModel {
         return UserDefaults.standard.object(forKey: key) as? Bool ?? true
     }
 
+    private var serviceChargeAppliesToSelectedOrderType: Bool {
+        let key: String
+        switch selectedOrderType {
+        case "take_out": key = "service_charge_apply_take_out"
+        case "delivery": key = "service_charge_apply_delivery"
+        default: key = "service_charge_apply_dine_in"
+        }
+        let defaultValue = selectedOrderType != "take_out" && selectedOrderType != "delivery"
+        return UserDefaults.standard.object(forKey: key) as? Bool ?? defaultValue
+    }
+
     private func getTaxRateAndInclusion(for item: MenuItem) -> (rate: Double, isInclusive: Bool) {
-        guard UserDefaults.standard.bool(forKey: "enable_tax"), taxAppliesToSelectedOrderType else {
+        guard (UserDefaults.standard.object(forKey: "enable_tax") as? Bool ?? true), taxAppliesToSelectedOrderType else {
             return (0.0, true)
         }
         let priceBasis = UserDefaults.standard.string(forKey: "tax_price_basis") ?? "itemDefault"
-        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
+        let globalTaxRate = UserDefaults.standard.object(forKey: "store_tax_rate") as? Double ?? 7.0
         let globalTaxType = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
+        let allowItemExemptions = UserDefaults.standard.object(forKey: "tax_allow_item_exemptions") as? Bool ?? true
+        let itemRate = allowItemExemptions || item.taxRate > 0 ? item.taxRate : globalTaxRate
 
         switch priceBasis {
         case "forceInclusive":
@@ -177,53 +503,90 @@ final class POSViewModel {
         case "forceExclusive":
             return (globalTaxRate, false)
         case "itemDefault":
-            let rate = item.taxRate
             let isInclusive = item.isTaxInclusive ?? (globalTaxType == "inclusive")
-            return (rate, isInclusive)
+            return (itemRate, isInclusive)
         default:
-            return (item.taxRate, item.isTaxInclusive ?? (globalTaxType == "inclusive"))
+            return (itemRate, item.isTaxInclusive ?? (globalTaxType == "inclusive"))
         }
+    }
+
+    private var roundsTaxPerLine: Bool {
+        (UserDefaults.standard.string(forKey: "tax_rounding_mode") ?? "perLine") == "perLine"
+    }
+
+    private func roundedMoney(_ value: Double) -> Double {
+        (value * 100).rounded() / 100
+    }
+
+    /// One calculation snapshot feeds the POS totals, persisted Order and tax lines.
+    /// Receipt/report code consumes that persisted snapshot instead of recalculating it.
+    private var checkoutCalculation: ReceiptCalculationEngine.Result {
+        let cacheKey = pricingCacheKey
+        if let cachedCheckoutCalculation, cachedCheckoutCalculation.0 == cacheKey {
+            return cachedCheckoutCalculation.1
+        }
+        let taxEnabled = (UserDefaults.standard.object(forKey: "enable_tax") as? Bool ?? true)
+            && taxAppliesToSelectedOrderType
+        let serviceEnabled = (UserDefaults.standard.object(forKey: "enable_service_charge") as? Bool ?? true)
+            && serviceChargeAppliesToSelectedOrderType
+        let serviceRate = UserDefaults.standard.object(forKey: "store_service_charge_rate") as? Double ?? 10.0
+        let globalTaxRate = UserDefaults.standard.object(forKey: "store_tax_rate") as? Double ?? 7.0
+        let globalInclusive = (UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive") == "inclusive"
+        let lines = cart.map { cartItem -> ReceiptCalculationEngine.Line in
+            let config = getTaxRateAndInclusion(for: cartItem.item)
+            let unitAmount = cartItem.quantity > 0 ? cartItem.totalPrice / Double(cartItem.quantity) : 0
+            return .init(
+                id: cartItem.id.uuidString,
+                name: cartItem.snapshotName,
+                quantity: cartItem.quantity,
+                unitPrice: Decimal(string: String(format: "%.6f", unitAmount)) ?? 0,
+                taxRate: taxEnabled ? Decimal(string: String(config.rate)) ?? 0 : 0,
+                taxInclusive: config.isInclusive
+            )
+        }
+        let result = ReceiptCalculationEngine.calculate(.init(
+            lines: lines,
+            discount: Decimal(string: String(cartDiscount + loyaltyPointsDiscount)) ?? 0,
+            serviceChargeRate: Decimal(string: String(serviceRate)) ?? 0,
+            serviceChargeEnabled: serviceEnabled,
+            serviceChargeTaxable: UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true,
+            serviceChargeTaxRate: taxEnabled ? Decimal(string: String(globalTaxRate)) ?? 0 : 0,
+            serviceChargeTaxInclusive: globalInclusive,
+            customerTaxExempt: selectedCustomer?.isTaxExempt == true,
+            roundingMode: roundsTaxPerLine ? .perLine : .perDocument
+        ))
+        cachedCheckoutCalculation = (cacheKey, result)
+        clearPricingCacheAfterCurrentUpdate()
+        return result
     }
 
     var cartTax: Double {
-        guard UserDefaults.standard.bool(forKey: "enable_tax"), taxAppliesToSelectedOrderType else {
-            return 0.0
-        }
-        if selectedCustomer?.isTaxExempt == true {
-            return 0.0 // No tax for tax-exempt customers
-        }
-
-        var totalTax = 0.0
-        for cartItem in cart {
-            let lineTotal = cartItem.totalPrice
-            let (rate, isInclusive) = getTaxRateAndInclusion(for: cartItem.item)
-
-            if isInclusive {
-                totalTax += lineTotal * (rate / (100.0 + rate))
-            } else {
-                totalTax += lineTotal * (rate / 100.0)
-            }
-        }
-
-        let serviceChargeTaxable = UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true
-        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
-        let serviceChargeTax = serviceChargeTaxable ? cartServiceCharge * (globalTaxRate / 100.0) : 0.0
-        return totalTax + serviceChargeTax
+        NSDecimalNumber(decimal: checkoutCalculation.tax).doubleValue
     }
 
     var cartServiceCharge: Double {
-        guard UserDefaults.standard.bool(forKey: "enable_service_charge") else {
-            return 0.0
-        }
-        if selectedOrderType == "take_out" || selectedOrderType == "delivery" {
-            return 0.0
-        }
-        let serviceChargeRate = UserDefaults.standard.object(forKey: "store_service_charge_rate") as? Double ?? 10.0
-        return cartSubtotal * (serviceChargeRate / 100.0)
+        NSDecimalNumber(decimal: checkoutCalculation.serviceCharge).doubleValue
     }
 
     var activePromotion: Promotion? {
-        bestPromotion()
+        let cacheKey = pricingCacheKey
+        if let cachedPromotion, cachedPromotion.0 == cacheKey {
+            return cachedPromotion.1
+        }
+
+        let promotion: Promotion?
+        if let couponPromo = resolvedAppliedCouponPromotion() {
+            promotion = couponPromo
+        } else if let selected = resolvedManuallySelectedPromotion() {
+            promotion = selected
+        } else if suppressAutomaticPromotion {
+            promotion = nil
+        } else {
+            promotion = bestPromotion()
+        }
+        cachedPromotion = (cacheKey, promotion)
+        clearPricingCacheAfterCurrentUpdate()
+        return promotion
     }
 
     var cartDiscount: Double {
@@ -231,31 +594,194 @@ final class POSViewModel {
         return discountAmount(for: activePromotion)
     }
 
-    var cartTotal: Double {
-        let taxEnabled = UserDefaults.standard.bool(forKey: "enable_tax") && taxAppliesToSelectedOrderType
-        if selectedCustomer?.isTaxExempt == true || !taxEnabled {
-            return max(0, cartSubtotal + cartServiceCharge - cartDiscount - loyaltyPointsDiscount)
+    /// True when a cashier-entered coupon is driving the active discount.
+    var isCouponDiscountActive: Bool {
+        appliedCouponPromotion != nil && resolvedAppliedCouponPromotion() != nil
+    }
+
+    /// Apply a coupon code entered at POS. Returns `true` on success.
+    @discardableResult
+    func applyCouponCode(_ rawCode: String) -> Bool {
+        couponFeedbackMessage = nil
+        couponFeedbackIsError = false
+
+        let code = rawCode
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+        guard !code.isEmpty else {
+            setCouponFeedback("coupon_pos_empty".t, isError: true)
+            return false
+        }
+        guard cartSubtotal > 0 else {
+            setCouponFeedback("coupon_pos_empty_cart".t, isError: true)
+            return false
+        }
+        guard let modelContext else {
+            setCouponFeedback("coupon_pos_unavailable".t, isError: true)
+            return false
         }
 
-        var totalAmount = 0.0
-        for cartItem in cart {
-            let lineTotal = cartItem.totalPrice
-            let (rate, isInclusive) = getTaxRateAndInclusion(for: cartItem.item)
+        let descriptor = FetchDescriptor<Promotion>(
+            predicate: #Predicate<Promotion> { $0.isDeleted == false }
+        )
+        let promotions = (try? modelContext.fetch(descriptor)) ?? []
+        let now = Date()
 
-            if isInclusive {
-                totalAmount += lineTotal
+        guard let promo = promotions.first(where: {
+            ($0.couponCode ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == code
+        }) else {
+            setCouponFeedback("coupon_pos_not_found".t, isError: true)
+            return false
+        }
+
+        guard promo.isEffective(at: now) else {
+            setCouponFeedback("coupon_pos_inactive".t, isError: true)
+            return false
+        }
+        guard promo.isCouponRedemptionAllowed(at: now) else {
+            if let expires = promo.couponExpiresAt, now > expires {
+                setCouponFeedback("coupon_pos_expired".t, isError: true)
             } else {
-                totalAmount += lineTotal * (1.0 + rate / 100.0)
+                setCouponFeedback("coupon_pos_max_uses".t, isError: true)
+            }
+            return false
+        }
+
+        if let customer = selectedCustomer, let limit = promo.perCustomerLimit {
+            let used = countCustomerRedemptions(
+                customerId: customer.id,
+                promotionId: promo.id,
+                modelContext: modelContext
+            )
+            if used >= limit {
+                setCouponFeedback("coupon_pos_customer_limit".t, isError: true)
+                return false
             }
         }
 
-        let serviceChargeTaxable = UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true
-        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
-        let serviceChargeTax = serviceChargeTaxable ? cartServiceCharge * (globalTaxRate / 100.0) : 0.0
-        return max(0, totalAmount + cartServiceCharge + serviceChargeTax - cartDiscount - loyaltyPointsDiscount)
+        guard promo.discountType != "none" else {
+            setCouponFeedback("coupon_pos_no_discount".t, isError: true)
+            return false
+        }
+
+        if cartSubtotal < promo.minimumSpend {
+            setCouponFeedback(
+                LocalizationManager.shared.t(
+                    "coupon_pos_min_spend",
+                    promo.minimumSpend.formatted(.number.precision(.fractionLength(0...2)))
+                ),
+                isError: true
+            )
+            return false
+        }
+
+        let amount = discountAmount(for: promo)
+        guard amount > 0 else {
+            setCouponFeedback("coupon_pos_not_eligible".t, isError: true)
+            return false
+        }
+
+        appliedCouponCode = code
+        appliedCouponPromotion = promo
+        manuallySelectedPromotion = nil
+        setCouponFeedback(
+            LocalizationManager.shared.t(
+                "coupon_pos_applied",
+                code,
+                amount.formatted(.number.precision(.fractionLength(0...2)))
+            ),
+            isError: false
+        )
+        APHaptic.trigger()
+        return true
+    }
+
+    func clearAppliedCoupon() {
+        appliedCouponCode = nil
+        appliedCouponPromotion = nil
+        couponFeedbackMessage = nil
+        couponFeedbackIsError = false
+    }
+
+    @discardableResult
+    func selectPromotion(_ promotion: Promotion) -> Bool {
+        guard promotion.couponCode == nil, isPromotionEligible(promotion) else { return false }
+        appliedCouponCode = nil
+        appliedCouponPromotion = nil
+        couponFeedbackMessage = nil
+        couponFeedbackIsError = false
+        manuallySelectedPromotion = promotion
+        suppressAutomaticPromotion = false
+        APHaptic.trigger()
+        return true
+    }
+
+    func clearSelectedPromotion() {
+        manuallySelectedPromotion = nil
+        suppressAutomaticPromotion = true
+    }
+
+    func useAutomaticPromotion() {
+        manuallySelectedPromotion = nil
+        suppressAutomaticPromotion = false
+    }
+
+    func resetPromotionSelection() {
+        manuallySelectedPromotion = nil
+        suppressAutomaticPromotion = false
+    }
+
+    func isPromotionEligible(_ promotion: Promotion) -> Bool {
+        guard promotion.couponCode == nil, promotion.isEffective(), cartSubtotal > 0 else { return false }
+        if let customer = selectedCustomer, let limit = promotion.perCustomerLimit, let modelContext {
+            let used = countCustomerRedemptions(
+                customerId: customer.id,
+                promotionId: promotion.id,
+                modelContext: modelContext
+            )
+            if used >= limit { return false }
+        }
+        return promotionDiscountAmount(promotion) > 0
+    }
+
+    func promotionDiscountAmount(_ promotion: Promotion) -> Double {
+        discountAmount(for: promotion)
+    }
+
+    private func setCouponFeedback(_ message: String, isError: Bool) {
+        couponFeedbackMessage = message
+        couponFeedbackIsError = isError
+    }
+
+    private func resolvedAppliedCouponPromotion() -> Promotion? {
+        guard let promo = appliedCouponPromotion else { return nil }
+        let now = Date()
+        guard promo.isEffective(at: now), promo.isCouponRedemptionAllowed(at: now) else {
+            return nil
+        }
+        if let customer = selectedCustomer, let limit = promo.perCustomerLimit, let modelContext {
+            let used = countCustomerRedemptions(
+                customerId: customer.id,
+                promotionId: promo.id,
+                modelContext: modelContext
+            )
+            if used >= limit { return nil }
+        }
+        return promo
+    }
+
+    private func resolvedManuallySelectedPromotion() -> Promotion? {
+        guard let promotion = manuallySelectedPromotion,
+              isPromotionEligible(promotion) else { return nil }
+        return promotion
+    }
+
+    var cartTotal: Double {
+        NSDecimalNumber(decimal: checkoutCalculation.total).doubleValue
     }
 
     private func bestPromotion() -> Promotion? {
+        
     guard cartSubtotal > 0,
           UserDefaults.standard.object(forKey: "promotions_auto_apply") as? Bool ?? true,
           let modelContext else { return nil }
@@ -266,18 +792,34 @@ final class POSViewModel {
     let now = Date()
     let promotions = (try? modelContext.fetch(descriptor)) ?? []
 
+    // A customer limit used to trigger one full OrderDiscount fetch for every
+    // candidate promotion. With a sizeable sales history this became the
+    // dominant main-thread cost whenever the cart changed. Materialize the
+    // customer's counts once and reuse them for all candidates.
+    var customerRedemptionsByPromotion: [UUID: Int] = [:]
+    if let customerId = selectedCustomer?.id,
+       promotions.contains(where: { $0.perCustomerLimit != nil }) {
+        let discountDescriptor = FetchDescriptor<OrderDiscount>(
+            predicate: #Predicate<OrderDiscount> { $0.isDeleted == false }
+        )
+        if let discounts = try? modelContext.fetch(discountDescriptor) {
+            for discount in discounts where discount.order?.customer?.id == customerId {
+                if let promotionId = discount.promotion?.id {
+                    customerRedemptionsByPromotion[promotionId, default: 0] += 1
+                }
+            }
+        }
+    }
+
     return promotions
         .filter { promo in
             guard promo.isEffective(at: now) else { return false }
+            guard promo.couponCode == nil, promo.allowsAutomaticApplication else { return false }
             guard discountAmount(for: promo) > 0 else { return false }
 
             // Check per-customer limit if customer is selected
-            if let customer = selectedCustomer, let limit = promo.perCustomerLimit {
-                let customerRedemptions = countCustomerRedemptions(
-                    customerId: customer.id,
-                    promotionId: promo.id,
-                    modelContext: modelContext
-                )
+            if selectedCustomer != nil, let limit = promo.perCustomerLimit {
+                let customerRedemptions = customerRedemptionsByPromotion[promo.id, default: 0]
                 if customerRedemptions >= limit { return false }
             }
 
@@ -289,27 +831,40 @@ final class POSViewModel {
 }
 
     private func countCustomerRedemptions(customerId: UUID, promotionId: UUID, modelContext: ModelContext) -> Int {
-    let descriptor = FetchDescriptor<OrderDiscount>(
-        predicate: #Predicate<OrderDiscount> { $0.isDeleted == false }
-    )
-    guard let discounts = try? modelContext.fetch(descriptor) else { return 0 }
-    return discounts.filter {
-        $0.promotion?.id == promotionId && $0.order?.customer?.id == customerId
-    }.count
-}
+        let descriptor = FetchDescriptor<OrderDiscount>(
+            predicate: #Predicate<OrderDiscount> { $0.isDeleted == false }
+        )
+        guard let discounts = try? modelContext.fetch(descriptor) else { return 0 }
+        return discounts.filter {
+            $0.promotion?.id == promotionId && $0.order?.customer?.id == customerId
+        }.count
+    }
 
 
     private func discountAmount(for promotion: Promotion) -> Double {
+        guard promotion.isEffective() else { return 0 }
+        if promotion.discountType != "fixed_per_item",
+           cartSubtotal < promotion.minimumSpend { return 0 }
+
+        if promotion.discountType == "fixed_per_item" {
+            guard promotion.discountValue > 0 else { return 0 }
+            return AccountingMath.fixedPerItemDiscount(
+                value: promotion.discountValue,
+                minimumUnitPrice: promotion.minimumSpend,
+                lines: cart.map { (quantity: $0.quantity, total: $0.totalPrice) }
+            )
+        }
+
         if promotion.discountType == "bundle_price" {
             guard let itemId = promotion.appliesToMenuItemId,
                   promotion.requiredQuantity > 0,
                   promotion.discountValue > 0 else { return 0 }
 
             return cart.reduce(0.0) { total, cartItem in
-                guard cartItem.item.id == itemId else { return total }
+                guard cartItem.snapshotItemId == itemId else { return total }
                 let bundleCount = cartItem.quantity / promotion.requiredQuantity
                 guard bundleCount > 0 else { return total }
-                let unitPrice = cartItem.item.price + cartItem.selectedModifiers.reduce(0.0) { $0 + $1.extraPrice }
+                let unitPrice = cartItem.snapshotPrice + cartItem.selectedModifiers.reduce(0.0) { $0 + $1.extraPrice }
                 let regularBundleTotal = unitPrice * Double(promotion.requiredQuantity * bundleCount)
                 let promoBundleTotal = promotion.discountValue * Double(bundleCount)
                 return total + max(0, regularBundleTotal - promoBundleTotal)
@@ -323,10 +878,10 @@ final class POSViewModel {
 
             let groupSize = promotion.requiredQuantity + promotion.rewardQuantity
             return cart.reduce(0.0) { total, cartItem in
-                guard cartItem.item.id == itemId else { return total }
+                guard cartItem.snapshotItemId == itemId else { return total }
                 let groupCount = cartItem.quantity / groupSize
                 guard groupCount > 0 else { return total }
-                let unitPrice = cartItem.item.price + cartItem.selectedModifiers.reduce(0.0) { $0 + $1.extraPrice }
+                let unitPrice = cartItem.snapshotPrice + cartItem.selectedModifiers.reduce(0.0) { $0 + $1.extraPrice }
                 let freeUnits = groupCount * promotion.rewardQuantity
                 return total + max(0, unitPrice * Double(freeUnits))
             }
@@ -339,13 +894,26 @@ final class POSViewModel {
                   promotion.rewardQuantity < promotion.requiredQuantity else { return 0 }
 
             return cart.reduce(0.0) { total, cartItem in
-                guard cartItem.item.id == itemId else { return total }
+                guard cartItem.snapshotItemId == itemId else { return total }
                 let groupCount = cartItem.quantity / promotion.requiredQuantity
                 guard groupCount > 0 else { return total }
-                let unitPrice = cartItem.item.price + cartItem.selectedModifiers.reduce(0.0) { $0 + $1.extraPrice }
+                let unitPrice = cartItem.snapshotPrice + cartItem.selectedModifiers.reduce(0.0) { $0 + $1.extraPrice }
                 let freeUnits = groupCount * (promotion.requiredQuantity - promotion.rewardQuantity)
                 return total + max(0, unitPrice * Double(freeUnits))
             }
+        }
+
+        // Industry-standard: % / fixed can be order-wide OR item-scoped.
+        if promotion.discountType == "percentage" || promotion.discountType == "fixed" {
+            if let itemId = promotion.appliesToMenuItemId, !itemId.isEmpty {
+                let eligibleSubtotal = cart.reduce(0.0) { total, cartItem in
+                    guard cartItem.snapshotItemId == itemId else { return total }
+                    return total + cartItem.totalPrice
+                }
+                guard eligibleSubtotal > 0 else { return 0 }
+                return promotion.discountAmount(for: eligibleSubtotal)
+            }
+            return promotion.discountAmount(for: cartSubtotal)
         }
 
         return promotion.discountAmount(for: cartSubtotal)
@@ -358,7 +926,7 @@ final class POSViewModel {
         if item.modifierGroupsRelations.isEmpty {
             let (allowed, reason) = checkStockBeforeAdding(item, modifiers: [], quantity: 1)
             guard allowed else {
-                alertMessage = reason
+                presentAlert(reason)
                 return
             }
             addToCart(item, modifiers: [])
@@ -370,10 +938,10 @@ final class POSViewModel {
     func addToCart(_ item: MenuItem, modifiers: [Modifier]) {
         let (allowed, reason) = checkStockBeforeAdding(item, modifiers: modifiers, quantity: 1)
         guard allowed else {
-            alertMessage = reason
+            presentAlert(reason)
             return
         }
-        let cartItem = CartItem(item: item, selectedModifiers: modifiers)
+        let cartItem = CartItem(item: item, selectedModifiers: modifiers, unitPrice: salesChannelUnitPrice(for: item))
         withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
             if let idx = cart.firstIndex(where: { $0.isEqual(to: cartItem) }) {
                 cart[idx].quantity += 1
@@ -384,13 +952,14 @@ final class POSViewModel {
             }
         }
         APHaptic.trigger()
+        presentStockWarningIfNeeded()
     }
 
     func increaseQty(_ item: CartItem) {
         if let idx = cart.firstIndex(where: { $0.id == item.id }) {
             let (allowed, reason) = checkStockBeforeAdding(cart[idx].item, modifiers: cart[idx].selectedModifiers, quantity: cart[idx].quantity + 1)
             guard allowed else {
-                alertMessage = reason
+                presentAlert(reason)
                 return
             }
             withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
@@ -398,6 +967,7 @@ final class POSViewModel {
                 lastAddedItem = FocusTarget(itemId: cart[idx].id)
             }
             APHaptic.trigger()
+            presentStockWarningIfNeeded()
         }
     }
 
@@ -421,14 +991,7 @@ final class POSViewModel {
     // MARK: - Checkout Stock Deduct Logic
 
     private func fetchActiveBranch(context: ModelContext) -> Branch? {
-        if let activeIdString = UserDefaults.standard.string(forKey: "active_branch_id"),
-           let activeUUID = UUID(uuidString: activeIdString) {
-            let branchDesc = FetchDescriptor<Branch>()
-            if let branches = try? context.fetch(branchDesc) {
-                return branches.first(where: { $0.id == activeUUID })
-            }
-        }
-        return nil
+        try? BranchContext.shared.requireActiveBranch(in: context)
     }
 
     private func makeOrderNumber() -> String {
@@ -441,7 +1004,9 @@ final class POSViewModel {
         tableSession: TableSession? = nil,
         createPayment: Bool = false,
         paymentMethod: String? = nil,
-        dispatchPrint: Bool = true
+        dispatchPrint: Bool = true,
+        cashTendered: Double? = nil,
+        transactionReference: String? = nil
     ) -> Order? {
     lastCheckoutError = nil
     guard let modelContext = modelContext else {
@@ -450,6 +1015,10 @@ final class POSViewModel {
     }
     guard !cart.isEmpty else {
         lastCheckoutError = "cart is empty — cannot create an order without items"
+        return nil
+    }
+    if activeCheckoutSession?.lifecycleState == .completed {
+        lastCheckoutError = "checkout already completed — duplicate charge prevented"
         return nil
     }
     let activeBranch = fetchActiveBranch(context: modelContext)
@@ -472,17 +1041,38 @@ final class POSViewModel {
     }
     let appliedPromotion = activePromotion
     let appliedDiscount = cartDiscount
+    let calculation = checkoutCalculation
+    let assignedReceipt: String? = {
+        if createPayment {
+            if !currentReceiptNumber.isEmpty { return currentReceiptNumber }
+            let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+            return NetworkManager.localFallbackReceiptNumber(merchantId: merchantId)
+        }
+        return currentReceiptNumber.isEmpty ? nil : currentReceiptNumber
+    }()
+
+    let resolvedPlatformOrderNumber: String? = {
+        guard selectedOrderType == "delivery" else { return nil }
+        let normalized = PlatformOrderNumber.applyBrandPrefix(platformOrderNumber, brand: deliveryBrand)
+        // Ignore bare prefix with no digits (user never typed an id).
+        let body = PlatformOrderNumber.stripKnownPrefix(normalized)
+        return body.isEmpty ? nil : normalized
+    }()
+
     let order = Order(
         orderNumber: finalOrderNum,
         tableSession: tableSession,
         orderType: selectedOrderType,
         status: "preparing",
-        subtotal: cartSubtotal,
-        tax: cartTax,
-        serviceCharge: cartServiceCharge,
-        discount: appliedDiscount,
-        total: cartTotal,
-        branch: activeBranch,
+        subtotal: NSDecimalNumber(decimal: calculation.subtotal).doubleValue,
+        tax: NSDecimalNumber(decimal: calculation.tax).doubleValue,
+        serviceCharge: NSDecimalNumber(decimal: calculation.serviceCharge).doubleValue,
+        discount: NSDecimalNumber(decimal: calculation.discount).doubleValue,
+        total: NSDecimalNumber(decimal: calculation.total).doubleValue,
+        branch: activeBranch!,
+        customer: selectedCustomer,
+        heldAt: nil,
+        receiptNumber: assignedReceipt,
         guestCount: guestCount,
         cashierName: cashierName,
         queueNumber: currentQueueNumber.isEmpty ? nil : currentQueueNumber,
@@ -490,14 +1080,40 @@ final class POSViewModel {
         deliveryGP: selectedOrderType == "delivery" ? deliveryGP : 0.0,
         deliveryAdFee: selectedOrderType == "delivery" ? deliveryAdFee : 0.0,
         deliveryAdFeeIsPct: selectedOrderType == "delivery" ? deliveryAdFeeIsPct : false,
-        deliveryOtherFee: selectedOrderType == "delivery" ? deliveryOtherFee : 0.0
+        deliveryOtherFee: selectedOrderType == "delivery" ? deliveryOtherFee : 0.0,
+        platformOrderNumber: resolvedPlatformOrderNumber
     )
-    order.customer = selectedCustomer
+
+    if UserDefaults.standard.bool(forKey: GovernmentSupportProgram.enabledSettingsKey),
+       selectedSupportProgram == GovernmentSupportProgram.thaiChuaThaiPlus {
+        let split = GovernmentSupportProgram.split(total: order.total)
+        order.supportProgramName = GovernmentSupportProgram.thaiChuaThaiPlus
+        order.supportGovernmentRate = GovernmentSupportProgram.governmentRate
+        order.supportCitizenAmount = split.citizen
+        order.supportGovernmentAmount = split.government
+        order.supportSettlementStatus = "pending"
+    }
 
     modelContext.insert(order)
+    let sellerTaxId = UserDefaults.standard.string(forKey: "store_tax_id") ?? ""
+    let taxMode = UserDefaults.standard.string(forKey: "store_tax_type") ?? "inclusive"
+    let canIssueTaxInvoice = taxMode == "inclusive"
+        && ReceiptComplianceGate.canIssueAbbreviatedTaxInvoice(vatEnabled: calculation.tax > 0, taxId: sellerTaxId)
+    order.receiptDocumentType = canIssueTaxInvoice
+        ? ReceiptDocumentType.receiptAndAbbreviatedTaxInvoice.rawValue
+        : ReceiptDocumentType.receipt.rawValue
+    if let recalledHeldOrder {
+        recalledHeldOrder.isDeleted = true
+        recalledHeldOrder.isSynced = false
+        recalledHeldOrder.updatedAt = Date()
+    }
 
     // Explicitly update relationship in-memory
     if let session = tableSession {
+        if let tableNum = session.table?.tableNumber.trimmingCharacters(in: .whitespacesAndNewlines),
+           !tableNum.isEmpty {
+            order.floorTableNumber = tableNum
+        }
         session.orders.append(order)
         recentlySubmittedTableOrder = order
         session.isSynced = false
@@ -506,13 +1122,23 @@ final class POSViewModel {
 
     // 2. Record OrderDiscount if promotion applied
     if let appliedPromotion, appliedDiscount > 0 {
+        let discountReason: String
+        if appliedPromotion.isStaffDiscount {
+            discountReason = "Staff discount: \(appliedPromotion.title)"
+        } else if let code = appliedCouponCode {
+            discountReason = "Coupon \(code): \(appliedPromotion.title)"
+        } else if manuallySelectedPromotion?.id == appliedPromotion.id {
+            discountReason = "Cashier-selected promotion: \(appliedPromotion.title)"
+        } else {
+            discountReason = "Auto-applied promotion: \(appliedPromotion.title)"
+        }
         let discount = OrderDiscount(
             order: order,
             promotion: appliedPromotion,
             discountType: appliedPromotion.discountType,
             discountValue: appliedPromotion.discountValue,
             discountAmount: appliedDiscount,
-            reason: "Auto-applied promotion: \(appliedPromotion.title)"
+            reason: discountReason
         )
         modelContext.insert(discount)
 
@@ -520,47 +1146,16 @@ final class POSViewModel {
         appliedPromotion.incrementRedemption()
     }
 
-    // Create OrderTaxLines if tax is enabled
-    if UserDefaults.standard.bool(forKey: "enable_tax"),
-       taxAppliesToSelectedOrderType,
-       selectedCustomer?.isTaxExempt != true {
-        let globalTaxRate = UserDefaults.standard.double(forKey: "store_tax_rate")
+    // Persist the exact tax groups emitted by the central engine.
+    if selectedCustomer?.isTaxExempt != true {
         let taxName = UserDefaults.standard.string(forKey: "store_tax_name") ?? "VAT"
-        var taxGroups: [String: (rate: Double, inclusive: Bool, taxable: Double, tax: Double)] = [:]
-
-        for cartItem in cart {
-            let lineTotal = cartItem.totalPrice
-            let taxConfig = getTaxRateAndInclusion(for: cartItem.item)
-            guard taxConfig.rate > 0 else { continue }
-            let tax = taxConfig.isInclusive
-                ? lineTotal * taxConfig.rate / (100.0 + taxConfig.rate)
-                : lineTotal * taxConfig.rate / 100.0
-            let key = "\(taxConfig.rate)|\(taxConfig.isInclusive)"
-            var group = taxGroups[key] ?? (taxConfig.rate, taxConfig.isInclusive, 0, 0)
-            group.taxable += taxConfig.isInclusive ? lineTotal - tax : lineTotal
-            group.tax += tax
-            taxGroups[key] = group
-        }
-
-        if (UserDefaults.standard.object(forKey: "tax_service_charge_taxable") as? Bool ?? true),
-           cartServiceCharge > 0,
-           globalTaxRate > 0 {
-            let key = "service|\(globalTaxRate)"
-            taxGroups[key] = (
-                globalTaxRate,
-                false,
-                cartServiceCharge,
-                cartServiceCharge * globalTaxRate / 100.0
-            )
-        }
-
-        for group in taxGroups.values where group.tax > 0 {
+        for group in calculation.taxLines where group.taxAmount > 0 {
             let taxLine = OrderTaxLine(
                 order: order,
-                taxName: "\(taxName) \(String(format: "%g", group.rate))%",
-                taxRate: group.rate,
-                taxableAmount: group.taxable,
-                taxAmount: group.tax,
+                taxName: "\(taxName) \(NSDecimalNumber(decimal: group.rate).stringValue)%",
+                taxRate: NSDecimalNumber(decimal: group.rate).doubleValue,
+                taxableAmount: NSDecimalNumber(decimal: group.taxableAmount).doubleValue,
+                taxAmount: NSDecimalNumber(decimal: group.taxAmount).doubleValue,
                 isInclusive: group.inclusive
             )
             modelContext.insert(taxLine)
@@ -587,7 +1182,8 @@ final class POSViewModel {
             order: order,
             menuItem: cartItem.item,
             quantity: cartItem.quantity,
-            unitPrice: cartItem.item.price,
+            unitPrice: cartItem.snapshotPrice,
+            lineType: cartItem.item.orderItemLineType,
             notes: cartItem.notes,
             status: "cooking"
         )
@@ -633,8 +1229,17 @@ final class POSViewModel {
     // 5. Process payment record only when this is an actual checkout.
     // Table-service orders are first sent to the kitchen unpaid, then paid after service.
     if createPayment {
-        let payment = Payment(paymentMethod: paymentMethod ?? selectedPaymentMethod, amount: cartTotal)
+        let paymentAmount = order.usesGovernmentSupport ? order.supportCitizenAmount : cartTotal
+        let payment = Payment(paymentMethod: paymentMethod ?? selectedPaymentMethod, amount: paymentAmount)
+        if let cashTendered, cashTendered > 0 {
+            payment.transactionReference = Payment.cashTenderedReference(cashTendered)
+        } else if let transactionReference, !transactionReference.isEmpty {
+            payment.transactionReference = transactionReference
+        } else if order.usesGovernmentSupport {
+            payment.transactionReference = Payment.thaiChuaThaiInternalReference(orderNumber: order.orderNumber)
+        }
         payment.order = order
+        BusinessDayContext.stamp(payment: payment, order: order, in: modelContext)
 
         // C-1: Gift Card Redeem — deduct balance before saving payment
         if let giftCard = selectedGiftCard, giftCardRedeemAmount > 0 {
@@ -670,6 +1275,21 @@ final class POSViewModel {
         }
 
         modelContext.insert(payment)
+        AccountingLedgerService.recordCapturedPayment(payment, order: order, in: modelContext)
+    }
+
+    if let activeCheckoutSession {
+        activeCheckoutSession.order = order
+        if createPayment {
+            activeCheckoutSession.lifecycleState = .completed
+            activeCheckoutSession.completedAt = Date()
+            if let latest = activeCheckoutSession.paymentAttempts.max(by: { $0.updatedAt < $1.updatedAt }) {
+                latest.method = (paymentMethod ?? selectedPaymentMethod).lowercased().replacingOccurrences(of: " ", with: "_")
+                latest.lifecycleState = .captured
+            }
+            let deviceId = UIDevice.current.identifierForVendor?.uuidString ?? "local-device"
+            activeCheckoutSession.releaseLock(deviceId: deviceId)
+        }
     }
 
     do {
@@ -688,13 +1308,29 @@ final class POSViewModel {
         return nil
     }
     cart.removeAll()
+    recalledHeldOrder = nil
+    activeCheckoutSession = nil
     selectedCustomer = nil
     selectedGiftCard = nil
     giftCardRedeemAmount = 0.0
     useLoyaltyPoints = false
     redeemLoyaltyPoints = 0
+    clearAppliedCoupon()
+    resetPromotionSelection()
     if tableSession == nil {
         currentQueueNumber = ""
+        currentReceiptNumber = ""
+        currentBillNumber = "AP-NEW"
+    }
+    platformOrderNumber = ""
+    if selectedOrderType == "delivery" {
+        selectedOrderType = (tableSession != nil) ? "dine_in" : postDeliveryOrderType
+        deliveryBrand = nil
+        deliveryGP = 0
+        deliveryAdFee = 0
+        deliveryAdFeeIsPct = false
+        deliveryOtherFee = 0
+        repriceCart()
     }
 
     // C-2: Loyalty Points Accrue — only on actual payment (not send-to-kitchen)
@@ -738,6 +1374,16 @@ final class POSViewModel {
         session.isSynced = false
         session.updatedAt = Date()
         modelContext.saveWithLogging(label: #function)
+    }
+
+    // A paid direct/Quick Service order is financially completed, but its prep
+    // items remain cooking until KDS finishes them. Payment settlement and kitchen
+    // fulfilment are separate lifecycles; marking items served here made paid Quick
+    // Service tickets disappear from KDS before the kitchen could see them.
+    if createPayment, tableSession == nil, order.status != "cancelled" {
+        order.status = "completed"
+        order.isSynced = false
+        order.updatedAt = Date()
     }
 
     APHaptic.trigger()
@@ -802,7 +1448,7 @@ final class POSViewModel {
     guard let rewardMenuItem = fetchMenuItem(id: rewardItemId, modelContext: modelContext) else { return }
 
     // Calculate how many reward items to give based on how many trigger items are in the cart
-    let triggerQtyInCart = cart.filter { $0.item.id == triggerItemId }.reduce(0) { $0 + $1.quantity }
+    let triggerQtyInCart = cart.filter { $0.snapshotItemId == triggerItemId }.reduce(0) { $0 + $1.quantity }
     // For different-item reward, groupSize is just requiredQuantity (customer doesn't need reward item in cart)
     let rewardGroups = triggerQtyInCart / promotion.requiredQuantity
     let totalRewardQty = rewardGroups * promotion.rewardQuantity
@@ -815,6 +1461,7 @@ final class POSViewModel {
         menuItem: rewardMenuItem,
         quantity: totalRewardQty,
         unitPrice: 0.0,
+        lineType: .promotionReward,
         notes: "🎁 Promo reward: \(promotion.title)",
         status: "cooking"
     )
@@ -844,14 +1491,14 @@ final class POSViewModel {
     // If appliesToMenuItemId is set, count by that item's quantity in cart
     var bundleCount = 1
     if let triggerItemId = promotion.appliesToMenuItemId, promotion.requiredQuantity > 0 {
-        let triggerQtyInCart = cart.filter { $0.item.id == triggerItemId }.reduce(0) { $0 + $1.quantity }
+        let triggerQtyInCart = cart.filter { $0.snapshotItemId == triggerItemId }.reduce(0) { $0 + $1.quantity }
         bundleCount = triggerQtyInCart / promotion.requiredQuantity
     }
 
     guard bundleCount > 0 else { return }
 
     // For each bundle component, check if it's already in the cart
-    let cartItemIds = Set(cart.map { $0.item.id })
+    let cartItemIds = Set(cart.map { $0.snapshotItemId })
 
     for bundleItem in promotion.bundleItems.filter({ !$0.isDeleted }) {
         guard let menuItem = bundleItem.menuItem else { continue }
@@ -867,6 +1514,7 @@ final class POSViewModel {
             menuItem: menuItem,
             quantity: totalQty,
             unitPrice: 0.0,
+            lineType: .bundleComponent,
             notes: "📦 Bundle component: \(promotion.title)",
             status: "cooking"
         )
@@ -892,9 +1540,15 @@ final class POSViewModel {
         selectedOrderType = order.orderType
         currentBillNumber = order.orderNumber
         if let q = order.queueNumber {
-            currentQueueNumber = q
+            currentQueueNumber = NetworkManager.sanitizeQueueNumber(q) ?? q
         }
         selectedCustomer = order.customer
+        deliveryBrand = order.deliveryBrand
+        deliveryGP = order.deliveryGP
+        deliveryAdFee = order.deliveryAdFee
+        deliveryAdFeeIsPct = order.deliveryAdFeeIsPct
+        deliveryOtherFee = order.deliveryOtherFee
+        platformOrderNumber = order.platformOrderNumber ?? ""
 
         for orderItem in order.items.filter({ !$0.isDeleted }) {
             if let menuItem = orderItem.menuItem {
@@ -903,26 +1557,37 @@ final class POSViewModel {
                     item: menuItem,
                     selectedModifiers: selectedModifiers,
                     quantity: orderItem.quantity,
-                    notes: orderItem.notes ?? ""
+                    notes: orderItem.notes ?? "",
+                    unitPrice: orderItem.unitPrice
                 )
                 cart.append(cartItem)
             }
         }
 
-        order.isDeleted = true
-        order.isSynced = false
-        order.updatedAt = Date()
-
-        try? modelContext?.save()
+        recalledHeldOrder = order
     }
 
-    func holdCurrentCart() {
-        guard let modelContext = modelContext, !cart.isEmpty else { return }
+    func recallParkedCheckout(_ session: CheckoutSession) {
+        guard let order = session.order else { return }
+        activeCheckoutSession = session
+        recallHeldOrder(order)
+    }
+
+    @discardableResult
+    func holdCurrentCart() -> Order? {
+        guard let modelContext = modelContext, !cart.isEmpty else { return nil }
         let activeBranch = fetchActiveBranch(context: modelContext)
 
         let finalOrderNum = currentBillNumber.isEmpty || currentBillNumber == "AP-NEW" ? makeOrderNumber() : currentBillNumber
         let appliedPromotion = activePromotion
         let appliedDiscount = cartDiscount
+        let resolvedPlatformOrderNumber: String? = {
+            guard selectedOrderType == "delivery" else { return nil }
+            let normalized = PlatformOrderNumber.applyBrandPrefix(platformOrderNumber, brand: deliveryBrand)
+            let body = PlatformOrderNumber.stripKnownPrefix(normalized)
+            return body.isEmpty ? nil : normalized
+        }()
+
         let order = Order(
             orderNumber: finalOrderNum,
             tableSession: nil,
@@ -933,24 +1598,56 @@ final class POSViewModel {
             serviceCharge: cartServiceCharge,
             discount: appliedDiscount,
             total: cartTotal,
-            branch: activeBranch,
+            branch: activeBranch!,
+            customer: selectedCustomer,
+            heldAt: Date(),
+            receiptNumber: nil,
             guestCount: guestCount,
             cashierName: cashierName,
-            queueNumber: currentQueueNumber.isEmpty ? nil : currentQueueNumber
+            queueNumber: currentQueueNumber.isEmpty ? nil : currentQueueNumber,
+            deliveryBrand: selectedOrderType == "delivery" ? deliveryBrand : nil,
+            deliveryGP: selectedOrderType == "delivery" ? deliveryGP : 0,
+            deliveryAdFee: selectedOrderType == "delivery" ? deliveryAdFee : 0,
+            deliveryAdFeeIsPct: selectedOrderType == "delivery" ? deliveryAdFeeIsPct : false,
+            deliveryOtherFee: selectedOrderType == "delivery" ? deliveryOtherFee : 0,
+            platformOrderNumber: resolvedPlatformOrderNumber
         )
-        order.customer = selectedCustomer
-        order.heldAt = Date()
+
+        if UserDefaults.standard.bool(forKey: GovernmentSupportProgram.enabledSettingsKey),
+           selectedSupportProgram == GovernmentSupportProgram.thaiChuaThaiPlus {
+            let split = GovernmentSupportProgram.split(total: order.total)
+            order.supportProgramName = GovernmentSupportProgram.thaiChuaThaiPlus
+            order.supportGovernmentRate = GovernmentSupportProgram.governmentRate
+            order.supportCitizenAmount = split.citizen
+            order.supportGovernmentAmount = split.government
+            order.supportSettlementStatus = "pending"
+        }
 
         modelContext.insert(order)
+        if let recalledHeldOrder, recalledHeldOrder.id != order.id {
+            recalledHeldOrder.isDeleted = true
+            recalledHeldOrder.isSynced = false
+            recalledHeldOrder.updatedAt = Date()
+        }
 
         if let appliedPromotion, appliedDiscount > 0 {
+            let discountReason: String
+            if appliedPromotion.isStaffDiscount {
+                discountReason = "Staff discount: \(appliedPromotion.title)"
+            } else if let code = appliedCouponCode {
+                discountReason = "Coupon \(code): \(appliedPromotion.title)"
+            } else if manuallySelectedPromotion?.id == appliedPromotion.id {
+                discountReason = "Cashier-selected promotion: \(appliedPromotion.title)"
+            } else {
+                discountReason = "Auto-applied promotion: \(appliedPromotion.title)"
+            }
             let discount = OrderDiscount(
                 order: order,
                 promotion: appliedPromotion,
                 discountType: appliedPromotion.discountType,
                 discountValue: appliedPromotion.discountValue,
                 discountAmount: appliedDiscount,
-                reason: "Auto-applied promotion: \(appliedPromotion.title)"
+                reason: discountReason
             )
             modelContext.insert(discount)
         }
@@ -960,7 +1657,8 @@ final class POSViewModel {
                 order: order,
                 menuItem: cartItem.item,
                 quantity: cartItem.quantity,
-                unitPrice: cartItem.item.price,
+                unitPrice: cartItem.snapshotPrice,
+                lineType: cartItem.item.orderItemLineType,
                 notes: cartItem.notes,
                 status: "cooking"
             )
@@ -980,11 +1678,10 @@ final class POSViewModel {
             try modelContext.save()
         } catch {
             print("POSViewModel [Hold Order Save Error]: \(error.localizedDescription)")
+            modelContext.rollback()
+            return nil
         }
-        cart.removeAll()
-        selectedCustomer = nil
-        currentQueueNumber = ""
-        currentBillNumber = "AP-NEW"
+        resetForNextCustomer()
 
         let auditLog = AuditLog(
             actionType: "order_held",
@@ -996,52 +1693,135 @@ final class POSViewModel {
         modelContext.saveWithLogging(label: #function)
 
         APHaptic.trigger()
+        return order
+    }
+
+    /// Parks the active tender without recording revenue. The attempt is kept
+    /// for reconciliation/resume and can never be mistaken for a captured Payment.
+    @discardableResult
+    func parkCurrentCheckout(method: String) -> CheckoutSession? {
+        guard let modelContext, let order = holdCurrentCart(),
+              let merchantId = UUID(uuidString: UserDefaults.standard.string(forKey: "active_merchant_id") ?? "")
+        else { return nil }
+
+        let session = CheckoutSession(
+            merchantId: merchantId,
+            order: order,
+            serviceMode: POSServiceMode.resolve(orderType: order.orderType, hasTable: false),
+            state: .parked,
+            parkedAt: Date()
+        )
+        let attempt = PaymentAttempt(
+            merchantId: merchantId,
+            checkoutSession: session,
+            order: order,
+            method: method,
+            amount: order.total,
+            status: .awaitingCustomer,
+            expiresAt: method.lowercased().contains("qr") ? Date().addingTimeInterval(15 * 60) : nil
+        )
+        modelContext.insert(session)
+        modelContext.insert(attempt)
+        session.paymentAttempts.append(attempt)
+        modelContext.saveWithLogging(label: #function)
+        return session
+    }
+
+    func resetForNextCustomer() {
+        cart.removeAll()
+        recalledHeldOrder = nil
+        activeCheckoutSession = nil
+        selectedCustomer = nil
+        selectedGiftCard = nil
+        giftCardRedeemAmount = 0
+        useLoyaltyPoints = false
+        redeemLoyaltyPoints = 0
+        currentQueueNumber = ""
+        currentReceiptNumber = ""
+        currentBillNumber = "AP-NEW"
+        guestCount = 1
+        deliveryBrand = nil
+        selectedSupportProgram = nil
+        deliveryGP = 0
+        deliveryAdFee = 0
+        deliveryAdFeeIsPct = false
+        deliveryOtherFee = 0
+        platformOrderNumber = ""
+        if selectedOrderType == "delivery" {
+            selectedOrderType = postDeliveryOrderType
+        }
+        clearAppliedCoupon()
+        resetPromotionSelection()
     }
 
     /// Checks if adding a menuItem and its modifiers is allowed based on ingredient/modifier stock levels.
     func checkStockBeforeAdding(_ item: MenuItem, modifiers: [Modifier], quantity: Int = 1) -> (allowed: Bool, reason: String?) {
         guard let modelContext = modelContext else { return (true, nil) }
 
-        // If negative stock is allowed, skip check
-        if UserDefaults.standard.bool(forKey: "allow_negative_stock") {
-            return (true, nil)
-        }
-
         let activeBranch = fetchActiveBranch(context: modelContext)
+        var negativeShortages: [String] = []
+        stockWarningMessage = nil
 
-        // 1. Check base recipe
-        for recipe in item.recipes {
-            if let ingredient = recipe.inventoryItem {
-                let localItem = findBranchInventoryItem(
-                    ingredient: ingredient,
-                    activeBranch: activeBranch,
-                    modelContext: modelContext
+        // 1. Check base recipe — collect short ingredients
+        for requirement in StockAvailability.requirements(menuItem: item, activeBranch: activeBranch, modelContext: modelContext) {
+            guard let localItem = requirement.local else {
+                negativeShortages.append("• \(requirement.source.name) (not configured for this branch)")
+                continue
+            }
+            let required = requirement.required * Double(max(quantity, 0))
+            if localItem.currentQuantity < required {
+                let detail = String(
+                    format: "• %@ (%.1f / %.1f %@)",
+                    localItem.name,
+                    localItem.currentQuantity,
+                    required,
+                    localItem.unit
                 )
-                let required = recipe.quantityRequired * Double(quantity)
-                if localItem.currentQuantity < required {
-                    let text = String(format: "วัตถุดิบ '%@' ในสต็อกไม่เพียงพอ (คงเหลือ %.1f, ต้องการ %.1f)", localItem.name, localItem.currentQuantity, required)
-                    return (false, text)
-                }
+                negativeShortages.append(detail + String(format: " → %.1f", localItem.currentQuantity - required))
             }
         }
 
         // 2. Check modifiers
         for mod in modifiers {
-            if let ingredient = mod.inventoryItemLink, let reqQty = mod.quantityRequired {
-                let localItem = findBranchInventoryItem(
+            if let ingredient = mod.inventoryItemLink, mod.quantityRequired != nil {
+                guard let localItem = findBranchInventoryItem(
                     ingredient: ingredient,
                     activeBranch: activeBranch,
                     modelContext: modelContext
-                )
-                let required = reqQty * Double(quantity)
+                ) else {
+                    negativeShortages.append("• \(ingredient.name) (not configured for this branch)")
+                    continue
+                }
+                let required = InventoryRequirementCalculator.required(for: mod, saleQuantity: quantity)
                 if localItem.currentQuantity < required {
-                    let text = String(format: "วัตถุดิบพิเศษ '%@' ไม่เพียงพอ (คงเหลือ %.1f, ต้องการ %.1f)", localItem.name, localItem.currentQuantity, required)
-                    return (false, text)
+                    let detail = String(
+                        format: "• %@ — %@ (%.1f / %.1f)",
+                        mod.name,
+                        localItem.name,
+                        localItem.currentQuantity,
+                        required
+                    )
+                    negativeShortages.append(detail + String(format: " → %.1f", localItem.currentQuantity - required))
                 }
             }
         }
 
+        if !negativeShortages.isEmpty {
+            stockWarningMessage = "pos_negative_stock_warning".t + "\n" + negativeShortages.joined(separator: "\n")
+        }
         return (true, nil)
+    }
+
+    func presentStockWarningIfNeeded() {
+        guard let warning = stockWarningMessage else { return }
+        // In the inverted backflush model, only show blocking modal alert if user specifically enabled strict alerts.
+        // Otherwise, avoid interrupting rapid order entry at the cash register.
+        if UserDefaults.standard.bool(forKey: "enable_strict_negative_stock_alert") {
+            presentAlert(warning)
+        } else {
+            AppLogger.pos.info("Negative stock sale permitted (backflush): \(warning)")
+        }
+        stockWarningMessage = nil
     }
 
     private func deductIngredientsLocally(
@@ -1053,153 +1833,140 @@ final class POSViewModel {
     ) {
     guard let modelContext = modelContext else { return }
 
-    // Base menu recipes deduction
-    for recipe in cartItem.item.recipes {
-        if let ingredient = recipe.inventoryItem {
-            var localItem = ingredient
-            if let activeBranch = activeBranch, ingredient.branch?.id != activeBranch.id {
-                // Use pre-fetched cache to avoid N+1 fetch inside loop
-                let key = ingredient.sku ?? ingredient.name
-                if let cached = branchInventoryCache?[key] {
-                    localItem = cached
-                }
-            }
+    func alreadyRecorded(_ referenceId: UUID?, item: InventoryItem) -> Bool {
+        guard let referenceId else { return false }
+        let itemID = item.id
+        let descriptor = FetchDescriptor<InventoryTransaction>(predicate: #Predicate {
+            !$0.isDeleted && $0.referenceId == referenceId
+        })
+        let movements = (try? modelContext.fetch(descriptor)) ?? []
+        return movements.contains {
+            $0.item?.id == itemID && $0.transactionType == InventoryMovementType.sell.rawValue
+        }
+    }
 
-            let qtyDeducted = recipe.quantityRequired * Double(cartItem.quantity)
+    // Re-fetch a fresh, valid MenuItem by id rather than trusting the cart's
+    // possibly-invalidated reference (a background sync may have deleted the
+    // original model since it was added to the cart). If it no longer exists,
+    // skip recipe deduction gracefully instead of crashing.
+    let freshItemId = cartItem.snapshotItemId
+    var __desc = FetchDescriptor<MenuItem>(predicate: #Predicate { $0.id == freshItemId })
+    __desc.fetchLimit = 1
+    guard let liveItem = try? modelContext.fetch(__desc).first else { return }
+
+    // Base menu recipes deduction
+        for requirement in StockAvailability.requirements(menuItem: liveItem, activeBranch: activeBranch, modelContext: modelContext) {
+            guard let localItem = requirement.local else { continue }
+            // Checkout retries/reconciliation can call this method more than
+            // once. A sale reference may deduct a given ingredient only once.
+            guard !alreadyRecorded(baseReferenceId, item: localItem) else { continue }
+            let qtyDeducted = requirement.required * Double(max(cartItem.quantity, 0))
             localItem.currentQuantity -= qtyDeducted
             localItem.updatedAt = Date()
             localItem.isSynced = false
 
             // Consume from FEFO lots to keep lots in sync with currentQuantity
             let expiryManager = InventoryExpiryManager.shared(for: modelContext)
-            expiryManager.consumeFEFO(item: localItem, quantity: qtyDeducted)
+            let consumption = expiryManager.consumeFEFO(item: localItem, quantity: qtyDeducted)
 
             let txn = InventoryTransaction(
                 item: localItem,
                 transactionType: InventoryMovementType.sell.rawValue,
                 quantity: -qtyDeducted,
+                costPrice: consumption.consumed.isEmpty
+                    ? localItem.costPrice
+                    : consumption.totalCOGS / consumption.consumed.reduce(0) { $0 + $1.quantityTaken },
                 referenceId: baseReferenceId,
-                notes: "Local POS checkout deduct for \(cartItem.item.name) (Qty: \(cartItem.quantity))",
-                branch: activeBranch
+                notes: "Local POS checkout deduct for \(cartItem.snapshotName) (Qty: \(cartItem.quantity))",
+                branch: activeBranch!
             )
             modelContext.insert(txn)
-        }
+            BusinessDayContext.stamp(inventoryTransaction: txn, in: modelContext)
+            for allocation in consumption.consumed {
+                modelContext.insert(InventoryLotAllocation(
+                    movementId: txn.id,
+                    referenceId: baseReferenceId,
+                    inventoryItemId: localItem.id,
+                    lotId: allocation.lot.id,
+                    quantity: allocation.quantityTaken,
+                    costPrice: allocation.lot.lotCostPrice
+                ))
+            }
     }
 
     // Modifier recipes deduction
     for (index, mod) in cartItem.selectedModifiers.enumerated() {
-        if let ingredient = mod.inventoryItemLink, let reqQty = mod.quantityRequired {
-            var localItem = ingredient
+        if let ingredient = mod.inventoryItemLink, mod.quantityRequired != nil {
+            var localItem: InventoryItem? = ingredient
             if let activeBranch = activeBranch, ingredient.branch?.id != activeBranch.id {
                 let key = ingredient.sku ?? ingredient.name
                 if let cached = branchInventoryCache?[key] {
                     localItem = cached
+                } else {
+                    localItem = nil
                 }
             }
 
-            let qtyDeducted = reqQty * Double(cartItem.quantity)
+            guard let localItem else { continue }
+            guard !alreadyRecorded(modifierReferenceIds.indices.contains(index) ? modifierReferenceIds[index] : baseReferenceId, item: localItem) else { continue }
+
+            let qtyDeducted = InventoryRequirementCalculator.required(for: mod, saleQuantity: cartItem.quantity)
             localItem.currentQuantity -= qtyDeducted
             localItem.updatedAt = Date()
             localItem.isSynced = false
 
             // Consume from FEFO lots to keep lots in sync with currentQuantity
             let expiryManager = InventoryExpiryManager.shared(for: modelContext)
-            expiryManager.consumeFEFO(item: localItem, quantity: qtyDeducted)
+            let consumption = expiryManager.consumeFEFO(item: localItem, quantity: qtyDeducted)
 
             let txn = InventoryTransaction(
                 item: localItem,
                 transactionType: InventoryMovementType.sell.rawValue,
                 quantity: -qtyDeducted,
+                costPrice: consumption.consumed.isEmpty
+                    ? localItem.costPrice
+                    : consumption.totalCOGS / consumption.consumed.reduce(0) { $0 + $1.quantityTaken },
                 referenceId: modifierReferenceIds.indices.contains(index) ? modifierReferenceIds[index] : baseReferenceId,
-                notes: "Modifier deduct: \(mod.name) for \(cartItem.item.name) (Qty: \(cartItem.quantity))",
-                branch: activeBranch
+                notes: "Modifier deduct: \(mod.name) for \(cartItem.snapshotName) (Qty: \(cartItem.quantity))",
+                branch: activeBranch!
             )
             modelContext.insert(txn)
+            BusinessDayContext.stamp(inventoryTransaction: txn, in: modelContext)
+            for allocation in consumption.consumed {
+                modelContext.insert(InventoryLotAllocation(
+                    movementId: txn.id,
+                    referenceId: txn.referenceId,
+                    inventoryItemId: localItem.id,
+                    lotId: allocation.lot.id,
+                    quantity: allocation.quantityTaken,
+                    costPrice: allocation.lot.lotCostPrice
+                ))
+            }
         }
     }
+
+    StockAlertEvaluator.refresh(modelContext: modelContext)
 }
 
-    func reverseInventoryDeduction(for order: Order, specificItems: [OrderItem]? = nil) {
+    func reverseInventoryDeduction(
+        for order: Order,
+        specificItems: [OrderItem]? = nil,
+        movement: InventoryMovementType = .refundReturn
+    ) {
     guard let modelContext = modelContext else { return }
 
     let itemsToReverse = specificItems ?? order.items.filter { !$0.isDeleted && $0.status != "cancelled" }
-    let activeBranch = order.branch
-
-    for orderItem in itemsToReverse {
-        guard let menuItem = orderItem.menuItem else { continue }
-
-        // Reverse base recipe deductions
-        for recipe in menuItem.recipes {
-            guard let ingredient = recipe.inventoryItem else { continue }
-
-            let localItem = findBranchInventoryItem(
-                ingredient: ingredient,
-                activeBranch: activeBranch,
-                modelContext: modelContext
-            )
-
-            let qtyToRestore = recipe.quantityRequired * Double(orderItem.quantity)
-            localItem.currentQuantity += qtyToRestore
-            localItem.updatedAt = Date()
-            localItem.isSynced = false
-
-            let txn = InventoryTransaction(
-                item: localItem,
-                transactionType: InventoryMovementType.refundReturn.rawValue,
-                quantity: qtyToRestore,
-                referenceId: orderItem.id,
-                notes: "Refund return: \(menuItem.name) (Qty: \(orderItem.quantity)) — Order: \(order.orderNumber)",
-                branch: activeBranch
-            )
-            modelContext.insert(txn)
-            modelContext.insert(InventoryLot(
-                inventoryItem: localItem,
-                branch: activeBranch,
-                lotNumber: "RETURN-\(order.orderNumber)",
-                initialQuantity: qtyToRestore,
-                lotCostPrice: localItem.costPrice,
-                sourceTransactionId: txn.id
-            ))
-        }
-
-        // Reverse modifier deductions
-        for orderItemMod in orderItem.modifiers {
-            guard let modifier = orderItemMod.modifier,
-                  let ingredient = modifier.inventoryItemLink,
-                  let reqQty = modifier.quantityRequired else { continue }
-
-            let localItem = findBranchInventoryItem(
-                ingredient: ingredient,
-                activeBranch: activeBranch,
-                modelContext: modelContext
-            )
-
-            let qtyToRestore = reqQty * Double(orderItem.quantity)
-            localItem.currentQuantity += qtyToRestore
-            localItem.updatedAt = Date()
-            localItem.isSynced = false
-
-            let txn = InventoryTransaction(
-                item: localItem,
-                transactionType: InventoryMovementType.refundReturn.rawValue,
-                quantity: qtyToRestore,
-                referenceId: orderItemMod.id,
-                notes: "Refund return modifier: \(modifier.name) for \(menuItem.name) — Order: \(order.orderNumber)",
-                branch: activeBranch
-            )
-            modelContext.insert(txn)
-            modelContext.insert(InventoryLot(
-                inventoryItem: localItem,
-                branch: activeBranch,
-                lotNumber: "RETURN-\(order.orderNumber)",
-                initialQuantity: qtyToRestore,
-                lotCostPrice: localItem.costPrice,
-                sourceTransactionId: txn.id
-            ))
-        }
-    }
+    let references = Set(itemsToReverse.flatMap { [$0.id] + $0.modifiers.map(\.id) })
+    InventoryReversalService.reverse(
+        referenceIds: references,
+        as: movement,
+        notes: "\(movement.displayName) — Order: \(order.orderNumber)",
+        in: modelContext
+    )
 
     modelContext.saveWithLogging(label: #function)
+
+    StockAlertEvaluator.refresh(modelContext: modelContext)
 
     Task {
         await SyncEngine.shared.syncAll(modelContext: modelContext)
@@ -1210,7 +1977,7 @@ final class POSViewModel {
     ingredient: InventoryItem,
     activeBranch: Branch?,
     modelContext: ModelContext
-) -> InventoryItem {
+) -> InventoryItem? {
     guard let activeBranch = activeBranch, ingredient.branch?.id != activeBranch.id else {
         return ingredient
     }
@@ -1223,8 +1990,9 @@ final class POSViewModel {
         return match
     }
 
-    // Fallback: return the original if no branch-specific match found
-    return ingredient
+    // Never consume inventory from another branch. Missing branch stock is a
+    // configuration error and must block the sale instead of silently leaking.
+    return nil
 }
 
     private func fetchMenuItem(id: String, modelContext: ModelContext) -> MenuItem? {
@@ -1232,824 +2000,8 @@ final class POSViewModel {
     guard let items = try? modelContext.fetch(descriptor) else { return nil }
     return items.first(where: { $0.id == id && !$0.isDeleted })
 }
-
-
-    // MARK: - Database Mock Seed data
-
-    func seedSampleMenu() {
-        guard let modelContext = modelContext else { return }
-        SampleDataSeeder.seedAll(modelContext: modelContext)
-    }
 }
 
-// MARK: - Reusable Sample Data Seeder
-
-@MainActor
-final class SampleDataSeeder {
-    static func clearAllData(modelContext: ModelContext) {
-        // Fetch and delete each model type explicitly to avoid complex existential issues in SwiftData
-        if let items = try? modelContext.fetch(FetchDescriptor<Role>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<User>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<Employee>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<EmployeeShift>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<Timecard>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<RegisterSession>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<Supplier>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<Branch>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<PurchaseOrder>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<PurchaseOrderItem>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<DeliveryPrice>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let tables = try? modelContext.fetch(FetchDescriptor<RestaurantTable>()) {
-            for item in tables { modelContext.delete(item) }
-        }
-        if let sessions = try? modelContext.fetch(FetchDescriptor<TableSession>()) {
-            for item in sessions { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<MenuItem>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let categories = try? modelContext.fetch(FetchDescriptor<Category>()) {
-            for item in categories { modelContext.delete(item) }
-        }
-        if let groups = try? modelContext.fetch(FetchDescriptor<ModifierGroup>()) {
-            for item in groups { modelContext.delete(item) }
-        }
-        if let modifiers = try? modelContext.fetch(FetchDescriptor<Modifier>()) {
-            for item in modifiers { modelContext.delete(item) }
-        }
-        if let rels = try? modelContext.fetch(FetchDescriptor<MenuItemModifierGroup>()) {
-            for item in rels { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<InventoryItem>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let recipes = try? modelContext.fetch(FetchDescriptor<Recipe>()) {
-            for item in recipes { modelContext.delete(item) }
-        }
-        if let orders = try? modelContext.fetch(FetchDescriptor<Order>()) {
-            for item in orders { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<OrderItem>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let mods = try? modelContext.fetch(FetchDescriptor<OrderItemModifier>()) {
-            for item in mods { modelContext.delete(item) }
-        }
-        if let payments = try? modelContext.fetch(FetchDescriptor<Payment>()) {
-            for item in payments { modelContext.delete(item) }
-        }
-        if let txns = try? modelContext.fetch(FetchDescriptor<InventoryTransaction>()) {
-            for item in txns { modelContext.delete(item) }
-        }
-        modelContext.saveWithLogging(label: #function)
-    }
-
-    static func seedTables(modelContext: ModelContext) {
-        // Delete existing tables first
-        if let tables = try? modelContext.fetch(FetchDescriptor<RestaurantTable>()) {
-            for table in tables {
-                modelContext.delete(table)
-            }
-        }
-
-        let sampleTables = [
-            // Floor 1 Tables
-            RestaurantTable(
-                tableNumber: "1", capacity: 2, status: "vacant",
-                qrCodeIdentifier: "t1_static_hash", positionX: 40, positionY: 40, floor: 1
-            ),
-            RestaurantTable(
-                tableNumber: "2", capacity: 4, status: "vacant",
-                qrCodeIdentifier: "t2_static_hash", positionX: 200, positionY: 40, floor: 1
-            ),
-            RestaurantTable(
-                tableNumber: "3", capacity: 4, status: "vacant",
-                qrCodeIdentifier: "t3_static_hash", positionX: 380, positionY: 40, floor: 1
-            ),
-            RestaurantTable(
-                tableNumber: "4", capacity: 6, status: "vacant",
-                qrCodeIdentifier: "t4_static_hash", positionX: 40, positionY: 200, floor: 1
-            ),
-            RestaurantTable(
-                tableNumber: "5", capacity: 8, status: "vacant",
-                qrCodeIdentifier: "t5_static_hash", positionX: 320, positionY: 200, floor: 1
-            ),
-            RestaurantTable(
-                tableNumber: "VIP 1", capacity: 10, status: "vacant",
-                qrCodeIdentifier: "tvip1_static_hash", positionX: 140, positionY: 360, floor: 1
-            ),
-            // Floor 2 Tables
-            RestaurantTable(
-                tableNumber: "201", capacity: 4, status: "vacant",
-                qrCodeIdentifier: "t201_static_hash", positionX: 60, positionY: 60, floor: 2
-            ),
-            RestaurantTable(
-                tableNumber: "202", capacity: 4, status: "vacant",
-                qrCodeIdentifier: "t202_static_hash", positionX: 240, positionY: 60, floor: 2
-            ),
-            RestaurantTable(
-                tableNumber: "203", capacity: 6, status: "vacant",
-                qrCodeIdentifier: "t203_static_hash", positionX: 420, positionY: 60, floor: 2
-            ),
-            // Floor 3 Tables
-            RestaurantTable(
-                tableNumber: "301 (ROOF)", capacity: 8, status: "vacant",
-                qrCodeIdentifier: "t301_static_hash", positionX: 120, positionY: 120, floor: 3
-            )
-        ]
-
-        for table in sampleTables {
-            modelContext.insert(table)
-        }
-        modelContext.saveWithLogging(label: #function)
-    }
-
-    static func seedRolesAndEmployeesIfEmpty(modelContext: ModelContext) {
-        // 1. Clean up old duplicate mock employees and users with mismatched UUIDs
-        let oldId1 = UUID(uuidString: "9a5767a4-6f30-4614-94d9-5ea85e282775")!
-        let oldId2 = UUID(uuidString: "193df239-104d-4e2d-b2e5-9f2b4ff30ddc")!
-        var removedAny = false
-        if let emps = try? modelContext.fetch(FetchDescriptor<Employee>()) {
-            for emp in emps {
-                if emp.id == oldId1 || emp.id == oldId2 {
-                    modelContext.delete(emp)
-                    removedAny = true
-                }
-            }
-        }
-        let oldUserId1 = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
-        let oldUserId2 = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
-        if let users = try? modelContext.fetch(FetchDescriptor<User>()) {
-            for user in users {
-                if user.id == oldUserId1 || user.id == oldUserId2 {
-                    modelContext.delete(user)
-                    removedAny = true
-                }
-            }
-        }
-        if removedAny {
-            try? modelContext.save()
-        }
-
-        // 2. Fetch or seed necessary roles to associate with employees
-        var matchedRoleManager = (try? modelContext.fetch(FetchDescriptor<Role>(predicate: #Predicate<Role> { $0.name == "Store Manager" })))?.first
-        var matchedRoleWaitstaff = (try? modelContext.fetch(FetchDescriptor<Role>(predicate: #Predicate<Role> { $0.name == "Waitstaff" })))?.first
-
-        if matchedRoleManager == nil {
-            let roleManager = Role(name: "Store Manager", roleDescription: "Full administrative and settings access.", permissionKeys: PermissionService.permissionCSV(for: PermissionService.permissions(forRoleName: "Store Manager")))
-            modelContext.insert(roleManager)
-            matchedRoleManager = roleManager
-        }
-        if matchedRoleWaitstaff == nil {
-            let roleWaitstaff = Role(name: "Waitstaff", roleDescription: "Table ordering and service requests.", permissionKeys: PermissionService.permissionCSV(for: PermissionService.permissions(forRoleName: "Waitstaff")))
-            modelContext.insert(roleWaitstaff)
-            matchedRoleWaitstaff = roleWaitstaff
-        }
-
-        // 3. Seed default users and employees if empty using canonical Supabase IDs
-        let employees = (try? modelContext.fetch(FetchDescriptor<Employee>())) ?? []
-        if employees.isEmpty {
-            let seedEmp1Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
-            let seedEmp2Id  = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
-            let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
-            let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
-
-            let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: matchedRoleManager, isSynced: false, isDeleted: false, updatedAt: Date())
-            let user2 = User(id: seedUser2Id, username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: matchedRoleWaitstaff, isSynced: false, isDeleted: false, updatedAt: Date())
-            modelContext.insert(user1)
-            modelContext.insert(user2)
-
-            let emp1 = Employee(id: seedEmp1Id, user: user1, firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, isSynced: false, isDeleted: false, updatedAt: Date())
-            let emp2 = Employee(id: seedEmp2Id, user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, isSynced: false, isDeleted: false, updatedAt: Date())
-            modelContext.insert(emp1)
-            modelContext.insert(emp2)
-        }
-        modelContext.saveWithLogging(label: #function)
-    }
-
-    static func clearCatalogOnly(modelContext: ModelContext) {
-        if let items = try? modelContext.fetch(FetchDescriptor<RestaurantTable>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<MenuItem>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let categories = try? modelContext.fetch(FetchDescriptor<Category>()) {
-            for item in categories { modelContext.delete(item) }
-        }
-        if let groups = try? modelContext.fetch(FetchDescriptor<ModifierGroup>()) {
-            for item in groups { modelContext.delete(item) }
-        }
-        if let modifiers = try? modelContext.fetch(FetchDescriptor<Modifier>()) {
-            for item in modifiers { modelContext.delete(item) }
-        }
-        if let rels = try? modelContext.fetch(FetchDescriptor<MenuItemModifierGroup>()) {
-            for item in rels { modelContext.delete(item) }
-        }
-        if let items = try? modelContext.fetch(FetchDescriptor<InventoryItem>()) {
-            for item in items { modelContext.delete(item) }
-        }
-        if let recipes = try? modelContext.fetch(FetchDescriptor<Recipe>()) {
-            for item in recipes { modelContext.delete(item) }
-        }
-        modelContext.saveWithLogging(label: #function)
-    }
-
-    static func autoSeedIfOutdated(modelContext: ModelContext) {
-        // M9 Safety: never auto-seed in production — only allowed in debug/developer mode
-        // This function is already guarded by developerModeEnabled in MainDashboardView,
-        // but we add a compile-time guard here as an extra layer of protection
-        #if !DEBUG
-        // In release builds, skip destructive re-seed — only seed missing roles/employees
-        seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
-        return
-        #endif
-        seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
-        let categories = (try? modelContext.fetch(FetchDescriptor<Category>())) ?? []
-        if categories.isEmpty {
-            seedCatalogOnly(modelContext: modelContext)
-            return
-        }
-
-        let oldCategoryNames = ["Burgers & Mains", "Coffee & Drinks"]
-        let hasOldCategories = categories.contains(where: { oldCategoryNames.contains($0.name) })
-
-        let menuItems = (try? modelContext.fetch(FetchDescriptor<MenuItem>())) ?? []
-        let oldMenuItemNames = ["Classic Cheese Burger", "Espresso Hot", "Latte Iced",
-                                "Crispy Golden Spring Rolls", "Royal Emerald Green Curry",
-                                "Signature River Prawn Pad Thai", "Traditional Thai Iced Tea"]
-        let hasOldMenuItems = menuItems.contains(where: { oldMenuItemNames.contains($0.name) })
-        let isMissingNewItems = menuItems.count < 50
-
-        if hasOldCategories || hasOldMenuItems || isMissingNewItems {
-            #if DEBUG
-            print("SampleDataSeeder [AutoSeed]: Outdated or mismatched menu items detected. Re-seeding...")
-            #endif
-            seedCatalogOnly(modelContext: modelContext)
-        }
-    }
-
-    static func seedCatalogOnly(modelContext: ModelContext) {
-        clearCatalogOnly(modelContext: modelContext)
-
-        // 1. Seed Tables
-        let sampleTables = [
-            // Floor 1 Tables
-            RestaurantTable(
-                tableNumber: "1", capacity: 2, status: "vacant",
-                qrCodeIdentifier: "t1_static_hash", positionX: 40, positionY: 40, floor: 1
-            ),
-            RestaurantTable(
-                tableNumber: "2", capacity: 4, status: "vacant",
-                qrCodeIdentifier: "t2_static_hash", positionX: 200, positionY: 40, floor: 1
-            ),
-            RestaurantTable(
-                tableNumber: "3", capacity: 4, status: "vacant",
-                qrCodeIdentifier: "t3_static_hash", positionX: 380, positionY: 40, floor: 1
-            ),
-            RestaurantTable(
-                tableNumber: "4", capacity: 6, status: "vacant",
-                qrCodeIdentifier: "t4_static_hash", positionX: 40, positionY: 200, floor: 1
-            ),
-            RestaurantTable(
-                tableNumber: "5", capacity: 8, status: "vacant",
-                qrCodeIdentifier: "t5_static_hash", positionX: 320, positionY: 200, floor: 1
-            ),
-            RestaurantTable(
-                tableNumber: "VIP 1", capacity: 10, status: "vacant",
-                qrCodeIdentifier: "tvip1_static_hash", positionX: 140, positionY: 360, floor: 1
-            ),
-            // Floor 2 Tables
-            RestaurantTable(
-                tableNumber: "201", capacity: 4, status: "vacant",
-                qrCodeIdentifier: "t201_static_hash", positionX: 60, positionY: 60, floor: 2
-            ),
-            RestaurantTable(
-                tableNumber: "202", capacity: 4, status: "vacant",
-                qrCodeIdentifier: "t202_static_hash", positionX: 240, positionY: 60, floor: 2
-            ),
-            RestaurantTable(
-                tableNumber: "203", capacity: 6, status: "vacant",
-                qrCodeIdentifier: "t203_static_hash", positionX: 420, positionY: 60, floor: 2
-            ),
-            // Floor 3 Tables
-            RestaurantTable(
-                tableNumber: "301 (ROOF)", capacity: 8, status: "vacant",
-                qrCodeIdentifier: "t301_static_hash", positionX: 120, positionY: 120, floor: 3
-            )
-        ]
-
-        for table in sampleTables {
-            modelContext.insert(table)
-        }
-
-        // 2. Ingredients (Inventory Items)
-        let prawns = InventoryItem(name: "Giant River Prawn", sku: "ING-PRAWN", unit: "piece", currentQuantity: 200, reorderLevel: 30, costPrice: 50.0)
-        let noodles = InventoryItem(name: "Rice Noodles", sku: "ING-NOODLE", unit: "g", currentQuantity: 10000, reorderLevel: 2000, costPrice: 0.05)
-        let chicken = InventoryItem(name: "Chicken Breast", sku: "ING-CHICKEN", unit: "g", currentQuantity: 8000, reorderLevel: 1500, costPrice: 0.12)
-        let curryPaste = InventoryItem(name: "Green Curry Paste", sku: "ING-CURRY", unit: "g", currentQuantity: 3000, reorderLevel: 500, costPrice: 0.08)
-        let coconutMilk = InventoryItem(name: "Coconut Milk", sku: "ING-COCONUT", unit: "ml", currentQuantity: 15000, reorderLevel: 3000, costPrice: 0.04)
-        let beefShank = InventoryItem(name: "Beef Shank", sku: "ING-BEEF", unit: "g", currentQuantity: 5000, reorderLevel: 1000, costPrice: 0.25)
-        let mango = InventoryItem(name: "Honey Mango", sku: "ING-MANGO", unit: "piece", currentQuantity: 150, reorderLevel: 25, costPrice: 15.0)
-        let sweetRice = InventoryItem(name: "Glutinous Rice", sku: "ING-SWEETRICE", unit: "g", currentQuantity: 10000, reorderLevel: 2000, costPrice: 0.03)
-        let teaLeaves = InventoryItem(name: "Thai Tea Leaves", sku: "ING-TEA", unit: "g", currentQuantity: 2000, reorderLevel: 500, costPrice: 0.3)
-
-        modelContext.insert(prawns)
-        modelContext.insert(noodles)
-        modelContext.insert(chicken)
-        modelContext.insert(curryPaste)
-        modelContext.insert(coconutMilk)
-        modelContext.insert(beefShank)
-        modelContext.insert(mango)
-        modelContext.insert(sweetRice)
-        modelContext.insert(teaLeaves)
-
-        // 2.1 Seed Inventory Lots for FEFO and Expiry testing
-        let calendar = Calendar.current
-        let today = Date()
-
-        // Prawn Lots
-        let prawnLot1 = InventoryLot(
-            lotNumber: "LOT-PR-001",
-            receivedDate: calendar.date(byAdding: .day, value: -3, to: today) ?? today,
-            expiryDate: calendar.date(byAdding: .day, value: 2, to: today),
-            initialQuantity: 100.0,
-            remainingQuantity: 100.0,
-            lotCostPrice: 48.0
-        )
-        prawnLot1.inventoryItem = prawns
-
-        let prawnLot2 = InventoryLot(
-            lotNumber: "LOT-PR-002",
-            receivedDate: today,
-            expiryDate: calendar.date(byAdding: .day, value: 10, to: today),
-            initialQuantity: 100.0,
-            remainingQuantity: 100.0,
-            lotCostPrice: 52.0
-        )
-        prawnLot2.inventoryItem = prawns
-
-        // Chicken Lots
-        let chickenLot1 = InventoryLot(
-            lotNumber: "LOT-CK-001",
-            receivedDate: calendar.date(byAdding: .day, value: -4, to: today) ?? today,
-            expiryDate: calendar.date(byAdding: .day, value: 1, to: today),
-            initialQuantity: 4000.0,
-            remainingQuantity: 4000.0,
-            lotCostPrice: 0.11
-        )
-        chickenLot1.inventoryItem = chicken
-
-        let chickenLot2 = InventoryLot(
-            lotNumber: "LOT-CK-002",
-            receivedDate: today,
-            expiryDate: calendar.date(byAdding: .day, value: 5, to: today),
-            initialQuantity: 4000.0,
-            remainingQuantity: 4000.0,
-            lotCostPrice: 0.13
-        )
-        chickenLot2.inventoryItem = chicken
-
-        // Mango Lots
-        let mangoLot1 = InventoryLot(
-            lotNumber: "LOT-MG-001",
-            receivedDate: calendar.date(byAdding: .day, value: -2, to: today) ?? today,
-            expiryDate: calendar.date(byAdding: .day, value: 3, to: today),
-            initialQuantity: 75.0,
-            remainingQuantity: 75.0,
-            lotCostPrice: 14.0
-        )
-        mangoLot1.inventoryItem = mango
-
-        let mangoLot2 = InventoryLot(
-            lotNumber: "LOT-MG-002",
-            receivedDate: today,
-            expiryDate: nil,
-            initialQuantity: 75.0,
-            remainingQuantity: 75.0,
-            lotCostPrice: 16.0
-        )
-        mangoLot2.inventoryItem = mango
-
-        // Noodles Lot
-        let noodleLot = InventoryLot(
-            lotNumber: "LOT-ND-001",
-            receivedDate: today,
-            expiryDate: nil,
-            initialQuantity: 10000.0,
-            remainingQuantity: 10000.0,
-            lotCostPrice: 0.05
-        )
-        noodleLot.inventoryItem = noodles
-
-        modelContext.insert(prawnLot1)
-        modelContext.insert(prawnLot2)
-        modelContext.insert(chickenLot1)
-        modelContext.insert(chickenLot2)
-        modelContext.insert(mangoLot1)
-        modelContext.insert(mangoLot2)
-        modelContext.insert(noodleLot)
-
-
-        // 3. Categories
-        let mainsCat = Category(name: "Main Dishes")
-        let appCat = Category(name: "Appetizers")
-        let drinkCat = Category(name: "Beverages")
-
-        modelContext.insert(mainsCat)
-        modelContext.insert(appCat)
-        modelContext.insert(drinkCat)
-
-        // 4. Modifiers Setup (preserved for future use)
-        let sugarGroup = ModifierGroup(name: "Sweetness Level", minSelection: 1, maxSelection: 1)
-        let extraGroup = ModifierGroup(name: "Extras Options", minSelection: 0, maxSelection: 1)
-
-        modelContext.insert(sugarGroup)
-        modelContext.insert(extraGroup)
-
-        let sugarNormal = Modifier(modifierGroup: sugarGroup, name: "Sweet Normal", extraPrice: 0.0)
-        let sugarLess = Modifier(modifierGroup: sugarGroup, name: "Sweet 50%", extraPrice: 0.0)
-        let sugarNone = Modifier(modifierGroup: sugarGroup, name: "Unsweetened", extraPrice: 0.0)
-
-        modelContext.insert(sugarNormal)
-        modelContext.insert(sugarLess)
-        modelContext.insert(sugarNone)
-
-        // 5. Isan Menu Items — 25 Mains
-        let items: [MenuItem] = [
-            // Mains (25)
-            MenuItem(id: "isan1", name: "Classic Som Tum Thai", itemDescription: "Green papaya salad with peanuts, dried shrimp, lime, palm sugar, and fish sauce.", price: 85.0, imageUrl: "https://images.unsplash.com/photo-1626132647523-66f5bf380027?w=400&q=80", category: mainsCat, isBestseller: true),
-            MenuItem(id: "isan2", name: "Som Tum Boo Plarah", itemDescription: "Papaya salad with fermented fish sauce, salted crab, and fresh Thai herbs.", price: 90.0, imageUrl: "https://images.unsplash.com/photo-1625813506062-0aeb1d7a094b?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan3", name: "Som Tum Korat", itemDescription: "Papaya salad combining Som Tum Thai and Boo Plarah styles with rice noodles.", price: 95.0, imageUrl: "https://images.unsplash.com/photo-1617470703128-26a0fc9af10f?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan4", name: "Som Tum Suan Pak", itemDescription: "Herbal papaya salad with seasonal Isan wild vegetables and bitter herbs.", price: 100.0, imageUrl: "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan5", name: "Som Tum Tard Platter", itemDescription: "Platter-sized papaya salad served with boiled eggs, pork cracklings, and noodles.", price: 220.0, imageUrl: "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan6", name: "Tum Corn with Salted Egg", itemDescription: "Sweet yellow corn salad tossed with rich salted egg yolk and lime juice.", price: 110.0, imageUrl: "https://images.unsplash.com/photo-1551248429-40975aa4de74?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan7", name: "Tum Cucumber (Tum Tang)", itemDescription: "Spicy cucumber salad with fermented fish sauce, chilies, and garlic.", price: 80.0, imageUrl: "https://images.unsplash.com/photo-1603052875302-d376b7c0638a?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan8", name: "Tum Tray Seafood", itemDescription: "Papaya salad platter served with giant river prawns, green mussels, and squid.", price: 250.0, imageUrl: "https://images.unsplash.com/photo-1534422298391-e4f8c172dddb?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan9", name: "Spicy Minced Pork Larb", itemDescription: "Minced pork salad with roasted ground rice, mint, lime, and dried chili.", price: 120.0, imageUrl: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=400&q=80", category: mainsCat, isBestseller: true),
-            MenuItem(id: "isan10", name: "Spicy Minced Chicken Larb", itemDescription: "Minced chicken breast salad seasoned with Isan herbs and fresh lime juice.", price: 120.0, imageUrl: "https://images.unsplash.com/photo-1606787366850-de6330128bfc?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan11", name: "Spicy Minced Duck Larb", itemDescription: "Authentic minced duck salad seasoned with roasted ground rice, mint, and galangal.", price: 140.0, imageUrl: "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan12", name: "Larb Woon Sen (Glass Noodle)", itemDescription: "Spicy glass noodle salad with minced pork, red onions, lime, and chilies.", price: 115.0, imageUrl: "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan13", name: "Larb Mushroom (Vegetarian)", itemDescription: "Vegetarian Larb with mixed forest mushrooms, mint, and roasted rice powder.", price: 105.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan14", name: "Nam Tok Moo (Pork Salad)", itemDescription: "Grilled sliced pork collar salad with roasted ground rice, chili, and fresh mint.", price: 130.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan15", name: "Nam Tok Neua (Beef Salad)", itemDescription: "Grilled sliced beef ribeye salad with authentic Isan herbs and lime dressing.", price: 160.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan16", name: "Sup Nor Mai (Bamboo Salad)", itemDescription: "Spicy warm shredded bamboo shoot salad infused with aromatic yanang leaf juice.", price: 95.0, imageUrl: "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan17", name: "Tom Zap Pork Ribs", itemDescription: "Hot, sour, and aromatic soup with tender pork ribs and fresh lemongrass.", price: 150.0, imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan18", name: "Tom Zap Beef Shank", itemDescription: "Spicy herbal soup with slow-braised beef shank, toasted rice, and fresh lime.", price: 180.0, imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan19", name: "Kaeng Om Pork (Isan Curry)", itemDescription: "Isan herbal soup with pork, dill, cabbage, pumpkin, and yanang juice.", price: 140.0, imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan20", name: "Kaeng Om Chicken", itemDescription: "Spicy herbal soup with chicken, dill, local vegetables, and roasted rice.", price: 135.0, imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan21", name: "Kaeng Pak Wahn with Ant Eggs", itemDescription: "Clear seasonal soup with wild star gooseberry leaves and premium ant eggs.", price: 150.0, imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan22", name: "Koi Neua (Beef Tartare)", itemDescription: "Isan-style raw minced beef salad with fresh chili, herbs, and bitter bile.", price: 175.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan23", name: "Sizzling Moo Nam Tok", itemDescription: "Sizzling hot plate of grilled pork neck tossed with lime, herbs, and roasted rice.", price: 165.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan24", name: "Yum Moo Yor (Pork Sausage)", itemDescription: "Spicy Vietnamese pork sausage salad with onions, tomatoes, and lime juice.", price: 110.0, imageUrl: "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80", category: mainsCat),
-            MenuItem(id: "isan25", name: "Yum Glass Noodle Seafood", itemDescription: "Spicy salad with glass noodles, fresh river prawns, squid, and celery.", price: 160.0, imageUrl: "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=400&q=80", category: mainsCat),
-
-            // Appetizers (15)
-            MenuItem(id: "isan26", name: "Classic Gai Yang (Half)", itemDescription: "Charcoal-grilled marinated chicken served with sweet chili and spicy Jaew sauces.", price: 180.0, imageUrl: "https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?w=400&q=80", category: appCat, isFavorite: true, isBestseller: true),
-            MenuItem(id: "isan27", name: "Classic Gai Yang (Whole)", itemDescription: "Full-sized charcoal-grilled marinated chicken with authentic Isan spices.", price: 340.0, imageUrl: "https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?w=400&q=80", category: appCat),
-            MenuItem(id: "isan28", name: "Moo Ping with Sticky Rice", itemDescription: "Three skewers of grilled sweet pork served with warm steamed sticky rice.", price: 95.0, imageUrl: "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80", category: appCat, isBestseller: true),
-            MenuItem(id: "isan29", name: "Kor Moo Yang (Pork Neck)", itemDescription: "Sliced charcoal-grilled pork neck served with spicy tamarind Jaew dipping sauce.", price: 150.0, imageUrl: "https://images.unsplash.com/photo-1603048588665-791ca8aea617?w=400&q=80", category: appCat),
-            MenuItem(id: "isan30", name: "Suea Rong Hai (Crying Tiger)", itemDescription: "Charcoal-grilled marinated beef brisket served with dynamic chili Jaew sauce.", price: 220.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: appCat, isFavorite: true),
-            MenuItem(id: "isan31", name: "Isan Sausage Skewers", itemDescription: "Grilled fermented pork and rice sausage served with ginger and cabbage leaves.", price: 110.0, imageUrl: "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80", category: appCat),
-            MenuItem(id: "isan32", name: "Sai Krok E-San Moo (Balls)", itemDescription: "Grilled round fermented pork and garlic sausage balls served with fresh chilies.", price: 110.0, imageUrl: "https://images.unsplash.com/photo-1582576163090-09d3b6f8a969?w=400&q=80", category: appCat),
-            MenuItem(id: "isan33", name: "Fried Larb Balls (Larb Tod)", itemDescription: "Deep-fried spicy minced pork balls with roasted ground rice and lime leaves.", price: 115.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: appCat),
-            MenuItem(id: "isan34", name: "Crispy Isan Chicken Wings", itemDescription: "Deep-fried marinated chicken wings tossed in garlic and light soy sauce.", price: 120.0, imageUrl: "https://images.unsplash.com/photo-1569058242253-92a9c755a0ec?w=400&q=80", category: appCat),
-            MenuItem(id: "isan35", name: "Deep Fried Pork Ribs", itemDescription: "Crispy deep-fried marinated pork ribs topped with crispy golden garlic.", price: 140.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: appCat),
-            MenuItem(id: "isan36", name: "Crispy Pork Crackling", itemDescription: "Crunchy deep-fried pork rinds, the perfect accompaniment for papaya salad.", price: 40.0, imageUrl: "https://images.unsplash.com/photo-1608039829572-78524f79c4c7?w=400&q=80", category: appCat),
-            MenuItem(id: "isan37", name: "Fried Sun-Dried Pork (Moo Dad Deaw)", itemDescription: "Deep-fried sweet and salty marinated sun-dried pork strips.", price: 130.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: appCat),
-            MenuItem(id: "isan38", name: "Fried Sun-Dried Beef (Neua Dad Deaw)", itemDescription: "Deep-fried marinated sun-dried beef strips served with chili sauce.", price: 160.0, imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400&q=80", category: appCat),
-            MenuItem(id: "isan39", name: "Grilled River Prawn (Single)", itemDescription: "Charcoal grilled giant river prawn served with spicy garlic seafood sauce.", price: 145.0, imageUrl: "https://images.unsplash.com/photo-1559314809-0d155014e29e?w=400&q=80", category: appCat, isFavorite: true),
-            MenuItem(id: "isan40", name: "Steamed Sticky Rice (Khao Niew)", itemDescription: "Warm steamed Thai glutinous rice served in a traditional bamboo basket.", price: 20.0, imageUrl: "https://images.unsplash.com/photo-1536304997881-a372c179924b?w=400&q=80", category: appCat),
-
-            // Beverages (10)
-            MenuItem(id: "isan41", name: "Cold Chrysanthemum Tea", itemDescription: "Sweet and cooling herbal chrysanthemum infusion served over ice.", price: 45.0, imageUrl: "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80", category: drinkCat),
-            MenuItem(id: "isan42", name: "Cold Roselle Juice", itemDescription: "Sweet and tart herbal roselle flower tea served with ice cubes.", price: 45.0, imageUrl: "https://images.unsplash.com/photo-1497534446932-c925b458314e?w=400&q=80", category: drinkCat),
-            MenuItem(id: "isan43", name: "Lemongrass Pandan Iced Tea", itemDescription: "Fragrant iced tea brewed with fresh lemongrass stalk and sweet pandan leaves.", price: 50.0, imageUrl: "https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?w=400&q=80", category: drinkCat),
-            MenuItem(id: "isan44", name: "Traditional Thai Iced Milk Tea", itemDescription: "Sweet brewed orange Thai tea topped with evaporated milk over shaved ice.", price: 65.0, imageUrl: "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80", category: drinkCat, isBestseller: true),
-            MenuItem(id: "isan45", name: "Thai Black Tea (Cha Dum Yen)", itemDescription: "Sweetened dark brewed Thai tea served chilled over crushed ice.", price: 55.0, imageUrl: "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=400&q=80", category: drinkCat),
-            MenuItem(id: "isan46", name: "Fresh Whole Young Coconut", itemDescription: "Freshly opened sweet young coconut juice with tender coconut flesh.", price: 80.0, imageUrl: "https://images.unsplash.com/photo-1526318896980-cf78c088247c?w=400&q=80", category: drinkCat, isFavorite: true),
-            MenuItem(id: "isan47", name: "Singha Lager Beer (Small)", itemDescription: "Premium clean Thai lager beer bottle, served chilled.", price: 95.0, imageUrl: "https://images.unsplash.com/photo-1608270586620-248524c67de9?w=400&q=80", category: drinkCat),
-            MenuItem(id: "isan48", name: "Chang Lager Beer (Small)", itemDescription: "Famous crisp and strong Thai lager beer, served ice-cold.", price: 90.0, imageUrl: "https://images.unsplash.com/photo-1608270586620-248524c67de9?w=400&q=80", category: drinkCat),
-            MenuItem(id: "isan49", name: "Sparkling Lime Pandan Soda", itemDescription: "Refreshing carbonated soda infused with fresh lime juice and pandan syrup.", price: 55.0, imageUrl: "https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?w=400&q=80", category: drinkCat),
-            MenuItem(id: "isan50", name: "Mineral Drinking Water", itemDescription: "Chilled bottled mineral drinking water served with a glass of ice.", price: 20.0, imageUrl: "https://images.unsplash.com/photo-1548865140-64a23cf87aee?w=400&q=80", category: drinkCat)
-        ]
-
-        for item in items {
-            modelContext.insert(item)
-        }
-
-        // 6. Link Thai Tea to Sweetness Level modifier group
-        if let thaiTea = items.first(where: { $0.name.contains("Traditional Thai Iced Milk Tea") }) {
-            let relationTeaSugar = MenuItemModifierGroup(menuItem: thaiTea, modifierGroup: sugarGroup)
-            modelContext.insert(relationTeaSugar)
-        }
-
-        seedRolesAndEmployeesIfEmpty(modelContext: modelContext)
-
-        // 7. Seed Recipes
-        let prawnItem = items.first(where: { $0.id == "isan39" }) // Grilled River Prawn
-        let chickenItem = items.first(where: { $0.id == "isan26" }) // Classic Gai Yang (Half)
-        let chickenItemWhole = items.first(where: { $0.id == "isan27" }) // Classic Gai Yang (Whole)
-        let teaItem = items.first(where: { $0.id == "isan44" }) // Traditional Thai Iced Milk Tea
-        let somTumItem = items.first(where: { $0.id == "isan1" }) // Classic Som Tum Thai
-        let larbItem = items.first(where: { $0.id == "isan9" }) // Spicy Minced Pork Larb
-
-        if let prawnItem = prawnItem {
-            let recipe = Recipe(menuItem: prawnItem, inventoryItem: prawns, quantityRequired: 1.0)
-            modelContext.insert(recipe)
-        }
-        if let chickenItem = chickenItem {
-            let recipe = Recipe(menuItem: chickenItem, inventoryItem: chicken, quantityRequired: 300.0)
-            modelContext.insert(recipe)
-        }
-        if let chickenItemWhole = chickenItemWhole {
-            let recipe = Recipe(menuItem: chickenItemWhole, inventoryItem: chicken, quantityRequired: 600.0)
-            modelContext.insert(recipe)
-        }
-        if let teaItem = teaItem {
-            let recipe1 = Recipe(menuItem: teaItem, inventoryItem: teaLeaves, quantityRequired: 15.0)
-            let recipe2 = Recipe(menuItem: teaItem, inventoryItem: coconutMilk, quantityRequired: 50.0)
-            modelContext.insert(recipe1)
-            modelContext.insert(recipe2)
-        }
-        if let somTumItem = somTumItem {
-            let recipe = Recipe(menuItem: somTumItem, inventoryItem: mango, quantityRequired: 1.0)
-            modelContext.insert(recipe)
-        }
-        if let larbItem = larbItem {
-            let recipe = Recipe(menuItem: larbItem, inventoryItem: chicken, quantityRequired: 150.0)
-            modelContext.insert(recipe)
-        }
-
-        modelContext.saveWithLogging(label: #function)
-    }
-
-    static func seedAll(modelContext: ModelContext) {
-        clearAllData(modelContext: modelContext)
-        seedCatalogOnly(modelContext: modelContext)
-        seedMockTransactions(modelContext: modelContext)
-        modelContext.saveWithLogging(label: #function)
-    }
-
-    static func seedMockTransactions(modelContext: ModelContext) {
-        let calendar = Calendar.current
-        let today = Date()
-        let yesterday = calendar.date(byAdding: .day, value: -1, to: today) ?? today
-
-        // Fetch Employees
-        let employees = (try? modelContext.fetch(FetchDescriptor<Employee>())) ?? []
-        let empSomchai = employees.first(where: { $0.firstName == "Somchai" })
-        let empSomsri = employees.first(where: { $0.firstName == "Somsri" })
-
-        // Fetch Menu Items
-        let menuItems = (try? modelContext.fetch(FetchDescriptor<MenuItem>())) ?? []
-        let somTum = menuItems.first(where: { $0.id == "isan1" })
-        let larb = menuItems.first(where: { $0.id == "isan9" })
-        let gaiYangHalf = menuItems.first(where: { $0.id == "isan26" })
-        let gaiYangWhole = menuItems.first(where: { $0.id == "isan27" })
-        let prawn = menuItems.first(where: { $0.id == "isan39" })
-        let milkTea = menuItems.first(where: { $0.id == "isan44" })
-        let beerSingha = menuItems.first(where: { $0.id == "isan47" })
-        let water = menuItems.first(where: { $0.id == "isan50" })
-
-        // Define transaction profiles
-        // We will generate 16 orders total: 8 yesterday, 8 today.
-        // Varying times: 10:00 to 21:00
-        let orderSpecs: [(daysAgo: Int, hour: Int, type: String, items: [(item: MenuItem?, qty: Int)], payMethod: String, cashier: String, deliveryBrand: String?, gp: Double, ad: Double)] = [
-            // Yesterday (June 11 equivalent)
-            (1, 11, "dine_in",  [(somTum, 2), (gaiYangHalf, 1), (milkTea, 2)], "qr_promptpay", "Somsri", nil, 0, 0),
-            (1, 12, "take_out", [(larb, 1), (water, 1)], "cash", "Somchai", nil, 0, 0),
-            (1, 13, "delivery", [(prawn, 2), (milkTea, 1)], "credit_card", "Somchai", "GrabFood", 30.0, 5.0),
-            (1, 15, "dine_in",  [(somTum, 1), (water, 1)], "cash", "Somsri", nil, 0, 0),
-            (1, 17, "delivery", [(gaiYangWhole, 1), (larb, 2)], "qr_promptpay", "Somchai", "LINE MAN", 30.0, 0.0),
-            (1, 18, "dine_in",  [(prawn, 4), (beerSingha, 3)], "credit_card", "Somsri", nil, 0, 0),
-            (1, 19, "delivery", [(somTum, 2), (gaiYangHalf, 2)], "true_money", "Somchai", "ShopeeFood", 30.0, 3.0),
-            (1, 20, "dine_in",  [(larb, 1), (beerSingha, 2)], "cash", "Somsri", nil, 0, 0),
-
-            // Today (June 12 equivalent)
-            (0, 10, "take_out", [(milkTea, 3)], "cash", "Somsri", nil, 0, 0),
-            (0, 12, "dine_in",  [(somTum, 1), (larb, 1), (gaiYangHalf, 1), (water, 2)], "qr_promptpay", "Somchai", nil, 0, 0),
-            (0, 13, "delivery", [(prawn, 2), (water, 1)], "credit_card", "Somchai", "GrabFood", 30.0, 5.0),
-            (0, 14, "dine_in",  [(gaiYangHalf, 1), (milkTea, 1)], "true_money", "Somsri", nil, 0, 0),
-            (0, 16, "delivery", [(somTum, 3), (larb, 1)], "qr_promptpay", "Somchai", "LINE MAN", 30.0, 0.0),
-            (0, 18, "dine_in",  [(gaiYangWhole, 1), (prawn, 2), (beerSingha, 4)], "credit_card", "Somsri", nil, 0, 0),
-            (0, 19, "delivery", [(larb, 2), (milkTea, 2)], "true_money", "Somchai", "Foodpanda", 30.0, 4.0),
-            (0, 21, "dine_in",  [(somTum, 1), (beerSingha, 1)], "cash", "Somsri", nil, 0, 0)
-        ]
-
-        var orderCounter = 1
-        for spec in orderSpecs {
-            let baseDate = spec.daysAgo == 1 ? yesterday : today
-            guard let orderDate = calendar.date(bySettingHour: spec.hour, minute: Int.random(in: 0...59), second: 0, of: baseDate) else { continue }
-
-            let dateStr = DateFormatter.orderDateFormat().string(from: orderDate)
-            let orderNumber = "ORD-\(dateStr)-\(String(format: "%03d", orderCounter))"
-            orderCounter += 1
-
-            // Create Order
-            let order = Order(
-                orderNumber: orderNumber,
-                orderType: spec.type,
-                status: "completed",
-                createdAt: orderDate,
-                cashierName: spec.cashier,
-                deliveryBrand: spec.deliveryBrand,
-                deliveryGP: spec.gp,
-                deliveryAdFee: spec.ad,
-                deliveryAdFeeIsPct: spec.ad > 0 ? true : false,
-                updatedAt: orderDate
-            )
-            modelContext.insert(order)
-
-            // Add OrderItems
-            var subtotal = 0.0
-            for itemSpec in spec.items {
-                guard let menuItem = itemSpec.item else { continue }
-                let qty = itemSpec.qty
-                let unitPrice = menuItem.price
-                let itemSubtotal = Double(qty) * unitPrice
-                subtotal += itemSubtotal
-
-                let orderItem = OrderItem(
-                    order: order,
-                    menuItem: menuItem,
-                    quantity: qty,
-                    unitPrice: unitPrice,
-                    status: "served",
-                    updatedAt: orderDate
-                )
-                modelContext.insert(orderItem)
-                orderItem.order = order
-                order.items.append(orderItem)
-            }
-
-            let tax = subtotal * 0.07
-            let serviceCharge = spec.type == "dine_in" ? subtotal * 0.10 : 0.0
-            let total = subtotal + tax + serviceCharge
-
-            order.subtotal = subtotal
-            order.tax = tax
-            order.serviceCharge = serviceCharge
-            order.total = total
-
-            // Add Payment
-            let payment = Payment(
-                order: order,
-                paymentMethod: spec.payMethod,
-                amount: total,
-                status: "completed",
-                paidAt: orderDate,
-                updatedAt: orderDate
-            )
-            modelContext.insert(payment)
-            order.payments.append(payment)
-        }
-
-        // Seed Timecards
-        // Somchai Timecards
-        if let somchai = empSomchai {
-            // Yesterday Timecard
-            if let clockInYesterday = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: yesterday),
-               let clockOutYesterday = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: yesterday) {
-                let tc = Timecard(
-                    employee: somchai,
-                    clockIn: clockInYesterday,
-                    clockOut: clockOutYesterday,
-                    breakDurationMinutes: 60,
-                    overtimeMinutes: 0,
-                    status: "approved",
-                    updatedAt: clockOutYesterday
-                )
-                modelContext.insert(tc)
-                somchai.timecards.append(tc)
-            }
-
-            // Today Timecard
-            if let clockInToday = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: today),
-               let clockOutToday = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: today) {
-                let tc = Timecard(
-                    employee: somchai,
-                    clockIn: clockInToday,
-                    clockOut: clockOutToday,
-                    breakDurationMinutes: 60,
-                    overtimeMinutes: 0,
-                    status: "approved",
-                    updatedAt: clockOutToday
-                )
-                modelContext.insert(tc)
-                somchai.timecards.append(tc)
-            }
-        }
-
-        // Somsri Timecards
-        if let somsri = empSomsri {
-            // Yesterday Timecard
-            if let clockInYesterday = calendar.date(bySettingHour: 10, minute: 0, second: 0, of: yesterday),
-               let clockOutYesterday = calendar.date(bySettingHour: 19, minute: 30, second: 0, of: yesterday) {
-                let tc = Timecard(
-                    employee: somsri,
-                    clockIn: clockInYesterday,
-                    clockOut: clockOutYesterday,
-                    breakDurationMinutes: 60,
-                    overtimeMinutes: 30,
-                    status: "approved",
-                    updatedAt: clockOutYesterday
-                )
-                modelContext.insert(tc)
-                somsri.timecards.append(tc)
-            }
-
-            // Today Timecard
-            if let clockInToday = calendar.date(bySettingHour: 10, minute: 0, second: 0, of: today),
-               let clockOutToday = calendar.date(bySettingHour: 19, minute: 0, second: 0, of: today) {
-                let tc = Timecard(
-                    employee: somsri,
-                    clockIn: clockInToday,
-                    clockOut: clockOutToday,
-                    breakDurationMinutes: 60,
-                    overtimeMinutes: 0,
-                    status: "approved",
-                    updatedAt: clockOutToday
-                )
-                modelContext.insert(tc)
-                somsri.timecards.append(tc)
-            }
-        }
-
-        // Seed Waste (InventoryTransaction)
-        let inventoryItems = (try? modelContext.fetch(FetchDescriptor<InventoryItem>())) ?? []
-        if let mangoItem = inventoryItems.first(where: { $0.sku == "ING-MANGO" }) {
-            // Yesterday waste
-            let txn1 = InventoryTransaction(
-                item: mangoItem,
-                transactionType: InventoryMovementType.waste.rawValue,
-                quantity: -3.0,
-                costPrice: mangoItem.costPrice,
-                notes: "Spoiled mangoes",
-                isSynced: false,
-                isDeleted: false,
-                updatedAt: yesterday
-            )
-            modelContext.insert(txn1)
-            mangoItem.transactions.append(txn1)
-            mangoItem.currentQuantity -= 3.0
-
-            // Today waste
-            let txn2 = InventoryTransaction(
-                item: mangoItem,
-                transactionType: InventoryMovementType.waste.rawValue,
-                quantity: -2.0,
-                costPrice: mangoItem.costPrice,
-                notes: "Bruised during prep",
-                isSynced: false,
-                isDeleted: false,
-                updatedAt: today
-            )
-            modelContext.insert(txn2)
-            mangoItem.transactions.append(txn2)
-            mangoItem.currentQuantity -= 2.0
-        }
-
-        if let coconutItem = inventoryItems.first(where: { $0.sku == "ING-COCONUT" }) {
-            let txn = InventoryTransaction(
-                item: coconutItem,
-                transactionType: InventoryMovementType.waste.rawValue,
-                quantity: -500.0,
-                costPrice: coconutItem.costPrice,
-                notes: "Spilled carton",
-                isSynced: false,
-                isDeleted: false,
-                updatedAt: today
-            )
-            modelContext.insert(txn)
-            coconutItem.transactions.append(txn)
-            coconutItem.currentQuantity -= 500.0
-        }
-    }
-
-}
 
 extension POSViewModel {
     fileprivate func resolvedTier(for totalSpend: Double) -> String {

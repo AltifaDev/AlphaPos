@@ -7,6 +7,7 @@ import UIKit
 extension NetworkService {
     func startRealtimeSync() {
         guard webSocketTask == nil else { return }
+        realtimeJoinSucceeded = false
         
         let baseRealtimeURL = AppConfig.supabaseRealtimeURL.absoluteString
             .replacingOccurrences(of: "https://", with: "wss://")
@@ -24,8 +25,6 @@ extension NetworkService {
         startHeartbeat()
         startPollingSync()
         
-        // Reset reconnect counter on successful connection
-        reconnectAttempt = 0
     }
 
     private func listenToWebSocket() {
@@ -46,6 +45,7 @@ extension NetworkService {
                 self.listenToWebSocket()
             case .failure(let error):
                 print("NetworkService WebSocket error: \(error.localizedDescription)")
+                self.realtimeJoinSucceeded = false
                 self.webSocketTask = nil
                 self.heartbeatTimer?.invalidate()
                 self.heartbeatTimer = nil
@@ -70,7 +70,7 @@ extension NetworkService {
 
     private func joinRealtimeTopic() {
         let merchantId = self.activeMerchantId
-        let accessToken = MerchantAuthManager.shared.currentToken ?? anonKey
+        let accessToken = authorizationToken
         
         let joinPayload: [String: Any] = [
             "topic": "realtime:public",
@@ -80,14 +80,13 @@ extension NetworkService {
                     "postgres_changes": [
                         ["event": "*", "schema": "public", "table": "orders", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "order_items", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "order_item_modifiers", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "table_sessions", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "restaurant_tables", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "service_requests", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "floor_plan_images", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "merchants", "filter": "id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "employees", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "employee_shifts", "filter": "merchant_id=eq.\(merchantId)"],
-                        ["event": "*", "schema": "public", "table": "timecards", "filter": "merchant_id=eq.\(merchantId)"]
+                        ["event": "*", "schema": "public", "table": "dining_areas", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "sync_outbox", "filter": "merchant_id=eq.\(merchantId)"]
                     ]
                 ],
                 "access_token": accessToken
@@ -137,16 +136,46 @@ extension NetworkService {
     private func startPollingSync() {
         pollingTimer?.invalidate()
         pollingTimer = nil
-        
-        pollingTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
+
+        pollingTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] timer in
             guard let self = self else { return }
             Task {
                 await self.refreshAll()
             }
+            // ── WebSocket health check ────────────────────────────────────
+            // ถ้า webSocketTask เป็น nil (disconnect โดยไม่มี error callback)
+            // ให้ reconnect ทันทีโดยไม่รอ backoff
+            if self.webSocketTask == nil {
+                #if DEBUG
+                print("NetworkService [HealthCheck]: WebSocket nil — reconnecting...")
+                #endif
+                self.reconnectAttempt = 0
+                self.startRealtimeSync()
+            }
         }
     }
 
+    /// Force reconnect WebSocket ทันที — เรียกจาก outside (เช่น TablesView pull-to-refresh)
+    func forceReconnect() {
+        webSocketTask?.cancel(with: .normalClosure, reason: nil)
+        webSocketTask = nil
+        realtimeJoinSucceeded = false
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        reconnectAttempt = 0
+        startRealtimeSync()
+        Task { await refreshAll() }
+    }
+
     private func processInstantNotification(table: String, type: String, record: [String: Any]) {
+        // Realtime subscriptions are merchant-filtered. Enforce branch scope a
+        // second time on-device so a stale/mis-issued token can never surface
+        // another branch's operational event or notification.
+        if let recordBranch = record["branch_id"] as? String,
+           !recordBranch.isEmpty,
+           recordBranch.lowercased() != StaffSessionContext.branchId {
+            return
+        }
         Task { @MainActor in
             let notificationsEnabled = UserDefaults.standard.object(forKey: "enable_notifications") as? Bool ?? true
             
@@ -164,6 +193,7 @@ extension NetworkService {
                     status: status,
                     createdAt: record["created_at"] as? String ?? ISO8601DateFormatter().string(from: Date())
                 )
+                let isCurrentRequest = StaffNotificationPolicy.isCurrentBusinessDay(timestamp: req.createdAt)
                 
                 if type == "DELETE" {
                     if let idx = self.serviceRequests.firstIndex(where: { $0.id == id }) {
@@ -172,11 +202,11 @@ extension NetworkService {
                 } else {
                     if let idx = self.serviceRequests.firstIndex(where: { $0.id == id }) {
                         self.serviceRequests[idx] = req
-                    } else if status == "pending" {
+                    } else if status == "pending" && isCurrentRequest {
                         self.serviceRequests.insert(req, at: 0)
                     }
                     
-                    if status == "pending" && notificationsEnabled {
+                    if status == "pending" && isCurrentRequest && notificationsEnabled {
                         guard !notifiedRequestIds.contains(id) else { return }
                         self.markRequestAsNotified(requestId: id)
                         
@@ -197,6 +227,7 @@ extension NetworkService {
                 } else {
                     guard let status = record["status"] as? String else { return }
                     let tableNumber = record["table_number"] as? String ?? "N/A"
+                    let orderSource = record["order_source"] as? String ?? "pos"
                     let rawOrderNum = record["order_number"]
                     let orderNumber: String
                     if let numStr = rawOrderNum as? String {
@@ -206,38 +237,38 @@ extension NetworkService {
                     } else {
                         orderNumber = "N/A"
                     }
-                    
+
                     let statusLower = status.lowercased()
-                    let notificationKey = "\(id)-\(statusLower)"
-                    
+                    let isWebOrder = orderSource == "web"
+                    let eventDate = ISO8601DateParser.date(from: record["created_at"] as? String)
+                    let isCurrentEvent = StaffNotificationPolicy.isCurrentBusinessDay(eventDate)
+                    // Use source-aware key so web "pending" and staff "preparing" deduplicate separately
+                    let notificationKey = "\(id)-\(statusLower)-\(orderSource)"
+
                     // Trigger instant alert if notifications are enabled
-                    if notificationsEnabled {
+                    if notificationsEnabled && isCurrentEvent {
                         if type == "INSERT" {
-                            if statusLower == "preparing" || statusLower == "ready" {
+                            // Web orders arrive as "pending" (awaiting approval)
+                            // Staff orders arrive as "preparing" — both should notify
+                            let shouldNotifyInsert = isWebOrder
+                                ? statusLower == "pending"
+                                : (statusLower == "preparing" || statusLower == "ready")
+                            if shouldNotifyInsert {
                                 if !notifiedOrderIds.contains(notificationKey) {
                                     self.markOrderAsNotified(key: notificationKey)
-                                    // Delay notification until items are fetched so the body
-                                    // shows item names instead of blank "Table X:".
-                                    // Items arrive 1-3s after the order INSERT event.
-                                    Task {
-                                        try? await Task.sleep(nanoseconds: 2_500_000_000)
-                                        if let fetched = try? await NetworkService.shared.fetchOrderById(id) {
-                                            let itemsSummary = fetched.items.isEmpty
-                                                ? "Table \(tableNumber)"
-                                                : fetched.items.prefix(3).map { "\($0.quantity)× \($0.name)" }.joined(separator: ", ")
-                                            let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "🧾 New Order \(orderNumber)"
-                                            NotificationManager.shared.notify(title: title, body: itemsSummary, type: .order, deduplicationKey: notificationKey, userInfo: ["table_number": tableNumber, "type": "order", "order_id": id])
-                                        }
-                                    }
+                                    let title = isWebOrder
+                                        ? "🌐 Web Order \(orderNumber) — อนุมัติด่วน!"
+                                        : (statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "🧾 New Order \(orderNumber)")
+                                    NotificationManager.shared.notify(title: title, body: "Table \(tableNumber)", type: .order, deduplicationKey: notificationKey, userInfo: ["table_number": tableNumber, "type": "order", "order_id": id])
                                 }
                             }
                         } else if type == "UPDATE" {
-                            if statusLower == "ready" || statusLower == "served" {
+                            if statusLower == "preparing" || statusLower == "ready" || statusLower == "served" {
                                 if !notifiedOrderIds.contains(notificationKey) {
                                     self.markOrderAsNotified(key: notificationKey)
-                                    let title = statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "🍽️ Order \(orderNumber) Served"
-                                    let body = statusLower == "ready" ? "Table \(tableNumber) is ready to be served" : "Table \(tableNumber) has been served"
-                                    let notifyType: NotificationType = statusLower == "ready" ? .order : .tableStatus
+                                    let title = statusLower == "preparing" ? "🧾 New Order \(orderNumber)" : (statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "🍽️ Order \(orderNumber) Served")
+                                    let body = statusLower == "preparing" ? "Table \(tableNumber)" : (statusLower == "ready" ? "Table \(tableNumber) is ready to be served" : "Table \(tableNumber) has been served")
+                                    let notifyType: NotificationType = statusLower == "served" ? .tableStatus : .order
                                     NotificationManager.shared.notify(title: title, body: body, type: notifyType, deduplicationKey: notificationKey, userInfo: ["table_number": tableNumber, "type": "order", "order_id": id])
                                 }
                             }
@@ -247,22 +278,9 @@ extension NetworkService {
                     // Fetch the single order + items to mutate self.orders locally
                     Task {
                         do {
-                            // When the iPad sends an order it POSTs orders first, then order_items.
-                            // Delay 2.0 s on INSERT (increased from 1.2 s) to cover slow networks
-                            // and server load. The retry loop below handles persistent race conditions.
-                            if type == "INSERT" {
-                                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                            }
-                            // Retry up to 4 times (2s, 2s, 3s, 3s) until items arrive
-                            var fetchedOrder = try await NetworkService.shared.fetchOrderById(id)
-                            let retryDelays: [UInt64] = [2_000_000_000, 2_000_000_000, 3_000_000_000, 3_000_000_000]
-                            if type == "INSERT" {
-                                for delay in retryDelays {
-                                    guard let order = fetchedOrder, order.items.isEmpty else { break }
-                                    try? await Task.sleep(nanoseconds: delay)
-                                    fetchedOrder = try? await NetworkService.shared.fetchOrderById(id)
-                                }
-                            }
+                            // Atomic order RPC commits the complete aggregate before
+                            // Postgres emits Realtime events, so no timing sleeps are needed.
+                            let fetchedOrder = try await NetworkService.shared.fetchOrderById(id)
                             if let order = fetchedOrder {
                                 await MainActor.run {
                                     if let idx = self.orders.firstIndex(where: { $0.id == order.id }) {
@@ -278,12 +296,30 @@ extension NetworkService {
                     }
                 }
                 
-            // 3. Restaurant Tables Mutation & Alert
+            // 3. Merchant settings mutation
+            } else if table == "merchants" {
+                if let tableSystemEnabled = record["is_table_system_enabled"] as? Bool {
+                    self.isTableSystemEnabled = tableSystemEnabled
+                }
+                if let webOrderingEnabled = record["is_web_ordering_enabled"] as? Bool {
+                    self.isWebOrderingEnabled = webOrderingEnabled
+                }
+                if let workflowRequired = record["kitchen_workflow_required"] as? Bool {
+                    self.kitchenWorkflowRequired = workflowRequired
+                }
+                if let promptPay = record["promptpay_number"] as? String {
+                    self.promptPayNumber = promptPay
+                }
+
+            // 4. Restaurant Tables Mutation & Alert
             } else if table == "restaurant_tables" {
                 guard let tableNumber = record["table_number"] as? String,
                       let status = record["status"] as? String else { return }
                 
                 if let idx = self.tables.firstIndex(where: { $0.tableNumber == tableNumber }) {
+                    // table_sessions is authoritative for occupied/vacant. A delayed
+                    // restaurant_tables event must not make an active table look vacant.
+                    guard self.tables[idx].sessionToken == nil || status == "occupied" else { return }
                     self.tables[idx].status = status
                     if status == "vacant" {
                         self.tables[idx].sessionToken = nil
@@ -309,7 +345,7 @@ extension NetworkService {
                     }
                 }
                 
-            // 4. Table Sessions Mutation
+            // 5. Table Sessions Mutation
             } else if table == "table_sessions" {
                 guard let tableNumber = record["table_number"] as? String else { return }
                 
@@ -325,14 +361,18 @@ extension NetworkService {
                 
                 if let idx = self.tables.firstIndex(where: { $0.tableNumber == tableNumber }) {
                     if isActive {
+                        self.tables[idx].activeSessionId = record["id"] as? String
                         self.tables[idx].sessionToken = record["session_token"] as? String
                         self.tables[idx].guestCount = record["guest_count"] as? Int ?? 0
                         self.tables[idx].status = "occupied"
                         self.tables[idx].sessionStartedAt = record["started_at"] as? String ?? record["created_at"] as? String
                     } else {
+                        self.tables[idx].activeSessionId = nil
                         self.tables[idx].sessionToken = nil
                         self.tables[idx].guestCount = 0
-                        self.tables[idx].status = "vacant"
+                        if self.tables[idx].status == "occupied" {
+                            self.tables[idx].status = "vacant"
+                        }
                         self.tables[idx].currentTotal = 0.0
                         self.tables[idx].sessionStartedAt = nil
                     }
@@ -343,21 +383,7 @@ extension NetworkService {
                 // Fetch the single order + items to mutate self.orders locally
                 Task {
                     do {
-                        // INSERT event arrives before the batch order_items POST completes.
-                        // Wait 1.2 s (เพิ่มจาก 0.8s) เพื่อให้ batch POST order_items เสร็จก่อน
-                        if type == "INSERT" {
-                            try? await Task.sleep(nanoseconds: 1_200_000_000)
-                        }
-                        // Retry loop: รอให้ items มาถึงก่อน insert/update self.orders
-                        var fetchedOrder = try await NetworkService.shared.fetchOrderById(orderId)
-                        let retryDelays: [UInt64] = [1_500_000_000, 2_000_000_000, 2_500_000_000]
-                        if type == "INSERT" {
-                            for delay in retryDelays {
-                                guard let order = fetchedOrder, order.items.isEmpty else { break }
-                                try? await Task.sleep(nanoseconds: delay)
-                                fetchedOrder = try? await NetworkService.shared.fetchOrderById(orderId)
-                            }
-                        }
+                        let fetchedOrder = try await NetworkService.shared.fetchOrderById(orderId)
                         if let order = fetchedOrder {
                             await MainActor.run {
                                 if let idx = self.orders.firstIndex(where: { $0.id == order.id }) {
@@ -373,6 +399,31 @@ extension NetworkService {
                         print("NetworkService [Realtime fetchOrderById for order_items failed]: \(error)")
                     }
                 }
+            } else if table == "order_item_modifiers" {
+                // An option was added/removed/changed on an order item. The record
+                // only carries order_item_id, so find the owning order in memory and
+                // refetch it (fetchOrderById now joins order_item_modifiers → modifiers).
+                guard let orderItemId = record["order_item_id"] as? String else { return }
+                let owningOrderId = self.orders.first { order in
+                    order.items.contains { $0.id == orderItemId }
+                }?.id
+                guard let orderId = owningOrderId else {
+                    // Owning order not loaded yet — the debounced refreshAll will reconcile.
+                    return
+                }
+                Task {
+                    if let order = try? await NetworkService.shared.fetchOrderById(orderId) {
+                        await MainActor.run {
+                            if let idx = self.orders.firstIndex(where: { $0.id == order.id }) {
+                                self.orders[idx] = order
+                            }
+                        }
+                    }
+                }
+            } else if table == "sync_outbox" {
+                // Outbox rows are emitted only after their parent transaction
+                // commits. Reconcile from the authoritative aggregate once.
+                Task { await self.refreshAll() }
             } else if table == "floor_plan_images" {
                 Task {
                     if let fetchedFloorPlans = try? await self.fetchFloorPlanImages() {
@@ -395,15 +446,31 @@ extension NetworkService {
         let isPostgresChange: Bool
         if event == "postgres_changes" {
             isPostgresChange = true
-        } else if event == "phx_reply" || event == "system" || event == "phx_close" {
-            #if DEBUG
-            if event == "phx_reply" {
-                if let payload = json["payload"] as? [String: Any],
-                   let status = payload["status"] as? String {
-                    print("NetworkService [Realtime]: phx_reply status = \(status)")
-                }
+        } else if event == "phx_reply" {
+            let status = (json["payload"] as? [String: Any])?["status"] as? String
+            if status == "ok" {
+                realtimeJoinSucceeded = true
+                reconnectAttempt = 0
+            } else if status == "error" {
+                realtimeJoinSucceeded = false
             }
+            #if DEBUG
+            print("NetworkService [Realtime]: phx_reply status = \(status ?? "unknown")")
             #endif
+            isPostgresChange = false
+        } else if event == "system" || event == "phx_close" {
+            realtimeJoinSucceeded = false
+            #if DEBUG
+            print("NetworkService [Realtime]: control event = \(event), reconnecting")
+            #endif
+            webSocketTask?.cancel(with: .goingAway, reason: nil)
+            webSocketTask = nil
+            heartbeatTimer?.invalidate()
+            heartbeatTimer = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self, self.webSocketTask == nil else { return }
+                self.startRealtimeSync()
+            }
             isPostgresChange = false
         } else {
             // Catch any other events that contain postgres change data in payload

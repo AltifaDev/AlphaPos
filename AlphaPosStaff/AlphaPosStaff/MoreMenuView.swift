@@ -6,6 +6,7 @@ struct MoreMenuView: View {
     @AppStorage("app_language") private var appLanguage = "en"
     @AppStorage("enable_notifications") private var enableNotifications = true
     @AppStorage("active_merchant_id") private var activeMerchantId = ""
+    @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @AppStorage("logged_in_employee_id") private var loggedInEmployeeId = ""
     
     @State private var isStoreIdCopied = false
@@ -13,7 +14,31 @@ struct MoreMenuView: View {
     @State private var showStatusMessage = false
     @State private var statusMessage = ""
     @State private var showingSignOutAlert = false
-    
+    @State private var todayTimecard: Timecard? = nil
+    @State private var isLoadingAttendance = false
+    @State private var attendanceLoadFailed = false
+
+    private var isCurrentlyClockedIn: Bool {
+        guard let card = todayTimecard else { return false }
+        return card.clockOut == nil || card.clockOut == 0.0
+    }
+
+    private var clockInDateString: String? {
+        guard let card = todayTimecard else { return nil }
+        let date = Date(timeIntervalSince1970: card.clockIn)
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        return "\(fmt.string(from: date)) น."
+    }
+
+    private var clockOutDateString: String? {
+        guard let card = todayTimecard, let out = card.clockOut, out > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: out)
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        return "\(fmt.string(from: date)) น."
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: APSpacing.lg) {
@@ -24,24 +49,144 @@ struct MoreMenuView: View {
                 
                 // 2. Work & Schedule Section
                 VStack(alignment: .leading, spacing: APSpacing.sm) {
-                    sectionTitle("work_schedule".localized(for: appLanguage))
+                    HStack {
+                        sectionTitle("work_schedule".localized(for: appLanguage))
+                        Spacer()
+                        if isLoadingAttendance {
+                            ProgressView()
+                                .scaleEffect(0.65)
+                        } else {
+                            Button(action: loadTodayAttendance) {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.textTertiary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                     
                     VStack(spacing: 0) {
+                        // Live attendance status banner
+                        if isCurrentlyClockedIn, let inTime = clockInDateString {
+                            HStack(spacing: APSpacing.md) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.appGreen.opacity(0.18))
+                                        .frame(width: 36, height: 36)
+                                    Circle()
+                                        .fill(Color.appGreen)
+                                        .frame(width: 10, height: 10)
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text("กำลังเข้างานอยู่ (On Shift)")
+                                            .font(.subheadline.weight(.bold))
+                                            .foregroundColor(.appGreen)
+                                        Text("· วันนี้")
+                                            .font(.caption)
+                                            .foregroundColor(.textTertiary)
+                                    }
+                                    Text("เข้างานเวลา \(inTime) · บันทึกเวลาแล้วที่ iPad ร้านค้า")
+                                        .font(.caption)
+                                        .foregroundColor(.textSecondary)
+                                }
+                                Spacer()
+                            }
+                            .padding(.horizontal, APSpacing.md)
+                            .padding(.vertical, 12)
+                            .background(Color.appGreen.opacity(0.06))
+
+                            Divider().background(Color.appDivider)
+                        } else if let inTime = clockInDateString, let outTime = clockOutDateString {
+                            HStack(spacing: APSpacing.md) {
+                                iconContainer(name: "checkmark.seal.fill", color: .appTeal)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("ออกงานแล้ววันนี้ (Off Shift)")
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundColor(.textPrimary)
+                                    Text("เวลา \(inTime) – \(outTime)")
+                                        .font(.caption)
+                                        .foregroundColor(.textSecondary)
+                                }
+                                Spacer()
+                            }
+                            .padding(.horizontal, APSpacing.md)
+                            .padding(.vertical, 12)
+                            .background(Color.appTeal.opacity(0.04))
+
+                            Divider().background(Color.appDivider)
+                        }
+
                         NavigationLink {
                             ShiftScheduleView()
                         } label: {
-                            menuRow(icon: "calendar.badge.clock", iconColor: .appAccent, title: "schedule".localized(for: appLanguage))
+                            menuRow(icon: "calendar.badge.clock", iconColor: .appAccent, title: "ตารางงาน (ดูอย่างเดียว)")
                         }
                         
                         Divider().background(Color.appDivider).padding(.leading, 48)
                         
-                        if let emp = loggedInEmployee {
-                            NavigationLink {
-                                TimecardView(employee: emp)
-                            } label: {
-                                menuRow(icon: "clock.badge.checkmark.fill", iconColor: .appTeal, title: "clock_in_out".localized(for: appLanguage))
+                        // Attendance row
+                        HStack(spacing: APSpacing.md) {
+                            if isCurrentlyClockedIn {
+                                iconContainer(name: "clock.badge.checkmark.fill", color: .appGreen)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("เข้างานแล้ววันนี้ (เวลา \(clockInDateString ?? ""))")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundColor(.textPrimary)
+                                    Text("ใช้ iPad ของร้านค้าเพื่อลงเวลาออกเมื่อเลิกงาน")
+                                        .font(.caption)
+                                        .foregroundColor(.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer()
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundColor(.appGreen)
+                            } else if let inTime = clockInDateString, let outTime = clockOutDateString {
+                                iconContainer(name: "clock.badge.checkmark", color: .appTeal)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("บันทึกเวลาวันนี้เรียบร้อย (\(inTime) – \(outTime))")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundColor(.textPrimary)
+                                    Text("ลงเวลาเข้าและออกงานผ่าน iPad ร้านค้าเรียบร้อยแล้ว")
+                                        .font(.caption)
+                                        .foregroundColor(.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer()
+                                Image(systemName: "checkmark.circle")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundColor(.appTeal)
+                            } else if attendanceLoadFailed {
+                                iconContainer(name: "exclamationmark.triangle.fill", color: .appAmber)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("ไม่สามารถตรวจสอบสถานะลงเวลาได้")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundColor(.textPrimary)
+                                    Text("ตรวจสอบการเชื่อมต่อแล้วกดรีเฟรชอีกครั้ง")
+                                        .font(.caption)
+                                        .foregroundColor(.textSecondary)
+                                }
+                                Spacer()
+                            } else {
+                                iconContainer(name: "ipad.and.iphone", color: .appTeal)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("ลงเวลาที่เครื่องร้านค้า (ยังไม่เข้างาน)")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundColor(.textPrimary)
+                                    Text("ใช้ iPad ของร้านค้าเพื่อยืนยันตัวตนและลงเวลาเข้างาน")
+                                        .font(.caption)
+                                        .foregroundColor(.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer()
+                                Image(systemName: "lock.fill")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundColor(.textSecondary)
                             }
                         }
+                        .padding(.horizontal, APSpacing.md)
+                        .padding(.vertical, 14)
                     }
                     .apCard(padding: 0)
                 }
@@ -55,7 +200,7 @@ struct MoreMenuView: View {
                             NavigationLink {
                                 StaffDashboardView(employee: emp, loggedInEmployee: $loggedInEmployee)
                             } label: {
-                                menuRow(icon: "person.text.rectangle.fill", iconColor: .appAmber, title: "my_account".localized(for: appLanguage))
+                                menuRow(icon: "person.text.rectangle.fill", iconColor: .appAmber, title: "ประวัติการทำงานและค่าจ้าง (ดูอย่างเดียว)")
                             }
                         }
                         
@@ -77,6 +222,15 @@ struct MoreMenuView: View {
                         }
                         .padding(.horizontal, APSpacing.md)
                         .padding(.vertical, 12)
+
+                        Divider().background(Color.appDivider).padding(.leading, 48)
+
+                        // Push Notification Settings
+                        NavigationLink {
+                            PushNotificationSettingsView()
+                        } label: {
+                            menuRow(icon: "bell.badge.fill", iconColor: .appPurple, title: "Push Notification Settings")
+                        }
                         
                         Divider().background(Color.appDivider).padding(.leading, 48)
                         
@@ -172,6 +326,41 @@ struct MoreMenuView: View {
                         .padding(.vertical, 12)
                         
                         Divider().background(Color.appDivider).padding(.leading, 48)
+
+                        diagnosticsValueRow(
+                            icon: "externaldrive.badge.icloud",
+                            iconColor: offlineSyncMode ? .appAmber : .appTeal,
+                            title: "offline_sync_mode",
+                            value: offlineSyncMode ? "true (Offline)" : "false (Online)"
+                        )
+
+                        Divider().background(Color.appDivider).padding(.leading, 48)
+
+                        diagnosticsValueRow(
+                            icon: "waveform.path.ecg",
+                            iconColor: NetworkService.shared.isRealtimeConnected ? .appTeal : .appRose,
+                            title: "Realtime",
+                            value: NetworkService.shared.isRealtimeConnected ? "Connected" : "Disconnected"
+                        )
+
+                        Divider().background(Color.appDivider).padding(.leading, 48)
+
+                        diagnosticsValueRow(
+                            icon: "clock.arrow.circlepath",
+                            iconColor: .appAccent,
+                            title: "Last Sync",
+                            value: NetworkService.shared.lastSyncDisplayDate?.formatted(date: .abbreviated, time: .standard) ?? "Never"
+                        )
+
+                        Divider().background(Color.appDivider).padding(.leading, 48)
+
+                        NavigationLink {
+                            SyncHealthView()
+                        } label: {
+                            menuRow(icon: "stethoscope", iconColor: .appAccent, title: "Sync Health & Diagnostics")
+                        }
+
+                        Divider().background(Color.appDivider).padding(.leading, 48)
                         
                         // Clear Cache Row
                         Button(action: {
@@ -240,6 +429,22 @@ struct MoreMenuView: View {
         .navigationTitle("more".localized(for: appLanguage))
         .navigationBarTitleDisplayMode(.large)
         .apNavBar()
+        .onAppear {
+            loadTodayAttendance()
+        }
+        .task(id: loggedInEmployeeId) {
+            // Attendance can be recorded on the shop iPad while this tab stays
+            // open. Periodically refresh the server-backed status so iPhone does
+            // not keep presenting a stale "not clocked in" value.
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard !Task.isCancelled else { break }
+                loadTodayAttendance()
+            }
+        }
+        .refreshable {
+            loadTodayAttendance()
+        }
 
         .alert("system_notification".localized(for: appLanguage), isPresented: $showStatusMessage) {
             Button("ok".localized(for: appLanguage), role: .cancel) { }
@@ -299,6 +504,61 @@ struct MoreMenuView: View {
                             .foregroundColor(.appGreen)
                             .fontWeight(.medium)
                     }
+
+                    if isCurrentlyClockedIn, let inTime = clockInDateString {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.appGreen)
+                                .frame(width: 6, height: 6)
+                            Text("เข้างาน \(inTime)")
+                                .font(.caption2)
+                                .foregroundColor(.appGreen)
+                                .fontWeight(.bold)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.appGreen.opacity(0.12))
+                        .cornerRadius(APRadius.sm)
+                    } else if clockOutDateString != nil {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.textTertiary)
+                                .frame(width: 6, height: 6)
+                            Text("ออกงานแล้ว")
+                                .font(.caption2)
+                                .foregroundColor(.textSecondary)
+                                .fontWeight(.medium)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.appSurfaceHigh)
+                        .cornerRadius(APRadius.sm)
+                    } else if attendanceLoadFailed {
+                        HStack(spacing: 4) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                            Text("ตรวจสอบสถานะไม่ได้")
+                        }
+                        .font(.caption2.weight(.medium))
+                        .foregroundColor(.appAmber)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.appAmber.opacity(0.12))
+                        .cornerRadius(APRadius.sm)
+                    } else {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.textTertiary)
+                                .frame(width: 6, height: 6)
+                            Text("ยังไม่เข้างาน")
+                                .font(.caption2)
+                                .foregroundColor(.textSecondary)
+                                .fontWeight(.medium)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.appSurfaceHigh)
+                        .cornerRadius(APRadius.sm)
+                    }
                 }
             }
             Spacer()
@@ -352,5 +612,49 @@ struct MoreMenuView: View {
         .padding(.horizontal, APSpacing.md)
         .padding(.vertical, 14)
         .contentShape(Rectangle())
+    }
+
+    private func diagnosticsValueRow(icon: String, iconColor: Color, title: String, value: String) -> some View {
+        HStack(spacing: APSpacing.md) {
+            iconContainer(name: icon, color: iconColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption2.weight(.bold))
+                    .foregroundColor(.textSecondary)
+                Text(value)
+                    .font(.system(.caption, design: value.contains("-") ? .monospaced : .default))
+                    .foregroundColor(.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, APSpacing.md)
+        .padding(.vertical, 12)
+    }
+
+    private func loadTodayAttendance() {
+        guard let empId = loggedInEmployee?.id, !empId.isEmpty else { return }
+        isLoadingAttendance = true
+        Task {
+            do {
+                let cards = try await NetworkService.shared.fetchTimecards(for: empId)
+                await MainActor.run {
+                    let cal = Calendar.current
+                    self.todayTimecard = cards.first { tc in
+                        let d = Date(timeIntervalSince1970: tc.clockIn)
+                        return cal.isDateInToday(d)
+                    }
+                    self.attendanceLoadFailed = false
+                    self.isLoadingAttendance = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.attendanceLoadFailed = true
+                    self.isLoadingAttendance = false
+                }
+            }
+        }
     }
 }

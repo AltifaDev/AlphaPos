@@ -14,8 +14,8 @@
   ],
   "routes": [
     {
-      "pattern": "sync.alphaposweb.com",
-      "custom_domain": true
+      "pattern": "sync.alphaposweb.com/*",
+      "zone_name": "alphaposweb.com"
     }
   ],
   "vars": {

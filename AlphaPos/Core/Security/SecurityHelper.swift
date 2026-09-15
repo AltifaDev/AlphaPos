@@ -56,7 +56,8 @@ struct SecurityHelper {
         // New format: iter:<n>:<salt_b64>:<hash_hex>
         let parts = storedHash.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
         guard parts.count == 4,
-              let iterations = Int(parts[1]) else { return false }
+              let iterations = Int(parts[1]),
+              (1...100_000).contains(iterations) else { return false }
         let salt = String(parts[2])
         let expectedHash = String(parts[3])
         
@@ -101,5 +102,18 @@ struct SecurityHelper {
     /// Verify with salt using constant-time comparison (legacy).
     static func verify(value: String, salt: String, againstHash hash: String) -> Bool {
         return constantTimeCompare(sha256(value, salt: salt), hash)
+    }
+
+    /// Extract a human-readable error from Supabase/auth JSON bodies.
+    static func serverMessage(from data: Data, fallback: String) -> String {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return fallback
+        }
+        for key in ["msg", "message", "error_description", "error"] {
+            if let message = json[key] as? String, !message.isEmpty {
+                return message
+            }
+        }
+        return fallback
     }
 }

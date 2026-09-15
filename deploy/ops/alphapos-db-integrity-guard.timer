@@ -1,0 +1,11 @@
+[Unit]
+Description=Check AlphaPos database integrity every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=alphapos-db-integrity-guard.service
+
+[Install]
+WantedBy=timers.target

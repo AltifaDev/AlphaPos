@@ -10,6 +10,8 @@ struct ForceCloseStaleShiftSheet: View {
     
     @Query(sort: \Payment.paidAt, order: .reverse) private var allPayments: [Payment]
     @Query(sort: \CashMovement.updatedAt, order: .reverse) private var allCashMovements: [CashMovement]
+    @Query private var allRefunds: [RefundTransaction]
+    @Query private var allRegisterSessions: [RegisterSession]
     @Query(sort: \User.username) private var users: [User]
     
     @State private var actualCashString = ""
@@ -19,15 +21,32 @@ struct ForceCloseStaleShiftSheet: View {
     var onCancel: (() -> Void)? = nil
     
     // Financial calculations for this session
+    private func financialScope(closingAt: Date) -> ForceCloseSessionScope {
+        ForceCloseSessionScope(session: session, sessions: allRegisterSessions, closingAt: closingAt)
+    }
+
     private var cashSalesAmount: Double {
-        allPayments
+        let scope = financialScope(closingAt: Date())
+        return allPayments
             .filter { payment in
                 !payment.isDeleted &&
-                payment.status == "completed" &&
+                payment.isCaptured &&
                 payment.paymentMethod.lowercased() == "cash" &&
-                payment.paidAt >= session.openedAt
+                scope.contains(payment)
             }
             .reduce(0.0) { $0 + $1.amount }
+    }
+
+    private var cashRefundsAmount: Double {
+        let scope = financialScope(closingAt: Date())
+        return allRefunds
+            .filter {
+                !$0.isDeleted &&
+                $0.status == "completed" &&
+                scope.contains($0) &&
+                ($0.refundMethod == "cash" || $0.originalPayment?.paymentMethod == "cash")
+            }
+            .reduce(0.0) { $0 + $1.refundAmount }
     }
     
     private var cashInAmount: Double {
@@ -51,7 +70,7 @@ struct ForceCloseStaleShiftSheet: View {
     }
     
     private var expectedCash: Double {
-        session.openingCash + cashSalesAmount + cashInAmount - cashOutAmount
+        session.openingCash + cashSalesAmount + cashInAmount - cashOutAmount - cashRefundsAmount
     }
     
     private func localT(_ key: String) -> String {
@@ -208,27 +227,104 @@ struct ForceCloseStaleShiftSheet: View {
     }
     
     private func closeStaleSession() {
+        let closeTime = Date()
+        let scope = financialScope(closingAt: closeTime)
+        let payments = allPayments.filter {
+            !$0.isDeleted && scope.contains($0)
+        }
+        let captured = payments.filter(\.isCaptured)
+        var orderMap: [UUID: Order] = [:]
+        for payment in captured {
+            if let order = payment.order { orderMap[order.id] = order }
+        }
+        let orders = orderMap.values.filter(\.isRecognizedSale)
+        let refunds = allRefunds.filter {
+            !$0.isDeleted && $0.status == "completed" &&
+            scope.contains($0)
+        }
+        let cashRefunds = refunds.filter {
+            $0.refundMethod == "cash" || $0.originalPayment?.paymentMethod == "cash"
+        }.reduce(0.0) { $0 + $1.refundAmount }
+        var tenderValues: [String: (amount: Double, count: Int)] = [:]
+        for payment in captured {
+            let raw = payment.paymentMethod.lowercased()
+            let name = raw == "cash" ? (lm.currentLanguage == .thai ? "เงินสด" : "Cash") : payment.paymentMethod
+            let current = tenderValues[name] ?? (0, 0)
+            tenderValues[name] = (current.amount + payment.amount, current.count + 1)
+        }
+        let tenders = tenderValues.map {
+            ShiftTenderSummary(method: $0.key, count: $0.value.count, received: $0.value.amount, refunded: 0)
+        }.sorted { $0.received > $1.received }
+
         let actual = Double(actualCashString) ?? 0.0
-        let discrepancy = actual - expectedCash
+        let capturedCash = captured
+            .filter { $0.paymentMethod.lowercased() == "cash" }
+            .reduce(0.0) { $0 + $1.amount }
+        let correctedExpectedCash = session.openingCash + capturedCash + cashInAmount - cashOutAmount - cashRefunds
+        let discrepancy = actual - correctedExpectedCash
         
-        session.closedAt = Date()
-        session.expectedClosingCash = expectedCash
+        session.closedAt = closeTime
+        session.expectedClosingCash = correctedExpectedCash
         session.actualClosingCash = actual
         session.cashDiscrepancy = discrepancy
         session.closedByUserId = users.first?.id ?? UUID()
         session.notes = closingNotes.isEmpty ? nil : closingNotes
         session.isSynced = false
         session.updatedAt = Date()
+
+        let grossSales = orders.reduce(0.0) { $0 + $1.total + $1.discount }
+        let discounts = orders.reduce(0.0) { $0 + $1.discount }
+        let refundTotal = refunds.reduce(0.0) { $0 + $1.refundAmount }
+        let report = ShiftReport(
+            registerSession: session,
+            reportType: "Z",
+            grossSales: grossSales,
+            netSales: max(0, grossSales - discounts - refundTotal),
+            totalTax: orders.reduce(0.0) { $0 + $1.tax },
+            totalDiscounts: discounts,
+            totalRefunds: refundTotal,
+            cashExpected: correctedExpectedCash,
+            cashActual: actual,
+            overShort: discrepancy
+        )
+        modelContext.insert(report)
+        AccountingLedgerService.createClosureSnapshot(
+            session: session,
+            report: report,
+            cashIn: cashInAmount,
+            cashOut: cashOutAmount,
+            transactionCount: captured.count,
+            generatedByUserId: session.closedByUserId,
+            in: modelContext
+        )
         
         modelContext.saveWithLogging(label: #function)
         APHaptic.trigger()
         
         Task {
             _ = try? await NetworkManager.shared.uploadRegisterSession(session)
+            _ = try? await NetworkManager.shared.uploadShiftReportDetailed(report)
+            _ = await PrintService.shared.printZReport(
+                session: session,
+                report: report,
+                tenders: tenders,
+                receiptCount: orders.count,
+                failedPaymentCount: payments.filter { $0.status == "failed" }.count,
+                cashMovementsIn: cashInAmount,
+                cashMovementsOut: cashOutAmount,
+                openedBy: displayName(for: session.openedByUserId),
+                closedBy: displayName(for: session.closedByUserId),
+                isThai: lm.currentLanguage == .thai
+            )
         }
         
         onComplete?()
         dismiss()
+    }
+
+    private func displayName(for userId: UUID?) -> String {
+        guard let userId, let user = users.first(where: { $0.id == userId }) else { return "" }
+        return user.username
     }
     
     private func formatDate(_ date: Date) -> String {

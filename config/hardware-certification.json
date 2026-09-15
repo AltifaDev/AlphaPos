@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "policy": "fail_closed",
+  "devices": [],
+  "required_test_cases": [
+    "connect",
+    "reconnect_after_network_loss",
+    "thai_text",
+    "58mm_receipt",
+    "80mm_receipt",
+    "cash_drawer_pulse",
+    "paper_out_recovery",
+    "duplicate_print_prevention"
+  ]
+}

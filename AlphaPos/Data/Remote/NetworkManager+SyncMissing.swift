@@ -23,11 +23,11 @@ extension NetworkManager {
     // ─── Expense ────────────────────────────────────────────────────────
 
     func fetchExpensesFromSupabase() async throws -> [[String: Any]] {
-        try await fetchMasterData(endpoint: "expenses")
+        try await fetchBranchScopedOperationalData(endpoint: "expenses")
     }
 
     func uploadExpense(_ expense: Expense) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
             "id": expense.id.uuidString.lowercased(),
             "merchant_id": merchantId,
@@ -41,6 +41,15 @@ extension NetworkManager {
             "payment_method": expense.paymentMethod,
             "status": expense.status,
             "is_capex": expense.isCapEx,
+            "recognition_type": expense.recognitionType,
+            "expense_nature": expense.expenseNature,
+            "is_vat_recoverable": expense.isVATRecoverable,
+            "is_recurring": expense.isRecurring,
+            "recurrence_frequency": expense.recurrenceFrequency,
+            "useful_life_months": expense.usefulLifeMonths,
+            "residual_value": expense.residualValue,
+            "expected_monthly_cash_benefit": expense.expectedMonthlyCashBenefit,
+            "expected_monthly_incremental_cost": expense.expectedMonthlyIncrementalCost,
             "date": NetworkManager.iso8601.string(from: expense.date),
             "is_deleted": expense.isDeleted,
             "updated_at": NetworkManager.iso8601.string(from: expense.updatedAt)
@@ -48,6 +57,11 @@ extension NetworkManager {
         if let invoiceNo = expense.invoiceNo { payload["invoice_no"] = invoiceNo }
         if let unit = expense.unit { payload["unit"] = unit }
         if let notes = expense.notes { payload["notes"] = notes }
+        if let value = expense.serviceStartDate { payload["service_start_date"] = NetworkManager.iso8601.string(from: value) }
+        if let value = expense.serviceEndDate { payload["service_end_date"] = NetworkManager.iso8601.string(from: value) }
+        if let value = expense.assetClass { payload["asset_class"] = value }
+        if let value = expense.availableForUseDate { payload["available_for_use_date"] = NetworkManager.iso8601.string(from: value) }
+        if let value = expense.investmentProject { payload["investment_project"] = value }
         if let supplierId = expense.supplier?.id { payload["supplier_id"] = supplierId.uuidString.lowercased() }
         if let branchId = expense.branch?.id { payload["branch_id"] = branchId.uuidString.lowercased() }
         return try await upsertMasterData(endpoint: "expenses", payload: payload)
@@ -64,7 +78,7 @@ extension NetworkManager {
     }
 
     func uploadSupplier(_ supplier: Supplier) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
             "id": supplier.id.uuidString.lowercased(),
             "merchant_id": merchantId,
@@ -76,6 +90,7 @@ extension NetworkManager {
         if let phone = supplier.phone { payload["phone"] = phone }
         if let email = supplier.email { payload["email"] = email }
         if let address = supplier.address { payload["address"] = address }
+        // tax_id / payment_terms / lead_time stored locally; push when remote schema supports them
         return try await upsertMasterData(endpoint: "suppliers", payload: payload)
     }
 
@@ -90,7 +105,7 @@ extension NetworkManager {
     }
 
     func uploadTaxRate(_ taxRate: TaxRate) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let payload: [String: Any] = [
             "id": taxRate.id.uuidString.lowercased(),
             "merchant_id": merchantId,
@@ -117,16 +132,41 @@ extension NetworkManager {
     }
 
     func uploadRecipe(_ recipe: Recipe) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
             "id": recipe.id.uuidString.lowercased(),
             "merchant_id": merchantId,
             "quantity_required": recipe.quantityRequired,
+            "yield_percentage": recipe.yieldPercentage,
             "is_deleted": recipe.isDeleted,
             "updated_at": NetworkManager.iso8601.string(from: recipe.updatedAt)
         ]
         if let menuItemId = recipe.menuItem?.id { payload["menu_item_id"] = menuItemId }
         if let inventoryItemId = recipe.inventoryItem?.id { payload["inventory_item_id"] = inventoryItemId.uuidString.lowercased() }
+        if let quantityUnit = recipe.quantityUnit { payload["quantity_unit"] = quantityUnit }
+
+        // Recipe identity is the active menu-item/inventory-item pair, not the
+        // UUID generated independently by each offline device. Update the
+        // canonical server row first to avoid the partial unique-index conflict.
+        if !recipe.isDeleted,
+           let menuItemId = recipe.menuItem?.id,
+           let inventoryItemId = recipe.inventoryItem?.id {
+            var updatePayload = payload
+            updatePayload.removeValue(forKey: "id")
+            let patchedData = try await sendSupabaseRequest(
+                method: "PATCH",
+                endpoint: "recipes",
+                queryItems: [
+                    URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                    URLQueryItem(name: "menu_item_id", value: "eq.\(menuItemId)"),
+                    URLQueryItem(name: "inventory_item_id", value: "eq.\(inventoryItemId.uuidString.lowercased())"),
+                    URLQueryItem(name: "is_deleted", value: "eq.false")
+                ],
+                payload: updatePayload
+            )
+            let patchedCount = (try? JSONSerialization.jsonObject(with: patchedData) as? [[String: Any]])?.count ?? 0
+            if patchedCount > 0 { return true }
+        }
         return try await upsertMasterData(endpoint: "recipes", payload: payload)
     }
 
@@ -137,14 +177,16 @@ extension NetworkManager {
     // ─── RestaurantWall ─────────────────────────────────────────────────
 
     func fetchRestaurantWallsFromSupabase() async throws -> [[String: Any]] {
-        try await fetchMasterData(endpoint: "restaurant_walls")
+        try await fetchBranchScopedOperationalData(endpoint: "restaurant_walls")
     }
 
     func uploadRestaurantWall(_ wall: RestaurantWall) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
         var payload: [String: Any] = [
             "id": wall.id.uuidString.lowercased(),
             "merchant_id": merchantId,
+            "branch_id": branchId,
             "floor": wall.floor,
             "type": wall.typeString,
             "start_x": wall.startX,
@@ -171,7 +213,7 @@ extension NetworkManager {
     }
 
     func uploadReceiptTemplate(_ template: ReceiptTemplate) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
             "id": template.id.uuidString.lowercased(),
             "merchant_id": merchantId,
@@ -205,17 +247,25 @@ extension NetworkManager {
     // ─── TableLayoutPreset ──────────────────────────────────────────────
 
     func fetchTableLayoutPresetsFromSupabase() async throws -> [[String: Any]] {
-        try await fetchMasterData(endpoint: "table_layout_presets")
+        try await fetchBranchScopedOperationalData(endpoint: "table_layout_presets")
     }
 
     func uploadTableLayoutPreset(_ preset: TableLayoutPreset) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        guard let diningAreaId = preset.diningAreaId else {
+            throw NSError(
+                domain: "TableLayoutPresetMigration",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Layout preset has no dining area; migration backfill is still required"]
+            )
+        }
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
             "id": preset.id.uuidString.lowercased(),
             "merchant_id": merchantId,
             "branch_id": preset.branchId,
-            "floor": preset.floor,
+            "dining_area_id": diningAreaId.uuidString.lowercased(),
             "name": preset.name,
+            "schema_version": preset.schemaVersion,
             "bg_image_scale": preset.bgImageScale,
             "bg_image_offset_x": preset.bgImageOffsetX,
             "bg_image_offset_y": preset.bgImageOffsetY,
@@ -224,11 +274,27 @@ extension NetworkManager {
             "updated_at": NetworkManager.iso8601.string(from: preset.updatedAt)
         ]
         if let bgFilename = preset.bgImageFilename { payload["bg_image_filename"] = bgFilename }
+        if let checksum = preset.bgImageChecksum { payload["bg_image_checksum"] = checksum }
         return try await upsertMasterData(endpoint: "table_layout_presets", payload: payload)
     }
 
     func deleteTableLayoutPresetOnServer(id: UUID) async throws -> Bool {
         try await softDeleteMasterData(endpoint: "table_layout_presets", id: id)
+    }
+
+    private func fetchBranchScopedOperationalData(endpoint: String) async throws -> [[String: Any]] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: endpoint, queryItems: [
+            URLQueryItem(name: "select", value: "*"),
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
+            URLQueryItem(name: "is_deleted", value: "eq.false")
+        ])
+        guard let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw NetworkError.invalidResponse
+        }
+        return rows
     }
 
     // ─── CurrencyExchangeRate ───────────────────────────────────────────
@@ -238,7 +304,7 @@ extension NetworkManager {
     }
 
     func uploadCurrencyExchangeRate(_ rate: CurrencyExchangeRate) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let payload: [String: Any] = [
             "id": rate.id.uuidString.lowercased(),
             "merchant_id": merchantId,
@@ -265,7 +331,7 @@ extension NetworkManager {
     }
 
     func fetchRolePermissionsFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "role_permissions",
@@ -281,7 +347,7 @@ extension NetworkManager {
     }
 
     func uploadRole(_ role: Role) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let payload: [String: Any] = [
             "id": role.id.uuidString.lowercased(),
             "merchant_id": merchantId,
@@ -304,11 +370,10 @@ extension NetworkManager {
     }
 
     func uploadUser(_ user: User) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
-            "id": user.id.uuidString.lowercased(),
             "merchant_id": merchantId,
-            "username": user.username,
+            "username": user.username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
             "password_hash": user.passwordHash,
             "is_active": user.isActive,
             "is_deleted": user.isDeleted,
@@ -320,6 +385,51 @@ extension NetworkManager {
             _ = try await uploadRole(role)
             payload["role_id"] = role.id.uuidString.lowercased()
         }
+
+        // The local User UUID is the primary identity. Only fall back to the
+        // merchant-scoped username for legacy rows whose local UUID has not yet
+        // been reconciled. Never choose a row by updated_at: duplicate users
+        // caused PINs to be written to one account while employees.user_id
+        // pointed to another.
+        let existingById = try await sendSupabaseRequest(
+            method: "GET",
+            endpoint: "users",
+            queryItems: [
+                URLQueryItem(name: "select", value: "id"),
+                URLQueryItem(name: "id", value: "eq.\(user.id.uuidString.lowercased())"),
+                URLQueryItem(name: "is_deleted", value: "eq.false"),
+                URLQueryItem(name: "limit", value: "1")
+            ]
+        )
+        let existingData: Data
+        if let rows = try? JSONSerialization.jsonObject(with: existingById) as? [[String: Any]],
+           !rows.isEmpty {
+            existingData = existingById
+        } else {
+            existingData = try await sendSupabaseRequest(
+                method: "GET",
+                endpoint: "users",
+                queryItems: [
+                    URLQueryItem(name: "select", value: "id"),
+                    URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                    URLQueryItem(name: "username", value: "eq.\(user.username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"),
+                    URLQueryItem(name: "is_deleted", value: "eq.false"),
+                    URLQueryItem(name: "limit", value: "1")
+                ]
+            )
+        }
+        if let rows = try? JSONSerialization.jsonObject(with: existingData) as? [[String: Any]],
+           let id = rows.first?["id"] as? String {
+            _ = try await sendSupabaseRequest(
+                method: "PATCH",
+                endpoint: "users",
+                queryItems: [URLQueryItem(name: "id", value: "eq.\(id)")],
+                payload: payload
+            )
+            return true
+        }
+
+        payload["id"] = user.id.uuidString.lowercased()
         return try await upsertMasterData(endpoint: "users", payload: payload)
     }
 
@@ -334,7 +444,7 @@ extension NetworkManager {
     }
 
     func uploadOrderItemModifier(_ oim: OrderItemModifier) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
             "id": oim.id.uuidString.lowercased(),
             "merchant_id": merchantId,
@@ -360,7 +470,15 @@ extension NetworkManager {
     // ─── ShiftReport fetch & delete ─────────────────────────────────────
 
     func fetchShiftReportsFromSupabase() async throws -> [[String: Any]] {
-        try await fetchMasterData(endpoint: "shift_reports")
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "shift_reports", queryItems: [
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
+            URLQueryItem(name: "order", value: "updated_at.asc"),
+            URLQueryItem(name: "limit", value: "2000")
+        ])
+        return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
     }
 
     func deleteShiftReportOnServer(id: UUID) async throws -> Bool {

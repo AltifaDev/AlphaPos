@@ -8,7 +8,10 @@ struct MainTabView: View {
     @StateObject private var deepLinkRouter = DeepLinkRouter.shared
     
     private var requestsCount: Int {
-        networkService.serviceRequests.filter { $0.status == "pending" }.count
+        networkService.serviceRequests.filter {
+            $0.status == "pending"
+                && StaffNotificationPolicy.isCurrentBusinessDay(timestamp: $0.createdAt)
+        }.count
     }
     
     @AppStorage("app_language") private var appLanguage = "en"
@@ -76,7 +79,6 @@ struct MainTabView: View {
                 loggedInEmployeeName = "\(emp.firstName) \(emp.lastName)"
                 loggedInEmployeeRole = emp.role
             }
-            prefetchMenu()
             startCentralSyncPolling()
         }
         .onChange(of: loggedInEmployee) { newEmp in
@@ -144,19 +146,20 @@ struct MainTabView: View {
         }) {
             if let tableNum = deepLinkTableNumber,
                let table = findTable(byNumber: tableNum) {
-                // ไม่ใส่ NavigationStack ซ้อน — TableDetailView ถูกออกแบบให้อยู่ใน stack ของ parent
-                TableDetailView(table: table)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                showTableDetail = false
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
+                NavigationStack {
+                    TableDetailView(table: table)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button {
+                                    showTableDetail = false
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
-                    }
-                    .apColorScheme()
+                }
+                .apColorScheme()
             }
         }
     }
@@ -185,13 +188,6 @@ struct MainTabView: View {
     }
     
     // MARK: - Existing Helpers
-    
-    private func prefetchMenu() {
-        Task {
-            // Warm-up cache
-            _ = try? await networkService.fetchMenu()
-        }
-    }
     
     private func startCentralSyncPolling() {
         Task {

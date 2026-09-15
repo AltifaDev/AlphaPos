@@ -5,7 +5,7 @@ import SwiftData
 extension NetworkManager {
     // MARK: - Loyalty Transactions Sync
     func fetchLoyaltyTransactionsFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "loyalty_transactions",
@@ -22,7 +22,7 @@ extension NetworkManager {
     }
 
     func uploadLoyaltyTransaction(_ transaction: RemoteLoyaltyTransactionUploadable) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         guard let customerId = transaction.customer?.id.uuidString.lowercased() else {
             throw NetworkError.serverError("Loyalty transaction requires a customer.")
         }
@@ -83,7 +83,7 @@ extension NetworkManager {
 
     // MARK: - Gift Cards Sync
     func fetchGiftCardsFromSupabase() async throws -> [[String: Any]] {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let data = try await sendSupabaseRequest(
             method: "GET",
             endpoint: "gift_cards",
@@ -100,7 +100,7 @@ extension NetworkManager {
     }
 
     func uploadGiftCard(_ giftCard: RemoteGiftCardUploadable) async throws -> Bool {
-        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? config.defaultMerchantId
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         var payload: [String: Any] = [
             "id": giftCard.id.uuidString.lowercased(),
             "merchant_id": merchantId,

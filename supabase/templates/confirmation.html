@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
+  <title>AlphaPos</title>
+  <!--
+    Multi-locale confirmation mail (GoTrue html/template).
+    Locale from signup user_metadata: preferred_language (en|th|zh|ja|ko|id|ms)
+    Vars: .ConfirmationURL .Token .Email .Data
+  -->
+</head>
+<body style="margin:0;padding:0;background-color:#F4F6F9;-webkit-text-size-adjust:100%;">
+{{ $lang := "en" }}
+{{ with .Data }}{{ with index . "preferred_language" }}{{ $lang = printf "%v" . }}{{ end }}{{ end }}
+
+{{ if eq $lang "th" }}
+  <div style="display:none;max-height:0;overflow:hidden;">ยืนยันอีเมลเพื่อตั้งค่าร้าน AlphaPos ของคุณ</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.3;font-weight:700;color:#0F172A;">ยืนยันอีเมลของคุณ</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">ขอบคุณที่สมัคร AlphaPos{{ if .Email }} — ยืนยัน <strong style="color:#0F172A;">{{ .Email }}</strong> เพื่อสร้างร้านของคุณให้เสร็จ{{ else }} เพื่อสร้างร้านของคุณให้เสร็จ{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">ยืนยันอีเมล</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#64748B;">หรือกรอกรหัสนี้</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">รหัสหมดอายุในประมาณ 1 ชั่วโมง</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;line-height:1.55;color:#64748B;">ถ้าปุ่มใช้ไม่ได้ ให้คัดลอกลิงก์นี้ไปเปิดในเบราว์เซอร์:</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">หากคุณไม่ได้สมัครบัญชี AlphaPos สามารถเพิกเฉยอีเมลนี้ได้</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+
+{{ else if eq $lang "zh" }}
+  <div style="display:none;max-height:0;overflow:hidden;">确认邮箱以完成 AlphaPos 门店设置</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;font-weight:700;color:#0F172A;">确认您的邮箱</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">感谢注册 AlphaPos{{ if .Email }}。请确认 <strong style="color:#0F172A;">{{ .Email }}</strong> 以完成门店创建。{{ else }}。请确认邮箱以完成门店创建。{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">确认邮箱</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;color:#64748B;">或输入此验证码</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">约 1 小时后过期</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;color:#64748B;">如果按钮无效，请复制此链接到浏览器：</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">如非本人注册，可忽略此邮件。</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+
+{{ else if eq $lang "ja" }}
+  <div style="display:none;max-height:0;overflow:hidden;">AlphaPosの店舗設定を完了するにはメールを確認してください</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;font-weight:700;color:#0F172A;">メールアドレスを確認</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">AlphaPosへのご登録ありがとうございます。{{ if .Email }}<strong style="color:#0F172A;">{{ .Email }}</strong> を確認して店舗作成を完了してください。{{ else }}メールを確認して店舗作成を完了してください。{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">メールを確認</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;color:#64748B;">またはコードを入力</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">約1時間で期限切れ</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;color:#64748B;">ボタンが使えない場合は、このリンクをブラウザに貼り付けてください：</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">この登録に心当たりがない場合は、このメールを無視してください。</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+
+{{ else if eq $lang "ko" }}
+  <div style="display:none;max-height:0;overflow:hidden;">AlphaPos 매장 설정을 완료하려면 이메일을 확인하세요</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;font-weight:700;color:#0F172A;">이메일을 확인하세요</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">AlphaPos에 가입해 주셔서 감사합니다.{{ if .Email }} <strong style="color:#0F172A;">{{ .Email }}</strong>을(를) 확인하여 매장 생성을 완료하세요.{{ else }} 이메일을 확인하여 매장 생성을 완료하세요.{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">이메일 확인</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;color:#64748B;">또는 이 코드 입력</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">약 1시간 후 만료</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;color:#64748B;">버튼이 작동하지 않으면 이 링크를 브라우저에 붙여넣으세요:</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">가입하지 않으셨다면 이 이메일을 무시하셔도 됩니다.</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+
+{{ else if or (eq $lang "id") (eq $lang "ms") }}
+  <div style="display:none;max-height:0;overflow:hidden;">Sahkan e-mel untuk selesaikan tetapan kedai AlphaPos</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;font-weight:700;color:#0F172A;">{{ if eq $lang "id" }}Konfirmasi email Anda{{ else }}Sahkan e-mel anda{{ end }}</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">{{ if eq $lang "id" }}Terima kasih telah mendaftar AlphaPos.{{ else }}Terima kasih kerana mendaftar AlphaPos.{{ end }}{{ if .Email }} {{ if eq $lang "id" }}Konfirmasi{{ else }}Sahkan{{ end }} <strong style="color:#0F172A;">{{ .Email }}</strong> {{ if eq $lang "id" }}untuk menyelesaikan pembuatan toko.{{ else }}untuk menyelesaikan penciptaan kedai.{{ end }}{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">{{ if eq $lang "id" }}Konfirmasi email{{ else }}Sahkan e-mel{{ end }}</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;color:#64748B;">{{ if eq $lang "id" }}Atau masukkan kode ini{{ else }}Atau masukkan kod ini{{ end }}</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">{{ if eq $lang "id" }}Kedaluwarsa dalam ~1 jam{{ else }}Tamat dalam ~1 jam{{ end }}</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;color:#64748B;">{{ if eq $lang "id" }}Jika tombol tidak berfungsi, tempel tautan ini di browser:{{ else }}Jika butang tidak berfungsi, tampal pautan ini dalam pelayar:{{ end }}</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">{{ if eq $lang "id" }}Jika Anda tidak mendaftar, abaikan email ini.{{ else }}Jika anda tidak mendaftar, abaikan e-mel ini.{{ end }}</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+
+{{ else }}
+  <div style="display:none;max-height:0;overflow:hidden;">Confirm your email to finish setting up your AlphaPos store.</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.3;font-weight:700;color:#0F172A;">Confirm your email</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">Thanks for signing up for AlphaPos.{{ if .Email }} Confirm <strong style="color:#0F172A;">{{ .Email }}</strong> to finish creating your store.{{ else }} Confirm your email address to finish creating your store.{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">Confirm email address</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#64748B;">Or enter this code</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">Expires in about 1 hour</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;line-height:1.55;color:#64748B;">If the button doesn’t work, copy and paste this link into your browser:</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">If you didn’t create an AlphaPos account, you can safely ignore this email.</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+{{ end }}
+</body>
+</html>

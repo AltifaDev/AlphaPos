@@ -28,10 +28,6 @@ struct CustomerCRMView: View {
     @State private var selectedCustomer: Customer? = nil
 
     @State private var showingAddCustomerSheet = false
-    @State private var newCustomerName = ""
-    @State private var newCustomerPhone = ""
-    @State private var newCustomerEmail = ""
-
     enum CustomerSegment: String, CaseIterable, Identifiable {
         case all = "All"
         case vip = "VIP"
@@ -64,11 +60,6 @@ struct CustomerCRMView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            headerSection
-
-            Divider().background(Color.appDivider)
-
             // Content
             HStack(spacing: 0) {
                 // Customer list
@@ -83,82 +74,25 @@ struct CustomerCRMView: View {
             }
         }
         .background(Color.appBackground)
-        .sheet(isPresented: $showingAddCustomerSheet) {
-            NavigationStack {
-                Form {
-                    Section(header: Text("Customer Information")) {
-                        TextField("Name", text: $newCustomerName)
-                        TextField("Phone", text: $newCustomerPhone)
-                            .keyboardType(.phonePad)
-                        TextField("Email", text: $newCustomerEmail)
-                            .keyboardType(.emailAddress)
-                            .autocapitalization(.none)
-                    }
-                }
-                .navigationTitle("Add Customer")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") {
-                            showingAddCustomerSheet = false
-                            clearAddCustomerFields()
-                        }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") {
-                            saveCustomer()
-                        }
-                        .disabled(newCustomerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                headerSection
             }
         }
-    }
-
-    private func clearAddCustomerFields() {
-        newCustomerName = ""
-        newCustomerPhone = ""
-        newCustomerEmail = ""
-    }
-
-    private func saveCustomer() {
-        let name = newCustomerName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let phone = newCustomerPhone.trimmingCharacters(in: .whitespacesAndNewlines)
-        let email = newCustomerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let newCustomer = Customer(
-            name: name,
-            email: email.isEmpty ? nil : email,
-            phone: phone.isEmpty ? nil : phone
-        )
-        modelContext.insert(newCustomer)
-        try? modelContext.save()
-
-        // Background sync
-        Task {
-            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        .sheet(isPresented: $showingAddCustomerSheet) {
+            AddCustomerSheet { newCustomer in
+                modelContext.insert(newCustomer)
+                modelContext.saveWithLogging(label: "CustomerCRMView.addCustomer")
+                selectedCustomer = newCustomer
+                Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+            }
         }
-
-        selectedCustomer = newCustomer
-        showingAddCustomerSheet = false
-        clearAddCustomerFields()
-        APHaptic.trigger()
     }
 
     // MARK: - Header
 
     private var headerSection: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("customers_title".t)
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundColor(.textPrimary)
-                Text("\(customers.count) " + "customers_count_suffix".t)
-                    .font(.subheadline)
-                    .foregroundColor(.textSecondary)
-            }
-
-            Spacer()
-
+        HStack(spacing: 8) {
             // Segment pills
             HStack(spacing: 8) {
                 ForEach(CustomerSegment.allCases) { segment in
@@ -181,8 +115,6 @@ struct CustomerCRMView: View {
                 }
             }
 
-            Spacer()
-
             // Add customer button
             Button {
                 showingAddCustomerSheet = true
@@ -200,7 +132,6 @@ struct CustomerCRMView: View {
             }
             .buttonStyle(.plain)
         }
-        .padding()
     }
 
     // MARK: - Customer List
@@ -327,8 +258,21 @@ struct CustomerCRMView: View {
                             statCard(title: "Points", value: "\(customer.loyaltyPoints)", color: .purple)
                         }
 
+                        if customer.dateOfBirth != nil || customer.address != nil || customer.taxId != nil || customer.allergies != nil || customer.preferences != nil {
+                            VStack(alignment: .leading, spacing: 8) {
+                                if let value = customer.dateOfBirth { profileDetail("Date of birth", value.formatted(date: .long, time: .omitted)) }
+                                if let value = customer.address { profileDetail("Address", value) }
+                                if let value = customer.taxId { profileDetail("Tax ID", value) }
+                                if let value = customer.allergies { profileDetail("Allergies", value) }
+                                if let value = customer.preferences { profileDetail("Preferences", value) }
+                            }
+                            .padding()
+                            .background(Color.appSurfaceHigh)
+                            .cornerRadius(12)
+                        }
+
                         // Purchase history from actual orders
-                        let customerOrders = allOrders.filter { $0.customer?.id == customer.id && $0.status == "completed" }
+                        let customerOrders = allOrders.filter { $0.customer?.id == customer.id && $0.isRecognizedSale }
 
                         // Personalized recommendations
                         personalizedRecommendationsCard(for: customer, orders: customerOrders)
@@ -400,12 +344,27 @@ struct CustomerCRMView: View {
         .cornerRadius(10)
     }
 
+    private func profileDetail(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label).foregroundColor(.textSecondary).frame(width: 110, alignment: .leading)
+            Text(value).foregroundColor(.textPrimary)
+            Spacer()
+        }
+        .font(.subheadline)
+    }
+
     // MARK: - Helpers
 
     private var filteredCustomers: [Customer] {
-        var result = customers
+        var result = activeCustomers
         if !searchText.isEmpty {
-            result = result.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let phone = Customer.normalizedPhone(query)
+            result = result.filter {
+                $0.name.localizedCaseInsensitiveContains(query) ||
+                ($0.email?.localizedCaseInsensitiveContains(query) ?? false) ||
+                (phone != nil && Customer.normalizedPhone($0.phone ?? "") == phone)
+            }
         }
         switch selectedSegment {
         case .all:
@@ -422,6 +381,8 @@ struct CustomerCRMView: View {
         return result
     }
 
+    private var activeCustomers: [Customer] { customers.filter { !$0.isDeleted } }
+
     private func customerInitials(_ name: String) -> String {
         let letters = name.split(separator: " ").prefix(2).compactMap { $0.first }
         return letters.isEmpty ? "?" : String(letters).uppercased()
@@ -432,7 +393,8 @@ struct CustomerCRMView: View {
         var clientItemCounts: [String: Int] = [:]
         for order in orders {
             for item in order.items where !item.isDeleted && item.status != "cancelled" {
-                if let name = item.menuItem?.name {
+                let name = item.itemName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty {
                     clientItemCounts[name] = (clientItemCounts[name] ?? 0) + item.quantity
                 }
             }
@@ -441,10 +403,11 @@ struct CustomerCRMView: View {
 
         // 2. Get overall best seller from all orders
         var globalItemCounts: [String: Int] = [:]
-        let completedAllOrders = allOrders.filter { $0.status == "completed" && !$0.isDeleted }
+        let completedAllOrders = allOrders.filter { $0.isRecognizedSale }
         for order in completedAllOrders {
             for item in order.items where !item.isDeleted && item.status != "cancelled" {
-                if let name = item.menuItem?.name {
+                let name = item.itemName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty {
                     globalItemCounts[name] = (globalItemCounts[name] ?? 0) + item.quantity
                 }
             }

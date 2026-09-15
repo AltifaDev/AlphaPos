@@ -1,5 +1,27 @@
 import Foundation
 import SwiftData
+
+enum InventoryTransactionIdentityPolicy {
+    static func canMatchByReference(
+        remoteReferenceId: UUID?,
+        localReferenceId: UUID?,
+        remoteItemId: UUID?,
+        localItemId: UUID?,
+        remoteType: String,
+        localType: String
+    ) -> Bool {
+        guard let remoteReferenceId else { return false }
+        return localReferenceId == remoteReferenceId
+            && localItemId == remoteItemId
+            && localType == remoteType
+    }
+}
+
+enum BranchParentSyncPolicy {
+    static func requiresUpload(localIsSynced: Bool, existsRemotely: Bool) -> Bool {
+        !localIsSynced || !existsRemotely
+    }
+}
 import Combine
 import UIKit
 import os
@@ -10,14 +32,17 @@ extension SyncEngine {
 
     func syncCategories(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<Category>(
-            predicate: #Predicate<Category> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<Category> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500  // Prevent OOM on large datasets
         guard let categories = try? modelContext.fetch(descriptor), !categories.isEmpty else { return }
         for category in categories {
             do {
                 if category.isDeleted {
-                    if try await NetworkManager.shared.deleteCategoryOnServer(id: category.id) { modelContext.delete(category) }
+                    if try await NetworkManager.shared.deleteCategoryOnServer(id: category.id) {
+                        category.isSynced = true
+                        category.updatedAt = Date()
+                    }
                 } else if try await NetworkManager.shared.uploadCategory(category) {
                     category.isSynced = true
                     category.updatedAt = Date()
@@ -38,17 +63,13 @@ extension SyncEngine {
             __desclocals.fetchLimit = 500  // N3: prevent OOM
             let locals = (try? modelContext.fetch(__desclocals)) ?? []
 
-            // Deduplicate: If any local category has the same name but a different ID, delete it.
-            for remote in remoteCategories {
-                guard let idStr = remote["id"] as? String,
-                      let id = UUID(uuidString: idStr),
-                      let name = remote["name"] as? String else { continue }
-                if let conflict = locals.first(where: { $0.id != id && $0.name.lowercased() == name.lowercased() }) {
-                    modelContext.delete(conflict)
-                }
-            }
-            try? modelContext.save()
             var localById = Dictionary(uniqueKeysWithValues: locals.map { ($0.id.uuidString.lowercased(), $0) })
+            // Use reduce(into:) instead of Dictionary(uniqueKeysWithValues:) to safely handle
+            // duplicate category names in local store (e.g. "beverages" vs "Beverages")
+            // uniqueKeysWithValues crashes with Fatal error when duplicate keys exist.
+            var localByName: [String: Category] = locals.reduce(into: [:]) { dict, cat in
+                dict[cat.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()] = cat
+            }
 
             for remote in remoteCategories {
                 guard let idStr = remote["id"] as? String,
@@ -56,20 +77,32 @@ extension SyncEngine {
                       let name = remote["name"] as? String else { continue }
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
                 let description = remote["description"] as? String ?? remote["category_description"] as? String
+                let nameKey = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     local.name = name
                     local.categoryDescription = description
                     local.imageUrl = remote["image_url"] as? String
                     local.updatedAt = updatedAt
                     local.isSynced = true
+                } else if let local = localByName[nameKey] {
+                    local.categoryDescription = description
+                    local.imageUrl = remote["image_url"] as? String
+                    local.updatedAt = max(local.updatedAt, updatedAt == .distantPast ? Date() : updatedAt)
+                    local.isSynced = true
+                    localById[idStr.lowercased()] = local
                 } else {
                     let category = Category(id: id, name: name, categoryDescription: description, imageUrl: remote["image_url"] as? String, isSynced: true, updatedAt: updatedAt == .distantPast ? Date() : updatedAt)
                     modelContext.insert(category)
                     localById[idStr.lowercased()] = category
+                    localByName[nameKey] = category
                 }
             }
+            // Clean up any legacy duplicate categories (same name, different id) that
+            // were created by earlier seed/import paths before name-matching existed.
+            deduplicateCategories(modelContext)
             modelContext.saveWithLogging(label: #function)
         } catch {
             encounteredSyncError = true
@@ -77,15 +110,79 @@ extension SyncEngine {
         }
     }
 
+    /// Merge duplicate categories that share the same (case-insensitive, trimmed) name.
+    /// Keeps a single "primary" row per name (prefer synced, then oldest), re-links all
+    /// MenuItems from duplicates onto the primary, and removes redundant local aliases.
+    func deduplicateCategories(_ modelContext: ModelContext) {
+        var descriptor = FetchDescriptor<Category>()
+        descriptor.fetchLimit = 1000
+        guard let all = try? modelContext.fetch(descriptor) else { return }
+
+        // Group active categories by normalized name.
+        var groups: [String: [Category]] = [:]
+        for cat in all where !cat.isDeleted {
+            let key = cat.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            groups[key, default: []].append(cat)
+        }
+
+        for (_, dupes) in groups where dupes.count > 1 {
+            // Choose primary: prefer already-synced rows, then the oldest updatedAt (stable id).
+            let sorted = dupes.sorted { lhs, rhs in
+                if lhs.isSynced != rhs.isSynced { return lhs.isSynced && !rhs.isSynced }
+                return lhs.updatedAt < rhs.updatedAt
+            }
+            guard let primary = sorted.first else { continue }
+
+            for dup in sorted.dropFirst() {
+                // Re-link menu items from the duplicate onto the primary category.
+                for item in dup.menuItems {
+                    item.category = primary
+                    item.isSynced = false            // force re-sync of the re-pointed item
+                    item.updatedAt = Date()
+                }
+                // The server already enforces one active normalized name per merchant.
+                // This row is therefore a local alias (or an already-deleted remote row),
+                // not a user deletion that still needs to be pushed.
+                dup.isDeleted = true
+                dup.isSynced = true
+                dup.updatedAt = Date()
+            }
+        }
+
+        // Repair aliases left by older builds. Preserve genuine user deletions:
+        // only suppress a tombstone when another active local category has the same name.
+        let activeNames = Set(all.lazy.filter { !$0.isDeleted }.map {
+            $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        })
+        for category in all where category.isDeleted && !category.isSynced {
+            let key = category.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if activeNames.contains(key) {
+                category.isSynced = true
+            }
+        }
+    }
+
     // MARK: - Branch Sync
 
     func syncBranches(_ modelContext: ModelContext) async {
-        var descriptor = FetchDescriptor<Branch>(
-            predicate: #Predicate<Branch> { $0.isSynced == false }
-        )
+        var descriptor = FetchDescriptor<Branch>()
         descriptor.fetchLimit = 500  // Prevent OOM on large datasets
         guard let branches = try? modelContext.fetch(descriptor), !branches.isEmpty else { return }
-        for branch in branches {
+        let remoteIds: Set<UUID>
+        do {
+            remoteIds = Set(try await NetworkManager.shared.fetchBranchesFromSupabase().compactMap {
+                ($0["id"] as? String).flatMap(UUID.init(uuidString:))
+            })
+        } catch {
+            reportSyncFailure("Branch parent verification: \(error.localizedDescription)", soft: false)
+            return
+        }
+
+        for branch in branches where !branch.isDeleted {
+            guard BranchParentSyncPolicy.requiresUpload(
+                localIsSynced: branch.isSynced,
+                existsRemotely: remoteIds.contains(branch.id)
+            ) else { continue }
             do {
                 if try await NetworkManager.shared.uploadBranch(branch) {
                     branch.isSynced = true
@@ -121,15 +218,59 @@ extension SyncEngine {
                         local.name = name
                         local.location = remote["location"] as? String
                         local.phone = remote["phone"] as? String
+                        local.businessDayCutoffHour = Int(remoteDouble(remote["business_day_cutoff_hour"], fallback: 4))
+                        local.timeZoneID = remote["time_zone_id"] as? String ?? "Asia/Bangkok"
                         local.updatedAt = updatedAt
                         local.isSynced = true
                     }
                 } else {
-                    let branch = Branch(id: id, name: name, location: remote["location"] as? String, phone: remote["phone"] as? String, isSynced: true, updatedAt: updatedAt == .distantPast ? Date() : updatedAt)
+                    let branch = Branch(id: id, name: name, location: remote["location"] as? String, phone: remote["phone"] as? String, businessDayCutoffHour: Int(remoteDouble(remote["business_day_cutoff_hour"], fallback: 4)), timeZoneID: remote["time_zone_id"] as? String ?? "Asia/Bangkok", isSynced: true, updatedAt: updatedAt == .distantPast ? Date() : updatedAt)
                     modelContext.insert(branch)
                 }
             }
             modelContext.saveWithLogging(label: #function)
+
+            // Older installs can contain a real server branch and a second
+            // placeholder "Main Branch" created locally during bootstrap. If
+            // that placeholder became active before the branch pull, every
+            // branch-scoped screen appears empty even though the merchant and
+            // its data are unchanged. Prefer the non-placeholder sibling; the
+            // exact fingerprint keeps genuine multi-branch stores untouched.
+            let refreshedAfterPull = (try? modelContext.fetch(FetchDescriptor<Branch>())) ?? []
+            if let activeId = BranchContext.shared.activeBranchID,
+               let active = refreshedAfterPull.first(where: { $0.id == activeId && !$0.isDeleted }),
+               active.name.caseInsensitiveCompare("Main Branch") == .orderedSame,
+               active.location?.caseInsensitiveCompare("Headquarters") == .orderedSame,
+               (active.phone ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let recovered = refreshedAfterPull.first(where: {
+                   !$0.isDeleted
+                       && $0.id != active.id
+                       && $0.name.caseInsensitiveCompare(active.name) == .orderedSame
+                       && ($0.location?.caseInsensitiveCompare("Headquarters") != .orderedSame
+                           || !($0.phone ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+               }) {
+                BranchContext.shared.select(recovered)
+                #if DEBUG
+                print("SyncEngine: replaced bootstrap placeholder branch with existing store branch \(recovered.id)")
+                #endif
+            }
+
+            // New merchant workspaces may receive their first branch from the
+            // server before a branch has ever been selected on this device.
+            // Persist a valid fallback now so the branch-scoped pulls that run
+            // immediately after this method do not fail with an empty UUID.
+            let refreshedBranches = (try? modelContext.fetch(FetchDescriptor<Branch>())) ?? []
+            let activeBranchId = BranchContext.shared.activeBranchIDString
+            let hasValidActiveBranch = refreshedBranches.contains {
+                !$0.isDeleted && $0.id.uuidString.caseInsensitiveCompare(activeBranchId) == .orderedSame
+            }
+            if !hasValidActiveBranch,
+               let fallback = refreshedBranches
+                .filter({ !$0.isDeleted })
+                .sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })
+                .first {
+                BranchContext.shared.select(fallback)
+            }
         } catch {
             encounteredSyncError = true
             print("SyncEngine [Branch Pull Error]: \(error.localizedDescription)")
@@ -138,7 +279,7 @@ extension SyncEngine {
 
     func syncInventoryItems(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<InventoryItem>(
-            predicate: #Predicate<InventoryItem> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<InventoryItem> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500  // Prevent OOM on large datasets
         guard let items = try? modelContext.fetch(descriptor), !items.isEmpty else { return }
@@ -158,10 +299,11 @@ extension SyncEngine {
         modelContext.saveWithLogging(label: #function)
     }
 
-    func pullInventoryItemsFromSupabase(_ modelContext: ModelContext) async {
+    @discardableResult
+    func pullInventoryItemsFromSupabase(_ modelContext: ModelContext) async -> Bool {
         do {
             let remoteItems = try await NetworkManager.shared.fetchInventoryItemsFromSupabase()
-            guard !remoteItems.isEmpty else { return }
+            guard !remoteItems.isEmpty else { return true }
             var __desclocals = FetchDescriptor<InventoryItem>()
             __desclocals.fetchLimit = 500  // N3: prevent OOM
             let locals = (try? modelContext.fetch(__desclocals)) ?? []
@@ -186,34 +328,15 @@ extension SyncEngine {
 
                 if let local = localById[idStr.lowercased()] {
                     let remoteQty = remoteDouble(remote["current_quantity"])
-                    let wasSynced = local.isSynced
-                    if local.isSynced {
-                        guard updatedAt > local.updatedAt else { continue }
-                        local.currentQuantity = remoteQty
-                    } else {
-                        // Merging: compute local unsynced delta to overlay on remote quantity
-                        let itemId = local.id
-                        let unsyncedTxDesc = FetchDescriptor<InventoryTransaction>(
-                            predicate: #Predicate<InventoryTransaction> { $0.item?.id == itemId && !$0.isSynced && !$0.isDeleted }
-                        )
-                        let unsyncedTxs = (try? modelContext.fetch(unsyncedTxDesc)) ?? []
-                        let delta = unsyncedTxs.reduce(0.0) { sum, tx in
-                            let mType = tx.movementType
-                            switch mType {
-                            case .adjust:
-                                return sum + tx.quantity
-                            default:
-                                return sum + (mType.isInbound ? tx.quantity : -tx.quantity)
-                            }
-                        }
-                        local.currentQuantity = remoteQty + delta
-                    }
+                    guard updatedAt > local.updatedAt || !local.isSynced else { continue }
+                    local.currentQuantity = remoteQty
 
                     local.name = name
                     local.sku = remote["sku"] as? String
                     local.unit = remote["unit"] as? String ?? local.unit
                     local.reorderLevel = remoteDouble(remote["reorder_level"])
                     local.costPrice = remoteDouble(remote["cost_price"])
+                    local.outOfStockPolicyRaw = (remote["out_of_stock_policy"] as? String) ?? OutOfStockPolicy.allowNegative.rawValue
                     local.supplier = supplier
                     local.branch = branch
                     local.category = remote["category"] as? String
@@ -227,7 +350,7 @@ extension SyncEngine {
                     local.expiryWarningDays  = (remote["expiry_warning_days"]  as? Int) ?? 7
                     local.expiryCriticalDays = (remote["expiry_critical_days"] as? Int) ?? 3
                     local.updatedAt = updatedAt
-                    local.isSynced = wasSynced
+                    local.isSynced = true
                 } else {
                     let item = InventoryItem(
                         id: id,
@@ -237,6 +360,7 @@ extension SyncEngine {
                         currentQuantity: remoteDouble(remote["current_quantity"]),
                         reorderLevel: remoteDouble(remote["reorder_level"]),
                         costPrice: remoteDouble(remote["cost_price"]),
+                        outOfStockPolicy: OutOfStockPolicy(rawValue: remote["out_of_stock_policy"] as? String ?? "") ?? .allowNegative,
                         supplier: supplier,
                         branch: branch,
                         safetyStockLevel:  remoteDouble(remote["safety_stock_level"]),
@@ -255,15 +379,17 @@ extension SyncEngine {
                 }
             }
             modelContext.saveWithLogging(label: #function)
+            return true
         } catch {
             encounteredSyncError = true
             print("SyncEngine [InventoryItem Pull Error]: \(error.localizedDescription)")
+            return false
         }
     }
 
     func syncModifierGroups(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<ModifierGroup>(
-            predicate: #Predicate<ModifierGroup> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<ModifierGroup> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500  // Prevent OOM on large datasets
         guard let groups = try? modelContext.fetch(descriptor), !groups.isEmpty else { return }
@@ -298,7 +424,8 @@ extension SyncEngine {
                       let name = remote["name"] as? String else { continue }
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     local.name = name
                     local.minSelection = remoteInt(remote["min_selection"])
                     local.maxSelection = remoteInt(remote["max_selection"], fallback: 1)
@@ -319,7 +446,7 @@ extension SyncEngine {
 
     func syncModifiers(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<Modifier>(
-            predicate: #Predicate<Modifier> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<Modifier> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500  // Prevent OOM on large datasets
         guard let modifiers = try? modelContext.fetch(descriptor), !modifiers.isEmpty else { return }
@@ -364,7 +491,8 @@ extension SyncEngine {
                 let quantityRequired = remote["quantity_required"].map { remoteDouble($0) }
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     local.modifierGroup = group
                     local.name = name
                     local.extraPrice = remoteDouble(remote["extra_price"])
@@ -388,7 +516,7 @@ extension SyncEngine {
 
     func syncMenuItemModifierGroups(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<MenuItemModifierGroup>(
-            predicate: #Predicate<MenuItemModifierGroup> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<MenuItemModifierGroup> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500  // Prevent OOM on large datasets
         guard let relations = try? modelContext.fetch(descriptor), !relations.isEmpty else { return }
@@ -437,7 +565,8 @@ extension SyncEngine {
                 let key = "\(menuItemId.lowercased())|\(groupIdStr.lowercased())"
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
                 if let local = localByKey[key] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     local.menuItem = menuItem
                     local.modifierGroup = modifierGroup
                     local.updatedAt = updatedAt
@@ -482,9 +611,14 @@ extension SyncEngine {
                     costPrice: txn.costPrice,
                     referenceId: txn.referenceId,
                     notes: txn.notes,
-                    branchId: txn.branch?.id,
+                    branchId: txn.branch.id,
+                    createdAt: txn.createdAt,
+                    businessDateKey: txn.businessDateKey,
+                    registerSessionId: txn.registerSessionId,
                     isDeleted: txn.isDeleted,
-                    updatedAt: txn.updatedAt
+                    updatedAt: txn.updatedAt,
+                    reasonCode: txn.reasonCode,
+                    auditSignature: txn.auditSignature
                 )
 
                 if success {
@@ -499,6 +633,113 @@ extension SyncEngine {
         }
     }
 
+    @discardableResult
+    func pullInventoryTransactionsFromSupabase(_ modelContext: ModelContext) async -> Bool {
+        do {
+            let remoteTransactions = try await NetworkManager.shared.fetchInventoryTransactionsFromSupabase()
+            guard !remoteTransactions.isEmpty else { return true }
+
+            let localTransactions = (try? modelContext.fetch(FetchDescriptor<InventoryTransaction>())) ?? []
+            let items = (try? modelContext.fetch(FetchDescriptor<InventoryItem>())) ?? []
+            let branches = (try? modelContext.fetch(FetchDescriptor<Branch>())) ?? []
+            var localById = Dictionary(uniqueKeysWithValues: localTransactions.map { ($0.id, $0) })
+            let itemById = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+            let branchById = Dictionary(uniqueKeysWithValues: branches.map { ($0.id, $0) })
+
+            for remote in remoteTransactions {
+                guard let idString = remote["id"] as? String, let id = UUID(uuidString: idString) else { continue }
+                let type = remote["transaction_type"] as? String ?? remote["type"] as? String ?? InventoryMovementType.adjust.rawValue
+                let itemId = (remote["item_id"] as? String).flatMap(UUID.init(uuidString:))
+                let branchId = (remote["branch_id"] as? String).flatMap(UUID.init(uuidString:))
+                let referenceId = (remote["reference_id"] as? String).flatMap(UUID.init(uuidString:))
+                let quantity = remoteDouble(remote["quantity"])
+                let costPrice = remote["cost_price"].map { remoteDouble($0) }
+                let createdAt = remoteDate(remote["created_at"], fallback: Date())
+                let updatedAt = remoteDate(remote["updated_at"], fallback: createdAt)
+                guard let transactionBranch = branchId.flatMap({ branchById[$0] }) else {
+                    encounteredSyncError = true
+                    continue
+                }
+
+                // Only business events with a stable reference may be matched
+                // across different server/client movement IDs. Manual receives
+                // and wastes commonly have a nil reference; matching those by
+                // item + type would collapse multiple ledger rows into one.
+                let referencedLocal = referenceId.flatMap { stableReference in
+                    localTransactions.first {
+                        InventoryTransactionIdentityPolicy.canMatchByReference(
+                            remoteReferenceId: stableReference,
+                            localReferenceId: $0.referenceId,
+                            remoteItemId: itemId,
+                            localItemId: $0.item?.id,
+                            remoteType: type,
+                            localType: $0.transactionType
+                        )
+                    }
+                }
+                let local = localById[id] ?? referencedLocal
+                if let local {
+                    local.item = itemId.flatMap { itemById[$0] }
+                    local.branch = transactionBranch
+                    local.transactionType = type
+                    local.quantity = quantity
+                    local.costPrice = costPrice
+                    local.referenceId = referenceId
+                    local.notes = remote["notes"] as? String
+                    local.reasonCode = remote["reason_code"] as? String
+                    local.auditSignature = remote["audit_signature"] as? String
+                    local.createdAt = createdAt
+                    local.businessDateKey = remote["business_date"] as? String ?? local.businessDateKey
+                    local.registerSessionId = (remote["register_session_id"] as? String).flatMap(UUID.init(uuidString:))
+                    local.updatedAt = updatedAt
+                    local.isSynced = true
+                    local.isDeleted = false
+                } else {
+                    let transaction = InventoryTransaction(
+                        id: id,
+                        item: itemId.flatMap { itemById[$0] },
+                        transactionType: type,
+                        quantity: quantity,
+                        costPrice: costPrice,
+                        referenceId: referenceId,
+                        notes: remote["notes"] as? String,
+                        branch: transactionBranch,
+                        createdAt: createdAt,
+                        businessDateKey: remote["business_date"] as? String ?? "",
+                        registerSessionId: (remote["register_session_id"] as? String).flatMap(UUID.init(uuidString:)),
+                        isSynced: true,
+                        reasonCode: remote["reason_code"] as? String,
+                        auditSignature: remote["audit_signature"] as? String
+                    )
+                    modelContext.insert(transaction)
+                    localById[id] = transaction
+                }
+            }
+            modelContext.saveWithLogging(label: #function)
+            return true
+        } catch {
+            encounteredSyncError = true
+            print("SyncEngine [InventoryTxn Pull Error]: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Rebuilds local on-hand from movements accepted by the server.
+    func reconcileInventoryFromLedger(_ modelContext: ModelContext) {
+        let transactions = ((try? modelContext.fetch(FetchDescriptor<InventoryTransaction>())) ?? [])
+            // Synced rows are the confirmed ledger; unsynced rows are the
+            // device's pending offline delta and must remain visible locally.
+            .filter { !$0.isDeleted }
+        let grouped = Dictionary(grouping: transactions) { $0.item?.id }
+
+        for (_, movements) in grouped {
+            guard let item = movements.first?.item else { continue }
+            item.currentQuantity = movements.reduce(0.0) { $0 + $1.quantity }
+            item.isSynced = true
+        }
+        modelContext.saveWithLogging(label: #function)
+    }
+
     func syncMenuItems(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<MenuItem>(
             predicate: #Predicate<MenuItem> { $0.isSynced == false }
@@ -511,7 +752,8 @@ extension SyncEngine {
             if item.isDeleted {
                 do {
                     if try await NetworkManager.shared.deleteMenuItemOnServer(id: item.id) {
-                        modelContext.delete(item)
+                        item.isSynced = true
+                        item.updatedAt = Date()
                         try modelContext.save()
                     } else {
                         encounteredSyncError = true

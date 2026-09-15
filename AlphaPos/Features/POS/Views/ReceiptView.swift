@@ -4,6 +4,7 @@
 import SwiftUI
 import SwiftData
 import UIKit
+import CoreImage.CIFilterBuiltins
 
 // MARK: - Receipt View Model
 
@@ -13,6 +14,11 @@ final class ReceiptViewModel {
     let order: Order
 
     var storeName: String
+    var storeAddress: String
+    var storePhone: String
+    var storeTaxId: String
+    var storeBranchCode: String
+    var documentTitle: String
     var receiptHeader: String
     var receiptFooter: String
     var receiptNumber: String
@@ -36,23 +42,43 @@ final class ReceiptViewModel {
     var serviceCharge: Double = 0.0
     var discount: Double = 0.0
     var total: Double = 0.0
-    var paymentMethod: String = ""
-    var paymentAmount: Double = 0.0
+    var taxableBase: Double = 0.0
+    struct PaymentLine: Identifiable {
+        let id: UUID
+        let method: String
+        let amount: Double
+        let reference: String?
+    }
+
+    var paymentLines: [PaymentLine] = []
     var tipAmount: Double = 0.0
     var changeAmount: Double = 0.0
 
     init(order: Order) {
         self.order = order
         self.storeName = UserDefaults.standard.string(forKey: "store_name") ?? "AlphaPos Restaurant"
-        self.receiptHeader = UserDefaults.standard.string(forKey: "receipt_header") ?? "receipt_header_default".t
-        self.receiptFooter = UserDefaults.standard.string(forKey: "receipt_footer") ?? "receipt_footer_default".t
+        self.storeAddress = UserDefaults.standard.string(forKey: "store_address") ?? ""
+        self.storePhone = UserDefaults.standard.string(forKey: "store_phone") ?? ""
+        self.storeTaxId = UserDefaults.standard.string(forKey: "store_tax_id") ?? ""
+        self.storeBranchCode = UserDefaults.standard.string(forKey: "store_branch_code") ?? "00000"
+        self.documentTitle = (ReceiptDocumentType(rawValue: order.receiptDocumentType) ?? .receipt).thaiTitle
+        // Same keys Store Settings writes ("store_receipt_header"/"store_receipt_footer")
+        // so the on-screen receipt matches the live preview and printed output.
+        self.receiptHeader = UserDefaults.standard.string(forKey: "store_receipt_header") ?? "receipt_header_default".t
+        self.receiptFooter = UserDefaults.standard.string(forKey: "store_receipt_footer") ?? "receipt_footer_default".t
 
-        // Generate receipt number: RCP-YYYYMMDD-NNN
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyyMMdd"
-        let datePart = dateFormatter.string(from: order.createdAt)
-        let sequenceNumber = String(format: "%03d", abs(order.orderNumber.hashValue) % 999 + 1)
-        self.receiptNumber = "RCP-\(datePart)-\(sequenceNumber)"
+        // Prefer persisted receipt number (source of truth). Fallback only for
+        // legacy orders that predate sequential receipt assignment.
+        if let persisted = order.receiptNumber, !persisted.isEmpty {
+            self.receiptNumber = persisted
+        } else {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "yyyyMMdd"
+            dateFormatter.timeZone = TimeZone(identifier: "Asia/Bangkok") ?? .current
+            let datePart = dateFormatter.string(from: order.createdAt)
+            let sequenceNumber = String(format: "%03d", abs(order.orderNumber.hashValue) % 999 + 1)
+            self.receiptNumber = "RCP-\(datePart)-\(sequenceNumber)"
+        }
 
         // Date and time
         let displayDateFormatter = DateFormatter()
@@ -64,7 +90,14 @@ final class ReceiptViewModel {
         self.formattedTime = timeFormatter.string(from: order.createdAt)
 
         self.cashierName = order.cashierName
-        self.tableNumber = order.tableSession?.table?.tableNumber
+        // Never surface the QUICK sentinel as a table number on receipts.
+        if let table = order.tableSession?.table?.tableNumber,
+           !table.isEmpty,
+           table.uppercased() != "QUICK" {
+            self.tableNumber = table
+        } else {
+            self.tableNumber = nil
+        }
 
         // Build line items
         self.buildLineItems()
@@ -75,19 +108,31 @@ final class ReceiptViewModel {
         self.serviceCharge = order.serviceCharge
         self.discount = order.discount
         self.total = order.total
+        self.taxableBase = order.taxLines.filter { !$0.isDeleted }.reduce(0) { $0 + $1.taxableAmount }
 
         // Payment info
-        if let payment = order.payments.first {
-            self.paymentMethod = payment.paymentMethod
-            self.paymentAmount = payment.amount
-            if payment.paymentMethod.lowercased().contains("cash") {
-                self.changeAmount = max(0, payment.amount - order.total)
+        let completedPayments = order.payments.filter { !$0.isDeleted && $0.status == "completed" }
+        self.paymentLines = completedPayments.map {
+            PaymentLine(id: $0.id, method: $0.paymentMethod, amount: $0.amount, reference: Self.maskedReference($0.transactionReference))
+        }
+        self.tipAmount = completedPayments.reduce(0) { $0 + $1.tipAmount }
+        for payment in completedPayments {
+            if let tendered = payment.cashTenderedAmount {
+                self.changeAmount += max(0, tendered - payment.amount)
             }
         }
     }
 
+    private static func maskedReference(_ reference: String?) -> String? {
+        guard let reference, !reference.isEmpty, !reference.hasPrefix("tendered:") else { return nil }
+        guard reference.count > 5 else { return "***" + reference.suffix(2) }
+        return String(reference.prefix(3)) + "******" + String(reference.suffix(2))
+    }
+
     private func buildLineItems() {
-        let items = order.items.filter { !$0.isDeleted }
+        let items = order.items.filter {
+            !$0.isDeleted && $0.status != "cancelled" && $0.status != "refunded"
+        }
         lineItems = items.map { item in
             let modNames = item.modifiers.compactMap { $0.modifier?.name }
             return ReceiptLineItem(
@@ -106,6 +151,22 @@ final class ReceiptViewModel {
         lines.append(receiptHeader)
         lines.append("\("receipt_label".t): \(receiptNumber)")
         lines.append("\("date_label".t): \(formattedDate) \(formattedTime)")
+        if let headerTag = PlatformOrderNumber.receiptHeaderDisplay(
+            orderType: order.orderType,
+            platformOrderNumber: order.platformOrderNumber,
+            queueNumber: order.queueNumber
+        ) {
+            lines.append(headerTag)
+        }
+        if let platform = order.platformOrderNumber, !platform.isEmpty {
+            lines.append("\("platform_order_label".t): \(platform)")
+        }
+        if let brand = order.deliveryBrand, !brand.isEmpty {
+            lines.append("\("pos_delivery".t): \(brand)")
+        }
+        if let program = order.supportProgramName, !program.isEmpty {
+            lines.append("โครงการร่วมจ่าย: \(program)")
+        }
         if let tableNumber { lines.append("\("table_label".t): \(tableNumber)") }
         lines.append("\("cashier_label".t): \(cashierName)")
         lines.append("------------------------------")
@@ -121,7 +182,15 @@ final class ReceiptViewModel {
         lines.append("\("pos_service_charge".t): ฿\(String(format: "%.2f", serviceCharge))")
         if discount > 0 { lines.append("\("pos_discount".t): -฿\(String(format: "%.2f", discount))") }
         lines.append("\("pos_total".t): ฿\(String(format: "%.2f", total))")
-        lines.append("\("payment_label".t): \(paymentMethod) ฿\(String(format: "%.2f", paymentAmount))")
+        if order.usesGovernmentSupport {
+            lines.append("รัฐสนับสนุน 60%: ฿\(String(format: "%.2f", order.supportGovernmentAmount))")
+            lines.append("ประชาชนชำระ 40%: ฿\(String(format: "%.2f", order.supportCitizenAmount))")
+            lines.append("สถานะเงินสนับสนุน: \(order.supportSettlementStatus)")
+        }
+        for payment in paymentLines {
+            lines.append("\("payment_label".t): \(payment.method) ฿\(String(format: "%.2f", payment.amount))")
+        }
+        if tipAmount > 0 { lines.append("\("pos_tip".t): ฿\(String(format: "%.2f", tipAmount))") }
         if changeAmount > 0 { lines.append("\("pos_change_due".t): ฿\(String(format: "%.2f", changeAmount))") }
         lines.append("------------------------------")
         lines.append(receiptFooter)
@@ -138,6 +207,7 @@ struct ReceiptView: View {
     @EnvironmentObject private var lm: LocalizationManager
     @State private var viewModel: ReceiptViewModel?
     @State private var showingShareSheet = false
+    @State private var showingFullTaxInvoiceSheet = false
     @State private var receiptActionMessage = ""
     @State private var showingReceiptActionAlert = false
 
@@ -178,7 +248,15 @@ struct ReceiptView: View {
         .preferredColorScheme(.light)
         .onAppear {
             viewModel = ReceiptViewModel(order: order)
-            if UserDefaults.standard.bool(forKey: "auto_print_receipt_on_payment") {
+            // AirPrint fallback only when no thermal printers and auto-print is on.
+            // Thermal auto-print is handled by PrintService.dispatchReceipt on payment.
+            let autoPrint: Bool = {
+                if UserDefaults.standard.object(forKey: "auto_print_receipt_on_payment") == nil {
+                    return true
+                }
+                return UserDefaults.standard.bool(forKey: "auto_print_receipt_on_payment")
+            }()
+            if autoPrint, !PrintService.shared.hasActiveReceiptPrinters() {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     printReceipt()
                 }
@@ -188,6 +266,9 @@ struct ReceiptView: View {
             if let vm = viewModel {
                 ShareSheet(activityItems: [vm.plainTextReceipt])
             }
+        }
+        .sheet(isPresented: $showingFullTaxInvoiceSheet) {
+            FullTaxInvoiceSheet(order: order)
         }
         .alert("receipt_title".t, isPresented: $showingReceiptActionAlert) {
             Button("ok_btn".t, role: .cancel) {}
@@ -229,8 +310,10 @@ struct ReceiptView: View {
 
                 receiptDivider
 
-                // QR Code Placeholder
-                if UserDefaults.standard.object(forKey: "show_qr_on_receipt") as? Bool ?? true {
+                // PromptPay is shown only while money is still outstanding.
+                if !order.isSettled,
+                   order.outstandingAmount > 0.005,
+                   !(UserDefaults.standard.string(forKey: "promptpay_number") ?? "").isEmpty {
                     qrCodeSection(vm: vm)
                 }
 
@@ -284,6 +367,44 @@ struct ReceiptView: View {
                 .foregroundColor(.black)
                 .multilineTextAlignment(.center)
 
+            Text(vm.storeAddress)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.black.opacity(0.75))
+                .multilineTextAlignment(.center)
+
+            if !vm.storePhone.isEmpty {
+                Text("TEL: \(vm.storePhone)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.black.opacity(0.75))
+            }
+
+            Text(vm.documentTitle)
+                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .foregroundColor(.black)
+
+            if let headerTag = PlatformOrderNumber.receiptHeaderDisplay(
+                orderType: vm.order.orderType,
+                platformOrderNumber: vm.order.platformOrderNumber,
+                queueNumber: vm.order.queueNumber
+            ) {
+                Text(headerTag)
+                    .font(.system(size: 20, weight: .black, design: .monospaced))
+                    .foregroundColor(.black)
+                    .padding(.vertical, 2)
+            }
+
+            if !vm.storeTaxId.isEmpty {
+                Text("TAX ID: \(vm.storeTaxId)  BR: \(vm.storeBranchCode)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.black.opacity(0.8))
+            }
+
+            if vm.order.receiptPrintCount > 0 {
+                Text("สำเนา / REPRINT #\(vm.order.receiptPrintCount + 1)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.black)
+            }
+
             if !vm.receiptHeader.isEmpty {
                 Text(vm.receiptHeader)
                     .font(.system(size: 12, design: .monospaced))
@@ -304,6 +425,15 @@ struct ReceiptView: View {
             infoRow(label: "time_label".t, value: vm.formattedTime)
             infoRow(label: "cashier_label".t, value: vm.cashierName)
             infoRow(label: "pos_order_number".t, value: vm.order.orderNumber)
+            if let platform = vm.order.platformOrderNumber, !platform.isEmpty {
+                infoRow(label: "platform_order_label".t, value: platform)
+            }
+            if let brand = vm.order.deliveryBrand, !brand.isEmpty {
+                infoRow(label: "pos_delivery".t, value: brand)
+            }
+            if let program = vm.order.supportProgramName, !program.isEmpty {
+                infoRow(label: "โครงการร่วมจ่าย", value: program)
+            }
             if let table = vm.tableNumber {
                 infoRow(label: "table_label".t, value: table)
             }
@@ -382,10 +512,15 @@ struct ReceiptView: View {
             totalRow(label: "pos_subtotal".t, amount: vm.subtotal)
 
             if vm.serviceCharge > 0 {
-                totalRow(label: "pos_service_charge".t + " (10%)", amount: vm.serviceCharge)
+                let serviceRate = UserDefaults.standard.object(forKey: "store_service_charge_rate") as? Double ?? 10
+                totalRow(label: "pos_service_charge".t + " (\(serviceRate.formatted())%)", amount: vm.serviceCharge)
             }
 
-            totalRow(label: "pos_vat".t + " (7%)", amount: vm.taxAmount)
+            if vm.taxAmount > 0 {
+                let taxRate = UserDefaults.standard.object(forKey: "store_tax_rate") as? Double ?? 7
+                totalRow(label: "Taxable base", amount: vm.taxableBase)
+                totalRow(label: "pos_vat".t + " (\(taxRate.formatted())%)", amount: vm.taxAmount)
+            }
 
             if vm.discount > 0 {
                 HStack {
@@ -413,6 +548,18 @@ struct ReceiptView: View {
             }
             .foregroundColor(.black)
             .padding(.top, 4)
+
+            if vm.order.usesGovernmentSupport {
+                totalRow(label: "รัฐสนับสนุน 60%", amount: vm.order.supportGovernmentAmount)
+                totalRow(label: "ประชาชนชำระ 40%", amount: vm.order.supportCitizenAmount)
+                HStack {
+                    Text("สถานะเงินสนับสนุน").foregroundColor(.black.opacity(0.6))
+                    Spacer()
+                    Text(vm.order.supportSettlementStatus == "received" ? "ได้รับแล้ว" : "รอรับจากรัฐ")
+                        .fontWeight(.semibold)
+                }
+                .font(.system(size: 12, design: .monospaced))
+            }
         }
     }
 
@@ -432,25 +579,33 @@ struct ReceiptView: View {
 
     private func paymentSection(vm: ReceiptViewModel) -> some View {
         VStack(spacing: 4) {
-            HStack {
-                Text("paid_via_label".t)
-                    .foregroundColor(.black.opacity(0.5))
-                Spacer()
-                Text(vm.paymentMethod.isEmpty ? "—" : vm.paymentMethod)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.black.opacity(0.85))
-            }
-            .font(.system(size: 12, design: .monospaced))
-
-            if vm.paymentAmount > 0 {
+            if vm.paymentLines.isEmpty {
                 HStack {
-                    Text("tendered_label".t)
+                    Text("paid_via_label".t)
                         .foregroundColor(.black.opacity(0.5))
                     Spacer()
-                    Text("฿\(vm.paymentAmount, specifier: "%.2f")")
+                    Text("—")
                         .foregroundColor(.black.opacity(0.85))
                 }
                 .font(.system(size: 12, design: .monospaced))
+            } else {
+                ForEach(vm.paymentLines) { payment in
+                    HStack {
+                        Text(payment.method)
+                            .foregroundColor(.black.opacity(0.5))
+                        Spacer()
+                        Text("฿\(payment.amount, specifier: "%.2f")")
+                            .fontWeight(.semibold)
+                            .foregroundColor(.black.opacity(0.85))
+                    }
+                    .font(.system(size: 12, design: .monospaced))
+                    if let reference = payment.reference {
+                        Text("Reference: \(reference)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.black.opacity(0.65))
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
             }
 
             if vm.changeAmount > 0 {
@@ -470,27 +625,67 @@ struct ReceiptView: View {
     // MARK: - QR Code Placeholder
 
     private func qrCodeSection(vm: ReceiptViewModel) -> some View {
-        VStack(spacing: APSpacing.sm) {
-            RoundedRectangle(cornerRadius: 4)
-                .stroke(Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                .frame(width: 100, height: 100)
-                .overlay(
-                    VStack(spacing: 4) {
-                        Image(systemName: "qrcode")
-                            .font(.system(size: 36))
-                            .foregroundColor(.black.opacity(0.2))
-                        Text("pos_qr_code".t)
-                            .font(.system(size: 8, design: .monospaced))
-                            .foregroundColor(.black.opacity(0.3))
-                    }
-                )
+        let promptPayNumber = UserDefaults.standard.string(forKey: "promptpay_number") ?? ""
+        let amountDue = vm.order.outstandingAmount
+        return VStack(spacing: APSpacing.sm) {
+            if let qr = promptPayQR(target: promptPayNumber, amount: amountDue) {
+                Image(uiImage: qr)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(12) // quiet zone greater than four modules
+                    .frame(width: 116, height: 116)
+                    .background(Color.white)
+            }
 
-            Text("scan_digital_receipt".t)
+            Text(String(format: "สแกน PromptPay เพื่อชำระ THB %.2f", amountDue))
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.black.opacity(0.35))
+                .foregroundColor(.black.opacity(0.75))
+            Text("PromptPay: \(promptPayNumber)")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(.black.opacity(0.65))
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, APSpacing.sm)
+    }
+
+    private func promptPayQR(target: String, amount: Double) -> UIImage? {
+        let payload = promptPayPayload(target: target, amount: amount)
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(payload.utf8)
+        filter.correctionLevel = "Q"
+        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)) else { return nil }
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(output, from: output.extent) else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+
+    private func promptPayPayload(target: String, amount: Double) -> String {
+        let sanitized = target.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "-", with: "")
+        var accountInfo = "0016A000000677010111"
+        if sanitized.count == 13 {
+            accountInfo += "0213\(sanitized)"
+        } else {
+            var phone = sanitized
+            if phone.hasPrefix("0") { phone.removeFirst() }
+            accountInfo += "0113" + "0066" + phone
+        }
+        var payload = "000201010212"
+        payload += String(format: "29%02d%@", accountInfo.count, accountInfo)
+        payload += "5303764"
+        let amountText = String(format: "%.2f", amount)
+        payload += String(format: "54%02d%@", amountText.count, amountText)
+        payload += "5802TH6304"
+        return payload + crc16(payload)
+    }
+
+    private func crc16(_ value: String) -> String {
+        var crc: UInt16 = 0xFFFF
+        for byte in value.utf8 {
+            crc ^= UInt16(byte) << 8
+            for _ in 0..<8 { crc = (crc & 0x8000) != 0 ? (crc << 1) ^ 0x1021 : crc << 1 }
+        }
+        return String(format: "%04X", crc)
     }
 
     // MARK: - Footer
@@ -513,35 +708,57 @@ struct ReceiptView: View {
     // MARK: - Action Buttons
 
     private var actionButtons: some View {
-        HStack(spacing: APSpacing.md) {
+        VStack(spacing: 8) {
             Button(action: {
                 APHaptic.trigger()
-                printReceipt()
+                showingFullTaxInvoiceSheet = true
             }) {
-                Label("print_btn".t, systemImage: "printer.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(
-                        RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
-                            .fill(Color(hex: "2D71F8"))
-                    )
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.text.fill")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("ออกใบกำกับภาษีเต็มรูปแบบ (A4)")
+                        .font(.system(size: 13, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                        .fill(LinearGradient(colors: [Color.appAccent, Color(hex: "3B82F6")], startPoint: .leading, endPoint: .trailing))
+                )
+                .shadow(color: Color.appAccent.opacity(0.25), radius: 6, x: 0, y: 3)
             }
 
-            Button(action: {
-                APHaptic.trigger()
-                showingShareSheet = true
-            }) {
-                Label("email_btn".t, systemImage: "envelope.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Color(hex: "2D71F8"))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(
-                        RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
-                            .stroke(Color(hex: "2D71F8"), lineWidth: 1.5)
-                    )
+            HStack(spacing: APSpacing.md) {
+                Button(action: {
+                    APHaptic.trigger()
+                    printReceipt()
+                }) {
+                    Label("print_btn".t, systemImage: "printer.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Color(hex: "2D71F8"))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                        .background(
+                            RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                                .stroke(Color(hex: "2D71F8"), lineWidth: 1.5)
+                        )
+                }
+
+                Button(action: {
+                    APHaptic.trigger()
+                    showingShareSheet = true
+                }) {
+                    Label("email_btn".t, systemImage: "envelope.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Color(hex: "2D71F8"))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                        .background(
+                            RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                                .stroke(Color(hex: "2D71F8"), lineWidth: 1.5)
+                        )
+                }
             }
         }
         .padding(.top, APSpacing.sm)
@@ -556,9 +773,9 @@ struct ReceiptView: View {
         }
 
         if PrintService.shared.hasActiveReceiptPrinters() {
-            // Print using hardware printers (USB, network, bluetooth thermal printers)
+            // Manual reprint — bypass auto-print toggle
             Task {
-                await PrintService.shared.dispatchReceipt(order)
+                await PrintService.shared.dispatchReceipt(order, forcePrintReceipt: true)
                 await MainActor.run {
                     receiptActionMessage = "receipt_sent_to_printer".t
                     showingReceiptActionAlert = true

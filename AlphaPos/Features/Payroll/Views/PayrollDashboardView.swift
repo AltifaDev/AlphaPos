@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 
 struct PayrollDashboardView: View {
+    @EnvironmentObject private var sessionManager: AppSessionManager
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Employee.firstName) private var employees: [Employee]
     @Query(sort: \Role.name) private var allRoles: [Role]
@@ -70,6 +71,8 @@ struct PayrollDashboardView: View {
     @State private var empRoleId: UUID? = nil
     @State private var faceEmbeddingData: Data? = nil
     @State private var faceRegisteredAt: Date? = nil
+    @State private var faceEmbeddingNeedsRemoteClear = false
+    @State private var employeeSaveError: String? = nil
 
     // Form States: Shift
     @State private var shiftEmployeeId: UUID? = nil
@@ -990,11 +993,11 @@ struct PayrollDashboardView: View {
         }
 
         if let user = employee.user {
-            enableLoginAccess = true
+            enableLoginAccess = employee.staffAppEnabled && user.isActive && !user.isDeleted
             empUsername = user.username
             empPassword = "" // Secure
             empPin = "" // Leave empty for security and edit flow
-            empRoleId = user.role?.id
+            empRoleId = resolveRoleForEditing(user: user, employee: employee)
         } else {
             enableLoginAccess = false
             empUsername = ""
@@ -1005,8 +1008,32 @@ struct PayrollDashboardView: View {
 
         faceEmbeddingData = employee.faceEmbeddingData
         faceRegisteredAt = employee.faceRegisteredAt
+        faceEmbeddingNeedsRemoteClear = employee.faceEmbeddingNeedsRemoteClear
 
         showingEmployeeSheet = true
+    }
+
+    /// Resolve legacy/local Role UUIDs to the active canonical Role row so an
+    /// old alias cannot make the access-role Picker appear empty.
+    private func resolveRoleForEditing(user: User, employee: Employee) -> UUID? {
+        if let currentRole = user.role,
+           allRoles.contains(where: { !$0.isDeleted && $0.id == currentRole.id }) {
+            return currentRole.id
+        }
+        guard let currentRole = user.role else { return nil }
+        let canonicalName = RestaurantRoleCatalog.canonicalName(for: currentRole.name)
+        guard let replacement = allRoles.first(where: {
+            !$0.isDeleted && RestaurantRoleCatalog.canonicalName(for: $0.name) == canonicalName
+        }) else { return nil }
+
+        if user.role?.id != replacement.id {
+            user.role = replacement
+            user.isSynced = false
+            user.updatedAt = Date()
+            employee.isSynced = false
+            employee.updatedAt = Date()
+        }
+        return replacement.id
     }
 
     private func addEmployeeAction() {
@@ -1041,17 +1068,65 @@ struct PayrollDashboardView: View {
         empRoleId = nil
         faceEmbeddingData = nil
         faceRegisteredAt = nil
+        faceEmbeddingNeedsRemoteClear = false
 
         showingEmployeeSheet = true
     }
 
     private func saveEmployee() {
+        guard sessionManager.can(.staffManage) else {
+            employeeSaveError = "ไม่มีสิทธิ์จัดการพนักงาน"
+            return
+        }
+        let trimmedFirstName = empFirstName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedLastName = empLastName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedUsername = empUsername.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        if enableLoginAccess {
+            guard !normalizedUsername.isEmpty else {
+                employeeSaveError = "Username is required when staff app access is enabled."
+                return
+            }
+            let existingPIN = editingEmployee?.user?.pinCodeHash?.isEmpty == false
+            let validPIN = empPin.range(of: #"^[0-9]{4}$"#, options: .regularExpression) != nil
+            guard validPIN || (editingEmployee != nil && existingPIN && empPin.isEmpty) else {
+                employeeSaveError = "PIN must contain exactly 4 numeric digits."
+                return
+            }
+            guard empRoleId != nil,
+                  allRoles.contains(where: { $0.id == empRoleId }) else {
+                employeeSaveError = "Select an access role."
+                return
+            }
+            let users = (try? modelContext.fetch(FetchDescriptor<User>())) ?? []
+            if users.contains(where: {
+                !$0.isDeleted &&
+                $0.id != editingEmployee?.user?.id &&
+                $0.username.caseInsensitiveCompare(normalizedUsername) == .orderedSame &&
+                // A detached duplicate can be left behind while the canonical
+                // server User is being reconciled. It is not another employee.
+                // Reject only when the username is owned by a different profile.
+                (editingEmployee == nil ||
+                 $0.employeeProfile.map { $0.id != editingEmployee?.id } == true)
+            }) {
+                employeeSaveError = "Username “\(normalizedUsername)” is already used by another employee."
+                return
+            }
+        }
+
         let selectedRole = allRoles.first(where: { $0.id == empRoleId })
+        if enableLoginAccess || editingEmployee?.user != nil {
+            guard sessionManager.canAssignRole(selectedRole ?? editingEmployee?.user?.role, to: editingEmployee?.id),
+                  editingEmployee?.user?.role.map({ PermissionService.permissions(for: $0).isSubset(of: sessionManager.currentStaffSession?.permissions ?? []) }) ?? true else {
+                employeeSaveError = "ไม่มีสิทธิ์จัดการบัญชีหรือกำหนดบทบาทนี้"
+                return
+            }
+        }
         let targetEmp: Employee
 
         if let emp = editingEmployee {
-            emp.firstName = empFirstName
-            emp.lastName = empLastName
+            emp.firstName = trimmedFirstName
+            emp.lastName = trimmedLastName
             emp.phone = empPhone.isEmpty ? nil : empPhone
             emp.nationalId = empNationalId.isEmpty ? nil : empNationalId
             emp.employmentType = empEmploymentType
@@ -1065,18 +1140,21 @@ struct PayrollDashboardView: View {
             emp.emergencyContactPhone = empEmergencyContactPhone.isEmpty ? nil : empEmergencyContactPhone
             emp.joinedAt = empJoinedAt
             emp.resignedAt = hasResigned ? empResignedAt : nil
+            emp.branchId = BranchContext.shared.activeBranchIDString.isEmpty ? emp.branchId : BranchContext.shared.activeBranchIDString
+            emp.staffAppEnabled = enableLoginAccess
             emp.dateOfBirth = specifyDOB ? empDateOfBirth : nil
 
             emp.faceEmbeddingData = faceEmbeddingData
             emp.faceRegisteredAt = faceEmbeddingData == nil ? nil : (faceRegisteredAt ?? Date())
+            emp.faceEmbeddingNeedsRemoteClear = faceEmbeddingNeedsRemoteClear
 
             emp.updatedAt = Date()
             emp.isSynced = false
             targetEmp = emp
         } else {
             let newEmp = Employee(
-                firstName: empFirstName,
-                lastName: empLastName,
+                firstName: trimmedFirstName,
+                lastName: trimmedLastName,
                 phone: empPhone.isEmpty ? nil : empPhone,
                 nationalId: empNationalId.isEmpty ? nil : empNationalId,
                 bankAccountNumber: empBankAccount.isEmpty ? nil : empBankAccount,
@@ -1085,8 +1163,11 @@ struct PayrollDashboardView: View {
                 payRate: empPayRate,
                 joinedAt: empJoinedAt,
                 resignedAt: hasResigned ? empResignedAt : nil,
+                branchId: BranchContext.shared.activeBranchIDString,
+                staffAppEnabled: enableLoginAccess,
                 faceEmbeddingData: faceEmbeddingData,
                 faceRegisteredAt: faceEmbeddingData == nil ? nil : (faceRegisteredAt ?? Date()),
+                faceEmbeddingNeedsRemoteClear: false,
                 email: empEmail.isEmpty ? nil : empEmail,
                 dateOfBirth: specifyDOB ? empDateOfBirth : nil,
                 address: empAddress.isEmpty ? nil : empAddress,
@@ -1101,9 +1182,11 @@ struct PayrollDashboardView: View {
             let userEmail = empEmail.isEmpty ? nil : empEmail
 
             if let user = targetEmp.user {
-                user.username = empUsername.lowercased()
+                user.username = normalizedUsername
                 user.email = userEmail
                 user.role = selectedRole
+                user.isActive = true
+                user.isDeleted = false
                 if !empPin.isEmpty {
                     // Use iterated hash with salt (not plain sha256) per SecurityHelper.hashPIN
                     user.pinCodeHash = SecurityHelper.hashPIN(empPin)
@@ -1118,7 +1201,7 @@ struct PayrollDashboardView: View {
                 let pHash = empPassword.isEmpty ? SecurityHelper.hashPIN("") : SecurityHelper.hashPIN(empPassword)
                 let pinValue = empPin.isEmpty ? nil : SecurityHelper.hashPIN(empPin)
                 let newUser = User(
-                    username: empUsername.lowercased(),
+                    username: normalizedUsername,
                     email: userEmail,
                     passwordHash: pHash,
                     pinCodeHash: pinValue,
@@ -1128,14 +1211,14 @@ struct PayrollDashboardView: View {
                 targetEmp.user = newUser
             }
         } else {
-            if let user = targetEmp.user {
-                user.isDeleted = true
-                user.isSynced = false
-                user.updatedAt = Date()
-            }
+            targetEmp.staffAppEnabled = false
         }
 
-        modelContext.saveWithLogging(label: #function)
+        guard modelContext.saveWithLogging(label: #function) else {
+            modelContext.rollback()
+            employeeSaveError = "The employee credentials could not be saved. No changes were applied."
+            return
+        }
         showingEmployeeSheet = false
         editingEmployee = nil
 
@@ -1559,13 +1642,24 @@ struct PayrollDashboardView: View {
                         SecureField(editingEmployee == nil ? "Password" : "New Password (Optional)", text: $empPassword)
                             .textInputAutocapitalization(.never)
 
-                        TextField(editingEmployee == nil ? "Login PIN (4-6 Digits)" : "New PIN (Optional)", text: $empPin)
-                            .keyboardType(.numberPad)
+                        StaffPINEntryField(
+                            pin: $empPin,
+                            hasExistingPIN: editingEmployee?.user?.pinCodeHash?.isEmpty == false,
+                            language: appLanguage
+                        )
+
+                        if editingEmployee?.user?.pinCodeHash?.isEmpty == false {
+                            Label("PIN is configured. Leave blank to keep it.", systemImage: "checkmark.shield.fill")
+                                .font(.caption)
+                                .foregroundStyle(Color.appTeal)
+                        }
 
                         Picker("Access Role", selection: $empRoleId) {
                             Text("no_system_role".t).tag(nil as UUID?)
                             ForEach(allRoles) { role in
-                                Text(role.name).tag(role.id as UUID?)
+                                if !role.isDeleted {
+                                    Text(RestaurantRoleCatalog.canonicalName(for: role.name)).tag(role.id as UUID?)
+                                }
                             }
                         }
                     }
@@ -1603,6 +1697,7 @@ struct PayrollDashboardView: View {
                                 APHaptic.trigger()
                                 faceEmbeddingData = nil
                                 faceRegisteredAt = nil
+                                faceEmbeddingNeedsRemoteClear = true
                             }) {
                                 Text("reset_clear_btn".t)
                                     .font(.caption)
@@ -1626,11 +1721,24 @@ struct PayrollDashboardView: View {
                     Button("save_btn_label".t) {
                         saveEmployee()
                     }
-                    .disabled(empFirstName.isEmpty || empLastName.isEmpty || (enableLoginAccess && empUsername.isEmpty))
+                    // Keep the action tappable so saveEmployee() can explain the
+                    // exact invalid field instead of silently disabling Save.
+                    .disabled(
+                        empFirstName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        empLastName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
                 }
             }
         }
         .apColorScheme()
+        .alert("Unable to Save Employee", isPresented: Binding(
+            get: { employeeSaveError != nil },
+            set: { if !$0 { employeeSaveError = nil } }
+        )) {
+            Button("OK", role: .cancel) { employeeSaveError = nil }
+        } message: {
+            Text(employeeSaveError ?? "")
+        }
     }
 
     private var roleSuggestions: [String] {

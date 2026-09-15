@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+container=${PG_CONTAINER:-supabase_db_AlphaPos}
+state_dir=/var/lib/alphapos-db-guard
+baseline=$state_dir/baseline
+install -d -m 700 "$state_dir"
+
+current=$(docker exec "$container" psql -X -U postgres -d postgres -AtF '|' -c \
+  "SELECT (SELECT count(*) FROM auth.users),(SELECT count(*) FROM public.merchants),(SELECT count(*) FROM public.branches),(SELECT count(*) FROM public.menu_items),(SELECT count(*) FROM public.inventory_items);")
+IFS='|' read -r users merchants branches menu inventory <<<"$current"
+
+if [[ ! -s "$baseline" ]]; then
+  printf '%s\n' "$current" > "$baseline"
+  logger -t alphapos-db-guard "baseline initialized counts=$current"
+  exit 0
+fi
+
+IFS='|' read -r old_users old_merchants old_branches old_menu old_inventory < "$baseline"
+if (( users < old_users || merchants < old_merchants || branches < old_branches || menu < old_menu || inventory < old_inventory )); then
+  message="Database row counts decreased. previous=$old_users|$old_merchants|$old_branches|$old_menu|$old_inventory current=$current"
+  logger -p daemon.crit -t alphapos-db-guard "$message"
+  /usr/local/sbin/alphapos-send-alert critical "AlphaPos database data-loss guard" "$message" || true
+  exit 1
+fi
+
+# Growth becomes the new floor; normal deletes should be reviewed and baseline-adjusted explicitly.
+printf '%s\n' "$current" > "$baseline"
+logger -t alphapos-db-guard "healthy counts=$current"
+

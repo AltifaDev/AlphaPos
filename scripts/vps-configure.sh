@@ -1,17 +1,25 @@
 #!/bin/bash
 # AlphaPos VPS Configuration Script
-# Run on the VPS after supabase start to provision Vault secrets
-# and update customer-order-web config
+# Run on the VPS after supabase start to provision Vault secrets,
+# enforce production auth URLs, and update customer-order-web config.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+PUBLIC_API_URL="${PUBLIC_API_URL:-https://api.alphaposweb.com}"
+PUBLIC_WEB_URL="${PUBLIC_WEB_URL:-https://sync.alphaposweb.com}"
 VPS_IP=$(hostname -I | awk '{print $1}')
-BASE_URL="http://${VPS_IP}"
-WEB_URL="http://${VPS_IP}:8080"
+BASE_URL="${PUBLIC_API_URL}"
+WEB_URL="${PUBLIC_WEB_URL}"
 
-echo "Configuring AlphaPos VPS at ${BASE_URL}"
+echo "Configuring AlphaPos VPS (API=${BASE_URL}, web=${WEB_URL})"
+
+if [[ -x "${ROOT_DIR}/scripts/fix-vps-auth-urls.sh" ]]; then
+    "${ROOT_DIR}/scripts/fix-vps-auth-urls.sh" apply "${ROOT_DIR}"
+else
+    echo "WARN: missing scripts/fix-vps-auth-urls.sh — auth email links may still use localhost" >&2
+fi
 
 # ── Get service role key from supabase status ──────────────────────────
 SERVICE_KEY=$(supabase status --output env 2>/dev/null | grep SERVICE_ROLE_KEY | sed 's/.*="\(.*\)"/\1/')
@@ -51,10 +59,11 @@ window.ALPHAPOS_CONFIG = {
     supabaseKey: '$(grep SUPABASE_ANON_KEY "$ENV_FILE" | cut -d= -f2)',
     edgeFunctionUrl: '${BASE_URL}/functions/v1',
     merchantId: '$(grep MERCHANT_ID "$ENV_FILE" | cut -d= -f2)',
-    isProduction: false
+    isProduction: true
 };
 JSEOF
 
+echo "✓ Production auth URLs enforced"
 echo "✓ Vault provisioned"
 echo "✓ customer-order-web config updated"
 echo "✓ Configured AlphaPos VPS at ${BASE_URL}"

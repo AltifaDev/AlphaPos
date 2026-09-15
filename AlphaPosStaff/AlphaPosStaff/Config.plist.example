@@ -2,13 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>SUPABASE_URL</key>
-    <string>http://127.0.0.1:54321</string>
-    <key>SUPABASE_ANON_KEY</key>
-    <string>your-anon-key</string>
-    <key>DEFAULT_MERCHANT_ID</key>
-    <string>your-merchant-uuid</string>
-    <key>DEFAULT_DEVICE_SECRET</key>
-    <string>your-device-secret</string>
+	<key>SUPABASE_ANON_KEY</key>
+	<string>your-anon-key</string>
+	<key>SUPABASE_URL</key>
+	<string>http://127.0.0.1:54321</string>
 </dict>
 </plist>

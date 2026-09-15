@@ -344,6 +344,22 @@ final class LanguageManager {
             "vi": "Mã PIN không đúng, vui lòng thử lại.",
             "my": "PIN နံပါတ် မှားယွင်းနေပါသည်။ ထပ်မံကြိုးစားပါ။"
         ],
+        "pin_verifying": [
+            "en": "Verifying PIN…",
+            "th": "กำลังตรวจสอบ PIN…",
+            "lo": "ກຳລັງກວດສອບ PIN…",
+            "km": "កំពុងផ្ទៀងផ្ទាត់ PIN…",
+            "vi": "Đang xác minh PIN…",
+            "my": "PIN ကို စစ်ဆေးနေသည်…"
+        ],
+        "pin_network_error": [
+            "en": "Unable to verify PIN. Check your connection and try again.",
+            "th": "ไม่สามารถตรวจสอบ PIN ได้ กรุณาตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง",
+            "lo": "ບໍ່ສາມາດກວດສອບ PIN ໄດ້ ກະລຸນາກວດກາການເຊື່ອມຕໍ່ແລ້ວລອງໃໝ່",
+            "km": "មិនអាចផ្ទៀងផ្ទាត់ PIN បានទេ។ សូមពិនិត្យការតភ្ជាប់ ហើយព្យាយាមម្តងទៀត។",
+            "vi": "Không thể xác minh PIN. Hãy kiểm tra kết nối và thử lại.",
+            "my": "PIN ကို စစ်ဆေး၍မရပါ။ ချိတ်ဆက်မှုကို စစ်ဆေးပြီး ထပ်မံကြိုးစားပါ။"
+        ],
         "biometric_auth": [
             "en": "BIOMETRIC AUTH",
             "th": "สแกนชีวภาพ",
@@ -1352,6 +1368,110 @@ final class LanguageManager {
             "vi": "Thanh toán",
             "my": "ငွေပေးချေမည်"
         ],
+        "bill_payment_hint": [
+            "en": "Close table & issue receipt",
+            "th": "ปิดโต๊ะและออกใบเสร็จ",
+            "lo": "ປິດໂຕະ ແລະ ອອກໃບບິນ",
+            "km": "បិទតុ និងចេញវិក្កយបត្រ",
+            "vi": "Đóng bàn & xuất hóa đơn",
+            "my": "စားပွဲပိတ်ပြီး ဘောက်ချာထုတ်မည်"
+        ],
+        "print_guest_bill": [
+            "en": "Print Bill",
+            "th": "พิมพ์บิล",
+            "lo": "ພິມບິນ",
+            "km": "បោះពុម្ពវិក្កយបត្រ",
+            "vi": "In hóa đơn",
+            "my": "ဘီလ်ပုံနှိပ်"
+        ],
+        "guest_bill_preview_title": [
+            "en": "Guest bill (before payment)",
+            "th": "ใบบันทึกรายการ (ก่อนชำระ)",
+            "lo": "ໃບບິນລາຍການ (ກ່ອນຊຳລະ)",
+            "km": "វិក្កយបត្រភ្ញៃវ (មុនបង់)",
+            "vi": "Hóa đơn tạm (trước thanh toán)",
+            "my": "ဧည့ဘီလ် (ငွေမပေးမီ)"
+        ],
+        "print_via_ipad_hint": [
+            "en": "Prints on the paired iPad station printer",
+            "th": "พิมพ์ผ่านเครื่องพิมพ์ที่ต่อกับ iPad",
+            "lo": "ພິມຜ່ານເຄຣື່ອງພິມທີ່ເຊື່ອມກັບ iPad",
+            "km": "បោះពុម្ពតាមម៉ាស៊ីនព្រីនភ្ជាបនឹង iPad",
+            "vi": "In qua máy in gắn với iPad",
+            "my": "iPad နှင့်ချိတ်ထားသော ပရင့်တာဖြင့် ပုံနှိပ်မည်"
+        ],
+        "print_sent_to_ipad": [
+            "en": "Print job sent to iPad",
+            "th": "ส่งคำสั่งพิมพ์ไปยัง iPad แล้ว",
+            "lo": "ສົງຄຳສັ່ງພິມໄປຫາ iPad ແລ້ວ",
+            "km": "បានផ្ញើការបោះពុម្ពទៅ iPad ហើយ",
+            "vi": "Đã gửi lệnh in tới iPad",
+            "my": "iPad သို့ ပုံနှိပ်အမိနည့် ပို့ပြီးပြီ"
+        ],
+        "print_send_failed": [
+            "en": "Could not send print job",
+            "th": "ส่งคำสั่งพิมพ์ไม่สำเร็จ",
+            "lo": "ສົງຄຳສັ່ງພິມບໍ່ສຳເລັດ",
+            "km": "ផ្ញើការបោះពុម្ពមិនបានជោគជ័យ",
+            "vi": "Gửi lệnh in thất bại",
+            "my": "ပုံနှိပ်အမိနည့် ပို့မရပါ"
+        ],
+        "no_menu_match": [
+            "en": "No matching menu items",
+            "th": "ไม่พบเมนูที่ตรงกัน",
+            "lo": "ບໍ່ພົບເມນູທີ່ກົງກັນ",
+            "km": "រកមិនហើញម៉ឹនុយដេលត្រូវ",
+            "vi": "Không có món phù hợp",
+            "my": "ကိုကည်ခံသော မီနျုး မရှိ"
+        ],
+        "customize_options": [
+            "en": "Customize",
+            "th": "เลือกตัวเลือก",
+            "lo": "ເລືອກຕົວເລືອກ",
+            "km": "ជ្រើសរើសជម្រើស",
+            "vi": "Tùy chọn",
+            "my": "ရွေးချယ်ရန်"
+        ],
+        "required": [
+            "en": "Required",
+            "th": "ต้องเลือก",
+            "lo": "ຕ້ອງເລືອກ",
+            "km": "ត្រូវការ",
+            "vi": "Bắt buộc",
+            "my": "လိုအပ်သည်"
+        ],
+        "optional": [
+            "en": "Optional",
+            "th": "ไม่บังคับ",
+            "lo": "ບໍ່ບັງຄັບ",
+            "km": "ស្រេចចិត្ត",
+            "vi": "Tùy chọn",
+            "my": "မဖြစ်မနေမဟုတ်"
+        ],
+        "add_to_order": [
+            "en": "Add to Order",
+            "th": "เพิ่มลงออเดอร์",
+            "lo": "ເພີ່ມລົງອໍເດີ",
+            "km": "បន្ថែមទៅការបញ្ជាទិញ",
+            "vi": "Thêm vào đơn",
+            "my": "အော်ဒါသို့ထည့်ရန်"
+        ],
+        "edit": [
+            "en": "Edit",
+            "th": "แก้ไข",
+            "lo": "ແກ້ໄຂ",
+            "km": "កែសម្រួល",
+            "vi": "Sửa",
+            "my": "ပြင်ဆင်ရန်"
+        ],
+        "choose_up_to": [
+            "en": "Choose up to",
+            "th": "เลือกได้สูงสุด",
+            "lo": "ເລືອກໄດ້ສູງສຸດ",
+            "km": "ជ្រើសរើសរហូតដល់",
+            "vi": "Chọn tối đa",
+            "my": "အများဆုံးရွေးပါ"
+        ],
         "table_details_title": [
             "en": "Table details",
             "th": "รายละเอียดโต๊ะ",
@@ -1716,9 +1836,24 @@ final class LanguageManager {
             "lo": "ຕະກລ້າຂອງທ່ານ"
         ],
         "queue_number": [
-            "en": "Queue Number",
-            "th": "หมายเลขคิว",
-            "lo": "ໝາຍເລຂຄິວ"
+            "en": "Queue",
+            "th": "คิวที่",
+            "lo": "ຄິວທີ"
+        ],
+        "platform_order_number_placeholder": [
+            "en": "Platform order # (paste OK)",
+            "th": "เลขออเดอร์แพลตฟอร์ม (วางได้)",
+            "lo": "ເລກອໍເດີແພລດຟອມ (ວາງໄດ້)"
+        ],
+        "platform_order_label": [
+            "en": "Platform #",
+            "th": "เลขแพลตฟอร์ม",
+            "lo": "ເລກແພລດຟອມ"
+        ],
+        "paste_btn": [
+            "en": "Paste",
+            "th": "วาง",
+            "lo": "ວາງ"
         ],
         "pay_now": [
             "en": "Pay Now",
@@ -2374,6 +2509,11 @@ final class LanguageManager {
             "th": "ยืนยัน",
             "lo": "ຢືນຢັນ"
         ],
+        "approve": [
+            "en": "Approve",
+            "th": "อนุมัติ",
+            "lo": "ອະນຸມັດ"
+        ],
         "people": [
             "en": "people",
             "th": "คน",
@@ -2427,6 +2567,11 @@ final class LanguageManager {
         ],
         // ── OrderStatusBadge localization (2026-06-28) ─────────────────────
         "status_pending": ["en": "Pending", "th": "รอยืนยัน", "lo": "ລອຢືນຢັນ"],
+        "kitchen_delay_minutes": [
+            "en": "Kitchen delay %d min",
+            "th": "ครัวล่าช้า %d นาที",
+            "lo": "ครัวຊ້າ %d ນາທີ"
+        ],
         "status_confirmed": ["en": "Confirmed", "th": "ยืนยันแล้ว", "lo": "ຢືນຢັນແລ້ວ"],
         "status_preparing": ["en": "Preparing", "th": "กำลังเตรียม", "lo": "ກຳລັງເຕລີຍມ"],
         "status_ready": ["en": "Ready", "th": "พร้อมเสิร์ฟ", "lo": "ພລ້ອມເສີບ"],

@@ -17,16 +17,26 @@ final class TableSession {
     var isSynced: Bool
     var isDeleted: Bool
     var updatedAt: Date
+    var rowVersion: Int = 0
     
     var guestCount: Int = 2
-    var cashierName: String = "Alex M."
+    var cashierName: String = ""
     var queueNumber: String? = nil
     
     var totalAmount: Double {
         orders.filter { !$0.isDeleted && $0.status != "cancelled" }.reduce(0.0) { $0 + $1.total }
     }
+
+    /// Number of visible product lines, not the sum of their quantities.
+    var itemCount: Int {
+        orders
+            .filter { !$0.isDeleted && $0.status != "cancelled" }
+            .reduce(0) { count, order in
+                count + order.items.filter { !$0.isDeleted && $0.status != "cancelled" }.count
+            }
+    }
     
-    init(id: UUID = UUID(), sessionToken: String = UUID().uuidString, startedAt: Date = Date(), endedAt: Date? = nil, isActive: Bool = true, table: RestaurantTable? = nil, guestCount: Int = 2, cashierName: String = "Alex M.", queueNumber: String? = nil, isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date()) {
+    init(id: UUID = UUID(), sessionToken: String = UUID().uuidString, startedAt: Date = Date(), endedAt: Date? = nil, isActive: Bool = true, table: RestaurantTable? = nil, guestCount: Int = 2, cashierName: String = "", queueNumber: String? = nil, isSynced: Bool = false, isDeleted: Bool = false, updatedAt: Date = Date(), rowVersion: Int = 0) {
         self.id = id
         self.sessionToken = sessionToken
         self.startedAt = startedAt
@@ -39,5 +49,6 @@ final class TableSession {
         self.isSynced = isSynced
         self.isDeleted = isDeleted
         self.updatedAt = updatedAt
+        self.rowVersion = rowVersion
     }
 }

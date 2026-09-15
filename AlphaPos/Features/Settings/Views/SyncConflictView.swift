@@ -17,6 +17,7 @@ struct SyncConflictView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
     @ObservedObject private var syncEngine = SyncEngine.shared
+    @ObservedObject private var conflictJournal = SyncConflictJournal.shared
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @AppStorage("conflict_strategy") private var conflictStrategy = "master_wins"
     
@@ -53,7 +54,8 @@ struct SyncConflictView: View {
     }
     
     private var totalPending: Int {
-        pendingOrders.count + pendingPayments.count + pendingMenuItems.count +
+        guard PersistenceStateResolver.cloudState(isSynced: false) != .disabled else { return 0 }
+        return pendingOrders.count + pendingPayments.count + pendingMenuItems.count +
         pendingTables.count + pendingSessions.count + pendingCustomers.count +
         pendingInventory.count + pendingTimecards.count
     }
@@ -161,7 +163,7 @@ struct SyncConflictView: View {
                         
                         if tab == .queue && totalPending > 0 {
                             Text("\(totalPending)")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(.white)
                                 .frame(width: 18, height: 18)
                                 .background(Color(hex: "F59E0B"))
@@ -240,7 +242,7 @@ struct SyncConflictView: View {
                         }
                         .buttonStyle(.plain)
                         Text("conflict_purge_warning".t)
-                            .font(.system(size: 10))
+                            .font(.system(size: 12))
                             .foregroundColor(.textTertiary)
                     }
                 }
@@ -254,24 +256,26 @@ struct SyncConflictView: View {
     private var conflictsSection: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                // In the current master-wins architecture, conflicts are auto-resolved.
-                // This section shows records where local was newer than server (master won).
-                
                 Text("conflict_detected_title".t)
-                    .font(.headline)
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.textPrimary)
                 
                 Text("conflict_detected_desc".t)
-                    .font(.subheadline)
+                    .font(.system(size: 12))
                     .foregroundColor(.textSecondary)
                 
-                // Show last-wins log (simulated — real implementation would track conflict events)
-                emptyState(
-                    icon: "checkmark.shield.fill",
-                    title: "conflict_no_conflicts".t,
-                    message: "conflict_no_conflicts_desc".t,
-                    color: .green
-                )
+                if conflictJournal.activeMerchantRecords.isEmpty {
+                    emptyState(
+                        icon: "checkmark.shield.fill",
+                        title: "conflict_no_conflicts".t,
+                        message: "conflict_no_conflicts_desc".t,
+                        color: .green
+                    )
+                } else {
+                    ForEach(conflictJournal.activeMerchantRecords) { record in
+                        conflictRecordRow(record)
+                    }
+                }
             }
             .padding()
         }
@@ -283,11 +287,11 @@ struct SyncConflictView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 Text("conflict_strategy_title".t)
-                    .font(.title2.weight(.bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.textPrimary)
                 
                 Text("conflict_strategy_desc".t)
-                    .font(.subheadline)
+                    .font(.system(size: 12))
                     .foregroundColor(.textSecondary)
                 
                 // Strategy picker
@@ -325,10 +329,10 @@ struct SyncConflictView: View {
                 // Priority config
                 VStack(alignment: .leading, spacing: 8) {
                     Text("conflict_priority_title".t)
-                        .font(.headline)
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.textPrimary)
                     Text("conflict_priority_desc".t)
-                        .font(.caption)
+                        .font(.system(size: 12))
                         .foregroundColor(.textTertiary)
                     
                     VStack(spacing: 6) {
@@ -354,38 +358,24 @@ struct SyncConflictView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text("conflict_log_title".t)
-                        .font(.headline)
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.textPrimary)
                     Spacer()
                     if let lastSync = syncEngine.lastSyncedAt {
                         Text("conflict_last_sync".t + " " + lastSync.formatted(date: .omitted, time: .standard))
-                            .font(.system(size: 11))
+                            .font(.system(size: 12))
                             .foregroundColor(.textTertiary)
                     }
                 }
                 
-                // Sync events (using SyncEngine state)
-                ForEach(0..<5, id: \.self) { i in
-                    HStack(spacing: 10) {
-                        Circle()
-                            .fill(Color.green.opacity(0.2))
-                            .frame(width: 28, height: 28)
-                            .overlay(
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(.green)
-                            )
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Sync completed successfully")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(.textPrimary)
-                            Text("\(i * 5 + 5) min ago • \(Int.random(in: 2...15)) records synced")
-                                .font(.system(size: 10))
-                                .foregroundColor(.textTertiary)
-                        }
-                        Spacer()
+                if conflictJournal.activeMerchantRecords.isEmpty {
+                    Text(syncEngine.lastSyncFailureDetails.isEmpty ? "No conflict decisions recorded" : syncEngine.lastSyncFailureDetails.joined(separator: "\n"))
+                        .font(.system(size: 12))
+                        .foregroundColor(.textTertiary)
+                } else {
+                    ForEach(conflictJournal.activeMerchantRecords.prefix(50)) { record in
+                        conflictRecordRow(record)
                     }
-                    .padding(.vertical, 4)
                 }
             }
             .padding()
@@ -393,6 +383,36 @@ struct SyncConflictView: View {
     }
     
     // MARK: - Components
+
+    private func conflictRecordRow(_ record: SyncConflictJournalRecord) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: record.resolvedAt == nil ? "exclamationmark.triangle.fill" : "checkmark.shield.fill")
+                .foregroundColor(record.resolvedAt == nil ? .orange : .green)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(record.source)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.textPrimary)
+                Text("\(record.strategy) • \(record.decision)")
+                    .font(.system(size: 12))
+                    .foregroundColor(.textSecondary)
+                Text("local \(record.localSnapshot)  /  remote \(record.remoteSnapshot)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.textTertiary)
+                Text(record.detectedAt.formatted(date: .abbreviated, time: .standard))
+                    .font(.system(size: 11))
+                    .foregroundColor(.textTertiary)
+            }
+            Spacer()
+            if record.resolvedAt == nil {
+                Button("Acknowledge") { conflictJournal.acknowledge(record.id) }
+                    .font(.system(size: 11, weight: .semibold))
+            }
+        }
+        .padding(10)
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
     
     private func emptyState(icon: String, title: String, message: String, color: Color) -> some View {
         VStack(spacing: 12) {
@@ -400,10 +420,10 @@ struct SyncConflictView: View {
                 .font(.system(size: 40))
                 .foregroundColor(color)
             Text(title)
-                .font(.headline)
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.textPrimary)
             Text(message)
-                .font(.subheadline)
+                .font(.system(size: 12))
                 .foregroundColor(.textTertiary)
                 .multilineTextAlignment(.center)
         }
@@ -434,7 +454,7 @@ struct SyncConflictView: View {
                             .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.textSecondary)
                         Text("(\(items.count))")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundColor(color)
                     }
                     
@@ -448,18 +468,18 @@ struct SyncConflictView: View {
                                 .foregroundColor(.textPrimary)
                                 .lineLimit(1)
                             Text(item.detail)
-                                .font(.system(size: 10))
+                                .font(.system(size: 12))
                                 .foregroundColor(.textTertiary)
                             Spacer()
                             Text(item.date.formatted(date: .omitted, time: .shortened))
-                                .font(.system(size: 9))
+                                .font(.system(size: 12))
                                 .foregroundColor(.textTertiary)
                         }
                     }
                     
                     if items.count > 5 {
                         Text("+ \(items.count - 5) " + "conflict_more_items".t)
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundColor(color)
                             .padding(.leading, 16)
                     }
@@ -481,16 +501,16 @@ struct SyncConflictView: View {
                         .fill(color.opacity(0.12))
                         .frame(width: 40, height: 40)
                     Image(systemName: icon)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(color)
                 }
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.textPrimary)
                     Text(desc)
-                        .font(.system(size: 11))
+                        .font(.system(size: 12))
                         .foregroundColor(.textTertiary)
                         .lineLimit(2)
                 }
@@ -531,7 +551,7 @@ struct SyncConflictView: View {
                 .foregroundColor(.textPrimary)
             Spacer()
             Text(priority)
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.appAccent)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)

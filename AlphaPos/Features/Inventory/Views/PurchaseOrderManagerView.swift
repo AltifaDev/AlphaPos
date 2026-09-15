@@ -6,206 +6,257 @@ struct PurchaseOrderManagerView: View {
     @Environment(\.dismiss) private var dismiss
     
     let activeBranch: Branch
+    /// When true (Inventory hub), skip NavigationStack chrome / Close button.
+    var embedded: Bool = false
+    var onScanDocument: (() -> Void)? = nil
     
-    @Query(sort: \PurchaseOrder.orderDate, order: .reverse) private var allPOs: [PurchaseOrder]
-    @Query(sort: \Supplier.name) private var suppliers: [Supplier]
+    @Query(filter: #Predicate<PurchaseOrder> { !$0.isDeleted }, sort: \PurchaseOrder.orderDate, order: .reverse) private var allPOs: [PurchaseOrder]
+    @Query(filter: #Predicate<Supplier> { !$0.isDeleted }, sort: \Supplier.name) private var allSuppliers: [Supplier]
     
     @State private var showingCreateSheet = false
     @State private var selectedPO: PurchaseOrder?
     @State private var showingNoSupplierAlert = false
+
+    private var suppliers: [Supplier] { allSuppliers }
     
     private var filteredPOs: [PurchaseOrder] {
         allPOs.filter { $0.branch?.id == activeBranch.id }
     }
+
+    private var draftCount: Int { filteredPOs.filter { $0.status == "draft" }.count }
+    private var pendingCount: Int { filteredPOs.filter { $0.status == "sent" || $0.status == "partially_received" }.count }
+    private var receivedCount: Int { filteredPOs.filter { $0.status == "received" }.count }
     
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color.appBackground.ignoresSafeArea()
-                
-                VStack(spacing: APSpacing.lg) {
-                    // Quick stats
-                    HStack(spacing: APSpacing.md) {
-                        statCard(title: "Drafts", count: filteredPOs.filter { $0.status == "draft" }.count, color: .appTeal)
-                        statCard(title: "Sent / Pending", count: filteredPOs.filter { $0.status == "sent" || $0.status == "partially_received" }.count, color: .appAmber)
-                        statCard(title: "Received", count: filteredPOs.filter { $0.status == "received" }.count, color: .appRose)
-                    }
-                    .padding(.horizontal)
-                    .padding(.top, APSpacing.sm)
-                    
-                    if suppliers.isEmpty {
-                        HStack(spacing: 12) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.appAmber)
-                                .font(.title3)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("po_no_suppliers_title".t)
-                                    .font(.subheadline)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.textPrimary)
-                                Text("po_no_suppliers_desc".t)
-                                    .font(.caption)
-                                    .foregroundColor(.textSecondary)
-                            }
-                            Spacer()
-                        }
-                        .padding()
-                        .background(Color.appAmber.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: APRadius.md)
-                                .stroke(Color.appAmber.opacity(0.3), lineWidth: 1)
-                        )
-                        .padding(.horizontal)
-                    }
-                    
-                    if filteredPOs.isEmpty {
-                        VStack(spacing: APSpacing.md) {
-                            Spacer()
-                            Image(systemName: "doc.text.magnifyingglass")
-                                .font(.system(size: 64))
-                                .foregroundColor(.textSecondary.opacity(0.5))
-                            Text("po_no_orders_title".t)
-                                .font(.headline)
-                                .foregroundColor(.textSecondary)
-                            Text("po_no_orders_desc".t)
-                                .font(.caption)
-                                .foregroundColor(.textSecondary.opacity(0.8))
-                            Spacer()
-                        }
-                    } else {
-                        ScrollView {
-                            VStack(spacing: APSpacing.md) {
-                                ForEach(filteredPOs) { po in
-                                    poRow(po)
-                                }
-                            }
-                            .padding(.horizontal)
-                        }
-                    }
+        Group {
+            if embedded {
+                poContent
+            } else {
+                NavigationStack {
+                    poContent
+                        .navigationTitle("Purchase Orders — \(activeBranch.name)")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { sheetToolbar }
                 }
             }
-            .navigationTitle("Purchase Orders — \(activeBranch.name)")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("close_btn_label".t) {
-                        dismiss()
-                    }
-                    .foregroundColor(.textPrimary)
-                }
-                
-                ToolbarItem(placement: .primaryAction) {
-                    Button(action: {
-                        if suppliers.isEmpty {
-                            showingNoSupplierAlert = true
-                        } else {
-                            showingCreateSheet = true
-                        }
-                    }) {
-                        Label("add_new_po_btn".t, systemImage: "plus")
-                            .foregroundColor(.appTeal)
-                    }
-                }
-            }
-            .sheet(isPresented: $showingCreateSheet) {
-                CreatePurchaseOrderSheet(activeBranch: activeBranch)
-            }
-            .sheet(item: $selectedPO) { po in
-                PurchaseOrderDetailView(po: po)
-            }
-            .alert("No Suppliers Found", isPresented: $showingNoSupplierAlert) {
-                Button("OK", role: .cancel) { }
-            } message: {
-                Text("po_must_register_supplier_desc".t)
-            }
+        }
+        .sheet(isPresented: $showingCreateSheet) {
+            CreatePurchaseOrderSheet(activeBranch: activeBranch)
+        }
+        .sheet(item: $selectedPO) { po in
+            PurchaseOrderDetailView(po: po)
+        }
+        .alert("No Suppliers Found", isPresented: $showingNoSupplierAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("po_must_register_supplier_desc".t)
         }
         .apColorScheme()
     }
-    
-    @ViewBuilder
-    private func statCard(title: String, count: Int, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title.uppercased())
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(.textSecondary)
-            Text("\(count)")
-                .font(.title2).fontWeight(.bold)
-                .foregroundColor(color)
+
+    @ToolbarContentBuilder
+    private var sheetToolbar: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("close_btn_label".t) { dismiss() }
+                .foregroundColor(.textPrimary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(APSpacing.md)
-        .background(Color.appSurface)
-        .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
-        .overlay(
-            RoundedRectangle(cornerRadius: APRadius.md)
-                .stroke(Color.appBorderSubtle, lineWidth: 1)
-        )
+        ToolbarItem(placement: .primaryAction) {
+            Button(action: addPOTapped) {
+                Label("add_new_po_btn".t, systemImage: "plus")
+                    .foregroundColor(.appTeal)
+            }
+        }
+    }
+
+    private var poContent: some View {
+        VStack(spacing: 0) {
+            // Single compact toolbar: scan + KPI chips + add
+            HStack(spacing: 6) {
+                if let onScanDocument {
+                    Button(action: onScanDocument) {
+                        Label("stock_scan_title".t, systemImage: "sparkles.rectangle.stack")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.appTeal)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.appTeal.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                poStatusChip("Drafts", draftCount, .appTeal)
+                poStatusChip("Sent", pendingCount, .appAmber)
+                poStatusChip("Received", receivedCount, .appRose)
+
+                Spacer(minLength: 4)
+
+                if suppliers.isEmpty {
+                    Text("po_no_suppliers_title".t)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.appAmber)
+                        .lineLimit(1)
+                }
+
+                if embedded {
+                    Button(action: addPOTapped) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 28, height: 28)
+                            .background(Color.appTeal)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, APSpacing.md)
+            .padding(.vertical, 8)
+            .background(Color.appSurface)
+            .overlay(Rectangle().fill(Color.appDivider).frame(height: 1), alignment: .bottom)
+
+            if filteredPOs.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 28))
+                        .foregroundColor(.textTertiary)
+                    Text("po_no_orders_title".t)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.textSecondary)
+                    Text("po_no_orders_desc".t)
+                        .font(.caption)
+                        .foregroundColor(.textTertiary)
+                    if !suppliers.isEmpty {
+                        Button(action: addPOTapped) {
+                            Text("add_new_po_btn".t)
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.appTeal)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.appBackground)
+            } else {
+                // Column header
+                HStack(spacing: 0) {
+                    Text("PO #").frame(width: 110, alignment: .leading)
+                    Text("po_supplier_label".t).frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Date").frame(width: 72, alignment: .trailing)
+                    Text("inv_stock_value_col".t).frame(width: 88, alignment: .trailing)
+                    Text("status_label".t).frame(width: 72, alignment: .center)
+                }
+                .font(.caption2.weight(.bold))
+                .foregroundColor(.textSecondary)
+                .textCase(.uppercase)
+                .padding(.horizontal, APSpacing.md)
+                .padding(.vertical, 6)
+                .background(Color.appSurfaceHigh.opacity(0.5))
+
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filteredPOs) { po in
+                            poRow(po)
+                        }
+                    }
+                }
+                .background(Color.appBackground)
+            }
+        }
+        .background(Color.appBackground)
+    }
+
+    private func addPOTapped() {
+        if suppliers.isEmpty {
+            showingNoSupplierAlert = true
+        } else {
+            showingCreateSheet = true
+        }
+    }
+
+    private func poStatusChip(_ title: String, _ count: Int, _ color: Color) -> some View {
+        HStack(spacing: 4) {
+            Text("\(count)")
+                .font(.caption.weight(.bold).monospacedDigit())
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+        }
+        .foregroundColor(color)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(color.opacity(0.10))
+        .clipShape(Capsule())
     }
     
     @ViewBuilder
     private func poRow(_ po: PurchaseOrder) -> some View {
+        let lineTotal = po.items.reduce(0.0) { $0 + ($1.quantityOrdered * $1.unitCost) }
+        let displayTotal = po.grandTotal ?? lineTotal
+
         Button(action: { selectedPO = po }) {
-            HStack(spacing: APSpacing.md) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(po.poNumber)
-                            .font(.headline)
-                            .foregroundColor(.textPrimary)
-                        
-                        poStatusBadge(po.status)
-                    }
-                    
-                    Text("Supplier: \(po.supplier?.name ?? "Unknown")")
-                        .font(.subheadline)
-                        .foregroundColor(.textSecondary)
-                    
-                    Text(String(format: "po_ordered_lbl_template".t, po.orderDate.formatted(date: .abbreviated, time: .omitted)))
-                        .font(.caption2)
-                        .foregroundColor(.textSecondary)
-                }
-                
-                Spacer()
-                
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(String(format: "po_items_count_template".t, po.items.count))
-                        .font(.subheadline)
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(po.poNumber)
+                        .font(.caption.weight(.bold))
                         .foregroundColor(.textPrimary)
-                    
-                    let totalCost = po.items.reduce(0.0) { $0 + ($1.quantityOrdered * $1.unitCost) }
-                    Text(String(format: "฿%.2f", totalCost))
-                        .font(.headline)
-                        .foregroundColor(.appTeal)
+                        .lineLimit(1)
+                    if let inv = po.invoiceNumber, !inv.isEmpty {
+                        Text(inv)
+                            .font(.system(size: 9))
+                            .foregroundColor(.textTertiary)
+                            .lineLimit(1)
+                    }
                 }
-                
-                Image(systemName: "chevron.right")
-                    .foregroundColor(.textSecondary.opacity(0.5))
+                .frame(width: 110, alignment: .leading)
+
+                Text(po.supplier?.name ?? "—")
+                    .font(.caption)
+                    .foregroundColor(.textSecondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(po.orderDate.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundColor(.textSecondary)
+                    .frame(width: 72, alignment: .trailing)
+
+                Text(String(format: "฿%.0f", displayTotal))
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundColor(.textPrimary)
+                    .frame(width: 88, alignment: .trailing)
+
+                poStatusBadge(po.status)
+                    .frame(width: 72, alignment: .center)
             }
-            .padding(APSpacing.md)
-            .background(Color.appSurface.opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
-            .overlay(
-                RoundedRectangle(cornerRadius: APRadius.md)
-                    .stroke(Color.appBorderSubtle, lineWidth: 1)
-            )
+            .padding(.horizontal, APSpacing.md)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .overlay(Divider().background(Color.appDivider), alignment: .bottom)
     }
     
     @ViewBuilder
     private func poStatusBadge(_ status: String) -> some View {
-        switch status {
-        case "draft":
-            APBadge(text: "Draft", color: .appTeal, icon: "pencil")
-        case "sent":
-            APBadge(text: "Sent", color: .appAmber, icon: "paperplane.fill")
-        case "received":
-            APBadge(text: "Received", color: .appRose, icon: "shippingbox.fill")
-        case "partially_received":
-            APBadge(text: "Partial", color: .appAmber, icon: "shippingbox")
-        case "cancelled":
-            APBadge(text: "Cancelled", color: .textSecondary, icon: "xmark.circle.fill")
-        default:
-            APBadge(text: status.capitalized, color: .textSecondary, icon: "questionmark")
-        }
+        let (text, color): (String, Color) = {
+            switch status {
+            case "draft": return ("Draft", .appTeal)
+            case "sent": return ("Sent", .appAmber)
+            case "received": return ("Received", .appRose)
+            case "partially_received": return ("Partial", .appAmber)
+            case "cancelled": return ("X", .textSecondary)
+            default: return (status.capitalized, .textSecondary)
+            }
+        }()
+        Text(text)
+            .font(.system(size: 9, weight: .bold))
+            .foregroundColor(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
+            .lineLimit(1)
     }
 }
 
@@ -453,6 +504,18 @@ struct PurchaseOrderDetailView: View {
                                 if let del = po.deliveryDate {
                                     Text("po_detail_delivery_template".t) + Text(" ") + Text(del.formatted(date: .abbreviated, time: .shortened)).bold()
                                 }
+                                if let inv = po.invoiceNumber, !inv.isEmpty {
+                                    Text("po_invoice_lbl".t) + Text(" ") + Text(inv).bold()
+                                }
+                                if let taxInv = po.taxInvoiceNumber, !taxInv.isEmpty {
+                                    Text("po_tax_invoice_lbl".t) + Text(" ") + Text(taxInv).bold()
+                                }
+                                let lineTotal = po.items.reduce(0.0) { $0 + ($1.quantityOrdered * $1.unitCost) }
+                                let total = po.grandTotal ?? lineTotal
+                                Text("po_grand_total_lbl".t) + Text(" ") + Text(String(format: "฿%.2f", total)).bold()
+                                if let tax = po.taxAmount, tax > 0 {
+                                    Text("po_tax_amount_lbl".t) + Text(" ") + Text(String(format: "฿%.2f", tax)).bold()
+                                }
                                 if let note = po.notes, !note.isEmpty {
                                     Text(String(format: "po_detail_notes_template".t, note))
                                         .font(.caption)
@@ -615,12 +678,14 @@ struct PurchaseOrderDetailView: View {
 struct ReceivePurchaseOrderSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var sessionManager: AppSessionManager
     
     let po: PurchaseOrder
     var onComplete: () -> Void
     
-    // Key is InventoryItem UUID, value is received quantity and cost
+    // Key is InventoryItem UUID, value is received quantity, cost, expiry date, lot number
     @State private var receivedData: [UUID: (qty: Double, cost: Double)] = [:]
+    @State private var expiryData: [UUID: (hasExpiry: Bool, expiryDate: Date, lotNumber: String)] = [:]
     @State private var notes = ""
     @State private var showingScanner = false
     
@@ -734,6 +799,55 @@ struct ReceivePurchaseOrderSheet: View {
                                             .foregroundColor(.textPrimary)
                                         }
                                     }
+                                    
+                                    // ── Expiry / Lot fields ──
+                                    let expiry = expiryData[itemId] ?? (hasExpiry: false, expiryDate: Date(), lotNumber: "PO-\(po.poNumber)")
+                                    
+                                    VStack(alignment: .leading, spacing: APSpacing.xs) {
+                                        Toggle(isOn: Binding(
+                                            get: { expiry.hasExpiry },
+                                            set: { newVal in expiryData[itemId] = (hasExpiry: newVal, expiryDate: expiry.expiryDate, lotNumber: expiry.lotNumber) }
+                                        )) {
+                                            Text("po_verify_has_expiry".t)
+                                                .font(.system(size: 9, weight: .semibold))
+                                                .foregroundColor(.textSecondary)
+                                        }
+                                        .tint(.appTeal)
+                                        
+                                        if expiry.hasExpiry {
+                                            HStack(spacing: APSpacing.md) {
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text("po_verify_expiry_date".t)
+                                                        .font(.system(size: 9, weight: .semibold)).foregroundColor(.textSecondary)
+                                                    DatePicker(
+                                                        "",
+                                                        selection: Binding(
+                                                            get: { expiry.expiryDate },
+                                                            set: { newDate in expiryData[itemId] = (hasExpiry: true, expiryDate: newDate, lotNumber: expiry.lotNumber) }
+                                                        ),
+                                                        displayedComponents: .date
+                                                    )
+                                                    .labelsHidden()
+                                                    .padding(4)
+                                                    .background(Color.appBackground)
+                                                    .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
+                                                }
+                                                
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text("po_verify_lot_number".t)
+                                                        .font(.system(size: 9, weight: .semibold)).foregroundColor(.textSecondary)
+                                                    TextField("PO-\(po.poNumber)", text: Binding(
+                                                        get: { expiry.lotNumber },
+                                                        set: { newLot in expiryData[itemId] = (hasExpiry: true, expiryDate: expiry.expiryDate, lotNumber: newLot) }
+                                                    ))
+                                                    .padding(6)
+                                                    .background(Color.appBackground)
+                                                    .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
+                                                    .foregroundColor(.textPrimary)
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 Divider().background(Color.appDivider)
                             }
@@ -780,6 +894,7 @@ struct ReceivePurchaseOrderSheet: View {
                     if let itemId = item.inventoryItem?.id {
                         let remaining = max(0.0, item.quantityOrdered - item.quantityReceived)
                         receivedData[itemId] = (qty: remaining, cost: item.unitCost)
+                        expiryData[itemId] = (hasExpiry: false, expiryDate: Date(), lotNumber: "PO-\(po.poNumber)")
                     }
                 }
             }
@@ -789,7 +904,11 @@ struct ReceivePurchaseOrderSheet: View {
     private func receiveAllItems() {
         for item in po.items {
             if let itemId = item.inventoryItem?.id {
-                receivedData[itemId] = (qty: item.quantityOrdered, cost: item.unitCost)
+                let remaining = max(0.0, item.quantityOrdered - item.quantityReceived)
+                receivedData[itemId] = (qty: remaining, cost: item.unitCost)
+                if expiryData[itemId] == nil {
+                    expiryData[itemId] = (hasExpiry: false, expiryDate: Date(), lotNumber: "PO-\(po.poNumber)")
+                }
             }
         }
     }
@@ -800,17 +919,27 @@ struct ReceivePurchaseOrderSheet: View {
             if let itemId = matchingItem.inventoryItem?.id {
                 let current = receivedData[itemId] ?? (qty: 0.0, cost: matchingItem.unitCost)
                 receivedData[itemId] = (qty: current.qty + 1.0, cost: current.cost)
+                if expiryData[itemId] == nil {
+                    expiryData[itemId] = (hasExpiry: false, expiryDate: Date(), lotNumber: "PO-\(po.poNumber)")
+                }
                 APHaptic.trigger()
             }
         }
     }
     
     private func commitReceive() {
+        guard sessionManager.can(.inventoryReceive) || sessionManager.can(.inventoryManage) else { return }
         let vm = InventoryViewModel(modelContext: modelContext)
         
-        var receivedItemsList: [UUID: (qtyReceived: Double, unitCost: Double)] = [:]
+        var receivedItemsList: [UUID: (qtyReceived: Double, unitCost: Double, expiryDate: Date?, lotNumber: String?)] = [:]
         for (key, val) in receivedData {
-            receivedItemsList[key] = (qtyReceived: val.qty, unitCost: val.cost)
+            let exp = expiryData[key]
+            receivedItemsList[key] = (
+                qtyReceived: val.qty,
+                unitCost: val.cost,
+                expiryDate: exp?.hasExpiry == true ? exp?.expiryDate : nil,
+                lotNumber: exp?.lotNumber
+            )
         }
         
         vm.commitPurchaseOrderReceive(po: po, receivedItems: receivedItemsList, notes: notes)

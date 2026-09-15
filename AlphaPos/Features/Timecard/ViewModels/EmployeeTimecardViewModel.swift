@@ -23,53 +23,86 @@ final class EmployeeTimecardViewModel {
     var showRegisterSessionWarning = false
     var activeRegisterSessionForWarning: RegisterSession? = nil
 
+    // Success feedback state
+    var showSuccessFeedback = false
+    var lastClockEvent: (employeeName: String, mode: EmployeeTimecardView.ScannerMode, time: Date)? = nil
+
+    /// Grace window (minutes) before late / early-out flags apply.
+    var shiftGraceMinutes: Int = ShiftAttendanceMatcher.defaultGraceMinutes
+
     init(modelContext: ModelContext? = nil) {
         self.modelContext = modelContext
     }
 
-    func fetchActiveTimecard(for employee: Employee) -> Timecard? {
-        guard let modelContext = modelContext else { return nil }
+    func fetchActiveTimecard(for employee: Employee, in context: ModelContext? = nil) -> Timecard? {
+        if let memoryCard = employee.timecards.first(where: { $0.clockOut == nil && !$0.isDeleted }) {
+            return memoryCard
+        }
+        guard let ctx = context ?? modelContext else { return nil }
 
         let employeeId = employee.id
         var descriptor = FetchDescriptor<Timecard>(
-            predicate: #Predicate<Timecard> { $0.employee?.id == employeeId && $0.clockOut == nil }
+            predicate: #Predicate<Timecard> { $0.employee?.id == employeeId && $0.clockOut == nil && !$0.isDeleted }
         )
         descriptor.fetchLimit = 1
 
         do {
-            let cards = try modelContext.fetch(descriptor)
+            let cards = try ctx.fetch(descriptor)
             return cards.first
         } catch {
             return nil
         }
     }
 
-    func handleScanResult(employee: Employee, success: Bool, confidence: Double) {
-        guard let modelContext = modelContext else { return }
+    /// Local equivalent of Staff `fetchTodayActiveShift` — reads SwiftData `EmployeeShift`.
+    func fetchTodayActiveShift(for employee: Employee, at date: Date = Date(), in context: ModelContext? = nil) -> EmployeeShift? {
+        guard let ctx = context ?? modelContext else { return nil }
 
-        let activeCard = fetchActiveTimecard(for: employee)
+        let employeeId = employee.id
+        let descriptor = FetchDescriptor<EmployeeShift>(
+            predicate: #Predicate<EmployeeShift> {
+                $0.employee?.id == employeeId && !$0.isDeleted
+            },
+            sortBy: [SortDescriptor(\.scheduledStart)]
+        )
+        let shifts = (try? ctx.fetch(descriptor)) ?? []
+        return ShiftAttendanceMatcher.activeShift(from: shifts, at: date)
+    }
+
+    func handleScanResult(employee: Employee, success: Bool, confidence: Double, context: ModelContext? = nil) {
+        if let context { self.modelContext = context }
+        guard let modelContext = context ?? self.modelContext else {
+            print("⚠️ [Attendance] handleScanResult aborted: modelContext is nil")
+            return
+        }
+        guard success else {
+            recordAttendanceAudit(employee: employee, action: scannerMode == .clockIn ? "attendance.face_scan_failed.clock_in" : "attendance.face_scan_failed.clock_out", details: "Face liveness or match verification failed", in: modelContext)
+            showingScanner = false
+            return
+        }
+
+        recordAttendanceAudit(
+            employee: employee,
+            action: scannerMode == .clockIn ? "attendance.face_scan_verified.clock_in" : "attendance.face_scan_verified.clock_out",
+            details: "Employee face embedding matched after live head-turn challenge; median cosine similarity=\(String(format: "%.4f", confidence))",
+            in: modelContext
+        )
+
+        let activeCard = fetchActiveTimecard(for: employee, in: modelContext)
+
+        if scannerMode == .clockIn, activeCard != nil {
+            recordAttendanceAudit(
+                employee: employee,
+                action: "attendance.duplicate_clock_in_blocked",
+                details: "Clock-in was blocked because an active timecard already exists",
+                in: modelContext
+            )
+            showingScanner = false
+            return
+        }
 
         if scannerMode == .clockIn {
-            // Clock-in processing
-            let timecard = Timecard(
-                employee: employee,
-                clockIn: Date(),
-                clockOut: nil,
-                breakDurationMinutes: 0,
-                status: "pending_audit",
-                clockInFaceConfidence: confidence,
-                clockInSelfieUrl: nil
-            )
-            modelContext.insert(timecard)
-
-            modelContext.saveWithLogging(label: #function)
-            showingScanner = false
-
-            let empName = "\(employee.firstName) \(employee.lastName)"
-            SyncEngine.shared.alertStaffClockIn(name: empName)
-            Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
-            }
+            performClockIn(employee: employee, confidence: confidence, in: modelContext)
         } else if let card = activeCard {
             // Check if the employee has an active open register session
             if let userId = employee.user?.id {
@@ -77,7 +110,6 @@ final class EmployeeTimecardViewModel {
                     predicate: #Predicate<RegisterSession> { $0.openedByUserId == userId && $0.closedAt == nil && !$0.isDeleted }
                 )
                 if let sessions = try? modelContext.fetch(descriptor), let activeSession = sessions.first {
-                    // We have an active register session! Show warning instead of immediately clocking out
                     self.activeRegisterSessionForWarning = activeSession
                     self.showRegisterSessionWarning = true
                     self.showingScanner = false
@@ -85,96 +117,124 @@ final class EmployeeTimecardViewModel {
                 }
             }
 
-            performClockOut(employee: employee, confidence: confidence, activeCard: card)
+            performClockOut(employee: employee, confidence: confidence, activeCard: card, in: modelContext)
         }
     }
 
-    func forceClockOut(employee: Employee, confidence: Double) {
-        let activeCard = fetchActiveTimecard(for: employee)
-        performClockOut(employee: employee, confidence: confidence, activeCard: activeCard)
+    /// Writes an audit event without storing a face image or biometric template.
+    private func recordAttendanceAudit(employee: Employee, action: String, details: String, in context: ModelContext? = nil) {
+        guard let ctx = context ?? modelContext else { return }
+        let log = AuditLog(employeeId: employee.id, actionType: action, details: details)
+        ctx.insert(log)
+        ctx.saveWithLogging(label: "attendance_audit")
+        Task { await SyncEngine.shared.syncAll(modelContext: ctx) }
+    }
+
+    func forceClockOut(employee: Employee, confidence: Double, context: ModelContext? = nil) {
+        let ctx = context ?? modelContext
+        guard let ctx else { return }
+        let activeCard = fetchActiveTimecard(for: employee, in: ctx)
+        performClockOut(employee: employee, confidence: confidence, activeCard: activeCard, in: ctx)
         self.activeRegisterSessionForWarning = nil
         self.showRegisterSessionWarning = false
     }
 
-    private func performClockOut(employee: Employee, confidence: Double, activeCard: Timecard?) {
-        guard let modelContext = modelContext else { return }
-        if let card = activeCard {
-            card.clockOut = Date()
-            card.clockOutFaceConfidence = confidence
-            card.clockOutSelfieUrl = nil
-            card.status = "pending_audit"
-            card.updatedAt = Date()
-            card.isSynced = false
+    // MARK: - Clock In (Layer 1: bind shift)
 
-            if let shift = card.shift {
-                let duration = card.clockOut!.timeIntervalSince(card.clockIn) / 60.0
-                let scheduledDuration = shift.scheduledEnd.timeIntervalSince(shift.scheduledStart) / 60.0
-                if duration > scheduledDuration {
-                    card.overtimeMinutes = Int(duration - scheduledDuration)
-                }
-            }
+    private func performClockIn(employee: Employee, confidence: Double, in modelContext: ModelContext) {
+        let now = Date()
+        let todayShift = fetchTodayActiveShift(for: employee, at: now, in: modelContext)
+        let decision = ShiftAttendanceMatcher.clockInDecision(
+            shift: todayShift,
+            clockIn: now,
+            graceMinutes: shiftGraceMinutes
+        )
+
+        let timecard = Timecard(
+            employee: employee,
+            shift: todayShift,
+            clockIn: now,
+            clockOut: nil,
+            breakDurationMinutes: 0,
+            overtimeMinutes: 0,
+            status: decision.status,
+            notes: decision.notes,
+            clockInFaceConfidence: confidence,
+            clockInSelfieUrl: nil
+        )
+        modelContext.insert(timecard)
+        timecard.employee = employee
+        if !employee.timecards.contains(where: { $0.id == timecard.id }) {
+            employee.timecards.append(timecard)
+        }
+        guard modelContext.saveWithLogging(label: #function) else {
+            // Do not report an attendance event as successful unless it is
+            // durably present in SwiftData. A later observation refresh would
+            // otherwise revert the optimistic relationship state.
+            modelContext.rollback()
+            showingScanner = false
+            return
         }
 
-        modelContext.saveWithLogging(label: #function)
-        showingScanner = false
+        self.lastClockEvent = (
+            employeeName: "\(employee.firstName) \(employee.lastName)",
+            mode: .clockIn,
+            time: now
+        )
+        self.showSuccessFeedback = true
+        self.showingScanner = false
 
         let empName = "\(employee.firstName) \(employee.lastName)"
-        if let card = activeCard, let clockOut = card.clockOut {
-            let hoursWorked = clockOut.timeIntervalSince(card.clockIn) / 3600.0
-            SyncEngine.shared.alertStaffClockOut(name: empName, hoursWorked: hoursWorked)
-        }
-
+        SyncEngine.shared.alertStaffClockIn(name: empName)
         Task {
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
     }
 
-    func seedSampleEmployees() {
-        guard let modelContext = modelContext else { return }
+    // MARK: - Clock Out (Layer 2: punctuality + OT from schedule)
 
-        let managerRole = Role(name: "Manager", roleDescription: "Store manager")
-        let baristaRole = Role(name: "Barista", roleDescription: "Coffee specialist")
-        modelContext.insert(managerRole)
-        modelContext.insert(baristaRole)
+    private func performClockOut(employee: Employee, confidence: Double, activeCard: Timecard?, in modelContext: ModelContext) {
+        guard let card = activeCard else { return }
 
-        // Fixed UUIDs — must match SampleDataSeeder constants so FK references stay valid after re-seed
-        let seedEmp1Id  = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
-        let seedEmp2Id  = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
-        let seedUser1Id = UUID(uuidString: "11111111-1111-1111-1111-111111112001")!
-        let seedUser2Id = UUID(uuidString: "11111111-1111-1111-1111-111111112002")!
-        let user1 = User(id: seedUser1Id, username: "somchai", email: "somchai@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("1234"), role: managerRole, isSynced: false, isDeleted: false, updatedAt: Date())
-        let user2 = User(id: seedUser2Id, username: "somsri", email: "somsri@alphapos.com", passwordHash: SecurityHelper.sha256("password"), pinCodeHash: SecurityHelper.sha256("5678"), role: baristaRole, isSynced: false, isDeleted: false, updatedAt: Date())
-        modelContext.insert(user1)
-        modelContext.insert(user2)
+        let clockOut = Date()
+        card.clockOut = clockOut
+        card.clockOutFaceConfidence = confidence
+        card.clockOutSelfieUrl = nil
+        card.updatedAt = Date()
+        card.isSynced = false
 
-        let emp1 = Employee(id: seedEmp1Id, user: user1, firstName: "Somchai", lastName: "Suksabai", phone: "081-234-5678", nationalId: "1234567890123", employmentType: "monthly", payRate: 25000.0, isSynced: false, isDeleted: false, updatedAt: Date())
-        let emp2 = Employee(id: seedEmp2Id, user: user2, firstName: "Somsri", lastName: "Jaidee", phone: "089-876-5432", nationalId: "9876543210987", employmentType: "hourly", payRate: 75.0, isSynced: false, isDeleted: false, updatedAt: Date())
-
-        // Mock Reference face vectors
-        emp1.faceEmbeddingData = Data("mock_embedding_1".utf8)
-        emp1.faceRegisteredAt = Date()
-        emp2.faceEmbeddingData = Data("mock_embedding_2".utf8)
-        emp2.faceRegisteredAt = Date()
-
-        modelContext.insert(emp1)
-        modelContext.insert(emp2)
-
-        // Seed mock scheduled shifts for the current week
-        let calendar = Calendar.current
-        let today = Date()
-        for i in 0..<5 {
-            if let start = calendar.date(byAdding: .day, value: i - 2, to: today) {
-                let scheduledStart = calendar.date(bySettingHour: 8, minute: 0, second: 0, of: start)!
-                let scheduledEnd = calendar.date(bySettingHour: 17, minute: 0, second: 0, of: start)!
-
-                let shift1 = EmployeeShift(employee: emp1, scheduledStart: scheduledStart, scheduledEnd: scheduledEnd, role: "Manager")
-                let shift2 = EmployeeShift(employee: emp2, scheduledStart: scheduledStart, scheduledEnd: scheduledEnd, role: "Barista")
-
-                modelContext.insert(shift1)
-                modelContext.insert(shift2)
-            }
+        // Backfill shift link if iPad/legacy clock-in omitted it
+        if card.shift == nil {
+            card.shift = fetchTodayActiveShift(for: employee, at: card.clockIn, in: modelContext)
         }
 
+        let decision = ShiftAttendanceMatcher.clockOutDecision(
+            shift: card.shift,
+            clockOut: clockOut,
+            existingNotes: card.notes,
+            graceMinutes: shiftGraceMinutes
+        )
+        card.overtimeMinutes = decision.overtimeMinutes
+        card.notes = ShiftAttendanceMatcher.mergeNotes(card.notes, decision.notesSuffix)
+        card.status = decision.status
+
         modelContext.saveWithLogging(label: #function)
+        try? modelContext.save()
+
+        self.lastClockEvent = (
+            employeeName: "\(employee.firstName) \(employee.lastName)",
+            mode: .clockOut,
+            time: clockOut
+        )
+        self.showSuccessFeedback = true
+        self.showingScanner = false
+
+        let empName = "\(employee.firstName) \(employee.lastName)"
+        let hoursWorked = clockOut.timeIntervalSince(card.clockIn) / 3600.0
+        SyncEngine.shared.alertStaffClockOut(name: empName, hoursWorked: hoursWorked)
+
+        Task {
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+        }
     }
 }

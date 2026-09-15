@@ -13,8 +13,8 @@ extension SyncEngine {
             predicate: #Predicate<SecurityPolicy> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500  // Prevent OOM on large datasets
-        guard let policies = try? modelContext.fetch(descriptor), !policies.isEmpty else { return }
-        for policy in policies {
+        let dirtyPolicies = (try? modelContext.fetch(descriptor)) ?? []
+        for policy in dirtyPolicies {
             do {
                 let success = try await NetworkManager.shared.uploadSecurityPolicy(policy)
                 if success { policy.isSynced = true }
@@ -22,6 +22,38 @@ extension SyncEngine {
                 encounteredSyncError = true
                 print("SyncEngine [SecurityPolicy Sync Error]: \(error.localizedDescription)")
             }
+        }
+
+        do {
+            if let remote = try await NetworkManager.shared.fetchSecurityPolicy() {
+                let allPolicies = (try? modelContext.fetch(FetchDescriptor<SecurityPolicy>())) ?? []
+                let policy = allPolicies.first ?? SecurityPolicy()
+                if allPolicies.isEmpty { modelContext.insert(policy) }
+
+                policy.passcodeMinLength = remote["passcode_min_length"] as? Int ?? policy.passcodeMinLength
+                policy.passcodeMaxAttempts = remote["passcode_max_attempts"] as? Int ?? policy.passcodeMaxAttempts
+                policy.lockoutMinutes = remote["lockout_minutes"] as? Int ?? policy.lockoutMinutes
+                policy.staffSessionTimeoutMinutes = remote["staff_session_timeout_minutes"] as? Int ?? policy.staffSessionTimeoutMinutes
+                policy.requireManagerOverrideForRefund = remote["require_manager_override_for_refund"] as? Bool ?? policy.requireManagerOverrideForRefund
+                policy.requireManagerOverrideForVoid = remote["require_manager_override_for_void"] as? Bool ?? policy.requireManagerOverrideForVoid
+                policy.requireManagerOverrideForNoSale = remote["require_manager_override_for_no_sale"] as? Bool ?? policy.requireManagerOverrideForNoSale
+                policy.requireManagerOverrideForDrawerTest = remote["require_manager_override_for_drawer_test"] as? Bool ?? policy.requireManagerOverrideForDrawerTest
+                policy.requireFaceScan = remote["require_face_scan"] as? Bool ?? policy.requireFaceScan
+                policy.isSynced = true
+
+                let defaults = UserDefaults.standard
+                defaults.set(policy.passcodeMaxAttempts, forKey: "passcode_max_attempts")
+                defaults.set(policy.lockoutMinutes, forKey: "passcode_lockout_minutes")
+                defaults.set(policy.staffSessionTimeoutMinutes, forKey: "staff_session_timeout_minutes")
+                defaults.set(policy.requireManagerOverrideForRefund, forKey: "require_manager_override_for_refund")
+                defaults.set(policy.requireManagerOverrideForVoid, forKey: "require_manager_override_for_void")
+                defaults.set(policy.requireManagerOverrideForNoSale, forKey: "require_manager_override_for_no_sale")
+                defaults.set(policy.requireManagerOverrideForDrawerTest, forKey: "require_manager_override_for_drawer_test")
+                defaults.set(policy.requireFaceScan, forKey: "require_face_scan")
+            }
+        } catch {
+            encounteredSyncError = true
+            print("SyncEngine [SecurityPolicy Pull Error]: \(error.localizedDescription)")
         }
         modelContext.saveWithLogging(label: #function)
     }
@@ -81,6 +113,70 @@ extension SyncEngine {
             }
         }
         modelContext.saveWithLogging(label: #function)
+    }
+
+    /// Merge server audit_logs into local SwiftData (upsert by id).
+    func pullAuditLogs(_ modelContext: ModelContext, limit: Int = 100) async {
+        guard !UserDefaults.standard.bool(forKey: "offline_sync_mode") else { return }
+        guard await NetworkManager.shared.isConnected() else { return }
+
+        do {
+            let rows = try await NetworkManager.shared.fetchAuditLogs(limit: limit)
+            await MainActor.run {
+                for row in rows {
+                    guard let idStr = row["id"] as? String,
+                          let id = UUID(uuidString: idStr) else { continue }
+
+                    let targetId = id
+                    var descriptor = FetchDescriptor<AuditLog>(
+                        predicate: #Predicate<AuditLog> { $0.id == targetId }
+                    )
+                    descriptor.fetchLimit = 1
+                    let existing = try? modelContext.fetch(descriptor).first
+
+                    // Never overwrite a local unsynced edit with a remote row.
+                    if let existing, !existing.isSynced { continue }
+
+                    let actionType = row["action_type"] as? String ?? "unknown"
+                    let details = row["details"] as? String
+                    let employeeId = (row["employee_id"] as? String).flatMap(UUID.init(uuidString:))
+                    let originalValue = row["original_value"] as? Double
+                    let newValue = row["new_value"] as? Double
+                    let createdAt = parseISO8601Date(row["created_at"])
+                    let updatedAt = parseISO8601Date(row["updated_at"], fallback: createdAt)
+
+                    if let existing {
+                        existing.actionType = actionType
+                        existing.details = details
+                        existing.employeeId = employeeId
+                        existing.originalValue = originalValue
+                        existing.newValue = newValue
+                        existing.createdAt = createdAt
+                        existing.updatedAt = updatedAt
+                        existing.isSynced = true
+                        existing.isDeleted = false
+                    } else {
+                        let log = AuditLog(
+                            id: id,
+                            employeeId: employeeId,
+                            actionType: actionType,
+                            details: details,
+                            originalValue: originalValue,
+                            newValue: newValue,
+                            createdAt: createdAt,
+                            isSynced: true,
+                            isDeleted: false,
+                            updatedAt: updatedAt
+                        )
+                        modelContext.insert(log)
+                    }
+                }
+                modelContext.saveWithLogging(label: #function)
+            }
+        } catch {
+            reportSyncFailure("AuditLog pull", soft: true)
+            print("SyncEngine [AuditLog Pull Error]: \(error.localizedDescription)")
+        }
     }
 
     func syncAuditLogs(_ modelContext: ModelContext) async {
@@ -161,7 +257,7 @@ extension SyncEngine {
                         encounteredSyncError = true
                     }
                 } catch {
-                    encounteredSyncError = true
+                    reportSyncFailure("Order delete: \(error.localizedDescription)", soft: false)
                     print("SyncEngine [Order Delete Error]: \(error.localizedDescription)")
                 }
                 continue
@@ -178,10 +274,14 @@ extension SyncEngine {
                     order.updatedAt = Date()
                     try modelContext.save()
                 } else {
-                    encounteredSyncError = true
+                    reportSyncFailure("Order upload returned false (\(order.id.uuidString.prefix(8)))", soft: false)
                 }
             } catch {
-                encounteredSyncError = true
+                await NetworkManager.shared.recordSyncConflict(
+                    entityType: "order", entityId: order.id,
+                    expectedVersion: order.rowVersion, error: error
+                )
+                reportSyncFailure("Order: \(error.localizedDescription)", soft: false)
                 print("SyncEngine [Order Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -195,50 +295,96 @@ extension SyncEngine {
 
         guard let payments = try? modelContext.fetch(descriptor), !payments.isEmpty else { return }
 
-        for payment in payments {
-            if payment.isDeleted {
-                do {
-                    _ = try await NetworkManager.shared.deletePaymentOnServer(id: payment.id)
-                } catch {
-                    // Non-fatal: payment may not exist on server yet (created offline then deleted before sync)
-                    print("SyncEngine [Payment Delete]: \(error.localizedDescription)")
+        for payment in payments where payment.isDeleted {
+            do {
+                _ = try await NetworkManager.shared.deletePaymentOnServer(id: payment.id)
+            } catch {
+                // Non-fatal: payment may not exist on server yet (created offline then deleted before sync)
+                print("SyncEngine [Payment Delete]: \(error.localizedDescription)")
+            }
+            modelContext.delete(payment)
+            modelContext.saveWithLogging(label: #function)
+        }
+
+        let activePayments = payments.filter { !$0.isDeleted }
+        let groupedByOrder = Dictionary(grouping: activePayments.compactMap { payment in
+            payment.order.map { ($0.id, payment) }
+        }, by: { $0.0 })
+
+        for (_, entries) in groupedByOrder {
+            guard let order = entries.first?.1.order else { continue }
+            // Always send the complete captured tender set. This makes split
+            // tender one idempotent server transaction instead of N partial
+            // commits and prevents an early retry from freezing a partial set.
+            let captured = order.payments.filter { !$0.isDeleted && $0.isCaptured }
+            guard !captured.isEmpty else { continue }
+            let capturedTotal = captured.reduce(0.0) { $0 + $1.amount }
+            if order.usesGovernmentSupport {
+                // The unpaid government share is a receivable, not a tender.
+                // complete_checkout_atomic intentionally requires tender ==
+                // order total, so preserve the full sale header and replicate
+                // only the citizen tender here.
+                for payment in captured where !payment.isSynced {
+                    do {
+                        if try await NetworkManager.shared.uploadPayment(
+                            id: payment.id, orderId: order.id, amount: payment.amount,
+                            method: payment.paymentMethod, paidAt: payment.paidAt,
+                            businessDateKey: payment.businessDateKey,
+                            registerSessionId: payment.registerSessionId
+                        ) {
+                            payment.isSynced = true
+                            payment.updatedAt = Date()
+                            try modelContext.save()
+                        }
+                    } catch {
+                        reportSyncFailure("Government-support tender: \(error.localizedDescription)", soft: false)
+                    }
                 }
-                modelContext.delete(payment)
-                modelContext.saveWithLogging(label: #function)
+                continue
+            }
+            let expectedTotal = order.total
+            guard abs(capturedTotal - expectedTotal) <= 0.05 else {
+                reportSyncFailure("Checkout \(order.orderNumber) waiting for complete tender set", soft: true)
                 continue
             }
 
             do {
-                let success: Bool
-                if let order = payment.order,
-                   let tableSession = order.tableSession,
-                   let table = tableSession.table {
-                    success = try await NetworkManager.shared.completeCheckout(
-                        paymentId: payment.id,
-                        orderId: order.id,
-                        amount: payment.amount,
-                        method: payment.paymentMethod,
-                        tableNumber: table.tableNumber
-                    )
-                } else {
-                    success = try await NetworkManager.shared.uploadPayment(
-                        id: payment.id,
-                        orderId: payment.order?.id,
-                        amount: payment.amount,
-                        method: payment.paymentMethod
-                    )
-                }
-
+                let tableNumber = order.tableSession?.table?.tableNumber ?? "QUICK"
+                let success = try await NetworkManager.shared.completeCheckout(
+                    order: order, payments: captured, tableNumber: tableNumber
+                )
                 if success {
-                    payment.isSynced = true
-                    payment.updatedAt = Date()
+                    for payment in captured where !payment.isSynced {
+                        try await NetworkManager.shared.annotatePaymentBusinessContext(id: payment.id, paidAt: payment.paidAt, businessDateKey: payment.businessDateKey, registerSessionId: payment.registerSessionId)
+                        payment.isSynced = true
+                        payment.updatedAt = Date()
+                    }
                     try modelContext.save()
                 }
             } catch {
                 encounteredSyncError = true
                 print("SyncEngine [Payment Sync Error]: \(error.localizedDescription)")
             }
+        }
 
+        // Legacy orphan payments cannot participate in an atomic checkout.
+        // Preserve compatibility while surfacing them for reconciliation.
+        for payment in activePayments where payment.order == nil {
+            do {
+                if try await NetworkManager.shared.uploadPayment(
+                    id: payment.id, orderId: nil, amount: payment.amount,
+                    method: payment.paymentMethod, paidAt: payment.paidAt,
+                    businessDateKey: payment.businessDateKey,
+                    registerSessionId: payment.registerSessionId
+                ) {
+                    payment.isSynced = true
+                    payment.updatedAt = Date()
+                    reportSyncFailure("Legacy orphan payment uploaded: \(payment.id.uuidString.prefix(8))", soft: true)
+                    try modelContext.save()
+                }
+            } catch {
+                reportSyncFailure("Orphan payment: \(error.localizedDescription)", soft: false)
+            }
         }
     }
 
@@ -296,20 +442,42 @@ extension SyncEngine {
             }
 
             guard let employeeId = timecard.employee?.id else {
-                encounteredSyncError = true
+                reportSyncFailure("Timecard missing employee", soft: true)
                 print("SyncEngine [Timecard Sync Error]: Missing employee relation for timecard \(timecard.id)")
                 continue
             }
 
-            // Duplicate detection: before pushing a new clock-in, check if there's
-            // already an active timecard for this employee on the server
+            // Idempotent clock-in reconciliation. A remote open card means the
+            // employee is already clocked in; it is not an audit failure. Adopt
+            // the canonical server ID so a later clock-out updates that same row
+            // instead of leaving the remote card open forever.
             if timecard.clockOut == nil {
                 let remoteActive = try? await NetworkManager.shared.fetchActiveTimecard(employeeId: employeeId)
-                if let remoteActive = remoteActive, remoteActive != timecard.id.uuidString.lowercased() {
-                    print("SyncEngine [Timecard Sync]: Remote active timecard found for employee \(employeeId). Merging data into local record.")
-                    // Another device created an active timecard — mark ours as a duplicate
-                    timecard.status = "pending_audit"
-                    timecard.notes = (timecard.notes ?? "") + " [Possible duplicate: remote active timecard exists]"
+                if let remoteActive,
+                   remoteActive != timecard.id.uuidString.lowercased(),
+                   let canonicalId = UUID(uuidString: remoteActive) {
+                    var canonicalDescriptor = FetchDescriptor<Timecard>(
+                        predicate: #Predicate<Timecard> { $0.id == canonicalId }
+                    )
+                    canonicalDescriptor.fetchLimit = 1
+                    if let canonical = try? modelContext.fetch(canonicalDescriptor).first {
+                        // The server row is already represented locally. Discard
+                        // only the unsynced duplicate; HR history remains on the
+                        // canonical object.
+                        if canonical.clockOut == nil {
+                            modelContext.delete(timecard)
+                            modelContext.saveWithLogging(label: "syncTimecards.mergeExistingActive")
+                            continue
+                        }
+                    } else {
+                        timecard.id = canonicalId
+                    }
+
+                    // Remove annotations produced by older builds. Scheduling
+                    // review (for example an unscheduled shift) remains intact.
+                    timecard.notes = timecard.notes?
+                        .replacingOccurrences(of: " [Possible duplicate: remote active timecard exists]", with: "")
+                    print("SyncEngine [Timecard Sync]: Adopted canonical active timecard \(canonicalId) for employee \(employeeId).")
                 }
             }
 
@@ -346,7 +514,7 @@ extension SyncEngine {
 
     func syncCustomers(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<Customer>(
-            predicate: #Predicate<Customer> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<Customer> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500  // Prevent OOM on large datasets
         guard let customers = try? modelContext.fetch(descriptor), !customers.isEmpty else { return }
@@ -372,6 +540,7 @@ extension SyncEngine {
         guard await NetworkManager.shared.isConnected() else { return }
 
         do {
+            let operationalBranch = try BranchContext.shared.requireActiveBranch(in: modelContext)
             let remoteOrders = try await NetworkManager.shared.fetchCompletedOrdersFromSupabase()
             guard !remoteOrders.isEmpty else { return }
 
@@ -394,7 +563,26 @@ extension SyncEngine {
                 let status = remoteOrder["status"] as? String ?? "completed"
                 let createdAtStr = remoteOrder["created_at"] as? String ?? remoteOrder["createdAt"] as? String ?? ""
                 let orderType = remoteOrder["order_type"] as? String ?? remoteOrder["orderType"] as? String ?? "dine_in"
-                let cashierName = remoteOrder["cashier_name"] as? String ?? remoteOrder["cashierName"] as? String ?? "Somsri"
+                let cashierName = remoteOrder["cashier_name"] as? String ?? remoteOrder["cashierName"] as? String ?? "Staff"
+                let deliveryBrand = remoteOrder["delivery_brand"] as? String
+                let deliveryGP = remoteDouble(remoteOrder["delivery_gp"])
+                let deliveryAdFee = remoteDouble(remoteOrder["delivery_ad_fee"])
+                let deliveryAdFeeIsPct = remoteBool(remoteOrder["delivery_ad_fee_is_pct"], fallback: false)
+                let deliveryOtherFee = remoteDouble(remoteOrder["delivery_other_fee"])
+                let queueNumber: String? = {
+                    if let s = remoteOrder["queue_number"] as? String, !s.isEmpty { return s }
+                    if let i = remoteOrder["queue_number"] as? Int { return NetworkManager.formatQueueNumber(i) }
+                    return nil
+                }()
+                let receiptNumber = remoteOrder["receipt_number"] as? String
+                let platformOrderNumber = remoteOrder["platform_order_number"] as? String
+                let supportProgramName = remoteOrder["support_program_name"] as? String
+                let supportGovernmentRate = remoteDouble(remoteOrder["support_government_rate"])
+                let supportCitizenAmount = remoteDouble(remoteOrder["support_citizen_amount"])
+                let supportGovernmentAmount = remoteDouble(remoteOrder["support_government_amount"])
+                let supportSettlementStatus = remoteOrder["support_settlement_status"] as? String ?? "not_applicable"
+                let businessDateKey = remoteOrder["business_date"] as? String ?? remoteOrder["businessDate"] as? String ?? ""
+                let registerSessionId = ((remoteOrder["register_session_id"] ?? remoteOrder["registerSessionId"]) as? String).flatMap(UUID.init(uuidString:))
 
                 let createdAt = parseISO8601Date(createdAtStr)
 
@@ -409,6 +597,23 @@ extension SyncEngine {
                     existingOrder.discount = discount
                     existingOrder.orderType = orderType
                     existingOrder.cashierName = cashierName
+                    existingOrder.deliveryBrand = deliveryBrand
+                    existingOrder.deliveryGP = deliveryGP
+                    existingOrder.deliveryAdFee = deliveryAdFee
+                    existingOrder.deliveryAdFeeIsPct = deliveryAdFeeIsPct
+                    existingOrder.deliveryOtherFee = deliveryOtherFee
+                    if let queueNumber { existingOrder.queueNumber = queueNumber }
+                    if let receiptNumber, !receiptNumber.isEmpty { existingOrder.receiptNumber = receiptNumber }
+                    if let platformOrderNumber, !platformOrderNumber.isEmpty {
+                        existingOrder.platformOrderNumber = platformOrderNumber
+                    }
+                    existingOrder.supportProgramName = supportProgramName
+                    existingOrder.supportGovernmentRate = supportGovernmentRate
+                    existingOrder.supportCitizenAmount = supportCitizenAmount
+                    existingOrder.supportGovernmentAmount = supportGovernmentAmount
+                    existingOrder.supportSettlementStatus = supportSettlementStatus
+                    existingOrder.businessDateKey = businessDateKey
+                    existingOrder.registerSessionId = registerSessionId
                     existingOrder.isSynced = true
                 } else {
                     existingOrder = Order(
@@ -422,7 +627,23 @@ extension SyncEngine {
                         discount: discount,
                         total: total,
                         createdAt: createdAt,
+                        businessDateKey: businessDateKey,
+                        registerSessionId: registerSessionId,
+                        branch: operationalBranch,
+                        receiptNumber: receiptNumber,
                         cashierName: cashierName,
+                        queueNumber: queueNumber,
+                        deliveryBrand: deliveryBrand,
+                        deliveryGP: deliveryGP,
+                        deliveryAdFee: deliveryAdFee,
+                        deliveryAdFeeIsPct: deliveryAdFeeIsPct,
+                        deliveryOtherFee: deliveryOtherFee,
+                        platformOrderNumber: platformOrderNumber,
+                        supportProgramName: supportProgramName,
+                        supportGovernmentRate: supportGovernmentRate,
+                        supportCitizenAmount: supportCitizenAmount,
+                        supportGovernmentAmount: supportGovernmentAmount,
+                        supportSettlementStatus: supportSettlementStatus,
                         isSynced: true
                     )
                     modelContext.insert(existingOrder)
@@ -436,13 +657,22 @@ extension SyncEngine {
 
                         let name = remoteItem["item_name"] as? String ?? remoteItem["itemName"] as? String ?? "Unknown Item"
                         let qty = remoteInt(remoteItem["quantity"])
-                        let price = remoteDouble(remoteItem["unit_price"] ?? remoteItem["unitPrice"])
+                        let price = remoteDouble(
+                            remoteItem["unit_price"] ?? remoteItem["unitPrice"] ?? remoteItem["price"]
+                        )
                         let itemStatus = remoteItem["status"] as? String ?? "served"
+                        let lineType = OrderItemLineType(
+                            rawValue: remoteItem["line_type"] as? String
+                                ?? remoteItem["lineType"] as? String
+                                ?? OrderItemLineType.main.rawValue
+                        ) ?? .main
 
                         if let localItem = existingOrder.items.first(where: { $0.id == itemId }) {
                             localItem.quantity = qty
                             localItem.unitPrice = price
                             localItem.subtotal = Double(qty) * price
+                            localItem.lineType = lineType.rawValue
+                            localItem.lineTypeVersion = 1
                             localItem.status = itemStatus
                             localItem.isSynced = true
                         } else {
@@ -453,6 +683,7 @@ extension SyncEngine {
                                 itemName: name,
                                 quantity: qty,
                                 unitPrice: price,
+                                lineType: lineType,
                                 notes: nil,
                                 status: itemStatus,
                                 isSynced: true
@@ -475,13 +706,19 @@ extension SyncEngine {
                         let pCreatedAtStr = remotePayment["created_at"] as? String ?? remotePayment["createdAt"] as? String ?? ""
                         let pCreatedAt = parseISO8601Date(pCreatedAtStr)
                         let pStatus = remotePayment["status"] as? String ?? "completed"
+                        let pBusinessDate = remotePayment["business_date"] as? String ?? ""
+                        let pRegisterSessionId = (remotePayment["register_session_id"] as? String).flatMap(UUID.init(uuidString:))
 
+                        let ledgerPayment: Payment
                         if let localPayment = existingOrder.payments.first(where: { $0.id == paymentId }) {
                             localPayment.amount = amount
                             localPayment.paymentMethod = method
                             localPayment.paidAt = pCreatedAt
                             localPayment.status = pStatus
+                            localPayment.businessDateKey = pBusinessDate
+                            localPayment.registerSessionId = pRegisterSessionId
                             localPayment.isSynced = true
+                            ledgerPayment = localPayment
                         } else {
                             let newPayment = Payment(
                                 id: paymentId,
@@ -490,11 +727,15 @@ extension SyncEngine {
                                 amount: amount,
                                 status: pStatus,
                                 paidAt: pCreatedAt,
+                                businessDateKey: pBusinessDate,
+                                registerSessionId: pRegisterSessionId,
                                 isSynced: true
                             )
                             modelContext.insert(newPayment)
                             existingOrder.payments.append(newPayment)
+                            ledgerPayment = newPayment
                         }
+                        AccountingLedgerService.recordCapturedPayment(ledgerPayment, order: existingOrder, in: modelContext)
                     }
                 }
             }
@@ -521,7 +762,8 @@ extension SyncEngine {
                 let updatedAt = remoteDate(remote["updated_at"], fallback: .distantPast)
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.name = name
                     local.email = remote["email"] as? String
@@ -575,7 +817,7 @@ extension SyncEngine {
 
     func syncGiftCards(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<GiftCard>(
-            predicate: #Predicate<GiftCard> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<GiftCard> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500  // Prevent OOM on large datasets
         guard let cards = try? modelContext.fetch(descriptor), !cards.isEmpty else { return }
@@ -620,7 +862,8 @@ extension SyncEngine {
                 let expiresAt = (remote["expires_at"] as? String).flatMap { parseISO8601DateOptional($0) }
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.cardNumber = cardNumber
                     local.balance = remoteDouble(remote["balance"])
@@ -656,7 +899,7 @@ extension SyncEngine {
 
     func syncLoyaltyTransactions(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<LoyaltyTransaction>(
-            predicate: #Predicate<LoyaltyTransaction> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<LoyaltyTransaction> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500  // Prevent OOM on large datasets
         guard let txns = try? modelContext.fetch(descriptor), !txns.isEmpty else { return }
@@ -703,7 +946,8 @@ extension SyncEngine {
                 }
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if local.isDeleted { continue }
                     local.customer = customer
                     local.order = order
@@ -777,6 +1021,10 @@ extension SyncEngine {
                 if let branchIdStr = remote["branch_id"] as? String {
                     branch = branchMap[branchIdStr.lowercased()]
                 }
+                guard let branch else {
+                    encounteredSyncError = true
+                    continue
+                }
 
                 let openedByUserIdStr = remote["opened_by_user_id"] as? String ?? ""
                 guard let openedByUserId = UUID(uuidString: openedByUserIdStr) else { continue }
@@ -795,10 +1043,12 @@ extension SyncEngine {
                 let actualClosingCash = remoteDouble(remote["actual_closing_cash"])
                 let cashDiscrepancy = remoteDouble(remote["cash_discrepancy"])
                 let notes = remote["notes"] as? String
+                let businessDateKey = remote["business_date"] as? String ?? ""
                 let isDeleted = remote["is_deleted"] as? Bool ?? false
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if isDeleted {
                         modelContext.delete(local)
                         localById.removeValue(forKey: idStr.lowercased())
@@ -808,6 +1058,7 @@ extension SyncEngine {
                     local.closedByUserId = closedByUserId
                     local.openedAt = openedAt
                     local.closedAt = closedAt
+                    local.businessDateKey = businessDateKey.isEmpty ? BusinessDayContext.key(for: openedAt, cutoffHour: branch.businessDayCutoffHour, timeZoneID: branch.timeZoneID) : businessDateKey
                     local.openingCash = openingCash
                     local.expectedClosingCash = expectedClosingCash
                     local.actualClosingCash = actualClosingCash
@@ -824,6 +1075,7 @@ extension SyncEngine {
                         closedByUserId: closedByUserId,
                         openedAt: openedAt,
                         closedAt: closedAt,
+                        businessDateKey: businessDateKey,
                         openingCash: openingCash,
                         expectedClosingCash: expectedClosingCash,
                         actualClosingCash: actualClosingCash,
@@ -908,7 +1160,8 @@ extension SyncEngine {
                 let isDeleted = remote["is_deleted"] as? Bool ?? false
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if isDeleted {
                         modelContext.delete(local)
                         localById.removeValue(forKey: idStr.lowercased())

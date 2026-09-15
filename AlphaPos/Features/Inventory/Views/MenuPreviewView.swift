@@ -34,7 +34,7 @@ struct MenuPreviewView: View {
 
     private var customerWebBaseUrl: String {
         let ud = UserDefaults.standard.string(forKey: "dynamic_customer_web_url") ?? ""
-        return ud.isEmpty ? "https://alphapos.altifadev.workers.dev" : ud
+        return ud.isEmpty ? "https://sync.alphaposweb.com" : ud
     }
 
     private var previewURL: URL? {

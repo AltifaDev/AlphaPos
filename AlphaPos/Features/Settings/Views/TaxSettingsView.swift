@@ -17,6 +17,9 @@ struct TaxSettingsView: View {
     @AppStorage("tax_apply_dine_in") private var applyDineIn = true
     @AppStorage("tax_apply_take_out") private var applyTakeOut = true
     @AppStorage("tax_apply_delivery") private var applyDelivery = true
+    @AppStorage("service_charge_apply_dine_in") private var serviceApplyDineIn = true
+    @AppStorage("service_charge_apply_take_out") private var serviceApplyTakeOut = false
+    @AppStorage("service_charge_apply_delivery") private var serviceApplyDelivery = false
     @AppStorage("tax_allow_item_exemptions") private var allowItemExemptions = true
 
     @State private var selectedTax: TaxRate?
@@ -40,23 +43,23 @@ struct TaxSettingsView: View {
 
         var title: String {
             switch self {
-            case .restaurantVAT: return "Restaurant VAT"
-            case .quickService: return "Quick Service"
-            case .retailSalesTax: return "Retail Sales Tax"
-            case .marketplaceDelivery: return "Delivery Marketplace"
-            case .taxExempt: return "Tax Exempt"
-            case .custom: return "Custom"
+            case .restaurantVAT: return "tax_profile_restaurant_vat".t
+            case .quickService: return "tax_profile_quick_service".t
+            case .retailSalesTax: return "tax_profile_retail".t
+            case .marketplaceDelivery: return "tax_profile_delivery".t
+            case .taxExempt: return "tax_profile_exempt".t
+            case .custom: return "tax_profile_custom".t
             }
         }
 
         var subtitle: String {
             switch self {
-            case .restaurantVAT: return "Dine-in, service charge, VAT invoice"
-            case .quickService: return "Counter sales with tax included"
-            case .retailSalesTax: return "Tax added at checkout"
-            case .marketplaceDelivery: return "Delivery fees, GP, channel rules"
-            case .taxExempt: return "No tax collected by default"
-            case .custom: return "Manual policy for mixed shops"
+            case .restaurantVAT: return "tax_profile_restaurant_vat_sub".t
+            case .quickService: return "tax_profile_quick_service_sub".t
+            case .retailSalesTax: return "tax_profile_retail_sub".t
+            case .marketplaceDelivery: return "tax_profile_delivery_sub".t
+            case .taxExempt: return "tax_profile_exempt_sub".t
+            case .custom: return "tax_profile_custom_sub".t
             }
         }
 
@@ -91,9 +94,9 @@ struct TaxSettingsView: View {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .itemDefault: return "ตามสินค้า"
-            case .forceInclusive: return "รวมภาษี"
-            case .forceExclusive: return "บวกภาษี"
+            case .itemDefault: return "tax_basis_item_default".t
+            case .forceInclusive: return "tax_basis_force_inclusive".t
+            case .forceExclusive: return "tax_basis_force_exclusive".t
             }
         }
     }
@@ -105,8 +108,8 @@ struct TaxSettingsView: View {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .perLine: return "ปัดต่อรายการ"
-            case .perOrder: return "ปัดท้ายบิล"
+            case .perLine: return "tax_round_per_line".t
+            case .perOrder: return "tax_round_per_order".t
             }
         }
     }
@@ -139,7 +142,9 @@ struct TaxSettingsView: View {
     }
 
     private var isValidForm: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && Double(ratePercentage) != nil
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let rate = Double(ratePercentage) else { return false }
+        return (0...100).contains(rate)
     }
 
     private var preview: TaxPreview {
@@ -223,18 +228,18 @@ struct TaxSettingsView: View {
         VStack(spacing: compact ? 10 : 0) {
             HStack(spacing: 14) {
                 Image(systemName: "building.columns.fill")
-                    .font(.title3)
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.white)
                     .frame(width: 42, height: 42)
                     .background(Color.appAccent)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Tax Control Center")
-                        .font(.title3.weight(.black))
+                    Text("tax_control_center_title".t)
+                        .font(.system(size: 12, weight: .black))
                         .foregroundColor(.textPrimary)
-                    Text("โครงสร้างภาษี, service charge, ช่องทางขาย และตัวอย่างใบเสร็จ")
-                        .font(.caption)
+                    Text("tax_control_center_subtitle".t)
+                        .font(.system(size: 12))
                         .foregroundColor(.textSecondary)
                         .lineLimit(compact ? 2 : 1)
                 }
@@ -242,17 +247,17 @@ struct TaxSettingsView: View {
                 Spacer()
 
                 if !compact {
-                    compactMetric(title: "Default Tax", value: String(format: "%.2f%%", storeTaxRate), icon: "percent")
-                    compactMetric(title: "Mode", value: storeTaxType == "inclusive" ? "Inclusive" : "Exclusive", icon: "number")
-                    compactMetric(title: "Service", value: String(format: "%.1f%%", storeServiceChargeRate), icon: "fork.knife.circle")
+                    compactMetric(title: "tax_metric_default".t, value: String(format: "%.2f%%", storeTaxRate), icon: "percent")
+                    compactMetric(title: "tax_metric_mode".t, value: storeTaxType == "inclusive" ? "tax_inclusive_btn".t : "tax_exclusive_btn".t, icon: "number")
+                    compactMetric(title: "tax_metric_service".t, value: String(format: "%.1f%%", storeServiceChargeRate), icon: "fork.knife.circle")
                 }
             }
 
             if compact {
                 HStack(spacing: 8) {
-                    compactMetric(title: "Default Tax", value: String(format: "%.2f%%", storeTaxRate), icon: "percent")
-                    compactMetric(title: "Mode", value: storeTaxType == "inclusive" ? "Inclusive" : "Exclusive", icon: "number")
-                    compactMetric(title: "Service", value: String(format: "%.1f%%", storeServiceChargeRate), icon: "fork.knife.circle")
+                    compactMetric(title: "tax_metric_default".t, value: String(format: "%.2f%%", storeTaxRate), icon: "percent")
+                    compactMetric(title: "tax_metric_mode".t, value: storeTaxType == "inclusive" ? "tax_inclusive_btn".t : "tax_exclusive_btn".t, icon: "number")
+                    compactMetric(title: "tax_metric_service".t, value: String(format: "%.1f%%", storeServiceChargeRate), icon: "fork.knife.circle")
                 }
             }
         }
@@ -262,7 +267,7 @@ struct TaxSettingsView: View {
 
     private var profileColumn: some View {
         VStack(alignment: .leading, spacing: 14) {
-            sectionTitle("ประเภทร้านค้า", icon: "square.grid.2x2.fill")
+            sectionTitle("tax_section_shop_type".t, icon: "square.grid.2x2.fill")
 
             VStack(spacing: 8) {
                 ForEach(TaxProfile.allCases) { profile in
@@ -273,11 +278,11 @@ struct TaxSettingsView: View {
             Divider().background(Color.appDivider)
 
             VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("ช่องทางที่คิดภาษี", icon: "arrow.triangle.branch")
+                sectionTitle("tax_section_channels".t, icon: "arrow.triangle.branch")
 
-                taxToggle("ทานที่ร้าน", icon: "fork.knife", isOn: $applyDineIn)
-                taxToggle("สั่งกลับบ้าน", icon: "takeoutbag.and.cup.and.straw", isOn: $applyTakeOut)
-                taxToggle("เดลิเวอรี", icon: "scooter", isOn: $applyDelivery)
+                taxToggle("sales_dine_in".t, icon: "fork.knife", isOn: $applyDineIn)
+                taxToggle("sales_take_out".t, icon: "takeoutbag.and.cup.and.straw", isOn: $applyTakeOut)
+                taxToggle("sales_delivery".t, icon: "scooter", isOn: $applyDelivery)
             }
         }
         .padding(16)
@@ -297,13 +302,31 @@ struct TaxSettingsView: View {
 
     private var policySection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            sectionTitle("นโยบายภาษีหลัก", icon: "checklist.checked")
+            sectionTitle("tax_section_policy".t, icon: "checklist.checked")
 
-            Toggle("เปิดใช้งานภาษีมูลค่าเพิ่ม (VAT)", isOn: $enableTax)
+            Toggle("store_enable_vat".t, isOn: $enableTax)
                 .tint(.appAccent)
             
-            Toggle("เปิดใช้งานเซอร์วิสชาร์จ (Service Charge)", isOn: $enableServiceCharge)
+            Toggle("store_enable_service_charge".t, isOn: $enableServiceCharge)
                 .tint(.appAccent)
+
+            if enableServiceCharge {
+                VStack(alignment: .leading, spacing: 8) {
+                    fieldLabel("ใช้ค่าบริการกับประเภทออร์เดอร์")
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) {
+                            taxToggle("sales_dine_in".t, icon: "fork.knife", isOn: $serviceApplyDineIn)
+                            taxToggle("sales_take_out".t, icon: "takeoutbag.and.cup.and.straw", isOn: $serviceApplyTakeOut)
+                            taxToggle("sales_delivery".t, icon: "scooter", isOn: $serviceApplyDelivery)
+                        }
+                        VStack(spacing: 8) {
+                            taxToggle("sales_dine_in".t, icon: "fork.knife", isOn: $serviceApplyDineIn)
+                            taxToggle("sales_take_out".t, icon: "takeoutbag.and.cup.and.straw", isOn: $serviceApplyTakeOut)
+                            taxToggle("sales_delivery".t, icon: "scooter", isOn: $serviceApplyDelivery)
+                        }
+                    }
+                }
+            }
             
             Divider().background(Color.appDivider)
 
@@ -391,6 +414,9 @@ struct TaxSettingsView: View {
                     .keyboardType(.decimalPad)
                     .textFieldStyle(.plain)
                     .font(.system(.body, design: .monospaced))
+                    .onChange(of: storeTaxRate) { _, value in
+                        storeTaxRate = min(100, max(0, value))
+                    }
                 Text("%")
                     .foregroundColor(.textSecondary)
             }
@@ -406,6 +432,9 @@ struct TaxSettingsView: View {
                     .keyboardType(.decimalPad)
                     .textFieldStyle(.plain)
                     .font(.system(.body, design: .monospaced))
+                    .onChange(of: storeServiceChargeRate) { _, value in
+                        storeServiceChargeRate = min(100, max(0, value))
+                    }
                 Text("%")
                     .foregroundColor(.textSecondary)
             }
@@ -422,7 +451,7 @@ struct TaxSettingsView: View {
                     setupNewTaxForm()
                 } label: {
                     Label("เพิ่มภาษี", systemImage: "plus")
-                        .font(.subheadline.weight(.bold))
+                        .font(.system(size: 12, weight: .bold))
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.appAccent)
@@ -463,7 +492,7 @@ struct TaxSettingsView: View {
     private var taxEditor: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(isCreatingNew ? "เพิ่มอัตราภาษี" : "แก้ไขอัตราภาษี")
-                .font(.headline.weight(.bold))
+                .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.textPrimary)
 
             VStack(alignment: .leading, spacing: 8) {
@@ -485,8 +514,8 @@ struct TaxSettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 fieldLabel("รูปแบบการคำนวณ")
                 Picker("Tax Type", selection: $taxType) {
-                    Text("Exclusive").tag("exclusive")
-                    Text("Inclusive").tag("inclusive")
+                    Text("tax_exclusive_btn".t).tag("exclusive")
+                    Text("tax_inclusive_btn".t).tag("inclusive")
                 }
                 .pickerStyle(.segmented)
             }
@@ -516,7 +545,7 @@ struct TaxSettingsView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: isDefault ? "star.fill" : "star")
-                    .font(.headline)
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(isDefault ? .white : .appAmber)
                     .frame(width: 34, height: 34)
                     .background(isDefault ? Color.white.opacity(0.18) : Color.appAmber.opacity(0.12))
@@ -524,11 +553,11 @@ struct TaxSettingsView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("ค่าเริ่มต้นของร้าน")
-                        .font(.subheadline.weight(.bold))
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundColor(isDefault ? .white : .textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                     Text("ใช้ภาษีนี้เป็นค่าเริ่มต้นตอนคิดเงิน")
-                        .font(.caption2)
+                        .font(.system(size: 12))
                         .foregroundColor(isDefault ? .white.opacity(0.82) : .textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -536,7 +565,7 @@ struct TaxSettingsView: View {
                 Spacer(minLength: 8)
 
                 Image(systemName: isDefault ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(isDefault ? .white : .textTertiary)
             }
             .padding(12)
@@ -572,7 +601,7 @@ struct TaxSettingsView: View {
 
                 HStack {
                     Text("ยอดสุทธิ")
-                        .font(.headline.weight(.black))
+                        .font(.system(size: 12, weight: .black))
                     Spacer()
                     Text(currency(preview.grandTotal))
                         .font(.system(.title3, design: .monospaced).weight(.black))
@@ -609,10 +638,10 @@ struct TaxSettingsView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Label("มาตรฐานที่รองรับ", systemImage: "checkmark.seal.fill")
-                    .font(.caption.weight(.bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.appTeal)
                 Text("รองรับ VAT/GST แบบรวมภาษี, Sales Tax แบบบวกเพิ่ม, ร้านอาหารที่มี service charge, ร้านขายปลีก, เดลิเวอรี และร้านที่ยกเว้นภาษี")
-                    .font(.caption)
+                    .font(.system(size: 12))
                     .foregroundColor(.textSecondary)
                     .lineSpacing(3)
             }
@@ -631,10 +660,10 @@ struct TaxSettingsView: View {
     private var emptyTaxState: some View {
         VStack(spacing: 10) {
             Image(systemName: "percent")
-                .font(.title)
+                .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.textTertiary)
             Text("ยังไม่มีอัตราภาษี")
-                .font(.caption.weight(.semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.textSecondary)
         }
         .frame(maxWidth: .infinity)
@@ -651,7 +680,7 @@ struct TaxSettingsView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: profile.icon)
-                    .font(.headline)
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(selected ? .white : profile.accent)
                     .frame(width: 34, height: 34)
                     .background((selected ? Color.white : profile.accent).opacity(selected ? 0.18 : 0.1))
@@ -659,10 +688,10 @@ struct TaxSettingsView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(profile.title)
-                        .font(.subheadline.weight(.bold))
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundColor(selected ? .white : .textPrimary)
                     Text(profile.subtitle)
-                        .font(.caption2)
+                        .font(.system(size: 12))
                         .lineLimit(1)
                         .foregroundColor(selected ? .white.opacity(0.82) : .textSecondary)
                 }
@@ -691,16 +720,16 @@ struct TaxSettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(tax.name)
-                            .font(.subheadline.weight(.bold))
+                            .font(.system(size: 12, weight: .bold))
                             .foregroundColor(selected ? .white : .textPrimary)
                         if tax.isDefault {
                             Image(systemName: "star.fill")
-                                .font(.caption2)
+                                .font(.system(size: 12))
                                 .foregroundColor(selected ? .white : .appAmber)
                         }
                     }
                     Text("\(String(format: "%.2f%%", tax.ratePercentage)) • \(tax.taxType.capitalized)")
-                        .font(.caption2)
+                        .font(.system(size: 12))
                         .foregroundColor(selected ? .white.opacity(0.8) : .textSecondary)
                 }
 
@@ -710,7 +739,7 @@ struct TaxSettingsView: View {
                     deleteTax(tax)
                 } label: {
                     Image(systemName: "trash")
-                        .font(.caption)
+                        .font(.system(size: 12))
                 }
                 .buttonStyle(.borderless)
                 .foregroundColor(selected ? .white : .appRose)
@@ -725,7 +754,7 @@ struct TaxSettingsView: View {
     private func taxToggle(_ title: String, icon: String, isOn: Binding<Bool>) -> some View {
         Toggle(isOn: isOn) {
             Label(title, systemImage: icon)
-                .font(.subheadline.weight(.semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.textPrimary)
         }
         .tint(.appAccent)
@@ -739,14 +768,14 @@ struct TaxSettingsView: View {
             Image(systemName: icon)
                 .foregroundColor(.appAccent)
             Text(title)
-                .font(.headline.weight(.black))
+                .font(.system(size: 12, weight: .black))
                 .foregroundColor(.textPrimary)
         }
     }
 
     private func fieldLabel(_ title: String) -> some View {
         Text(title)
-            .font(.caption.weight(.bold))
+            .font(.system(size: 12, weight: .bold))
             .foregroundColor(.textSecondary)
     }
 
@@ -756,10 +785,10 @@ struct TaxSettingsView: View {
                 .foregroundColor(.appAccent)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .font(.caption2)
+                    .font(.system(size: 12))
                     .foregroundColor(.textTertiary)
                 Text(value)
-                    .font(.caption.weight(.black))
+                    .font(.system(size: 12, weight: .black))
                     .foregroundColor(.textPrimary)
             }
         }
@@ -787,11 +816,11 @@ struct TaxSettingsView: View {
             Image(systemName: ok ? "checkmark.circle.fill" : "minus.circle.fill")
                 .foregroundColor(ok ? .appTeal : .textTertiary)
             Text(title)
-                .font(.caption.weight(.semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.textSecondary)
             Spacer()
             Text(value)
-                .font(.caption.weight(.bold))
+                .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.textPrimary)
         }
         .padding(10)
@@ -831,7 +860,7 @@ struct TaxSettingsView: View {
 
     private func saveTax() {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let rateVal = max(0, Double(ratePercentage) ?? 0)
+        guard isValidForm, let rateVal = Double(ratePercentage) else { return }
 
         if isDefault {
             for tax in taxRates {
@@ -892,6 +921,9 @@ struct TaxSettingsView: View {
             applyDineIn = true
             applyTakeOut = true
             applyDelivery = true
+            serviceApplyDineIn = true
+            serviceApplyTakeOut = false
+            serviceApplyDelivery = false
             allowItemExemptions = true
             priceBasis = TaxPriceBasis.itemDefault.rawValue
         case .quickService:
@@ -902,6 +934,9 @@ struct TaxSettingsView: View {
             applyDineIn = true
             applyTakeOut = true
             applyDelivery = true
+            serviceApplyDineIn = false
+            serviceApplyTakeOut = false
+            serviceApplyDelivery = false
             allowItemExemptions = true
             priceBasis = TaxPriceBasis.forceInclusive.rawValue
         case .retailSalesTax:
@@ -912,6 +947,9 @@ struct TaxSettingsView: View {
             applyDineIn = true
             applyTakeOut = true
             applyDelivery = false
+            serviceApplyDineIn = false
+            serviceApplyTakeOut = false
+            serviceApplyDelivery = false
             allowItemExemptions = true
             priceBasis = TaxPriceBasis.forceExclusive.rawValue
         case .marketplaceDelivery:
@@ -922,6 +960,9 @@ struct TaxSettingsView: View {
             applyDineIn = false
             applyTakeOut = true
             applyDelivery = true
+            serviceApplyDineIn = false
+            serviceApplyTakeOut = false
+            serviceApplyDelivery = false
             allowItemExemptions = true
             priceBasis = TaxPriceBasis.itemDefault.rawValue
         case .taxExempt:
@@ -932,6 +973,9 @@ struct TaxSettingsView: View {
             applyDineIn = false
             applyTakeOut = false
             applyDelivery = false
+            serviceApplyDineIn = false
+            serviceApplyTakeOut = false
+            serviceApplyDelivery = false
             allowItemExemptions = true
             priceBasis = TaxPriceBasis.forceInclusive.rawValue
         case .custom:
@@ -945,8 +989,10 @@ struct TaxSettingsView: View {
 
     private func calculatePreview(orderType: String) -> TaxPreview {
         let itemsSubtotal = 100.0
-        let serviceCharge = orderType == "dine_in" ? itemsSubtotal * max(0, storeServiceChargeRate) / 100.0 : 0.0
-        let taxApplies = taxApplies(to: orderType) && storeTaxRate > 0
+        let serviceCharge = enableServiceCharge && serviceChargeApplies(to: orderType)
+            ? itemsSubtotal * max(0, storeServiceChargeRate) / 100.0
+            : 0.0
+        let taxApplies = enableTax && taxApplies(to: orderType) && storeTaxRate > 0
         let isInclusive = effectiveTaxType() == "inclusive"
         let serviceTaxBase = serviceChargeTaxable ? serviceCharge : 0.0
         let base = itemsSubtotal + serviceTaxBase
@@ -979,6 +1025,15 @@ struct TaxSettingsView: View {
         case "take_out": return applyTakeOut
         case "delivery": return applyDelivery
         default: return true
+        }
+    }
+
+    private func serviceChargeApplies(to orderType: String) -> Bool {
+        switch orderType {
+        case "dine_in": return serviceApplyDineIn
+        case "take_out": return serviceApplyTakeOut
+        case "delivery": return serviceApplyDelivery
+        default: return false
         }
     }
 

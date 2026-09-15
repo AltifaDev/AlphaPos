@@ -4,7 +4,7 @@ import SwiftData
 @Model
 final class DeliveryPrice {
     @Attribute(.unique) var id: UUID
-    var brandName: String // "GrabFood", "LINE MAN", "ShopeeFood", "Foodpanda", "Robinhood"
+    var brandName: String // ExternalSalesChannel value (delivery platforms only)
     var price: Double
 
     var menuItem: MenuItem?

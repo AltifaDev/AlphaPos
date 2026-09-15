@@ -4,7 +4,10 @@ import SwiftData
 @Model
 final class ShiftReport {
     @Attribute(.unique) var id: UUID
-    var registerSession: RegisterSession?
+    /// Historical reports survive register-session cleanup. Explicit nullify
+    /// prevents a dangling managed-object reference from crashing SwiftData
+    /// when an old session is removed by reconciliation.
+    @Relationship(deleteRule: .nullify) var registerSession: RegisterSession?
     var reportType: String // "Z", "X"
     var grossSales: Double
     var netSales: Double

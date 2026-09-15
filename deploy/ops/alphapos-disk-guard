@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir=/var/lib/alphapos-disk-guard
+state_file=$state_dir/state
+mkdir -p "$state_dir"
+
+# ── 1. Proactive Per-Container Log Truncation (>20MB) ──────────────────────────
+# Check individual container logs and truncate if they spike, even before disk threshold hits
+find /var/lib/docker/containers/ -name "*-json.log" -size +20M 2>/dev/null | while read -r log_file; do
+  logger -p daemon.warn -t alphapos-disk-guard "proactively truncating oversized docker log: $log_file"
+  truncate -s 0 "$log_file" 2>/dev/null || true
+done
+
+# ── 2. Evaluate Disk Usage ───────────────────────────────────────────────────
+actual_usage=$(df -P / | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
+avail_kb=$(df -Pk / | awk 'NR==2 {print $4}')
+usage=$actual_usage
+if [[ "${ALPHAPOS_DISK_GUARD_TEST_MODE:-0}" == "1" ]]; then
+  usage=${ALPHAPOS_DISK_GUARD_USAGE_OVERRIDE:-$actual_usage}
+fi
+[[ "$usage" =~ ^[0-9]+$ ]] || { logger -p daemon.err -t alphapos-disk-guard "invalid usage value"; exit 1; }
+
+level=normal
+(( usage >= 75 )) && level=warning
+(( usage >= 85 )) && level=critical
+previous=$(cat "$state_file" 2>/dev/null || printf normal)
+
+logger -t alphapos-disk-guard "disk_usage=${actual_usage}% evaluated_usage=${usage}% available_kb=${avail_kb} level=${level}"
+
+# ── 3. Multi-Stage Auto-Remediation ──────────────────────────────────────────
+if (( usage >= 70 )); then
+  # Clean VSCode server cache
+  rm -rf /root/.vscode-server/cli/servers/* 2>/dev/null || true
+  # Vacuum journald logs older than 3 days
+  /usr/bin/journalctl --vacuum-time=3d >/dev/null 2>&1 || true
+  # Prune dangling docker images
+  docker image prune -f >/dev/null 2>&1 || true
+
+  # Analytics retention deletes can leave multi-gigabyte empty relations on
+  # disk. VACUUM with TRUNCATE reclaims empty tail pages without requiring the
+  # extra free space of VACUUM FULL. Run only for large, statistically empty
+  # log relations and let PostgreSQL keep the operation transaction-safe.
+  if docker exec supabase_db_AlphaPos pg_isready -U postgres -d _supabase >/dev/null 2>&1; then
+    docker exec -i supabase_db_AlphaPos psql -X -v ON_ERROR_STOP=1 -U postgres -d _supabase >/dev/null <<'SQL' || \
+      logger -p daemon.err -t alphapos-disk-guard "analytics vacuum failed"
+SELECT format('VACUUM (TRUNCATE, ANALYZE) %I.%I;', schemaname, relname)
+FROM pg_stat_user_tables
+WHERE schemaname = '_analytics'
+  AND relname LIKE 'log_events_%'
+  AND n_live_tup = 0
+  AND pg_total_relation_size(format('%I.%I', schemaname, relname)::regclass) > 512 * 1024 * 1024
+\gexec
+SQL
+  fi
+fi
+
+if (( usage >= 75 )); then
+  /usr/sbin/logrotate -f /etc/logrotate.d/docker-containers >/dev/null 2>&1 || true
+  docker builder prune -a -f >/dev/null 2>&1 || true
+
+  # On a small VPS, observability data must never evict the transactional
+  # database. Drop only the PostgreSQL analytics source when it exceeds 5 GiB;
+  # business schemas live in the separate `postgres` database and are untouched.
+  if docker exec supabase_db_AlphaPos pg_isready -U postgres -d _supabase >/dev/null 2>&1; then
+    docker exec -i supabase_db_AlphaPos psql -X -v ON_ERROR_STOP=1 -U postgres -d _supabase >/dev/null <<'SQL' || \
+      logger -p daemon.err -t alphapos-disk-guard "analytics emergency cap failed"
+SELECT format('TRUNCATE TABLE %I.%I;', st.schemaname, st.relname)
+FROM pg_stat_user_tables st
+JOIN _analytics.sources src
+  ON st.relname = 'log_events_' || replace(src.token::text, '-', '_')
+WHERE st.schemaname = '_analytics'
+  AND src.name = 'postgres.logs'
+  AND pg_total_relation_size(format('%I.%I', st.schemaname, st.relname)::regclass) > 5::bigint * 1024 * 1024 * 1024
+\gexec
+SQL
+  fi
+fi
+
+if (( usage >= 85 )); then
+  # Emergency: truncate all container logs and prune all stopped containers/images
+  truncate -s 0 /var/lib/docker/containers/*/*-json.log 2>/dev/null || true
+  /usr/bin/journalctl --vacuum-size=50M >/dev/null 2>&1 || true
+fi
+
+# ── 4. State Change Alerting ─────────────────────────────────────────────────
+if [[ "$level" != "$previous" ]]; then
+  /usr/local/sbin/alphapos-send-alert "$level" "Disk threshold changed to ${level}" \
+    "Root filesystem is ${actual_usage}% full (${avail_kb} KB available). Evaluated threshold: ${usage}%." || \
+    logger -p daemon.err -t alphapos-disk-guard "external alert delivery failed"
+fi
+printf '%s\n' "$level" > "$state_file"
+
+[[ "$level" != critical ]]

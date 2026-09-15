@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 
 struct ExpenseTrackerView: View {
+    @EnvironmentObject private var sessionManager: AppSessionManager
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
 
@@ -9,7 +10,7 @@ struct ExpenseTrackerView: View {
     @Query(sort: \Supplier.name) private var suppliers: [Supplier]
     @Query(sort: \Branch.name) private var branches: [Branch]
 
-    @AppStorage("active_branch_id") private var activeBranchId = ""
+    @AppStorage(BranchContext.storageKey) private var activeBranchId = ""
 
     // Filters & Navigation States
     @State private var searchText = ""
@@ -24,7 +25,7 @@ struct ExpenseTrackerView: View {
     // Form Inputs
     @State private var titleInput = ""
     @State private var invoiceNoInput = ""
-    @State private var categoryInput = "Raw Materials"
+    @State private var categoryInput = "Consumables"
     @State private var quantityInput = "1.0"
     @State private var unitInput = "pcs"
     @State private var unitPriceInput = "0.0"
@@ -33,13 +34,28 @@ struct ExpenseTrackerView: View {
     @State private var paymentMethodInput = "Cash"
     @State private var statusInput = "Paid"
     @State private var isCapExInput = false
+    @State private var recognitionTypeInput = "operating_expense"
+    @State private var expenseNatureInput = "other"
+    @State private var isVATRecoverableInput = true
+    @State private var isRecurringInput = false
+    @State private var recurrenceFrequencyInput = "monthly"
+    @State private var serviceStartInput = Date()
+    @State private var serviceEndInput = Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date()
+    @State private var assetClassInput = "Furniture & Fixtures"
+    @State private var availableForUseInput = Date()
+    @State private var usefulLifeMonthsInput = "60"
+    @State private var residualValueInput = "0"
+    @State private var investmentProjectInput = ""
+    @State private var monthlyCashBenefitInput = "0"
+    @State private var monthlyIncrementalCostInput = "0"
     @State private var notesInput = ""
     @State private var dateInput = Date()
 
     init() {}
 
     private var activeBranch: Branch? {
-        branches.first(where: { $0.id.uuidString == activeBranchId })
+        guard let selectedID = UUID(uuidString: activeBranchId) else { return nil }
+        return branches.first(where: { $0.id == selectedID && !$0.isDeleted })
     }
 
     // Filtered Ledger List
@@ -93,20 +109,37 @@ struct ExpenseTrackerView: View {
         let calendar = Calendar.current
         return expenses.filter { expense in
             !expense.isDeleted &&
-            !expense.isCapEx &&
+            AccountingMath.normalizedExpenseRecognition(expense.recognitionType, legacyIsCapEx: expense.isCapEx) == "operating_expense" &&
             (activeBranch == nil || expense.branch?.id == activeBranch?.id) &&
             calendar.isDate(expense.date, equalTo: Date(), toGranularity: .month)
-        }.reduce(0.0) { $0 + $1.amount }
+        }.reduce(0.0) { total, expense in
+            total + max(0, expense.amount - (expense.isVATRecoverable ? expense.vatAmount : 0))
+        }
     }
 
     private var capExTotal: Double {
         let calendar = Calendar.current
         return expenses.filter { expense in
             !expense.isDeleted &&
-            expense.isCapEx &&
+            AccountingMath.normalizedExpenseRecognition(expense.recognitionType, legacyIsCapEx: expense.isCapEx) == "fixed_asset" &&
             (activeBranch == nil || expense.branch?.id == activeBranch?.id) &&
             calendar.isDate(expense.date, equalTo: Date(), toGranularity: .month)
-        }.reduce(0.0) { $0 + $1.amount }
+        }.reduce(0.0) { total, expense in
+            total + max(0, expense.amount - (expense.isVATRecoverable ? expense.vatAmount : 0))
+        }
+    }
+
+    private var monthlyDepreciationTotal: Double {
+        expenses.filter {
+            !$0.isDeleted &&
+            (activeBranch == nil || $0.branch?.id == activeBranch?.id) &&
+            AccountingMath.normalizedExpenseRecognition($0.recognitionType, legacyIsCapEx: $0.isCapEx) == "fixed_asset"
+        }.reduce(0) { total, asset in
+            total + AccountingMath.monthlyStraightLineDepreciation(
+                cost: max(0, asset.amount - (asset.isVATRecoverable ? asset.vatAmount : 0)),
+                residualValue: asset.residualValue, usefulLifeMonths: asset.usefulLifeMonths
+            )
+        }
     }
 
     // Dynamic values computed during Form entry
@@ -132,11 +165,10 @@ struct ExpenseTrackerView: View {
     }
 
     var body: some View {
+        GeometryReader { geometry in
         VStack(spacing: 0) {
-            // Sleek Compact Header (Metrics Bar)
-            compactMetricsBar
-
-            Divider().background(Color.appDivider)
+            // Native Header
+            pageHeader
 
             // Advanced Filters Toolbar
             advancedFilterToolbar
@@ -155,15 +187,38 @@ struct ExpenseTrackerView: View {
                 }
                 .frame(maxWidth: .infinity)
 
-                Divider().background(Color.appDivider)
+                if geometry.size.width >= 920 {
+                    Divider().background(Color.appDivider)
 
-                // Right Panel: Detail Inspector (Detail Panel)
-                detailInspectorView
-                    .frame(width: 380)
-                    .background(Color.appSurface)
+                    // Keep the inspector only when both panes remain readable.
+                    detailInspectorView
+                        .frame(width: min(380, geometry.size.width * 0.34))
+                        .background(Color.appSurface)
+                }
             }
         }
         .background(Color.appBackground)
+        .navigationTitle(lm.currentLanguage == .thai ? "ค่าใช้จ่ายและสินทรัพย์" : "Expenses & Asset Register")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: { openAddExpenseForm() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("expense_add".t)
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    .background(APGradient.accent)
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
         .sheet(isPresented: $showingForm) {
             addEditExpenseFormView
         }
@@ -172,131 +227,261 @@ struct ExpenseTrackerView: View {
                 selectedExpense = first
             }
         }
+        }
     }
 
-    // MARK: - Compact Metrics Bar
-    private var compactMetricsBar: some View {
-        HStack(spacing: APSpacing.lg) {
-            HStack(spacing: APSpacing.xs) {
-                Image(systemName: "banknote")
-                    .foregroundColor(.textSecondary)
-                    .font(.system(size: 10))
-                Text("expense_monthly".t + ":")
-                    .font(.system(size: 10))
-                    .foregroundColor(.textSecondary)
-                Text(String(format: "฿%.2f", monthlyTotal))
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundColor(.textPrimary)
+    // MARK: - Native Header
+    private var pageHeader: some View {
+        HStack(alignment: .center, spacing: 14) {
+            // Icon + Title & Subtitle Badge
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(LinearGradient(colors: [Color.appAccent, Color(hex: "F59E0B")], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 34, height: 34)
+                    Image(systemName: "banknote.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.white)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Text(lm.currentLanguage == .thai ? "ค่าใช้จ่ายและสินทรัพย์" : "Expenses & Asset Register")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundColor(.textPrimary)
+
+                        Text("EXPENSES & ASSETS")
+                            .font(.system(size: 9, weight: .black))
+                            .foregroundColor(.appAccent)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.appAccent.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+
+                    Text(lm.currentLanguage == .thai ? "บันทึกค่าใช้จ่ายร้าน ค่าเช่า ค่าน้ำไฟ ทะเบียนสินทรัพย์ และค่าตัดจำหน่าย" : "Manage OpEx, CapEx, Fixed Asset Register & Amortisation")
+                        .font(.system(size: 11))
+                        .foregroundColor(.textTertiary)
+                        .lineLimit(1)
+                }
             }
 
-            HStack(spacing: APSpacing.xs) {
-                Image(systemName: "briefcase")
-                    .foregroundColor(.textSecondary)
-                    .font(.system(size: 10))
-                Text("OpEx:")
-                    .font(.system(size: 10))
-                    .foregroundColor(.textSecondary)
-                Text(String(format: "฿%.2f", opExTotal))
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundColor(.appTeal)
-            }
+            Spacer(minLength: 12)
 
-            HStack(spacing: APSpacing.xs) {
-                Image(systemName: "wrench.and.screwdriver")
-                    .foregroundColor(.textSecondary)
-                    .font(.system(size: 10))
-                Text("CapEx:")
-                    .font(.system(size: 10))
-                    .foregroundColor(.textSecondary)
-                Text(String(format: "฿%.2f", capExTotal))
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundColor(.appAccent)
+            // Summary metrics strip (Compact & Clean)
+            HStack(spacing: 10) {
+                metricChip(
+                    title: lm.currentLanguage == .thai ? "ค่าใช้จ่ายเดือนนี้" : "Monthly Expenses",
+                    amount: monthlyTotal,
+                    color: .textPrimary,
+                    icon: "banknote"
+                )
+                metricChip(
+                    title: lm.currentLanguage == .thai ? "ค่าเสื่อม/เดือน" : "Depreciation/mo",
+                    amount: monthlyDepreciationTotal,
+                    color: .appAmber,
+                    icon: "calendar.badge.minus"
+                )
+                metricChip(
+                    title: "OpEx",
+                    amount: opExTotal,
+                    color: .appTeal,
+                    icon: "briefcase"
+                )
+                metricChip(
+                    title: "CapEx",
+                    amount: capExTotal,
+                    color: .appAccent,
+                    icon: "wrench.and.screwdriver"
+                )
             }
-
-            Spacer()
         }
-        .padding(.horizontal, APSpacing.sm)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .background(Color.appSurface)
+        .overlay(alignment: .bottom) {
+            Divider().background(Color.appDivider)
+        }
+    }
+
+    private func metricChip(title: String, amount: Double, color: Color, icon: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 10))
+                .foregroundColor(color)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(.system(size: 9))
+                    .foregroundColor(.textSecondary)
+                Text("฿\(amount.formatted(.number.precision(.fractionLength(2))))")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundColor(color)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.appSurfaceHigh)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
     // MARK: - Advanced Filters Toolbar
     private var advancedFilterToolbar: some View {
-        HStack(spacing: APSpacing.sm) {
-            // Search Text Field
-            HStack(spacing: APSpacing.xs) {
+        ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+            // Search — shared height with filter chips
+            HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
                     .foregroundColor(.textSecondary)
-                    .font(.system(size: 9))
-                TextField("search_hint".t + " (Inv #, Item)", text: $searchText)
-                    .font(.system(size: 10))
+                TextField(lm.currentLanguage == .thai ? "ค้นหา (เลขบิล, รายการ, หมายเหตุ)" : "Search (Inv #, Item, Notes)", text: $searchText)
+                    .font(.caption)
                     .foregroundColor(.textPrimary)
                 if !searchText.isEmpty {
                     Button(action: { searchText = "" }) {
                         Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
                             .foregroundColor(.textSecondary)
-                            .font(.system(size: 9))
                     }
+                    .buttonStyle(.plain)
                 }
             }
-            .padding(4)
+            .padding(.horizontal, 10)
+            .frame(height: 30)
             .background(Color.appSurfaceHigh)
-            .cornerRadius(APRadius.md)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: APRadius.md)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(Color.appBorderSubtle, lineWidth: 1)
             )
-            .frame(width: 200)
+            .frame(minWidth: 160, maxWidth: 240)
 
-            // Category Selector
-            Picker("Category", selection: $selectedCategoryFilter) {
-                Text("All").tag("All")
-                Text("expense_category_raw_materials".t).tag("Raw Materials")
-                Text("expense_category_equipment".t).tag("Equipment")
-                Text("expense_category_consumables".t).tag("Consumables")
-                Text("expense_category_maintenance".t).tag("Maintenance")
-                Text("expense_category_other".t).tag("Other")
+            // Category — compact menu (same height as search; no oversized system All control)
+            Menu {
+                Button { selectedCategoryFilter = "All" } label: {
+                    labelCheck(selectedCategoryFilter == "All", "expense_category_all".t)
+                }
+                Button { selectedCategoryFilter = "Raw Materials" } label: {
+                    labelCheck(selectedCategoryFilter == "Raw Materials", "expense_category_raw_materials".t)
+                }
+                Button { selectedCategoryFilter = "Equipment" } label: {
+                    labelCheck(selectedCategoryFilter == "Equipment", "expense_category_equipment".t)
+                }
+                Button { selectedCategoryFilter = "Consumables" } label: {
+                    labelCheck(selectedCategoryFilter == "Consumables", "expense_category_consumables".t)
+                }
+                Button { selectedCategoryFilter = "Maintenance" } label: {
+                    labelCheck(selectedCategoryFilter == "Maintenance", "expense_category_maintenance".t)
+                }
+                Button { selectedCategoryFilter = "Other" } label: {
+                    labelCheck(selectedCategoryFilter == "Other", "expense_category_other".t)
+                }
+            } label: {
+                filterChipLabel(
+                    title: selectedCategoryFilter == "All"
+                        ? "expense_category_all".t
+                        : localizedCategoryName(selectedCategoryFilter),
+                    systemImage: "line.3.horizontal.decrease"
+                )
             }
-            .pickerStyle(.menu)
-            .font(.system(size: 9))
-            .padding(.horizontal, APSpacing.xs)
-            .padding(.vertical, 3)
+            .buttonStyle(.plain)
+
+            // Period — short labels so Thai text is never truncated
+            HStack(spacing: 0) {
+                periodChip(title: "expense_period_today".t, tag: 0)
+                periodChip(title: "expense_period_month".t, tag: 1)
+            }
+            .padding(2)
             .background(Color.appSurfaceHigh)
-            .cornerRadius(APRadius.md)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: APRadius.md)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(Color.appBorderSubtle, lineWidth: 1)
             )
 
-            // Period Segmented View
-            Picker("Period", selection: $periodFilter) {
-                Text("expense_today".t).tag(0)
-                Text("expense_monthly".t).tag(1)
-            }
-            .pickerStyle(.segmented)
-            .scaleEffect(0.9)
-            .frame(width: 160)
+            Spacer(minLength: 8)
 
-            Spacer()
-
-            // Add Expense Button
             Button(action: { openAddExpenseForm() }) {
                 HStack(spacing: 4) {
                     Image(systemName: "plus")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                     Text("expense_add".t)
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.caption.weight(.bold))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 .foregroundColor(.white)
-                .padding(.horizontal, APSpacing.sm)
-                .padding(.vertical, 4)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
                 .background(APGradient.accent)
-                .cornerRadius(APRadius.pill)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             .buttonStyle(.plain)
         }
-        .padding(APSpacing.sm)
+        .padding(.horizontal, APSpacing.md)
+        .padding(.vertical, 8)
+        .fixedSize(horizontal: true, vertical: false)
+        }
         .background(Color.appSurface)
+        .overlay(Rectangle().fill(Color.appDivider).frame(height: 1), alignment: .bottom)
+    }
+
+    private func periodChip(title: String, tag: Int) -> some View {
+        Button {
+            periodFilter = tag
+        } label: {
+            Text(title)
+                .font(.caption.weight(periodFilter == tag ? .semibold : .medium))
+                .foregroundColor(periodFilter == tag ? .white : .textSecondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 12)
+                .frame(height: 26)
+                .background(periodFilter == tag ? Color.appAccent : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func filterChipLabel(title: String, systemImage: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .semibold))
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8, weight: .bold))
+        }
+        .foregroundColor(.textSecondary)
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(Color.appSurfaceHigh)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.appBorderSubtle, lineWidth: 1)
+        )
+    }
+
+    private func localizedCategoryName(_ tag: String) -> String {
+        switch tag {
+        case "Raw Materials": return "expense_category_raw_materials".t
+        case "Equipment": return "expense_category_equipment".t
+        case "Consumables": return "expense_category_consumables".t
+        case "Maintenance": return "expense_category_maintenance".t
+        case "Other": return "expense_category_other".t
+        default: return tag
+        }
+    }
+
+    @ViewBuilder
+    private func labelCheck(_ selected: Bool, _ title: String) -> some View {
+        if selected {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
+        }
     }
 
     // MARK: - Ledger Table List
@@ -445,7 +630,7 @@ struct ExpenseTrackerView: View {
                             .background(getCategoryColor(expense.category).opacity(0.12))
                             .cornerRadius(APRadius.sm)
 
-                        Text(expense.isCapEx ? "CAPITAL ASSET (CAPEX)" : "OPERATING EXPENSE (OPEX)")
+                        Text(accountingTreatmentLabel(expense))
                             .font(.system(size: 7, weight: .bold))
                             .foregroundColor(expense.isCapEx ? .appAccent : .appTeal)
                             .padding(.horizontal, 6)
@@ -534,6 +719,50 @@ struct ExpenseTrackerView: View {
                             infoRow(label: "Status", value: expense.status)
                         }
 
+                        if AccountingMath.normalizedExpenseRecognition(expense.recognitionType, legacyIsCapEx: expense.isCapEx) == "fixed_asset" {
+                            let netCost = max(0, expense.amount - (expense.isVATRecoverable ? expense.vatAmount : 0))
+                            let monthlyDepreciation = AccountingMath.monthlyStraightLineDepreciation(
+                                cost: netCost, residualValue: expense.residualValue,
+                                usefulLifeMonths: expense.usefulLifeMonths
+                            )
+                            let accumulated = AccountingMath.accumulatedDepreciation(
+                                cost: netCost, residualValue: expense.residualValue,
+                                usefulLifeMonths: expense.usefulLifeMonths,
+                                availableForUse: expense.availableForUseDate ?? expense.date,
+                                asOf: Date()
+                            )
+                            let payback = AccountingMath.simplePaybackMonths(
+                                investment: netCost,
+                                monthlyCashBenefit: expense.expectedMonthlyCashBenefit,
+                                monthlyIncrementalCost: expense.expectedMonthlyIncrementalCost
+                            )
+                            let calendar = Calendar.current
+                            let available = expense.availableForUseDate ?? expense.date
+                            let elapsedMonths = max(0, (calendar.dateComponents([.month], from: calendar.startOfDay(for: available), to: calendar.startOfDay(for: Date())).month ?? 0) + 1)
+                            let remainingMonths = max(0, expense.usefulLifeMonths - elapsedMonths)
+                            let deprPct = expense.usefulLifeMonths > 0 ? min(100.0, (Double(elapsedMonths) / Double(expense.usefulLifeMonths)) * 100.0) : 0.0
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(lm.currentLanguage == .thai ? "สินทรัพย์และการคืนทุน" : "ASSET & PAYBACK")
+                                        .font(.system(size: 8, weight: .bold)).foregroundColor(.appAccent)
+                                    Spacer()
+                                    Text("\(String(format: "%.0f", deprPct))% " + (lm.currentLanguage == .thai ? "ตัดค่าเสื่อมแล้ว" : "depreciated"))
+                                        .font(.system(size: 8, weight: .semibold)).foregroundColor(.textSecondary)
+                                }
+                                infoRow(label: lm.currentLanguage == .thai ? "ประเภทสินทรัพย์" : "Asset Class", value: expense.assetClass ?? "—")
+                                infoRow(label: lm.currentLanguage == .thai ? "โครงการ" : "Project", value: expense.investmentProject ?? "—")
+                                infoRow(label: lm.currentLanguage == .thai ? "อายุการใช้งาน" : "Useful Life", value: "\(expense.usefulLifeMonths) " + (lm.currentLanguage == .thai ? "เดือน (เหลืออีก \(remainingMonths) เดือน)" : "mos (\(remainingMonths) mos left)"))
+                                infoRow(label: lm.currentLanguage == .thai ? "ค่าเสื่อม/เดือน" : "Depreciation/month", value: String(format: "฿%.2f", monthlyDepreciation))
+                                infoRow(label: lm.currentLanguage == .thai ? "ค่าเสื่อมสะสม" : "Accumulated depr.", value: String(format: "฿%.2f", accumulated))
+                                infoRow(label: lm.currentLanguage == .thai ? "มูลค่าสุทธิตามบัญชี (NBV)" : "Net Book Value (NBV)", value: String(format: "฿%.2f", max(expense.residualValue, netCost - accumulated)))
+                                infoRow(label: lm.currentLanguage == .thai ? "คืนทุนโดยประมาณ" : "Estimated payback", value: payback.map { String(format: "%.1f %@", $0, lm.currentLanguage == .thai ? "เดือน" : "months") } ?? "—")
+                            }
+                            .padding(APSpacing.sm)
+                            .background(Color.appAccent.opacity(0.07))
+                            .cornerRadius(APRadius.md)
+                        }
+
                         // Notes
                         if let notes = expense.notes, !notes.isEmpty {
                             VStack(alignment: .leading, spacing: 2) {
@@ -608,6 +837,15 @@ struct ExpenseTrackerView: View {
         .padding(.vertical, 2)
     }
 
+    private func accountingTreatmentLabel(_ expense: Expense) -> String {
+        switch AccountingMath.normalizedExpenseRecognition(expense.recognitionType, legacyIsCapEx: expense.isCapEx) {
+        case "fixed_asset": return "CAPITAL ASSET (CAPEX)"
+        case "prepaid_expense": return "PREPAID EXPENSE"
+        case "refundable_deposit": return "REFUNDABLE DEPOSIT"
+        default: return "OPERATING EXPENSE (OPEX)"
+        }
+    }
+
     // MARK: - Add/Edit Expense Form View
     private var addEditExpenseFormView: some View {
         NavigationStack {
@@ -620,13 +858,18 @@ struct ExpenseTrackerView: View {
                         .foregroundColor(.textPrimary)
 
                     Picker("Category", selection: $categoryInput) {
-                        Text("expense_category_raw_materials".t).tag("Raw Materials")
                         Text("expense_category_equipment".t).tag("Equipment")
                         Text("expense_category_consumables".t).tag("Consumables")
                         Text("expense_category_maintenance".t).tag("Maintenance")
                         Text("expense_category_other".t).tag("Other")
                     }
                     .pickerStyle(.menu)
+
+                    Text(lm.currentLanguage == .thai
+                         ? "วัตถุดิบอาหารให้บันทึกผ่าน จัดซื้อ/คลังสินค้า เพื่อคำนวณสินค้าคงเหลือและต้นทุนขาย (COGS) โดยไม่ซ้ำรายการนี้ ส่วนค่าแรงให้บันทึกผ่านพนักงาน/บันทึกเวลา"
+                         : "Record food ingredients through Purchasing/Inventory for inventory and COGS. Record labor through Employees/Timecards to avoid double counting.")
+                        .font(.caption)
+                        .foregroundColor(.textSecondary)
                 }
 
                 Section(header: Text("Quantities & Cost (Calculated)")) {
@@ -641,12 +884,9 @@ struct ExpenseTrackerView: View {
                     }
 
                     HStack {
-                        Text("Unit of Measure")
+                        Text(lm.currentLanguage == .thai ? "หน่วยนับ" : "Unit of Measure")
                         Spacer()
-                        TextField("pcs", text: $unitInput)
-                            .multilineTextAlignment(.trailing)
-                            .foregroundColor(.textPrimary)
-                            .frame(width: 100)
+                        StandardUnitPickerMenu(unit: $unitInput)
                     }
 
                     HStack {
@@ -706,12 +946,76 @@ struct ExpenseTrackerView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    Toggle(isOn: $isCapExInput) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Capital Expenditure (CapEx)")
-                                .fontWeight(.medium)
-                            Text("Check if asset lasts >1 year (furniture, computers, machines)")
-                                .font(.caption2).foregroundColor(.textSecondary)
+                    Picker(lm.currentLanguage == .thai ? "การรับรู้ทางบัญชี" : "Accounting Treatment", selection: $recognitionTypeInput) {
+                        Text(lm.currentLanguage == .thai ? "ค่าใช้จ่ายดำเนินงาน (OpEx)" : "Operating Expense (OpEx)").tag("operating_expense")
+                        Text(lm.currentLanguage == .thai ? "สินทรัพย์ถาวร (CapEx)" : "Fixed Asset (CapEx)").tag("fixed_asset")
+                        Text(lm.currentLanguage == .thai ? "ค่าใช้จ่ายจ่ายล่วงหน้า" : "Prepaid Expense").tag("prepaid_expense")
+                        Text(lm.currentLanguage == .thai ? "เงินประกัน/เงินมัดจำคืนได้" : "Refundable Deposit").tag("refundable_deposit")
+                    }
+                    .pickerStyle(.menu)
+
+                    Picker(lm.currentLanguage == .thai ? "ลักษณะค่าใช้จ่าย" : "Expense Nature", selection: $expenseNatureInput) {
+                        Text(lm.currentLanguage == .thai ? "ค่าเช่า" : "Rent").tag("rent")
+                        Text(lm.currentLanguage == .thai ? "สาธารณูปโภค" : "Utilities").tag("utilities")
+                        Text(lm.currentLanguage == .thai ? "ซ่อมบำรุง" : "Repairs & Maintenance").tag("maintenance")
+                        Text(lm.currentLanguage == .thai ? "การตลาด" : "Marketing").tag("marketing")
+                        Text(lm.currentLanguage == .thai ? "วัสดุสิ้นเปลือง" : "Consumables").tag("consumables")
+                        Text(lm.currentLanguage == .thai ? "อื่นๆ" : "Other").tag("other")
+                    }.pickerStyle(.menu)
+
+                    Toggle(lm.currentLanguage == .thai ? "VAT ขอคืนได้" : "Recoverable Input VAT", isOn: $isVATRecoverableInput)
+
+                    if recognitionTypeInput == "operating_expense" {
+                        Toggle(lm.currentLanguage == .thai ? "รายการประจำ" : "Recurring Expense", isOn: $isRecurringInput)
+                        if isRecurringInput {
+                            Picker(lm.currentLanguage == .thai ? "ความถี่" : "Frequency", selection: $recurrenceFrequencyInput) {
+                                Text(lm.currentLanguage == .thai ? "รายเดือน" : "Monthly").tag("monthly")
+                                Text(lm.currentLanguage == .thai ? "รายไตรมาส" : "Quarterly").tag("quarterly")
+                                Text(lm.currentLanguage == .thai ? "รายปี" : "Yearly").tag("yearly")
+                            }.pickerStyle(.segmented)
+                        }
+                    }
+
+                    if recognitionTypeInput == "prepaid_expense" {
+                        DatePicker(lm.currentLanguage == .thai ? "เริ่มงวดบริการ" : "Service Start", selection: $serviceStartInput, displayedComponents: .date)
+                        DatePicker(lm.currentLanguage == .thai ? "สิ้นสุดงวดบริการ" : "Service End", selection: $serviceEndInput, in: serviceStartInput..., displayedComponents: .date)
+                    }
+
+                    if recognitionTypeInput == "fixed_asset" {
+                        Picker(lm.currentLanguage == .thai ? "ประเภทสินทรัพย์" : "Asset Class", selection: $assetClassInput) {
+                            Text(lm.currentLanguage == .thai ? "เฟอร์นิเจอร์และอุปกรณ์ตกแต่ง" : "Furniture & Fixtures").tag("Furniture & Fixtures")
+                            Text(lm.currentLanguage == .thai ? "อุปกรณ์ครัว" : "Kitchen Equipment").tag("Kitchen Equipment")
+                            Text(lm.currentLanguage == .thai ? "ปรับปรุงสถานที่เช่า" : "Leasehold Improvement").tag("Leasehold Improvement")
+                            Text(lm.currentLanguage == .thai ? "คอมพิวเตอร์/POS" : "Computer & POS").tag("Computer & POS")
+                            Text(lm.currentLanguage == .thai ? "อื่นๆ" : "Other Asset").tag("Other Asset")
+                        }.pickerStyle(.menu)
+                        DatePicker(lm.currentLanguage == .thai ? "วันที่พร้อมใช้งาน" : "Available for Use", selection: $availableForUseInput, displayedComponents: .date)
+                        HStack {
+                            Text(lm.currentLanguage == .thai ? "อายุใช้งาน (เดือน)" : "Useful Life (months)")
+                            Spacer(); TextField("60", text: $usefulLifeMonthsInput).keyboardType(.numberPad).multilineTextAlignment(.trailing).frame(width: 90)
+                        }
+                        HStack {
+                            Text(lm.currentLanguage == .thai ? "มูลค่าคงเหลือ" : "Residual Value")
+                            Spacer(); TextField("0", text: $residualValueInput).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 110)
+                        }
+                        TextField(lm.currentLanguage == .thai ? "โครงการลงทุน เช่น เพิ่มที่นั่ง 20 ที่" : "Investment project", text: $investmentProjectInput)
+                        HStack {
+                            Text(lm.currentLanguage == .thai ? "กระแสเงินสดเพิ่ม/เดือน" : "Monthly cash benefit")
+                            Spacer(); TextField("0", text: $monthlyCashBenefitInput).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 110)
+                        }
+                        HStack {
+                            Text(lm.currentLanguage == .thai ? "ต้นทุนเพิ่ม/เดือน" : "Monthly incremental cost")
+                            Spacer(); TextField("0", text: $monthlyIncrementalCostInput).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 110)
+                        }
+                        let payback = AccountingMath.simplePaybackMonths(
+                            investment: formCalculatedValues.subtotal,
+                            monthlyCashBenefit: Double(monthlyCashBenefitInput) ?? 0,
+                            monthlyIncrementalCost: Double(monthlyIncrementalCostInput) ?? 0
+                        )
+                        LabeledContent(lm.currentLanguage == .thai ? "คืนทุนโดยประมาณ" : "Estimated Payback") {
+                            Text(payback.map { String(format: "%.1f %@", $0, lm.currentLanguage == .thai ? "เดือน" : "months") }
+                                 ?? (lm.currentLanguage == .thai ? "ยังคำนวณไม่ได้" : "Not yet measurable"))
+                                .fontWeight(.semibold)
                         }
                     }
 
@@ -744,8 +1048,9 @@ struct ExpenseTrackerView: View {
     }
 
     private var emptyStateView: some View {
-        VStack(spacing: APSpacing.sm) {
-            Spacer().frame(height: 40)
+        ScrollView {
+        VStack(spacing: APSpacing.md) {
+            Spacer().frame(height: 24)
             Image(systemName: "book.pages")
                 .font(.system(size: 32))
                 .foregroundColor(.textSecondary.opacity(0.6))
@@ -753,15 +1058,25 @@ struct ExpenseTrackerView: View {
                 .background(Color.appSurfaceHigh)
                 .clipShape(Circle())
 
-            Text("No Expense Records Found")
-                .font(.system(size: 11, weight: .bold))
+            Text(lm.currentLanguage == .thai ? "เริ่มต้นทะเบียนค่าใช้จ่ายและสินทรัพย์" : "Start the expense and asset register")
+                .font(.headline.weight(.bold))
                 .foregroundColor(.textPrimary)
 
-            Text("Add expense records to track invoice details, suppliers, VAT and equipment purchases.")
-                .font(.system(size: 9))
+            Text(lm.currentLanguage == .thai
+                 ? "บันทึกค่าใช้จ่ายประจำ ค่าใช้จ่ายล่วงหน้า เงินมัดจำ หรือสินทรัพย์ เช่น โต๊ะ เก้าอี้ และอุปกรณ์ร้าน"
+                 : "Record operating expenses, prepayments, deposits, or assets such as tables, chairs and store equipment.")
+                .font(.subheadline)
                 .foregroundColor(.textSecondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 280)
+                .frame(maxWidth: 520)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], spacing: 8) {
+                emptyFeature("briefcase.fill", lm.currentLanguage == .thai ? "OpEx และค่าใช้จ่ายประจำ" : "OpEx & recurring")
+                emptyFeature("building.2.fill", lm.currentLanguage == .thai ? "สินทรัพย์และค่าเสื่อม" : "Assets & depreciation")
+                emptyFeature("clock.arrow.circlepath", lm.currentLanguage == .thai ? "ค่าใช้จ่ายล่วงหน้า" : "Prepaid expenses")
+                emptyFeature("chart.line.uptrend.xyaxis", lm.currentLanguage == .thai ? "วิเคราะห์ระยะคืนทุน" : "Payback analysis")
+            }
+            .frame(maxWidth: 640)
 
             Button(action: { openAddExpenseForm() }) {
                 HStack(spacing: 4) {
@@ -777,8 +1092,29 @@ struct ExpenseTrackerView: View {
                 .cornerRadius(APRadius.pill)
             }
             .buttonStyle(.plain)
+
+            Text(lm.currentLanguage == .thai
+                 ? "หลังบันทึก: ดูรายละเอียดสินทรัพย์ด้านขวา และดูผลใน P&L ที่ การเงิน & กำไร → กำไร/ขาดทุน"
+                 : "After saving: inspect the asset here, then open Finance & Profit → P&L for recognised expenses.")
+                .font(.caption)
+                .foregroundColor(.textSecondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 600)
             Spacer()
         }
+        .frame(maxWidth: .infinity)
+        }
+    }
+
+    private func emptyFeature(_ icon: String, _ title: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).foregroundColor(.appAccent).frame(width: 20)
+            Text(title).font(.caption.weight(.semibold)).foregroundColor(.textPrimary).lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Color.appSurfaceHigh)
+        .clipShape(RoundedRectangle(cornerRadius: APRadius.md, style: .continuous))
     }
 
     // MARK: - Helpers & Database Mutations
@@ -786,7 +1122,7 @@ struct ExpenseTrackerView: View {
         editingExpense = nil
         titleInput = ""
         invoiceNoInput = ""
-        categoryInput = "Raw Materials"
+        categoryInput = "Consumables"
         quantityInput = "1.0"
         unitInput = "pcs"
         unitPriceInput = "0.00"
@@ -795,6 +1131,11 @@ struct ExpenseTrackerView: View {
         paymentMethodInput = "Cash"
         statusInput = "Paid"
         isCapExInput = false
+        recognitionTypeInput = "operating_expense"; expenseNatureInput = "other"
+        isVATRecoverableInput = true; isRecurringInput = false; recurrenceFrequencyInput = "monthly"
+        serviceStartInput = Date(); serviceEndInput = Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date()
+        assetClassInput = "Furniture & Fixtures"; availableForUseInput = Date(); usefulLifeMonthsInput = "60"
+        residualValueInput = "0"; investmentProjectInput = ""; monthlyCashBenefitInput = "0"; monthlyIncrementalCostInput = "0"
         notesInput = ""
         dateInput = Date()
         showingForm = true
@@ -827,12 +1168,26 @@ struct ExpenseTrackerView: View {
         paymentMethodInput = expense.paymentMethod
         statusInput = expense.status
         isCapExInput = expense.isCapEx
+        recognitionTypeInput = AccountingMath.normalizedExpenseRecognition(expense.recognitionType, legacyIsCapEx: expense.isCapEx)
+        expenseNatureInput = expense.expenseNature
+        isVATRecoverableInput = expense.isVATRecoverable
+        isRecurringInput = expense.isRecurring; recurrenceFrequencyInput = expense.recurrenceFrequency
+        serviceStartInput = expense.serviceStartDate ?? expense.date
+        serviceEndInput = expense.serviceEndDate ?? (Calendar.current.date(byAdding: .month, value: 1, to: expense.date) ?? expense.date)
+        assetClassInput = expense.assetClass ?? "Furniture & Fixtures"
+        availableForUseInput = expense.availableForUseDate ?? expense.date
+        usefulLifeMonthsInput = String(expense.usefulLifeMonths > 0 ? expense.usefulLifeMonths : 60)
+        residualValueInput = String(format: "%.2f", expense.residualValue)
+        investmentProjectInput = expense.investmentProject ?? ""
+        monthlyCashBenefitInput = String(format: "%.2f", expense.expectedMonthlyCashBenefit)
+        monthlyIncrementalCostInput = String(format: "%.2f", expense.expectedMonthlyIncrementalCost)
         notesInput = expense.notes ?? ""
         dateInput = expense.date
         showingForm = true
     }
 
     private func saveFormExpense() {
+        guard sessionManager.can(.expensesManage) else { return }
         let calculations = formCalculatedValues
         let qty = Double(quantityInput) ?? 1.0
         let price = Double(unitPriceInput) ?? 0.0
@@ -854,7 +1209,19 @@ struct ExpenseTrackerView: View {
             editing.vatAmount = calculations.vat
             editing.paymentMethod = paymentMethodInput
             editing.status = statusInput
-            editing.isCapEx = isCapExInput
+            editing.recognitionType = recognitionTypeInput
+            editing.isCapEx = recognitionTypeInput == "fixed_asset"
+            editing.expenseNature = expenseNatureInput; editing.isVATRecoverable = isVATRecoverableInput
+            editing.isRecurring = isRecurringInput; editing.recurrenceFrequency = isRecurringInput ? recurrenceFrequencyInput : "none"
+            editing.serviceStartDate = recognitionTypeInput == "prepaid_expense" ? serviceStartInput : nil
+            editing.serviceEndDate = recognitionTypeInput == "prepaid_expense" ? serviceEndInput : nil
+            editing.assetClass = recognitionTypeInput == "fixed_asset" ? assetClassInput : nil
+            editing.availableForUseDate = recognitionTypeInput == "fixed_asset" ? availableForUseInput : nil
+            editing.usefulLifeMonths = recognitionTypeInput == "fixed_asset" ? (Int(usefulLifeMonthsInput) ?? 0) : 0
+            editing.residualValue = recognitionTypeInput == "fixed_asset" ? (Double(residualValueInput) ?? 0) : 0
+            editing.investmentProject = investmentProjectInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : investmentProjectInput
+            editing.expectedMonthlyCashBenefit = Double(monthlyCashBenefitInput) ?? 0
+            editing.expectedMonthlyIncrementalCost = Double(monthlyIncrementalCostInput) ?? 0
             editing.notes = notesInput.trimmingCharacters(in: .whitespacesAndNewlines)
             if editing.notes?.isEmpty == true { editing.notes = nil }
             editing.supplier = targetSupplier
@@ -877,9 +1244,23 @@ struct ExpenseTrackerView: View {
                 amount: calculations.total,
                 vatRate: vatRateValue,
                 vatAmount: calculations.vat,
+                isVATRecoverable: isVATRecoverableInput,
                 paymentMethod: paymentMethodInput,
                 status: statusInput,
-                isCapEx: isCapExInput,
+                isCapEx: recognitionTypeInput == "fixed_asset",
+                recognitionType: recognitionTypeInput,
+                expenseNature: expenseNatureInput,
+                isRecurring: isRecurringInput,
+                recurrenceFrequency: isRecurringInput ? recurrenceFrequencyInput : "none",
+                serviceStartDate: recognitionTypeInput == "prepaid_expense" ? serviceStartInput : nil,
+                serviceEndDate: recognitionTypeInput == "prepaid_expense" ? serviceEndInput : nil,
+                assetClass: recognitionTypeInput == "fixed_asset" ? assetClassInput : nil,
+                availableForUseDate: recognitionTypeInput == "fixed_asset" ? availableForUseInput : nil,
+                usefulLifeMonths: recognitionTypeInput == "fixed_asset" ? (Int(usefulLifeMonthsInput) ?? 0) : 0,
+                residualValue: recognitionTypeInput == "fixed_asset" ? (Double(residualValueInput) ?? 0) : 0,
+                investmentProject: investmentProjectInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : investmentProjectInput,
+                expectedMonthlyCashBenefit: Double(monthlyCashBenefitInput) ?? 0,
+                expectedMonthlyIncrementalCost: Double(monthlyIncrementalCostInput) ?? 0,
                 notes: notesInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : notesInput.trimmingCharacters(in: .whitespacesAndNewlines),
                 supplier: targetSupplier,
                 branch: activeBranch
@@ -893,6 +1274,7 @@ struct ExpenseTrackerView: View {
     }
 
     private func deleteSelectedExpense(_ expense: Expense) {
+        guard sessionManager.can(.expensesManage) else { return }
         expense.isDeleted = true
         expense.updatedAt = Date()
         expense.isSynced = false

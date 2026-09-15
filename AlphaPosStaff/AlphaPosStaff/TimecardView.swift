@@ -1,6 +1,7 @@
 import SwiftUI
 import LocalAuthentication
 import CryptoKit
+import AVFoundation
 
 // MARK: - Clock Action State Machine
 // มาตรฐานสากล: แต่ละ state มี transition ชัดเจน
@@ -32,6 +33,8 @@ struct TimecardView: View {
     @State private var showPINFallback              = false
     @State private var pinInput                     = ""
     @State private var pinError                     = ""
+    @State private var showEvidenceCamera           = false
+    @State private var evidenceError                = ""
 
     // ── Face enrollment ───────────────────────────────────────────────────
     @State private var showEnrollmentSheet          = false
@@ -105,6 +108,17 @@ struct TimecardView: View {
             enrollmentSheet
                 .presentationDetents([.fraction(0.85)])
                 .apColorScheme()
+        }
+        .fullScreenCover(isPresented: $showEvidenceCamera) {
+            TimecardEvidenceCapture(onCapture: { result in
+                switch result {
+                case .success(let data): performClockAction(evidenceJPEG: data)
+                case .failure(let error):
+                    evidenceError = error.localizedDescription
+                    clockState = .failure(error.localizedDescription)
+                }
+            }, isPresented: $showEvidenceCamera)
+            .ignoresSafeArea()
         }
         .onAppear {
             withAnimation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true)) {
@@ -245,12 +259,8 @@ struct TimecardView: View {
                         .background((isClockedIn ? Color.appTeal : Color.appSurfaceHigh).opacity(isClockedIn ? 0.12 : 0.8))
                         .clipShape(Capsule())
 
-                    // faceRegisteredAt is non-nil when a face template exists server-side
-                    if localEmployee.faceRegisteredAt != nil {
-                        Image(systemName: "faceid")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(.appAccent)
-                    }
+                    // Employee-specific face matching is intentionally unavailable.
+                    // Do not display a verified badge based only on stale enrollment metadata.
                 }
 
                 if let active = todayActiveTimecard {
@@ -317,14 +327,6 @@ struct TimecardView: View {
             .disabled(clockState == .authenticating || clockState == .uploading)
 
             HStack(spacing: APSpacing.sm) {
-                secondaryActionButton(
-                    title: localEmployee.faceRegisteredAt == nil ? "enroll_face".localized(for: appLanguage) : "update_face".localized(for: appLanguage),
-                    subtitle: localEmployee.faceRegisteredAt == nil ? "Coming soon" : "Registered",
-                    icon: localEmployee.faceRegisteredAt == nil ? "faceid" : "checkmark.shield.fill",
-                    color: .appAccent,
-                    action: { showEnrollmentSheet = true }
-                )
-
                 secondaryActionButton(
                     title: "adjustment".localized(for: appLanguage),
                     subtitle: "Request correction",
@@ -517,11 +519,11 @@ struct TimecardView: View {
             .background(Color.appBackground)
             .cornerRadius(12)
 
-            // Confirm → biometric auth
+            // Confirm → server-verified employee PIN.
             Button(action: {
                 showConfirmSheet = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    attemptBiometricAuth()
+                    requireEmployeePIN()
                 }
             }) {
                 Text("Confirm \(isClockedIn ? "Clock Out" : "Clock In")")
@@ -551,6 +553,8 @@ struct TimecardView: View {
                 .font(.system(size: 40)).foregroundColor(.appAccent)
             Text("Enter PIN to verify").font(.title3.weight(.bold)).foregroundColor(.textPrimary)
             Text("Face ID unavailable — use your PIN").font(.subheadline).foregroundColor(.textSecondary)
+            Text("After PIN verification, take a live evidence photo. Exactly one face must be visible; the photo is retained for 30 days.")
+                .font(.caption).foregroundColor(.textSecondary).multilineTextAlignment(.center)
 
             // PIN display
             HStack(spacing: 14) {
@@ -608,54 +612,27 @@ struct TimecardView: View {
         .padding(.horizontal, 28)
     }
 
-    // MARK: - Enrollment Sheet
+    // MARK: - Enrollment Sheet (Face ID — not yet implemented)
 
     private var enrollmentSheet: some View {
         VStack(spacing: 24) {
             Spacer().frame(height: 20)
-            Image(systemName: "faceid")
+            Image(systemName: "lock.shield.fill")
                 .font(.system(size: 54, weight: .ultraLight)).foregroundColor(.appAccent)
 
-            Text(localEmployee.faceRegisteredAt == nil ? "Enroll Face ID" : "Update Face ID")
+            Text("PIN Verification Active")
                 .font(.title2.weight(.bold)).foregroundColor(.textPrimary)
-            Text("Face ID enrollment is coming soon. PIN verification is active in the meantime.")
+            Text("Face ID clock-in is not available yet. PIN verification is active and provides secure timecard authentication in the meantime.")
                 .font(.subheadline).foregroundColor(.textSecondary)
                 .multilineTextAlignment(.center).padding(.horizontal, 20)
 
-            // Progress ring
-            ZStack {
-                Circle().stroke(Color.appBorderSubtle, lineWidth: 6).frame(width: 100, height: 100)
-                if isRegScanning {
-                    Circle()
-                        .trim(from: 0, to: registrationProgress)
-                        .stroke(Color.appAccent, style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                        .frame(width: 100, height: 100)
-                        .rotationEffect(.degrees(-90))
-                }
-                Image(systemName: registrationSuccess ? "checkmark" : "faceid")
-                    .font(.system(size: 36, weight: .ultraLight))
-                    .foregroundColor(registrationSuccess ? .appTeal : .appAccent)
-            }
-
-            Text(registrationSuccess ? "Enrollment complete!" : (isRegScanning ? registrationMessage : "Tap Start to begin"))
-                .font(.subheadline.weight(.medium))
-                .foregroundColor(registrationSuccess ? .appTeal : .textSecondary)
-
-            if !isRegScanning && !registrationSuccess {
-                Button(action: startFaceEnrollment) {
-                    Text("Start Enrollment")
-                        .font(.system(size: 16, weight: .semibold)).foregroundColor(.white)
-                        .frame(maxWidth: .infinity).padding(.vertical, 14)
-                        .background(Color.appAccent).cornerRadius(10)
-                }
-                .padding(.horizontal, 28)
-            }
-
-            Button(registrationSuccess ? "Done" : "Cancel") {
+            Button("OK") {
                 showEnrollmentSheet = false
-                isRegScanning = false; registrationProgress = 0; registrationSuccess = false
             }
-            .font(.system(size: 15, weight: .medium)).foregroundColor(.textSecondary)
+            .font(.system(size: 16, weight: .semibold)).foregroundColor(.white)
+            .frame(maxWidth: .infinity).padding(.vertical, 14)
+            .background(Color.appAccent).cornerRadius(10)
+            .padding(.horizontal, 28)
 
             Spacer()
         }
@@ -668,33 +645,12 @@ struct TimecardView: View {
         showConfirmSheet = true
     }
 
-    /// มาตรฐาน: Biometric → fallback PIN
-    private func attemptBiometricAuth() {
-        let context = LAContext()
-        var error: NSError?
-        clockState = .authenticating
-
-        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) {
-            // Face ID / Touch ID available
-            context.evaluatePolicy(
-                .deviceOwnerAuthenticationWithBiometrics,
-                localizedReason: "Verify identity to \(isClockedIn ? "clock out" : "clock in")"
-            ) { success, authError in
-                DispatchQueue.main.async {
-                    if success {
-                        self.performClockAction()
-                    } else {
-                        // Biometric failed → PIN fallback
-                        self.clockState = .idle
-                        self.showPINFallback = true
-                    }
-                }
-            }
-        } else {
-            // Biometrics not available → PIN fallback immediately
-            clockState = .idle
-            showPINFallback = true
-        }
+    /// Device Face ID proves only that an enrolled device owner is present; it
+    /// cannot prove which selected employee is clocking in. Require the
+    /// employee's server-verified PIN until face matching + liveness exists.
+    private func requireEmployeePIN() {
+        clockState = .idle
+        showPINFallback = true
     }
 
     private func appendPin(_ digit: String) {
@@ -708,7 +664,7 @@ struct TimecardView: View {
         // SECURITY: PIN must ALWAYS be verified server-side.
         // Never compare pinInput == stored (plaintext) — only hash comparison is allowed.
         // TimecardView.verifyPIN() is the biometric fallback path:
-        // delegate to NetworkService.verifyPin() which uses constantTimeCompare(SHA256).
+        // delegate to the server-side NetworkService.verifyPin() RPC.
         Task {
             do {
                 let verified = try await NetworkService.shared.verifyPin(
@@ -718,7 +674,21 @@ struct TimecardView: View {
                     if verified {
                         showPINFallback = false
                         pinInput = ""
-                        performClockAction()
+                        clockState = .authenticating
+                        Task { @MainActor in
+                            let status = AVCaptureDevice.authorizationStatus(for: .video)
+                            let granted: Bool
+                            if status == .notDetermined {
+                                granted = await AVCaptureDevice.requestAccess(for: .video)
+                            } else {
+                                granted = status == .authorized
+                            }
+                            if granted {
+                                showEvidenceCamera = true
+                            } else {
+                                clockState = .failure("Camera access is required to capture attendance evidence. Enable Camera in Settings, then try again.")
+                            }
+                        }
                     } else {
                         pinError = "pin_error".localized(for: appLanguage)
                         pinInput = ""
@@ -740,7 +710,15 @@ struct TimecardView: View {
         return digest.compactMap { String(format: "%02x", $0) }.joined()
     }
 
-    private func performClockAction() {
+    /// Combine Staff shift `yyyy-MM-dd` + `HH:mm` into a Date (device local calendar).
+    private static func combineShiftDate(_ dateStr: String, time: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.date(from: "\(dateStr) \(time)")
+    }
+
+    private func performClockAction(evidenceJPEG: Data) {
         clockState = .uploading
         let now = Date()
         let confidence = dynamicConfidence()
@@ -748,15 +726,29 @@ struct TimecardView: View {
         Task {
             do {
                 if !isClockedIn {
-                    // WFM Standard: Fetch today's scheduled shift to auto-match and link
+                    // WFM: match today's scheduled shift + late grace (10 min)
                     let todayShift = try? await NetworkService.shared.fetchTodayActiveShift(employeeId: localEmployee.id)
-                    let hasShift = todayShift != nil
-                    let status = hasShift ? "approved" : "pending_audit"
-                    let notes = hasShift ? "Clock-in via AlphaPosStaff" : "Unscheduled clock-in via AlphaPosStaff (No shift found)"
-                    
-                    // ── Clock In ──────────────────────────────────────────
+                    let grace: TimeInterval = 10 * 60
+                    var status = "pending_audit"
+                    var notes = "Unscheduled clock-in via AlphaPosStaff (No shift found)"
+                    if let shift = todayShift,
+                       let scheduledStart = Self.combineShiftDate(shift.date, time: shift.startTime) {
+                        let lateSecs = now.timeIntervalSince(scheduledStart)
+                        if lateSecs > grace {
+                            let lateMin = Int(lateSecs / 60)
+                            status = "pending_audit"
+                            notes = "Late \(lateMin) min vs schedule · Clock-in via AlphaPosStaff"
+                        } else {
+                            status = "approved"
+                            notes = "Clock-in matched scheduled shift · AlphaPosStaff"
+                        }
+                    }
+
+                    let timecardId = UUID().uuidString
+                    let evidencePath = try await NetworkService.shared.uploadTimecardEvidence(
+                        evidenceJPEG, employeeId: localEmployee.id, timecardId: timecardId, event: "clock_in")
                     let tc = Timecard(
-                        id: UUID().uuidString,
+                        id: timecardId,
                         employeeId: localEmployee.id,
                         employeeName: "\(localEmployee.firstName) \(localEmployee.lastName)",
                         clockIn: now.timeIntervalSince1970,
@@ -767,6 +759,8 @@ struct TimecardView: View {
                         notes: notes,
                         clockInFaceConfidence: confidence,
                         clockOutFaceConfidence: nil,
+                        clockInSelfieUrl: evidencePath,
+                        clockOutSelfieUrl: nil,
                         shiftId: todayShift?.id
                     )
                     _ = try await NetworkService.shared.uploadTimecard(timecard: tc)
@@ -776,7 +770,28 @@ struct TimecardView: View {
                         APHaptic.trigger()
                     }
                 } else if let active = todayActiveTimecard {
-                    // ── Clock Out ─────────────────────────────────────────
+                    // Clock-out: OT after scheduled end + early-out review
+                    let todayShift = try? await NetworkService.shared.fetchTodayActiveShift(employeeId: localEmployee.id)
+                    let grace: TimeInterval = 10 * 60
+                    var otMinutes = 0
+                    var status = "approved"
+                    var notes = "Clock-out via AlphaPosStaff"
+                    if let shift = todayShift,
+                       let scheduledEnd = Self.combineShiftDate(shift.date, time: shift.endTime) {
+                        if now > scheduledEnd {
+                            otMinutes = Int(now.timeIntervalSince(scheduledEnd) / 60)
+                            if otMinutes > 0 { notes += " · OT \(otMinutes) min after schedule" }
+                        } else if now < scheduledEnd.addingTimeInterval(-grace) {
+                            let early = Int(scheduledEnd.timeIntervalSince(now) / 60)
+                            status = "pending_audit"
+                            notes += " · Early out \(early) min"
+                        }
+                    } else if active.shiftId == nil {
+                        status = "pending_audit"
+                    }
+
+                    let evidencePath = try await NetworkService.shared.uploadTimecardEvidence(
+                        evidenceJPEG, employeeId: localEmployee.id, timecardId: active.id, event: "clock_out")
                     let tc = Timecard(
                         id: active.id,
                         employeeId: localEmployee.id,
@@ -784,12 +799,14 @@ struct TimecardView: View {
                         clockIn: active.clockIn,
                         clockOut: now.timeIntervalSince1970,
                         breakDurationMinutes: 0,
-                        overtimeMinutes: 0,
-                        status: "approved",
-                        notes: "Clock-out via AlphaPosStaff",
+                        overtimeMinutes: otMinutes,
+                        status: status,
+                        notes: notes,
                         clockInFaceConfidence: active.clockInFaceConfidence,
                         clockOutFaceConfidence: confidence,
-                        shiftId: active.shiftId
+                        clockInSelfieUrl: active.clockInSelfieUrl,
+                        clockOutSelfieUrl: evidencePath,
+                        shiftId: active.shiftId ?? todayShift?.id
                     )
                     _ = try await NetworkService.shared.uploadTimecard(timecard: tc)
                     let duration = Int(now.timeIntervalSince1970 - active.clockIn) / 60

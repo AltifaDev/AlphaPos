@@ -11,16 +11,19 @@ import Foundation
 import Observation
 import UIKit
 import CryptoKit
+import OSLog
 
 enum NetworkError: Error, LocalizedError {
     case offline
     case serverError(String)
     case invalidResponse
+    case conflict(String)
     var errorDescription: String? {
         switch self {
         case .offline: return "No internet connection detected."
         case .serverError(let msg): return "Server returned error: \(msg)"
         case .invalidResponse: return "Received invalid response from server."
+        case .conflict(let msg): return "Sync conflict: \(msg)"
         }
     }
 }
@@ -34,10 +37,11 @@ struct SyncResponse: Codable {
 @Observable
 final class NetworkService {
     static let shared = NetworkService()
-    
+    private static let performanceLogger = Logger(subsystem: "com.alphapos.staff", category: "NetworkPerformance")
+
     var baseURL: URL { AppConfig.supabaseRestURL }
     var anonKey: String { AppConfig.supabaseAnonKey }
-    
+
     @ObservationIgnored
     lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
@@ -48,6 +52,7 @@ final class NetworkService {
     
     // Global lists
     var tables: [RestaurantTable] = []
+    var diningAreas: [DiningAreaStaff] = []
 
     var menuItems: [MenuItem] = []
     var serviceRequests: [ServiceRequest] = []
@@ -56,9 +61,16 @@ final class NetworkService {
     var unreadChatCount = 0
     
     var activeAlertsCount: Int {
-        let pendingRequests = serviceRequests.filter { $0.status == "pending" }.count
-        let preparingOrReadyOrders = orders.filter { $0.status == "preparing" || $0.status == "ready" }.count
-        return pendingRequests + preparingOrReadyOrders
+        let pendingRequests = serviceRequests.filter {
+            $0.status == "pending"
+                && StaffNotificationPolicy.isCurrentBusinessDay(timestamp: $0.createdAt)
+        }.count
+        let activeOrders = orders.filter {
+            StaffNotificationPolicy.isCurrentBusinessDay(timestamp: $0.createdAt)
+                && ($0.isAwaitingStaffApproval
+                    || ["preparing", "cooking", "ready"].contains($0.status.lowercased()))
+        }.count
+        return pendingRequests + activeOrders
     }
     
     // Status states
@@ -67,11 +79,25 @@ final class NetworkService {
     
     /// Convenience computed property: true when connected to backend
     var isOnline: Bool { !connectionError }
+    var isRealtimeConnected: Bool { realtimeJoinSucceeded }
+    var lastSyncDisplayDate: Date? { lastSuccessfulSyncAt }
     var kitchenWorkflowRequired = true
     var promptPayNumber = ""
     var isTableSystemEnabled = true
     var isWebOrderingEnabled = true
+    var merchantName = ""
+    var merchantPhone = ""
+    var merchantAddress = ""
+    var merchantTaxId = ""
+    var merchantReceiptHeader = ""
+    var merchantReceiptFooter = ""
+    var taxRate: Double = 0.0
+    var taxType = "inclusive"
+    var serviceChargeRate: Double = 0.0
+    var currency = "THB"
+    var currencySymbol = "฿"
     private var lastSyncTime: Date = Date(timeIntervalSince1970: 0)
+    private var lastSuccessfulSyncAt: Date?
     
     @ObservationIgnored
     var notifiedRequestIds = Set<String>()
@@ -83,6 +109,8 @@ final class NetworkService {
     private var notifiedOrderKeysHistory: [String] = []
     @ObservationIgnored
     var notifiedTableStatuses: [String: String] = [:]
+    @ObservationIgnored
+    var realtimeJoinSucceeded = false
     
     func markOrderAsNotified(key: String) {
         if !self.notifiedOrderIds.contains(key) {
@@ -115,34 +143,45 @@ final class NetworkService {
     }
     
     private var isFirstSync = true
+    private static let debugLogQueue = DispatchQueue(label: "com.alphapos.staff.debug-log", qos: .utility)
     
     private func writeDebugLog(_ message: String) {
-        guard let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-        let logURL = docsURL.appendingPathComponent("debug_sync.log")
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        let timestamp = formatter.string(from: Date())
-        let line = "[\(timestamp)] \(message)\n"
-        
-        if let data = line.data(using: .utf8) {
+        #if DEBUG
+        Self.debugLogQueue.async {
+            guard let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+            let logURL = docsURL.appendingPathComponent("debug_sync.log")
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            let line = "[\(formatter.string(from: Date()))] \(message)\n"
+            guard let data = line.data(using: .utf8) else { return }
             if FileManager.default.fileExists(atPath: logURL.path) {
                 if let fileHandle = try? FileHandle(forWritingTo: logURL) {
-                    fileHandle.seekToEndOfFile()
-                    fileHandle.write(data)
-                    fileHandle.closeFile()
+                    try? fileHandle.seekToEnd()
+                    try? fileHandle.write(contentsOf: data)
+                    try? fileHandle.close()
                 }
             } else {
                 try? line.write(to: logURL, atomically: true, encoding: .utf8)
             }
         }
+        #endif
     }
     
     @ObservationIgnored
     private var activeSyncTask: Task<Void, Never>?
     
     var activeMerchantId: String {
-        let raw = UserDefaults.standard.string(forKey: "active_merchant_id") ?? AppConfig.defaultMerchantId
-        return raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? AppConfig.defaultMerchantId.lowercased() : raw.lowercased()
+        (UserDefaults.standard.string(forKey: "active_merchant_id") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    var authorizationToken: String {
+        let auth = MerchantAuthManager.shared
+        guard auth.isAuthenticated,
+              auth.merchantId?.lowercased() == activeMerchantId,
+              let token = auth.currentToken else { return anonKey }
+        return token
     }
     
     private init() {
@@ -159,15 +198,21 @@ final class NetworkService {
             #if DEBUG
             print("NetworkService: App returned to foreground. Reconnecting WebSocket...")
             #endif
-            
+
             // Cancel existing WebSocket task
             self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
             self.webSocketTask = nil
-            
+            self.realtimeJoinSucceeded = false
+            self.heartbeatTimer?.invalidate()
+            self.heartbeatTimer = nil
+            self.pollingTimer?.invalidate()
+            self.pollingTimer = nil
+            // Reset reconnect backoff so foreground gets immediate reconnect
+            self.reconnectAttempt = 0
+
             // Reconnect WebSocket and sync REST data
             self.startRealtimeSync()
             Task {
-                // Single sync on foreground resume
                 await self.refreshAll()
             }
         }
@@ -187,6 +232,7 @@ final class NetworkService {
             self.pollingTimer = nil
             self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
             self.webSocketTask = nil
+            self.realtimeJoinSucceeded = false
         }
         
         // Observe JWT token refresh — reconnect WebSocket with the new token
@@ -201,34 +247,12 @@ final class NetworkService {
             #endif
             self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
             self.webSocketTask = nil
+            self.realtimeJoinSucceeded = false
             self.heartbeatTimer?.invalidate()
             self.heartbeatTimer = nil
             self.startRealtimeSync()
-            Task { try? await self.registerSavedPushToken() }
+            Task { try? await self.upsertPushDevice() }
         }
-    }
-
-    func registerPushDevice(token: String) async throws {
-        UserDefaults.standard.set(token, forKey: "apns_device_token")
-        try await registerSavedPushToken()
-    }
-
-    private func registerSavedPushToken() async throws {
-        guard let token = UserDefaults.standard.string(forKey: "apns_device_token"), !token.isEmpty else { return }
-        let payload: [String: Any] = [
-            "merchant_id": activeMerchantId,
-            "device_token": token,
-            "app_id": "staff",
-            "platform": "ios",
-            "is_active": true,
-            "updated_at": ISO8601DateFormatter().string(from: Date())
-        ]
-        _ = try await sendSupabaseRequest(
-            method: "POST",
-            endpoint: "push_devices",
-            queryItems: [URLQueryItem(name: "on_conflict", value: "device_token")],
-            payload: payload
-        )
     }
     
     // Ping/Check connection to Supabase menu_items REST endpoint
@@ -236,7 +260,7 @@ final class NetworkService {
         var req = URLRequest(url: baseURL.appendingPathComponent("menu_items"))
         req.httpMethod = "HEAD"
         // Use merchant JWT if available, fall back to anon key
-        let token = MerchantAuthManager.shared.currentToken ?? anonKey
+        let token = authorizationToken
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.timeoutInterval = 2.0
@@ -252,10 +276,38 @@ final class NetworkService {
     }
     
     // General request sender that performs actual HTTP queries to Supabase
-    func sendSupabaseRequest(method: String, endpoint: String, queryItems: [URLQueryItem]? = nil, payload: Any? = nil) async throws -> Data {
+    func sendSupabaseRequest(method: String, endpoint: String, queryItems: [URLQueryItem]? = nil, payload: Any? = nil, timeoutInterval: TimeInterval = 15.0) async throws -> Data {
+        let requestStartedAt = Date()
+        let requestId = UUID().uuidString.lowercased()
+        let auth = MerchantAuthManager.shared
+        let tokenRefreshStartedAt = Date()
+        await auth.refreshTokenIfNeeded()
+        let tokenRefreshMilliseconds = Int(Date().timeIntervalSince(tokenRefreshStartedAt) * 1_000)
+        if endpoint == "rpc/verify_staff_pin" {
+            Self.performanceLogger.info("staff_auth token_refresh_ms=\(tokenRefreshMilliseconds, privacy: .public) request_id=\(requestId, privacy: .public)")
+        }
+        guard auth.isAuthenticated,
+              auth.merchantId?.lowercased() == activeMerchantId else {
+            throw AuthError.tokenExpired
+        }
+
+        var scopedQueryItems = queryItems ?? []
+        let branchScopedTables: Set<String> = [
+            "orders", "order_items", "payments", "restaurant_tables", "table_sessions",
+            "service_requests", "employees", "employee_shifts", "employee_breaks",
+            "chat_channels", "chat_messages", "checkout_operations", "timecards",
+            "tips", "floor_plan_images", "dining_areas", "table_layout_presets"
+        ]
+        if method != "POST",
+           branchScopedTables.contains(endpoint),
+           !StaffSessionContext.branchId.isEmpty,
+           !scopedQueryItems.contains(where: { $0.name == "branch_id" }) {
+            scopedQueryItems.append(URLQueryItem(name: "branch_id", value: "eq.\(StaffSessionContext.branchId)"))
+        }
+
         var url = baseURL.appendingPathComponent(endpoint)
-        if let queryItems = queryItems, var components = URLComponents(url: url, resolvingAgainstBaseURL: true) {
-            components.queryItems = queryItems
+        if !scopedQueryItems.isEmpty, var components = URLComponents(url: url, resolvingAgainstBaseURL: true) {
+            components.queryItems = scopedQueryItems
             if let newUrl = components.url {
                 url = newUrl
             }
@@ -266,24 +318,29 @@ final class NetworkService {
         // Use merchant JWT if available — the JWT contains a `merchant_id` claim
         // that PostgREST extracts via `current_setting('request.jwt.claims')`,
         // enabling RLS policies to isolate data per merchant automatically.
-        let token = MerchantAuthManager.shared.currentToken ?? anonKey
+        let token = authorizationToken
         request.setValue(anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(requestId, forHTTPHeaderField: "x-request-id")
+        request.setValue("AlphaPosStaff/1 order-contract/1", forHTTPHeaderField: "x-client-info")
         
         // Add x-merchant-id header so RLS get_active_merchant_id() functions can evaluate correctly
         // when the JWT token does not explicitly contain the merchant_id claim (like anonKey).
-        let merchantId = activeMerchantId.isEmpty ? AppConfig.defaultMerchantId : activeMerchantId
-        request.setValue(merchantId, forHTTPHeaderField: "x-merchant-id")
+        if !activeMerchantId.isEmpty {
+            request.setValue(activeMerchantId, forHTTPHeaderField: "x-merchant-id")
+        }
         
         // Joined queries (select with nested relations like order_items(*)) can be
         // slower than simple selects — 15 s gives enough headroom on slow WiFi/3G
         // while still catching genuine outages within a reasonable window.
-        request.timeoutInterval = 15.0
+        request.timeoutInterval = timeoutInterval
         
         // Enable upsert for POST with on_conflict parameter
         if method == "POST" {
             request.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
+        } else if method == "PATCH" {
+            request.setValue("return=representation", forHTTPHeaderField: "Prefer")
         }
         
         if let payload = payload {
@@ -291,39 +348,112 @@ final class NetworkService {
             request.httpBody = jsonData
         }
         
-        let (data, response) = try await session.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-            let errorMsg = String(data: data, encoding: .utf8) ?? "HTTP Request failed"
-            if errorMsg.contains("PGRST301") {
-                #if DEBUG
-                print("NetworkService: Detected JWT decryption error (PGRST301). Clearing token...")
-                #endif
-                MerchantAuthManager.shared.logout()
+        var (data, response) = try await dataWithTransientRetry(for: request)
+        if let http = response as? HTTPURLResponse,
+           http.statusCode == 401 || http.statusCode == 403 {
+            let forcedRefreshStartedAt = Date()
+            await MerchantAuthManager.shared.refreshTokenIfNeeded(force: true)
+            if endpoint == "rpc/verify_staff_pin" {
+                let forcedRefreshMilliseconds = Int(Date().timeIntervalSince(forcedRefreshStartedAt) * 1_000)
+                Self.performanceLogger.info("staff_auth forced_token_refresh_ms=\(forcedRefreshMilliseconds, privacy: .public) request_id=\(requestId, privacy: .public)")
             }
-            throw NetworkError.serverError(errorMsg)
+            if MerchantAuthManager.shared.isAuthenticated {
+                request.setValue("Bearer \(authorizationToken)", forHTTPHeaderField: "Authorization")
+                (data, response) = try await dataWithTransientRetry(for: request)
+            }
         }
-        
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            NetworkDiagnostics.shared.record(NetworkDiagnosticEvent(
+                id: UUID(), requestId: requestId, method: method, endpoint: endpoint,
+                statusCode: nil, durationMilliseconds: Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                occurredAt: Date(), error: "Invalid HTTP response", retryable: true
+            ))
+            throw NetworkError.invalidResponse
+        }
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let message = String(data: data, encoding: .utf8) ?? "HTTP Request failed"
+            let structuredError = StaffHTTPError(
+                statusCode: httpResponse.statusCode,
+                requestId: requestId,
+                endpoint: endpoint,
+                serverMessage: message
+            )
+            NetworkDiagnostics.shared.record(NetworkDiagnosticEvent(
+                id: UUID(), requestId: requestId, method: method, endpoint: endpoint,
+                statusCode: httpResponse.statusCode,
+                durationMilliseconds: Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                occurredAt: Date(), error: structuredError.localizedDescription, retryable: structuredError.isRetryable
+            ))
+            throw structuredError
+        }
+
+        NetworkDiagnostics.shared.record(NetworkDiagnosticEvent(
+            id: UUID(), requestId: requestId, method: method, endpoint: endpoint,
+            statusCode: httpResponse.statusCode,
+            durationMilliseconds: Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+            occurredAt: Date(), error: nil, retryable: false
+        ))
         return data
+    }
+
+    /// Retry only safe reads and only transient transport/server failures.
+    /// HTTP 400/401/403/409 are contract/auth/conflict outcomes and are never
+    /// repeated blindly. The same request ID is retained across attempts.
+    private func dataWithTransientRetry(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let safeToRetry = request.httpMethod == "GET"
+        let maximumAttempts = safeToRetry ? 3 : 1
+        var attempt = 1
+        while true {
+            do {
+                let result = try await session.data(for: request)
+                if let response = result.1 as? HTTPURLResponse,
+                   safeToRetry,
+                   attempt < maximumAttempts,
+                   response.statusCode == 408 || response.statusCode == 429 || response.statusCode >= 500 {
+                    let delay = UInt64(250 * (1 << (attempt - 1)) + Int.random(in: 0...150))
+                    try await Task.sleep(nanoseconds: delay * 1_000_000)
+                    attempt += 1
+                    continue
+                }
+                return result
+            } catch {
+                guard safeToRetry, attempt < maximumAttempts else { throw error }
+                let delay = UInt64(250 * (1 << (attempt - 1)) + Int.random(in: 0...150))
+                try await Task.sleep(nanoseconds: delay * 1_000_000)
+                attempt += 1
+            }
+        }
+    }
+
+    /// Shared hub health (same RPC as POS SyncHealthView + web /v1/sync/status).
+    func fetchSyncHealth() async throws -> [String: Any] {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id")
+            ?? UserDefaults.standard.string(forKey: "merchant_id")
+            ?? ""
+        var payload: [String: Any] = [:]
+        if !merchantId.isEmpty {
+            payload["p_merchant_id"] = merchantId.lowercased()
+        }
+        let data = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "rpc/get_sync_health",
+            payload: payload
+        )
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let ok = obj["ok"] as? Bool, ok == false {
+                let message = (obj["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw NetworkError.serverError(message?.isEmpty == false ? message! : "get_sync_health failed")
+            }
+            return obj
+        }
+        throw NetworkError.invalidResponse
     }
     
     func refreshAll() async {
-        // Auto-authenticate via JWT if not already authenticated in development
         if !MerchantAuthManager.shared.isAuthenticated {
-            #if DEBUG
-            print("NetworkService: Not authenticated via JWT. Performing auto-authentication...")
-            #endif
-            let merchantId = activeMerchantId.isEmpty ? AppConfig.defaultMerchantId : activeMerchantId
-            do {
-                try await MerchantAuthManager.shared.authenticate(
-                    merchantId: merchantId,
-                    deviceSecret: AppConfig.defaultDeviceSecret
-                )
-            } catch {
-                #if DEBUG
-                print("NetworkService: Auto-authentication failed: \(error.localizedDescription)")
-                #endif
-            }
+            await MerchantAuthManager.shared.refreshTokenIfNeeded()
+            guard MerchantAuthManager.shared.isAuthenticated else { return }
         }
 
         if let existingTask = activeSyncTask {
@@ -331,7 +461,9 @@ final class NetworkService {
             return
         }
         
-        let task = Task { @MainActor in
+        // Do not pin networking, JSON parsing, diffing, and cache preparation to
+        // the UI executor. UI state is committed in the MainActor block below.
+        let task = Task {
             await performRefreshAll()
         }
         activeSyncTask = task
@@ -375,25 +507,40 @@ final class NetworkService {
             
             // Perform concurrent requests to Supabase
             async let fetchedTables = fetchTables()
+            async let fetchedDiningAreas = fetchDiningAreas()
             async let fetchedRequests = fetchRequests()
             async let fetchedOrders = fetchAllActiveOrders()
             async let fetchedWorkflow = fetchMerchantSettings()
             async let fetchedFloorPlans = fetchFloorPlanImages()
             async let fetchedUnreadChat = fetchTotalUnreadChatCount()
             
-            // Await all concurrent fetches (orders first for notification priority)
-            let ordersRes = try await fetchedOrders
+            // Tables are the critical path for online/offline state. Optional
+            // endpoints keep their last known value so one slow feature does not
+            // make the whole table screen look offline.
             let tablesRes = try await fetchedTables
-            let requestsRes = try await fetchedRequests
-            let floorPlansRes = try await fetchedFloorPlans
+            let diningAreasRes = (try? await fetchedDiningAreas) ?? self.diningAreas
+            let ordersRes = (try? await fetchedOrders) ?? self.orders
+            let requestsRes = (try? await fetchedRequests) ?? self.serviceRequests
+            let floorPlansRes = (try? await fetchedFloorPlans) ?? self.floorPlanImages
             _ = await fetchedUnreadChat
-            let settingsRes = (try? await fetchedWorkflow) ?? (true, "", true, true)
+            let settingsRes = (try? await fetchedWorkflow) ?? MerchantSettingsPayload()
             
             await MainActor.run {
-                self.kitchenWorkflowRequired = settingsRes.0
-                self.promptPayNumber = settingsRes.1
-                self.isTableSystemEnabled = settingsRes.2
-                self.isWebOrderingEnabled = settingsRes.3
+                self.kitchenWorkflowRequired = settingsRes.kitchenWorkflowRequired
+                self.promptPayNumber = settingsRes.promptPayNumber
+                self.isTableSystemEnabled = settingsRes.isTableSystemEnabled
+                self.isWebOrderingEnabled = settingsRes.isWebOrderingEnabled
+                self.merchantName = settingsRes.merchantName
+                self.merchantPhone = settingsRes.phone
+                self.merchantAddress = settingsRes.address
+                self.merchantTaxId = settingsRes.taxId
+                self.merchantReceiptHeader = settingsRes.receiptHeader
+                self.merchantReceiptFooter = settingsRes.receiptFooter
+                self.taxRate = settingsRes.taxRate
+                self.taxType = settingsRes.taxType
+                self.serviceChargeRate = settingsRes.serviceChargeRate
+                self.currency = settingsRes.currency
+                self.currencySymbol = (settingsRes.currency == "THB" || settingsRes.currency.isEmpty) ? "฿" : settingsRes.currency
                 let oldTables = self.tables
                 let oldRequests = self.serviceRequests
                 let oldOrders = self.orders
@@ -405,10 +552,9 @@ final class NetworkService {
                 if self.tables != tablesRes {
                     self.tables = tablesRes
                 }
-                // Cache tables and orders for offline use
-                OfflineCache.shared.cacheTables(tablesRes)
-                OfflineCache.shared.cacheOrders(ordersRes)
-
+                if self.diningAreas != diningAreasRes {
+                    self.diningAreas = diningAreasRes
+                }
                 if self.floorPlanImages != floorPlansRes {
                     self.floorPlanImages = floorPlansRes
                 }
@@ -419,6 +565,7 @@ final class NetworkService {
                     self.orders = ordersRes
                 }
                 self.connectionError = false
+                self.lastSuccessfulSyncAt = Date()
                 // NWPathMonitor owns isOffline — don't override it here
                 
                 // Sync offline queue if we just came back online
@@ -439,8 +586,14 @@ final class NetworkService {
                     self.writeDebugLog("notificationsEnabled: \(notificationsEnabled)")
                     if notificationsEnabled {
                         // 1. Service Requests Diff
-                        let oldPendingIds = Set(oldRequests.filter { $0.status == "pending" }.map { $0.id })
-                        let newPendingRequests = requestsRes.filter { $0.status == "pending" }
+                        let oldPendingIds = Set(oldRequests.filter {
+                            $0.status == "pending"
+                                && StaffNotificationPolicy.isCurrentBusinessDay(timestamp: $0.createdAt)
+                        }.map { $0.id })
+                        let newPendingRequests = requestsRes.filter {
+                            $0.status == "pending"
+                                && StaffNotificationPolicy.isCurrentBusinessDay(timestamp: $0.createdAt)
+                        }
                         for req in newPendingRequests {
                             if !oldPendingIds.contains(req.id) && !self.notifiedRequestIds.contains(req.id) {
                                 self.markRequestAsNotified(requestId: req.id)
@@ -492,13 +645,15 @@ final class NetworkService {
                                 }
                             } else {
                                 self.writeDebugLog("Order \(order.orderNumber) is NEW (not in oldOrders)!")
-                                if statusLower == "preparing" || statusLower == "ready" {
-                                    let notificationKey = "\(order.id)-\(statusLower)"
+                                if order.isAwaitingStaffApproval || statusLower == "preparing" || statusLower == "ready" {
+                                    let notificationKey = "\(order.id)-\(statusLower)-\(order.orderSource)"
                                     if !self.notifiedOrderIds.contains(notificationKey) {
                                         self.writeDebugLog("Triggering new/preparing notification for order \(order.orderNumber)")
                                         self.markOrderAsNotified(key: notificationKey)
                                         let itemsSummary = order.items.map { "\($0.quantity)x \($0.name)" }.joined(separator: ", ")
-                                        let title = statusLower == "ready" ? "🍳 Order \(order.orderNumber) Ready!" : "📝 New Order \(order.orderNumber)"
+                                        let title = order.isAwaitingStaffApproval
+                                            ? "🌐 Web Order \(order.orderNumber) — อนุมัติด่วน!"
+                                            : (statusLower == "ready" ? "🍳 Order \(order.orderNumber) Ready!" : "📝 New Order \(order.orderNumber)")
                                         let body = "Table \(order.tableNumber): \(itemsSummary)"
                                         NotificationManager.shared.notify(title: title, body: body, type: .order, deduplicationKey: notificationKey, userInfo: ["table_number": order.tableNumber, "type": "order", "order_id": order.id])
                                     } else {
@@ -517,6 +672,10 @@ final class NetworkService {
                 // Initialize WebSocket Realtime task
                 self.startRealtimeSync()
             }
+
+            // OfflineCache schedules encoding and disk I/O on a utility queue.
+            await OfflineCache.shared.cacheTables(tablesRes)
+            await OfflineCache.shared.cacheOrders(ordersRes)
         } catch {
             await MainActor.run {
                 self.connectionError = true

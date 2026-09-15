@@ -10,6 +10,8 @@ struct RecipeBuilderSheet: View {
     
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \InventoryItem.name) private var allIngredients: [InventoryItem]
+    @Query(sort: \PrepRecipe.name) private var prepRecipes: [PrepRecipe]
+    @Query(sort: \Recipe.updatedAt) private var allRecipes: [Recipe]
     
     @State private var viewModel = InventoryViewModel()
     @State private var trackingMode = "not_tracked" // "not_tracked", "finished_good", "recipe_based"
@@ -27,6 +29,15 @@ struct RecipeBuilderSheet: View {
     
     @State private var recipeLines: [RecipeLineInput] = []
     @State private var showingAddIngredient = false
+
+    /// Query recipes directly instead of relying on `menuItem.recipes`.
+    /// Offline stores imported from another device can contain valid foreign
+    /// keys before SwiftData has rebuilt the inverse relationship collection.
+    private var currentRecipes: [Recipe] {
+        allRecipes.filter {
+            !$0.isDeleted && $0.menuItem?.id == menuItem.id
+        }
+    }
     
     // Costing calculations
     private var totalCost: Double {
@@ -41,7 +52,7 @@ struct RecipeBuilderSheet: View {
             return 0.0
         case "recipe_based":
             return recipeLines.reduce(0.0) { sum, line in
-                sum + (line.ingredient.costPrice * line.qty)
+                sum + lineCost(line)
             }
         default:
             return 0.0
@@ -107,13 +118,15 @@ struct RecipeBuilderSheet: View {
     
     private var itemOverviewCard: some View {
         HStack(spacing: APSpacing.md) {
-            ZStack {
-                RoundedRectangle(cornerRadius: APRadius.sm)
-                    .fill(Color.appSurfaceHigh)
-                    .frame(width: 50, height: 50)
-                Image(systemName: "tag.fill")
-                    .foregroundColor(.appAccent)
-            }
+            RemoteImageView(
+                imageUrl: menuItem.imageUrl,
+                imageData: menuItem.imageData,
+                fallbackColor: Color.appSurfaceHigh,
+                fallbackIcon: "fork.knife",
+                iconSize: 18
+            )
+            .frame(width: 50, height: 50)
+            .clipShape(RoundedRectangle(cornerRadius: APRadius.sm))
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(menuItem.name)
@@ -149,6 +162,17 @@ struct RecipeBuilderSheet: View {
                 Text("stock_mode_recipe_based".t).tag("recipe_based")
             }
             .pickerStyle(.segmented)
+
+            Text({
+                switch trackingMode {
+                case "finished_good": return "stock_mode_finished_good_help".t
+                case "recipe_based": return "stock_mode_recipe_based_help".t
+                default: return "stock_mode_not_tracked_help".t
+                }
+            }())
+                .font(.caption2)
+                .foregroundColor(.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(APSpacing.md)
         .apCard()
@@ -217,13 +241,24 @@ struct RecipeBuilderSheet: View {
                     ForEach($recipeLines) { $line in
                         HStack(spacing: APSpacing.sm) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(line.ingredient.name)
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(.textPrimary)
-                                Text("Cost: ฿\(String(format: "%.2f", line.ingredient.costPrice))/\(line.ingredient.unit)")
-                                    .font(.caption2)
-                                    .foregroundColor(.textSecondary)
+                                HStack {
+                                    Text(line.ingredient.name)
+                                        .font(.subheadline).fontWeight(.medium).foregroundColor(.textPrimary)
+                                    if let prep = prepRecipe(for: line.ingredient) {
+                                        Text(LocalizationManager.shared.currentLanguage == .thai ? "สูตรเตรียม" : "Prep recipe")
+                                            .font(.caption2.weight(.bold)).foregroundColor(.appAmber)
+                                            .padding(.horizontal, 5).padding(.vertical, 2)
+                                            .background(Color.appAmber.opacity(0.12)).clipShape(Capsule())
+                                        Text("\(prep.components.filter { !$0.isDeleted }.count) "
+                                             + (LocalizationManager.shared.currentLanguage == .thai ? "ส่วนผสมย่อย" : "nested ingredients"))
+                                            .font(.caption2).foregroundColor(.textSecondary)
+                                    } else {
+                                        Text(LocalizationManager.shared.currentLanguage == .thai ? "วัตถุดิบ/บรรจุภัณฑ์" : "Raw/package")
+                                            .font(.caption2).foregroundColor(.textSecondary)
+                                    }
+                                }
+                                Text(String(format: "Cost: ฿%.4f/%@", effectiveUnitCost(line.ingredient), line.ingredient.unit))
+                                    .font(.caption2).foregroundColor(.textSecondary)
                             }
                             
                             Spacer()
@@ -386,24 +421,22 @@ struct RecipeBuilderSheet: View {
     
     private var ingredientSelectionSheet: some View {
         NavigationStack {
-            List(allIngredients) { ingredient in
-                Button(action: { addIngredient(ingredient) }) {
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(ingredient.name)
-                                .font(.subheadline)
-                                .foregroundColor(.textPrimary)
-                            Text("SKU: \(ingredient.sku ?? "N/A")  ·  Unit: \(ingredient.unit)")
-                                .font(.caption2)
-                                .foregroundColor(.textSecondary)
-                        }
-                        Spacer()
-                        Image(systemName: "plus.circle")
-                            .foregroundColor(.appAccent)
-                    }
+            List {
+              let prepOutputs = allIngredients.filter { prepRecipe(for: $0) != nil }
+              if !prepOutputs.isEmpty {
+                Section(LocalizationManager.shared.currentLanguage == .thai ? "สูตรย่อย — แตกวัตถุดิบเมื่อตัดขาย" : "Nested recipes — expand ingredients on sale") {
+                  ForEach(prepOutputs) { ingredient in
+                    ingredientSelectionRow(ingredient, isPrep: true)
+                  }
                 }
+              }
+              Section(LocalizationManager.shared.currentLanguage == .thai ? "วัตถุดิบและบรรจุภัณฑ์" : "Raw ingredients and packaging") {
+                ForEach(allIngredients.filter { prepRecipe(for: $0) == nil }) { ingredient in
+                    ingredientSelectionRow(ingredient, isPrep: false)
+                }
+              }
             }
-            .navigationTitle("select_raw_ingredient_title".t)
+            .navigationTitle(LocalizationManager.shared.currentLanguage == .thai ? "เพิ่มองค์ประกอบสินค้าขาย" : "Add sale-item component")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -413,20 +446,42 @@ struct RecipeBuilderSheet: View {
         }
         .apColorScheme()
     }
+
+    private func ingredientSelectionRow(_ ingredient: InventoryItem, isPrep: Bool) -> some View {
+        Button(action: { addIngredient(ingredient) }) {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(ingredient.name)
+                                .font(.subheadline)
+                                .foregroundColor(.textPrimary)
+                            Text(isPrep
+                                 ? (LocalizationManager.shared.currentLanguage == .thai
+                                    ? "ผลิตเป็น Batch · ไม่แตกส่วนผสมซ้ำตอนขาย"
+                                    : "Batch-produced · nested ingredients are not deducted again at sale")
+                                 : "SKU: \(ingredient.sku ?? "N/A")  ·  Unit: \(ingredient.unit)")
+                                .font(.caption2)
+                                .foregroundColor(.textSecondary)
+                        }
+                        Spacer()
+                        Image(systemName: "plus.circle")
+                            .foregroundColor(.appAccent)
+                    }
+                }
+    }
     
     // MARK: - Logic Operations
     
     private func loadCurrentRecipe() {
-        let recipes = menuItem.recipes
-        if recipes.isEmpty {
-            trackingMode = "not_tracked"
-        } else if recipes.count == 1 && recipes.first?.quantityRequired == 1.0 {
-            trackingMode = "finished_good"
+        trackingMode = menuItem.resolvedTrackingMode.rawValue
+        let recipes = currentRecipes
+        switch menuItem.resolvedTrackingMode {
+        case .notTracked:
+            break
+        case .finishedGood:
             selectedIngredientId = recipes.first?.inventoryItem?.id
-        } else {
-            trackingMode = "recipe_based"
-            recipeLines = recipes.map { recipe in
-                let ingredient = recipe.inventoryItem!
+        case .recipeBased:
+            recipeLines = recipes.compactMap { recipe in
+                guard let ingredient = recipe.inventoryItem else { return nil }
                 return RecipeLineInput(
                     ingredient: ingredient,
                     qty: recipe.quantityRequired,
@@ -450,6 +505,22 @@ struct RecipeBuilderSheet: View {
     
     private func removeLine(lineId: UUID) {
         recipeLines.removeAll(where: { $0.id == lineId })
+    }
+
+    private func prepRecipe(for item: InventoryItem) -> PrepRecipe? {
+        prepRecipes.first { !$0.isDeleted && $0.isActive && $0.outputItem?.id == item.id }
+    }
+
+    private func effectiveUnitCost(_ item: InventoryItem) -> Double {
+        prepRecipe(for: item)?.unitCost ?? item.costPrice
+    }
+
+    private func lineCost(_ line: RecipeLineInput) -> Double {
+        let entered = max(line.qty, 0)
+        let converted = UnitOfMeasure.parse(line.ingredient.unit).flatMap { to in
+            UnitOfMeasure.convert(entered, from: to, to: to)
+        } ?? entered
+        return effectiveUnitCost(line.ingredient) * converted
     }
     
     private func saveRecipe() {

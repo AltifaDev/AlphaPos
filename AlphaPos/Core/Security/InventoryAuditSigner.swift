@@ -22,18 +22,26 @@ enum InventoryAuditSigner {
         return hash.map { String(format: "%02hhx", $0) }.joined()
     }
 
-    /// Verifies if the transaction notes contain a matching cryptographic signature.
+    /// Verifies a transaction's integrity.
+    /// Prefers the dedicated `auditSignature` column; falls back to the legacy
+    /// signature embedded in `notes` for rows created before the column existed.
     static func verifyTransaction(_ transaction: InventoryTransaction) -> Bool {
-        let clean = cleanNotes(transaction.notes)
         let expectedSig = generateSignature(
             id: transaction.id,
             type: transaction.transactionType,
             quantity: transaction.quantity,
             costPrice: transaction.costPrice,
             referenceId: transaction.referenceId,
-            notes: clean,
-            branchId: transaction.branch?.id
+            notes: cleanNotes(transaction.notes),
+            branchId: transaction.branch.id
         )
+
+        // 1. Modern path — dedicated column.
+        if let sig = transaction.auditSignature, !sig.isEmpty {
+            return sig == expectedSig
+        }
+
+        // 2. Legacy path — signature embedded in notes.
         guard let notes = transaction.notes else { return false }
         return notes.contains("[sig: \(expectedSig)]")
     }

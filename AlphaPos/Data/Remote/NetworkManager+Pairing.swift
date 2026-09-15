@@ -22,81 +22,69 @@ extension NetworkManager {
         }
     }
 
-    /// Generates a dynamic one-time pairing token and numeric passcode on Supabase.
+    /// Creates a one-time pairing token + 6-digit code via SECURITY DEFINER RPC.
+    /// Direct inserts into `device_pairing_tokens` are revoked for anon/authenticated.
     func createPairingToken(merchantId: UUID, branchId: UUID) async throws -> DevicePairingToken {
-        let token = UUID().uuidString + "-" + UUID().uuidString
-        let code = String(format: "%06d", Int.random(in: 100000...999999))
-        let expires = Date().addingTimeInterval(600) // 10 minutes
-
+        guard !OfflineSyncModeController.isEnabled else { throw NetworkError.offline }
         let payload: [String: Any] = [
-            "merchant_id": merchantId.uuidString.lowercased(),
-            "branch_id": branchId.uuidString.lowercased(),
-            "token": token,
-            "pairing_code": code,
-            "expires_at": NetworkManager.iso8601.string(from: expires)
+            "p_merchant_id": merchantId.uuidString.lowercased(),
+            "p_branch_id": branchId.uuidString.lowercased()
         ]
 
-        // Use POST with return=representation preference to get created record
-        let url = serverBaseURL.appendingPathComponent("device_pairing_tokens")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue(anonKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(anonKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("return=representation", forHTTPHeaderField: "Prefer")
+        let data = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "rpc/create_device_pairing",
+            payload: payload
+        )
 
-        let jsonData = try JSONSerialization.data(withJSONObject: payload)
-        request.httpBody = jsonData
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200...299).contains(httpStatus) else {
-            let errStr = String(data: data, encoding: .utf8) ?? "HTTP POST failed"
-            throw NSError(domain: "NetworkManager", code: httpStatus, userInfo: [NSLocalizedDescriptionKey: errStr])
-        }
-
-        // Decode response to verify it was written
-        struct DecodedToken: Codable {
+        struct Row: Codable {
             let id: UUID
-            let merchant_id: UUID
-            let branch_id: UUID
+            let merchantId: UUID
+            let branchId: UUID
             let token: String
-            let pairing_code: String
-            let expires_at: String
-        }
-        let results = try JSONDecoder().decode([DecodedToken].self, from: data)
-        guard let first = results.first else {
-            throw NSError(domain: "NetworkManager", code: 500, userInfo: [NSLocalizedDescriptionKey: "No representation returned"])
+            let pairingCode: String
+            let expiresAt: String
+
+            enum CodingKeys: String, CodingKey {
+                case id
+                case merchantId = "merchant_id"
+                case branchId = "branch_id"
+                case token
+                case pairingCode = "pairing_code"
+                case expiresAt = "expires_at"
+            }
         }
 
-        let parsedExpiry = NetworkManager.iso8601.date(from: first.expires_at) ?? expires
+        let rows = try JSONDecoder().decode([Row].self, from: data)
+        guard let row = rows.first else {
+            throw NetworkError.serverError("create_device_pairing returned empty result")
+        }
+        let expires = NetworkManager.iso8601.date(from: row.expiresAt)
+            ?? ISO8601DateFormatter().date(from: row.expiresAt)
+            ?? Date().addingTimeInterval(600)
         return DevicePairingToken(
-            id: first.id,
-            merchantId: first.merchant_id,
-            branchId: first.branch_id,
-            token: first.token,
-            pairingCode: first.pairing_code,
-            expiresAt: parsedExpiry
+            id: row.id,
+            merchantId: row.merchantId,
+            branchId: row.branchId,
+            token: row.token,
+            pairingCode: row.pairingCode,
+            expiresAt: expires
         )
     }
 
-    // H-5: Poll Supabase to check if Staff app has consumed the pairing token
-    // Returns the newly registered MerchantDevice if paired, nil if still waiting.
+    /// Poll for a device registered against this pairing token.
+    /// - QR path: returns trusted device when Staff finishes scan.
+    /// - Code path: first returns pending (`isTrusted=false`), then trusted after Approve.
     func checkPairingStatus(token: String) async throws -> PairedDeviceInfo? {
-        let url = serverBaseURL
-            .appendingPathComponent("merchant_devices")
-            .appending(queryItems: [
+        guard !OfflineSyncModeController.isEnabled else { throw NetworkError.offline }
+        let data = try await sendSupabaseRequest(
+            method: "GET",
+            endpoint: "merchant_devices",
+            queryItems: [
                 URLQueryItem(name: "pairing_token", value: "eq.\(token)"),
                 URLQueryItem(name: "limit", value: "1")
-            ])
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue(anonKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(anonKey)", forHTTPHeaderField: "Authorization")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200...299).contains(httpStatus) else { return nil }
+            ]
+        )
 
         struct Row: Codable {
             let id: String
@@ -118,6 +106,24 @@ extension NetworkManager {
             isTrusted: row.is_trusted,
             fingerprint: row.device_fingerprint_hash,
             createdAt: NetworkManager.iso8601.date(from: row.created_at) ?? Date()
+        )
+    }
+
+    func approvePendingDevice(id: UUID) async throws {
+        guard !OfflineSyncModeController.isEnabled else { throw NetworkError.offline }
+        _ = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "rpc/approve_pending_device_pairing",
+            payload: ["p_device_id": id.uuidString.lowercased()]
+        )
+    }
+
+    func rejectPendingDevice(id: UUID) async throws {
+        guard !OfflineSyncModeController.isEnabled else { throw NetworkError.offline }
+        _ = try await sendSupabaseRequest(
+            method: "POST",
+            endpoint: "rpc/reject_pending_device_pairing",
+            payload: ["p_device_id": id.uuidString.lowercased()]
         )
     }
 

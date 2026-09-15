@@ -5,21 +5,32 @@ import SwiftUI
 @Observable @MainActor
 final class SalesViewModel {
     enum SummaryMode {
+        case shift
         case daily
         case monthly
     }
 
     // UI state variables
-    var summaryMode: SummaryMode = .daily
+    var summaryMode: SummaryMode = .shift
+    var selectedRegisterSessionId: UUID?
+    var selectedShiftInterval: DateInterval?
     var selectedDate: Date = Date()
     var selectedMonth: Int = Calendar.current.component(.month, from: Date())
     var selectedYear: Int = Calendar.current.component(.year, from: Date())
+    var businessDayCutoffHour: Int = 4
+    var businessTimeZoneID: String = "Asia/Bangkok"
 
     // ─────────────────────────────────────────────────
     // MARK: KPIs — Revenue & Orders
     // ─────────────────────────────────────────────────
     var grossRevenue: Double = 0.0
     var netRevenue: Double = 0.0
+    /// Net sales after refunds including VAT; reconciles to Dashboard.
+    var netSalesInclVAT: Double = 0.0
+    /// Net output VAT after refund reversals; a liability, not P&L revenue.
+    var netOutputVAT: Double = 0.0
+    /// Revenue used by P&L under tax-exclusive accounting presentation.
+    var accountingRevenueExVAT: Double = 0.0
     var taxCollected: Double = 0.0
     var serviceChargeCollected: Double = 0.0
     var discountGiven: Double = 0.0
@@ -48,6 +59,7 @@ final class SalesViewModel {
     // MARK: Profitability (P&L)
     // ─────────────────────────────────────────────────
     var totalCOGS: Double = 0.0           // Cost of Goods Sold จาก Recipe × InventoryItem.costPrice
+    var cogsPct: Double { grossRevenue > 0 ? (totalCOGS / grossRevenue) * 100 : 0.0 }
     var grossProfit: Double = 0.0          // grossRevenue − totalCOGS
     var grossMarginPct: Double = 0.0       // grossProfit / grossRevenue × 100
     var totalLaborCost: Double = 0.0       // จาก Timecard + Employee.payRate
@@ -56,8 +68,24 @@ final class SalesViewModel {
     var revenuePerLaborHour: Double = 0.0
     var totalWasteCost: Double = 0.0       // InventoryTransaction type="waste" × costPrice
     var totalOperatingExpenses: Double = 0.0 // C-3: Expense model (cash expenses, bills, etc.)
+    var totalDepreciationExpense: Double = 0.0
+    var totalPrepaidExpenseRecognized: Double = 0.0
     var estimatedNetProfit: Double = 0.0   // grossProfit − laborCost − wasteCost − operatingExpenses
     var netProfitMarginPct: Double = 0.0
+
+    // ─────────────────────────────────────────────────
+    // MARK: Break-Even & Investment Payback
+    // ─────────────────────────────────────────────────
+    var totalCapExInvestment: Double = 0.0
+    var hasCapExInvestment: Bool = false
+    var monthlyBreakEvenSales: Double = 0.0
+    var dailyBreakEvenSales: Double = 0.0
+    var operatingCashFlow: Double = 0.0
+    var paybackProgressPct: Double = 0.0
+    var paybackRemainingMonths: Double = 0.0
+    var paybackRemainingDays: Int = 0
+    var paybackTotalYears: Double = 0.0
+    var isFullyPaidBack: Bool = false
 
     // ─────────────────────────────────────────────────
     // MARK: Inventory Analytics
@@ -74,7 +102,15 @@ final class SalesViewModel {
     var deliveryPlatformBreakdown: [DeliveryPlatformPoint] = []
     var totalDeliveryGPFees: Double = 0.0
     var totalDeliveryAdFees: Double = 0.0
+    var totalDeliveryPlatformCosts: Double = 0.0
     var netDeliveryRevenue: Double = 0.0
+
+    // Government co-payment reconciliation (kept separate from delivery).
+    var supportProgramOrders: Int = 0
+    var supportProgramSales: Double = 0.0
+    var supportCitizenCollected: Double = 0.0
+    var supportGovernmentReceivable: Double = 0.0
+    var supportGovernmentReceived: Double = 0.0
 
     // ─────────────────────────────────────────────────
     // MARK: Staff Analytics
@@ -122,6 +158,15 @@ final class SalesViewModel {
 
     init() {}
 
+    private var selectedBusinessDayInterval: DateInterval {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: businessTimeZoneID) ?? .current
+        let dayStart = calendar.startOfDay(for: selectedDate)
+        let start = calendar.date(byAdding: .hour, value: businessDayCutoffHour, to: dayStart) ?? dayStart
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
+        return DateInterval(start: start, end: end)
+    }
+
     // ─────────────────────────────────────────────────
     // MARK: - Main Entry: updateAnalytics
     // ─────────────────────────────────────────────────
@@ -132,14 +177,18 @@ func updateAnalytics(
         inventoryItems: [InventoryItem] = [],
         employees: [Employee] = [],
         timecards: [Timecard] = [],
-        expenses: [Expense] = []
+        expenses: [Expense] = [],
+        inventoryTransactions: [InventoryTransaction] = [],
+        financialEvents: [FinancialEvent] = []
     ) {
         self.runAnalytics(
             orders: orders,
             inventoryItems: inventoryItems,
             employees: employees,
             timecards: timecards,
-            expenses: expenses
+            expenses: expenses,
+            inventoryTransactions: inventoryTransactions,
+            financialEvents: financialEvents
         )
     }
 
@@ -149,22 +198,26 @@ func updateAnalytics(
         inventoryItems: [InventoryItem],
         employees: [Employee],
         timecards: [Timecard],
-        expenses: [Expense] = []
+        expenses: [Expense] = [],
+        inventoryTransactions: [InventoryTransaction],
+        financialEvents: [FinancialEvent]
     ) {
         let calendar = Calendar.current
 
-        // 1. Filter completed orders for the selected period
-        let filtered = orders.filter { order in
-            guard !order.isDeleted, !order.payments.isEmpty else { return false }
-            switch summaryMode {
-            case .daily:
-                return calendar.isDate(order.createdAt, inSameDayAs: selectedDate)
-            case .monthly:
-                let m = calendar.component(.month, from: order.createdAt)
-                let y = calendar.component(.year, from: order.createdAt)
-                return m == selectedMonth && y == selectedYear
-            }
-        }
+        // 1. Filter recognized sales for the selected period.
+        // Uses the same canonical definition as Dashboard & Reports
+        // (Order.isRecognizedSale) so all three modules agree on what
+        // counts as a sale — paid orders OR closed/completed orders,
+        // never cancelled/deleted ones.
+        // FinancialEvent is the canonical recognized-sales source used by the
+        // Live Dashboard. Order timestamps are operational, not accounting
+        // timestamps, and can differ after partial settlement or late sync.
+        let scopedFinancialEvents = financialEvents.filter(isFinancialEventInSelectedPeriod)
+        let recognizedOrderIds = Set(scopedFinancialEvents.compactMap { event in
+            (event.eventType == "sale_capture" || event.eventType == "government_subsidy")
+                ? event.orderId : nil
+        })
+        let filtered = orders.filter { !$0.isDeleted && recognizedOrderIds.contains($0.id) }
 
         self.historicalOrders = filtered.sorted(by: { $0.createdAt > $1.createdAt })
 
@@ -172,8 +225,11 @@ func updateAnalytics(
         let cancelledInPeriod = orders.filter { order in
             guard !order.isDeleted, order.status == "cancelled" else { return false }
             switch summaryMode {
+            case .shift:
+                guard let interval = selectedShiftInterval else { return false }
+                return order.createdAt >= interval.start && order.createdAt < interval.end
             case .daily:
-                return calendar.isDate(order.createdAt, inSameDayAs: selectedDate)
+                return selectedBusinessDayInterval.contains(order.createdAt)
             case .monthly:
                 let m = calendar.component(.month, from: order.createdAt)
                 let y = calendar.component(.year, from: order.createdAt)
@@ -184,19 +240,30 @@ func updateAnalytics(
         self.cancelledItemsCount = cancelledInPeriod.flatMap { $0.items }.reduce(0) { $0 + $1.quantity }
 
         // Run sub-analyzers
-        computeRevenueKPIs(filtered: filtered)
+        computeRevenueKPIs(filtered: filtered, allOrders: orders, financialEvents: scopedFinancialEvents)
         computeOrderTypeMix(filtered: filtered)
         computeTrends(filtered: filtered, calendar: calendar)
         computePaymentBreakdown(filtered: filtered)
         computeProductSales(filtered: filtered)
         computeDeliveryAnalytics(filtered: filtered)
+        computeSupportProgramAnalytics(filtered: filtered)
         computeCategoryBreakdown()
         computeMenuEngineering()
         computeCashierPerformance(filtered: filtered)
 
+        // P&L must still be computed when the inventory catalog is empty;
+        // in that case COGS is explicitly zero rather than leaving stale state.
+        computeProfitability(
+            filtered: filtered,
+            inventoryTransactions: inventoryTransactions,
+            financialEvents: scopedFinancialEvents,
+            expenses: expenses
+        )
         if !inventoryItems.isEmpty {
-            computeInventoryAnalytics(inventoryItems: inventoryItems, filtered: filtered)
-            computeProfitability(filtered: filtered, inventoryItems: inventoryItems, expenses: expenses)
+            computeInventoryAnalytics(
+                inventoryItems: inventoryItems,
+                inventoryTransactions: inventoryTransactions
+            )
         }
 
         if !timecards.isEmpty && !employees.isEmpty {
@@ -204,10 +271,38 @@ func updateAnalytics(
         }
     }
 
+    private func isFinancialEventInSelectedPeriod(_ event: FinancialEvent) -> Bool {
+        guard !event.isDeleted, event.status == "posted",
+              AccountingMath.recognizedAmount(eventType: event.eventType, amount: event.amount) != nil else { return false }
+        let calendar = Calendar.current
+        switch summaryMode {
+        case .shift:
+            guard let sessionId = selectedRegisterSessionId,
+                  let interval = selectedShiftInterval else { return false }
+            return event.registerSessionId == sessionId ||
+                (event.registerSessionId == nil && interval.contains(event.occurredAt))
+        case .daily:
+            let expectedKey = BusinessDayContext.key(
+                for: selectedBusinessDayInterval.start,
+                cutoffHour: businessDayCutoffHour,
+                timeZoneID: businessTimeZoneID
+            )
+            return event.businessDateKey == expectedKey ||
+                (event.businessDateKey.isEmpty && selectedBusinessDayInterval.contains(event.occurredAt))
+        case .monthly:
+            return calendar.component(.month, from: event.occurredAt) == selectedMonth &&
+                calendar.component(.year, from: event.occurredAt) == selectedYear
+        }
+    }
+
     // ─────────────────────────────────────────────────
     // MARK: Revenue KPIs
     // ─────────────────────────────────────────────────
-    private func computeRevenueKPIs(filtered: [Order]) {
+    private func computeRevenueKPIs(
+        filtered: [Order],
+        allOrders: [Order],
+        financialEvents: [FinancialEvent]
+    ) {
         var gross = 0.0, tax = 0.0, svc = 0.0, disc = 0.0, items = 0, refunds = 0.0
 
         for order in filtered {
@@ -219,21 +314,82 @@ func updateAnalytics(
             for item in order.items where item.status != "cancelled" {
                 items += item.quantity
             }
-            // Refunded payments
-            for payment in order.payments where payment.status == "refunded" {
-                refunds += payment.amount
-            }
+            // Refunds come from RefundTransaction — the same source Daily Sales
+            // reports and the Live Dashboard use — so refund totals reconcile
+            // across all three modules.
+            refunds += order.refunds.filter { refund in
+                guard !refund.isDeleted && refund.status == "completed" else { return false }
+                switch summaryMode {
+                case .shift:
+                    guard let sessionId = selectedRegisterSessionId,
+                          let interval = selectedShiftInterval else { return false }
+                    return RegisterShiftScope.contains(
+                        eventSessionId: refund.registerSessionId,
+                        eventAt: refund.financialEventAt,
+                        sessionId: sessionId,
+                        openedAt: interval.start,
+                        closedAt: interval.end
+                    )
+                case .daily:
+                    return selectedBusinessDayInterval.contains(refund.financialEventAt)
+                case .monthly:
+                    return Calendar.current.component(.month, from: refund.financialEventAt) == selectedMonth &&
+                           Calendar.current.component(.year, from: refund.financialEventAt) == selectedYear
+                }
+            }.reduce(0.0) { $0 + $1.refundAmount }
         }
 
         self.grossRevenue      = gross
         self.taxCollected      = tax
         self.serviceChargeCollected = svc
         self.discountGiven     = disc
-        self.netRevenue        = gross - tax - svc
+        // Net revenue = ticket totals net of refunds (matches Reports.netRevenue
+        // and Dashboard todayRevenue). VAT / service charge remain visible as
+        // their own KPIs and in the P&L bridge below.
+        let facts = financialEvents.map {
+            AccountingFact(eventType: $0.eventType, amount: $0.amount,
+                           paymentMethod: $0.paymentMethod, orderId: $0.orderId,
+                           isLateAdjustment: $0.isLateAdjustment)
+        }
+        let ledger = AccountingMath.summarize(facts)
+        self.grossRevenue = ledger.capturedSales
+        self.refundedAmount = ledger.refunds
+        self.netRevenue = ledger.netSales
+        self.netSalesInclVAT = ledger.netSales
+
+        let ordersById = Dictionary(uniqueKeysWithValues: allOrders.map { ($0.id, $0) })
+        var capturedByOrder: [UUID: Double] = [:]
+        for event in financialEvents where event.eventType != "refund" {
+            guard let orderId = event.orderId,
+                  let amount = AccountingMath.recognizedAmount(
+                    eventType: event.eventType, amount: event.amount
+                  ) else { continue }
+            capturedByOrder[orderId, default: 0] += amount
+        }
+        let capturedVAT = filtered.reduce(0.0) { result, order in
+            result + AccountingMath.allocatedOutputVAT(
+                ticketTotal: order.total, documentVAT: order.tax,
+                recognizedAmount: capturedByOrder[order.id, default: 0]
+            )
+        }
+        var refundsByOrder: [UUID: Double] = [:]
+        for event in financialEvents where event.eventType == "refund" {
+            guard let orderId = event.orderId else { continue }
+            refundsByOrder[orderId, default: 0] += abs(event.amount)
+        }
+        let reversedVAT = refundsByOrder.reduce(0.0) { result, entry in
+            guard let order = ordersById[entry.key], order.total > 0 else { return result }
+            return result + AccountingMath.allocatedOutputVAT(
+                ticketTotal: order.total, documentVAT: order.tax,
+                recognizedAmount: entry.value
+            )
+        }
+        self.netOutputVAT = capturedVAT - reversedVAT
+        self.taxCollected = self.netOutputVAT
+        self.accountingRevenueExVAT = self.netSalesInclVAT - self.netOutputVAT
         self.totalOrders       = filtered.count
-        self.averageTicketValue = filtered.isEmpty ? 0 : gross / Double(filtered.count)
+        self.averageTicketValue = filtered.isEmpty ? 0 : self.grossRevenue / Double(filtered.count)
         self.totalItemsSold    = items
-        self.refundedAmount    = refunds
 
         // Peak hour
         if let best = hourlyTrend.max(by: { $0.revenue < $1.revenue }), best.revenue > 0 {
@@ -278,7 +434,7 @@ func updateAnalytics(
         var dailyMap: [Int: Double] = [:]
 
         for order in filtered {
-            if summaryMode == .daily {
+            if summaryMode != .monthly {
                 let h = calendar.component(.hour, from: order.createdAt)
                 hourlyMap[h, default: 0] += order.total
             } else {
@@ -287,7 +443,7 @@ func updateAnalytics(
             }
         }
 
-        if summaryMode == .daily {
+        if summaryMode != .monthly {
             var pts: [HourlySalesPoint] = []
             for hour in 9...22 {
                 pts.append(HourlySalesPoint(hour: hour, revenue: hourlyMap[hour] ?? 0))
@@ -317,7 +473,20 @@ func updateAnalytics(
     private func computePaymentBreakdown(filtered: [Order]) {
         var map: [String: (amount: Double, count: Int)] = [:]
         for order in filtered {
-            for payment in order.payments where payment.status != "refunded" {
+            // Only captured payments represent tender actually received.
+            // Refunded, failed and manager-voided correction records must stay
+            // in the audit trail without inflating the payment breakdown.
+            for payment in order.payments where !payment.isDeleted && payment.isCaptured {
+                if summaryMode == .shift,
+                   let sessionId = selectedRegisterSessionId,
+                   let interval = selectedShiftInterval,
+                   !RegisterShiftScope.contains(
+                       eventSessionId: payment.registerSessionId,
+                       eventAt: payment.paidAt,
+                       sessionId: sessionId,
+                       openedAt: interval.start,
+                       closedAt: interval.end
+                   ) { continue }
                 let key = payment.paymentMethod.lowercased()
                 let cur = map[key] ?? (0, 0)
                 map[key] = (cur.amount + payment.amount, cur.count + 1)
@@ -330,11 +499,25 @@ func updateAnalytics(
             case "cash":           name = "Cash"
             case "credit_card":    name = "Credit Card"
             case "qr_promptpay":   name = "PromptPay QR"
+            case "delivery_platform": name = "Delivery Platform"
             case "true_money":     name = "TrueMoney Wallet"
             default:               name = key.capitalized
             }
             return PaymentBreakdownPoint(method: name, amount: val.amount, count: val.count)
         }.sorted(by: { $0.amount > $1.amount })
+    }
+
+    private func computeSupportProgramAnalytics(filtered: [Order]) {
+        let supported = filtered.filter(\.usesGovernmentSupport)
+        supportProgramOrders = supported.count
+        supportProgramSales = supported.reduce(0) { $0 + $1.recognizedNetTotal }
+        supportCitizenCollected = supported.reduce(0) { $0 + min($1.paidAmount, $1.supportCitizenAmount) }
+        supportGovernmentReceived = supported
+            .filter { $0.supportSettlementStatus == "received" }
+            .reduce(0) { $0 + $1.supportGovernmentAmount }
+        supportGovernmentReceivable = supported
+            .filter { $0.supportSettlementStatus == "pending" }
+            .reduce(0) { $0 + $1.supportGovernmentAmount }
     }
 
     // ─────────────────────────────────────────────────
@@ -345,22 +528,27 @@ func updateAnalytics(
         var modRev = 0.0
 
         for order in filtered {
-            for item in order.items where item.status != "cancelled" {
+            let channel = order.orderType == "delivery" ? "เดลิเวอรี" : "หน้าร้าน"
+            for item in order.items where !item.isDeleted && item.status != "cancelled" {
                 let itemId   = item.menuItem?.id ?? item.id.uuidString
                 let itemName = item.menuItem?.name ?? "Unknown Dish"
                 let category = item.menuItem?.category?.name ?? "Other"
+                let itemType = item.resolvedLineType == .addOn ? "Add-on" : "เมนูหลัก"
+                let key = "\(channel)|\(itemType)|\(itemId)"
 
-                if let ex = productMap[itemId] {
-                    productMap[itemId] = ProductSalesPoint(
+                if let ex = productMap[key] {
+                    productMap[key] = ProductSalesPoint(
                         name: itemName, category: category,
+                        channel: channel, itemType: itemType, sourceId: itemId,
                         quantity: ex.quantity + item.quantity,
                         unitPrice: item.unitPrice,
                         totalRevenue: ex.totalRevenue + item.subtotal,
                         cogs: ex.cogs  // will be filled in profitability pass
                     )
                 } else {
-                    productMap[itemId] = ProductSalesPoint(
+                    productMap[key] = ProductSalesPoint(
                         name: itemName, category: category,
+                        channel: channel, itemType: itemType, sourceId: itemId,
                         quantity: item.quantity,
                         unitPrice: item.unitPrice,
                         totalRevenue: item.subtotal,
@@ -368,8 +556,16 @@ func updateAnalytics(
                     )
                 }
                 // Modifier add-on revenue
-                for mod in item.modifiers {
-                    modRev += mod.price * Double(item.quantity)
+                for mod in item.modifiers where !mod.isDeleted {
+                    let revenue = mod.price * Double(item.quantity)
+                    modRev += revenue
+                    let name = mod.modifier?.name ?? "Modifier"
+                    let modKey = "\(channel)|modifier|\(mod.id.uuidString)"
+                    if let ex = productMap[modKey] {
+                        productMap[modKey] = ProductSalesPoint(name: name, category: "Modifier", channel: channel, itemType: "Modifier", sourceId: mod.id.uuidString, quantity: ex.quantity + item.quantity, unitPrice: mod.price, totalRevenue: ex.totalRevenue + revenue, cogs: ex.cogs)
+                    } else {
+                        productMap[modKey] = ProductSalesPoint(name: name, category: "Modifier", channel: channel, itemType: "Modifier", sourceId: mod.id.uuidString, quantity: item.quantity, unitPrice: mod.price, totalRevenue: revenue, cogs: 0)
+                    }
                 }
             }
         }
@@ -401,16 +597,17 @@ func updateAnalytics(
     // MARK: Menu Engineering Matrix (Star/Plow/Puzzle/Dog)
     // ─────────────────────────────────────────────────
     private func computeMenuEngineering() {
-        guard !productSales.isEmpty else {
+        let mainProducts = productSales.filter { $0.itemType == "เมนูหลัก" }
+        guard !mainProducts.isEmpty else {
             self.menuEngineeringMatrix = []
             self.topMarginItems = []
             return
         }
 
-        let avgQty    = Double(productSales.map(\.quantity).reduce(0, +)) / Double(productSales.count)
-        let avgMargin = productSales.isEmpty ? 0 : productSales.map(\.grossMarginPct).reduce(0, +) / Double(productSales.count)
+        let avgQty    = Double(mainProducts.map(\.quantity).reduce(0, +)) / Double(mainProducts.count)
+        let avgMargin = mainProducts.map(\.grossMarginPct).reduce(0, +) / Double(mainProducts.count)
 
-        self.menuEngineeringMatrix = productSales.map { prod in
+        self.menuEngineeringMatrix = mainProducts.map { prod in
             let isHighPop    = Double(prod.quantity) >= avgQty
             let isHighMargin = prod.grossMarginPct >= avgMargin
             let segment: MenuSegment
@@ -423,7 +620,7 @@ func updateAnalytics(
             return MenuMatrixPoint(product: prod, segment: segment)
         }.sorted(by: { $0.product.totalRevenue > $1.product.totalRevenue })
 
-        self.topMarginItems = productSales
+        self.topMarginItems = mainProducts
             .filter { $0.cogs > 0 }
             .sorted(by: { $0.grossMarginPct > $1.grossMarginPct })
             .prefix(10)
@@ -444,18 +641,17 @@ func updateAnalytics(
             } else {
                 brand = "Other"
             }
-            let gpFee = order.total * (order.deliveryGP / 100.0)
-            let adFee = order.deliveryAdFeeIsPct
-                ? order.total * (order.deliveryAdFee / 100.0)
-                : order.deliveryAdFee
-            let otherFee = order.deliveryOtherFee
-            let netRev   = order.total - gpFee - adFee - otherFee
+            let gpFee = order.deliveryGPFeeAmount
+            let adFee = order.deliveryAdFeeAmount
+            let otherFee = max(order.deliveryOtherFee, 0)
+            let grossRevenue = order.total
+            let netRev = order.deliveryNetRevenue
 
             if let ex = platformMap[brand] {
                 platformMap[brand] = DeliveryPlatformPoint(
                     brandName:     brand,
                     orderCount:    ex.orderCount + 1,
-                    grossRevenue:  ex.grossRevenue + order.total,
+                    grossRevenue:  ex.grossRevenue + grossRevenue,
                     gpFees:        ex.gpFees + gpFee,
                     adFees:        ex.adFees + adFee,
                     otherFees:     ex.otherFees + otherFee,
@@ -465,7 +661,7 @@ func updateAnalytics(
                 platformMap[brand] = DeliveryPlatformPoint(
                     brandName:    brand,
                     orderCount:   1,
-                    grossRevenue: order.total,
+                    grossRevenue: grossRevenue,
                     gpFees:       gpFee,
                     adFees:       adFee,
                     otherFees:    otherFee,
@@ -478,6 +674,7 @@ func updateAnalytics(
             .sorted(by: { $0.grossRevenue > $1.grossRevenue })
         self.totalDeliveryGPFees  = platformMap.values.map(\.gpFees).reduce(0, +)
         self.totalDeliveryAdFees  = platformMap.values.map(\.adFees).reduce(0, +)
+        self.totalDeliveryPlatformCosts = platformMap.values.reduce(0) { $0 + $1.gpFees + $1.adFees + $1.otherFees }
         self.netDeliveryRevenue   = platformMap.values.map(\.netRevenue).reduce(0, +)
     }
 
@@ -504,26 +701,45 @@ func updateAnalytics(
     }
 
     // ─────────────────────────────────────────────────
-    // MARK: Profitability — COGS from Recipe
+    // MARK: Profitability — actual COGS from immutable sell ledger snapshots
     // ─────────────────────────────────────────────────
-    private func computeProfitability(filtered: [Order], inventoryItems: [InventoryItem], expenses: [Expense] = []) {
-        // Build ingredient cost lookup: menuItemId → COGS per unit sold
-        var cogsPerMenuItem: [String: Double] = [:]
-        for inv in inventoryItems {
-            for recipe in inv.recipeUsages where !recipe.isDeleted {
-                guard let menuId = recipe.menuItem?.id else { continue }
-                let ingredientCost = recipe.quantityRequired * inv.costPrice
-                cogsPerMenuItem[menuId, default: 0] += ingredientCost
-            }
+    private func computeProfitability(
+        filtered: [Order],
+        inventoryTransactions: [InventoryTransaction],
+        financialEvents: [FinancialEvent],
+        expenses: [Expense] = []
+    ) {
+        let sellCostByReference = Dictionary(grouping: inventoryTransactions.filter {
+            !$0.isDeleted && $0.movementType == .sell && $0.referenceId != nil
+        }, by: { $0.referenceId! }).mapValues {
+            $0.reduce(0) { $0 + $1.magnitude * ($1.costPrice ?? 0) }
         }
 
-        // Compute COGS per product (match by menuItem.id from order items)
+        var capturedByOrder: [UUID: Double] = [:]
+        for event in financialEvents where event.eventType != "refund" {
+            guard let orderId = event.orderId,
+                  let amount = AccountingMath.recognizedAmount(
+                    eventType: event.eventType, amount: event.amount
+                  ) else { continue }
+            capturedByOrder[orderId, default: 0] += amount
+        }
+
+        // Compute COGS per product (match by menuItem.id from order items).
+        // Partial settlements recognize the same fraction of COGS as Dashboard.
         var productCogsMap: [String: Double] = [:]  // productSalesPoint.id (menuItem.id or name) → total COGS
         for order in filtered {
+            let capturedFraction = AccountingMath.capturedFraction(
+                ticketTotal: order.total,
+                recognizedBeforeRefunds: capturedByOrder[order.id, default: 0]
+            )
             for item in order.items where item.status != "cancelled" {
                 guard let menuItem = item.menuItem else { continue }
-                let unitCOGS = cogsPerMenuItem[menuItem.id] ?? 0
-                productCogsMap[menuItem.id, default: 0] += unitCOGS * Double(item.quantity)
+                let channel = order.orderType == "delivery" ? "เดลิเวอรี" : "หน้าร้าน"
+                let itemType = item.resolvedLineType == .addOn ? "Add-on" : "เมนูหลัก"
+                productCogsMap["\(channel)|\(itemType)|\(menuItem.id)", default: 0] += capturedFraction * (sellCostByReference[item.id] ?? 0)
+                for modifier in item.modifiers where !modifier.isDeleted {
+                    productCogsMap["\(channel)|modifier|\(modifier.id.uuidString)", default: 0] += capturedFraction * (sellCostByReference[modifier.id] ?? 0)
+                }
             }
         }
 
@@ -531,40 +747,86 @@ func updateAnalytics(
         let updatedProducts: [ProductSalesPoint] = productSales.map { prod in
             ProductSalesPoint(
                 name: prod.name, category: prod.category,
+                channel: prod.channel, itemType: prod.itemType, sourceId: prod.sourceId,
                 quantity: prod.quantity, unitPrice: prod.unitPrice,
                 totalRevenue: prod.totalRevenue,
                 cogs: productCogsMap[prod.id] ?? 0
             )
         }
 
-        // Direct COGS total from order items × recipes
-        var directCOGS = 0.0
-        for order in filtered {
-            for item in order.items where item.status != "cancelled" {
-                guard let menuItem = item.menuItem else { continue }
-                let unitCOGS = cogsPerMenuItem[menuItem.id] ?? 0
-                directCOGS += unitCOGS * Double(item.quantity)
-            }
-        }
+        let directCOGS = productCogsMap.values.reduce(0, +)
 
         self.totalCOGS       = directCOGS
-        self.grossProfit      = grossRevenue - directCOGS
-        self.grossMarginPct   = grossRevenue > 0 ? grossProfit / grossRevenue * 100 : 0
+        // P&L starts from revenue net of refunds so the statement reconciles
+        // with the Net Revenue KPI and the Reports module.
+        self.grossProfit      = accountingRevenueExVAT - directCOGS
+        self.grossMarginPct   = accountingRevenueExVAT > 0 ? grossProfit / accountingRevenueExVAT * 100 : 0
         self.productSales     = updatedProducts
 
-        // C-3: Aggregate operating expenses for the selected period
-        let expensesInPeriod = expenses.filter { exp in
-            guard !exp.isDeleted else { return false }
+        let calendar = Calendar.current
+        let expenseInterval: DateInterval? = {
             switch summaryMode {
+            case .shift: return selectedShiftInterval
             case .daily:
-                return Calendar.current.isDate(exp.date, inSameDayAs: selectedDate)
+                return selectedBusinessDayInterval
             case .monthly:
-                let m = Calendar.current.component(.month, from: exp.date)
-                let y = Calendar.current.component(.year, from: exp.date)
-                return m == selectedMonth && y == selectedYear
+                guard let start = calendar.date(from: DateComponents(year: selectedYear, month: selectedMonth, day: 1)),
+                      let end = calendar.date(byAdding: .month, value: 1, to: start) else { return nil }
+                return DateInterval(start: start, end: end)
+            }
+        }()
+        var operating = 0.0
+        var depreciation = 0.0
+        var prepaid = 0.0
+        for expense in expenses {
+            guard !expense.isDeleted, let interval = expenseInterval else { continue }
+            let treatment = AccountingMath.normalizedExpenseRecognition(
+                expense.recognitionType, legacyIsCapEx: expense.isCapEx
+            )
+            let netCost = max(0, expense.amount - (expense.isVATRecoverable ? expense.vatAmount : 0))
+            switch treatment {
+            case "operating_expense":
+                if interval.contains(expense.date) { operating += netCost }
+            case "prepaid_expense":
+                guard let serviceStart = expense.serviceStartDate,
+                      let serviceEnd = expense.serviceEndDate, serviceEnd > serviceStart else {
+                    if interval.contains(expense.date) { prepaid += netCost }
+                    continue
+                }
+                let overlapStart = max(interval.start, serviceStart)
+                let overlapEnd = min(interval.end, serviceEnd)
+                if overlapEnd > overlapStart {
+                    prepaid += netCost * overlapEnd.timeIntervalSince(overlapStart) / serviceEnd.timeIntervalSince(serviceStart)
+                }
+            case "fixed_asset":
+                let available = expense.availableForUseDate ?? expense.date
+                guard available < interval.end, expense.usefulLifeMonths > 0 else { continue }
+                let monthly = AccountingMath.monthlyStraightLineDepreciation(
+                    cost: netCost, residualValue: expense.residualValue,
+                    usefulLifeMonths: expense.usefulLifeMonths
+                )
+                let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: interval.start)) ?? interval.start
+                let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart) ?? interval.end
+                let activeStart = max(interval.start, available)
+                let overlap = max(0, min(interval.end, monthEnd).timeIntervalSince(activeStart))
+                let monthDuration = max(1, monthEnd.timeIntervalSince(monthStart))
+                depreciation += monthly * min(1, overlap / monthDuration)
+            default: // refundable deposits are balance-sheet assets, not P&L expense
+                break
             }
         }
-        self.totalOperatingExpenses = expensesInPeriod.reduce(0) { $0 + $1.amount }
+        // CapEx Total Initial Investment
+        let totalCapEx = expenses.filter {
+            !$0.isDeleted &&
+            AccountingMath.normalizedExpenseRecognition($0.recognitionType, legacyIsCapEx: $0.isCapEx) == "fixed_asset"
+        }.reduce(0.0) { total, exp in
+            total + max(0, exp.amount - (exp.isVATRecoverable ? exp.vatAmount : 0))
+        }
+        self.totalCapExInvestment = totalCapEx
+
+        self.totalOperatingExpenses = operating
+        self.totalDepreciationExpense = depreciation
+        self.totalPrepaidExpenseRecognized = prepaid
 
         recomputeNetProfit()
         computeMenuEngineering()  // recompute with COGS data
@@ -578,8 +840,12 @@ func updateAnalytics(
             guard !tc.isDeleted else { return false }
             let clockIn = tc.clockIn
             switch summaryMode {
+            case .shift:
+                guard let interval = selectedShiftInterval else { return false }
+                return clockIn < interval.end && (tc.clockOut ?? interval.end) > interval.start
             case .daily:
-                return calendar.isDate(clockIn, inSameDayAs: selectedDate)
+                let interval = selectedBusinessDayInterval
+                return clockIn < interval.end && (tc.clockOut ?? interval.end) > interval.start
             case .monthly:
                 let m = calendar.component(.month, from: clockIn)
                 let y = calendar.component(.year, from: clockIn)
@@ -593,19 +859,31 @@ func updateAnalytics(
 
         for tc in relevantTimecards {
             guard let emp = tc.employee, let clockOut = tc.clockOut else { continue }
-            let workedSecs = clockOut.timeIntervalSince(tc.clockIn)
-            let breakSecs  = Double(tc.breakDurationMinutes) * 60
+            let effectiveIn: Date
+            let effectiveOut: Date
+            if summaryMode == .shift, let interval = selectedShiftInterval {
+                effectiveIn = max(tc.clockIn, interval.start)
+                effectiveOut = min(clockOut, interval.end)
+            } else {
+                effectiveIn = tc.clockIn
+                effectiveOut = clockOut
+            }
+            let fullWorkedSecs = max(1, clockOut.timeIntervalSince(tc.clockIn))
+            let workedSecs = max(0, effectiveOut.timeIntervalSince(effectiveIn))
+            let allocation = min(1, workedSecs / fullWorkedSecs)
+            let breakSecs  = Double(tc.breakDurationMinutes) * 60 * allocation
             let netHours   = max(0, (workedSecs - breakSecs) / 3600)
 
-            let regularHours = max(0, netHours - Double(tc.overtimeMinutes) / 60)
-            let otHours      = Double(tc.overtimeMinutes) / 60
+            let allocatedOT = Double(tc.overtimeMinutes) * allocation
+            let regularHours = max(0, netHours - allocatedOT / 60)
+            let otHours      = allocatedOT / 60
 
             let regularCost = regularHours * emp.payRate
             let otCost       = otHours * emp.payRate * 1.5
             let totalEmpCost = regularCost + otCost
 
             let cur = empMap[emp.id] ?? (0, 0, 0, "\(emp.firstName) \(emp.lastName)")
-            empMap[emp.id] = (cur.hours + netHours, cur.otMins + tc.overtimeMinutes, cur.cost + totalEmpCost, cur.name)
+            empMap[emp.id] = (cur.hours + netHours, cur.otMins + Int(allocatedOT.rounded()), cur.cost + totalEmpCost, cur.name)
 
             totalHours += netHours
             totalCost  += totalEmpCost
@@ -613,8 +891,8 @@ func updateAnalytics(
 
         self.totalLaborHours  = totalHours
         self.totalLaborCost   = totalCost
-        self.laborCostPct     = grossRevenue > 0 ? totalCost / grossRevenue * 100 : 0
-        self.revenuePerLaborHour = totalHours > 0 ? grossRevenue / totalHours : 0
+        self.laborCostPct = accountingRevenueExVAT > 0 ? totalCost / accountingRevenueExVAT * 100 : 0
+        self.revenuePerLaborHour = totalHours > 0 ? accountingRevenueExVAT / totalHours : 0
 
         self.staffLaborBreakdown = empMap.map { _, val in
             StaffLaborPoint(name: val.name, hoursWorked: val.hours, overtimeMinutes: val.otMins, laborCost: val.cost)
@@ -626,7 +904,10 @@ func updateAnalytics(
     // ─────────────────────────────────────────────────
     // MARK: Inventory Analytics
     // ─────────────────────────────────────────────────
-    private func computeInventoryAnalytics(inventoryItems: [InventoryItem], filtered: [Order]) {
+    private func computeInventoryAnalytics(
+        inventoryItems: [InventoryItem],
+        inventoryTransactions: [InventoryTransaction]
+    ) {
         let activeItems = inventoryItems.filter { !$0.isDeleted }
 
         // Total stock value
@@ -646,8 +927,24 @@ func updateAnalytics(
             }
             .sorted(by: { $0.currentQty < $1.currentQty })
 
-        // Waste summary from InventoryTransactions
-        let allWaste = activeItems.flatMap { $0.transactions }.filter { $0.transactionType == InventoryMovementType.waste.rawValue && !$0.isDeleted }
+        // Waste summary from InventoryTransactions — scoped to the selected
+        // period (by event time, createdAt) so waste cost in the P&L matches
+        // the revenue period instead of accumulating all-time waste.
+        let calendar = Calendar.current
+        let allWaste = activeItems.flatMap { $0.transactions }.filter { tx in
+            guard tx.transactionType == InventoryMovementType.waste.rawValue, !tx.isDeleted else { return false }
+            switch summaryMode {
+            case .shift:
+                guard let interval = selectedShiftInterval else { return false }
+                return tx.createdAt >= interval.start && tx.createdAt < interval.end
+            case .daily:
+                return selectedBusinessDayInterval.contains(tx.createdAt)
+            case .monthly:
+                let m = calendar.component(.month, from: tx.createdAt)
+                let y = calendar.component(.year, from: tx.createdAt)
+                return m == selectedMonth && y == selectedYear
+            }
+        }
         self.totalWasteCost = allWaste.reduce(0.0) { total, tx in
             let costPer = tx.costPrice ?? (tx.item?.costPrice ?? 0)
             return total + abs(tx.quantity) * costPer
@@ -658,23 +955,32 @@ func updateAnalytics(
                 quantity: abs(tx.quantity),
                 unit: tx.item?.unit ?? "",
                 cost: abs(tx.quantity) * (tx.costPrice ?? tx.item?.costPrice ?? 0),
-                date: tx.updatedAt
+                date: tx.createdAt
             )
         }.sorted(by: { $0.date > $1.date })
 
-        // Theoretical usage (from sold items × recipe)
+        // Usage and cost come from the immutable sell ledger snapshot, not today's recipe.
         var usageMap: [String: (name: String, unit: String, theoretical: Double, cost: Double)] = [:]
-        for order in filtered {
-            for item in order.items where item.status != "cancelled" {
-                guard let menuItem = item.menuItem else { continue }
-                for recipe in menuItem.recipes where !recipe.isDeleted {
-                    guard let inv = recipe.inventoryItem else { continue }
-                    let used = recipe.quantityRequired * Double(item.quantity)
-                    let key  = inv.id.uuidString
-                    let cur  = usageMap[key] ?? (inv.name, inv.unit, 0, 0)
-                    usageMap[key] = (cur.name, cur.unit, cur.theoretical + used, cur.cost + used * inv.costPrice)
+        for tx in inventoryTransactions where tx.movementType == .sell && !tx.isDeleted {
+            let inPeriod: Bool
+            switch summaryMode {
+            case .shift:
+                if let interval = selectedShiftInterval {
+                    inPeriod = tx.createdAt >= interval.start && tx.createdAt < interval.end
+                } else {
+                    inPeriod = false
                 }
+            case .daily:
+                inPeriod = selectedBusinessDayInterval.contains(tx.createdAt)
+            case .monthly:
+                inPeriod = calendar.component(.month, from: tx.createdAt) == selectedMonth
+                    && calendar.component(.year, from: tx.createdAt) == selectedYear
             }
+            guard inPeriod, let inv = tx.item else { continue }
+            let used = tx.magnitude
+            let key = inv.id.uuidString
+            let cur = usageMap[key] ?? (inv.name, inv.unit, 0, 0)
+            usageMap[key] = (cur.name, cur.unit, cur.theoretical + used, cur.cost + used * (tx.costPrice ?? 0))
         }
         self.inventoryUsageSummary = usageMap.values.map {
             InventoryUsagePoint(name: $0.name, unit: $0.unit, theoreticalUsed: $0.theoretical, cost: $0.cost)
@@ -691,8 +997,41 @@ func updateAnalytics(
     // ─────────────────────────────────────────────────
     private func recomputeNetProfit() {
         // C-3: Include operating expenses in net profit calculation
-        self.estimatedNetProfit  = grossProfit - totalLaborCost - totalWasteCost - totalOperatingExpenses
-        self.netProfitMarginPct  = grossRevenue > 0 ? estimatedNetProfit / grossRevenue * 100 : 0
+        self.estimatedNetProfit = grossProfit - totalLaborCost - totalWasteCost
+            - totalOperatingExpenses - totalPrepaidExpenseRecognized
+            - totalDepreciationExpense - totalDeliveryPlatformCosts
+        self.netProfitMarginPct = accountingRevenueExVAT > 0
+            ? estimatedNetProfit / accountingRevenueExVAT * 100 : 0
+        recomputeBreakEvenAndPayback()
+    }
+
+    private func recomputeBreakEvenAndPayback() {
+        let fixedOpEx = totalOperatingExpenses + totalLaborCost + totalPrepaidExpenseRecognized
+        self.monthlyBreakEvenSales = AccountingMath.breakEvenMonthlySales(
+            fixedOpEx: fixedOpEx,
+            monthlyDepreciation: totalDepreciationExpense,
+            grossMarginPct: grossMarginPct
+        )
+        self.dailyBreakEvenSales = AccountingMath.breakEvenDailySales(
+            monthlyBreakEven: monthlyBreakEvenSales,
+            daysInMonth: 30
+        )
+        self.operatingCashFlow = AccountingMath.operatingCashFlow(
+            netProfit: estimatedNetProfit,
+            depreciation: totalDepreciationExpense
+        )
+
+        let payback = AccountingMath.paybackMetrics(
+            totalCapEx: totalCapExInvestment,
+            accumulatedCashFlow: max(0, operatingCashFlow),
+            monthlyAverageCashFlow: max(0, operatingCashFlow)
+        )
+        self.hasCapExInvestment = payback.hasInvestmentData
+        self.paybackProgressPct = payback.progressPct
+        self.isFullyPaidBack = payback.isFullyPaidBack
+        self.paybackRemainingMonths = payback.remainingMonths
+        self.paybackRemainingDays = payback.remainingDays
+        self.paybackTotalYears = payback.paybackYears
     }
 }
 
@@ -726,9 +1065,12 @@ struct PaymentBreakdownPoint: Identifiable, Equatable {
 }
 
 struct ProductSalesPoint: Identifiable, Equatable {
-    var id: String { name }
+    var id: String { "\(channel)|\(itemType)|\(sourceId)" }
     let name: String
     let category: String
+    let channel: String
+    let itemType: String
+    let sourceId: String
     let quantity: Int
     let unitPrice: Double
     let totalRevenue: Double

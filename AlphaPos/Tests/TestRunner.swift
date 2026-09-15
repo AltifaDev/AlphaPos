@@ -16,17 +16,35 @@ enum TestRunner {
 
         let suites: [(name: String, results: [TestResult])] = [
             ("Security",  SecurityTests.runAll()),
+            ("Platform Order Number", PlatformOrderNumberTests.runAll()),
             ("POS",       POSTests.runAll()),
             ("Decimal Currency", DecimalCurrencyTests.runAll()),
             ("Thread Safety", ThreadSafetyTests.runAll()),
             ("Inventory", InventoryTests.runAll()),
             ("Inventory Enhancement", InventoryEnhancementTests.runAll()),
             ("Inventory Enterprise", InventoryEnterpriseTests.runAll()),
+            ("Inventory Compliance", InventoryComplianceTests.runAll()),
+            ("Prep Recipe", PrepRecipeTests.runAll()),
             ("Timecard",  TimecardTests.runAll()),
             ("Payroll",   PayrollTests.runAll()),
+            ("Shift Scheduling", ShiftSchedulingPolicyTests.runAll()),
             ("Localization", LocalizationTests.runAll()),
             ("Expense",   ExpenseTests.runAll()),
-            ("Inventory Advanced", InventoryAdvancedTests.runAll())
+            ("Inventory Advanced", InventoryAdvancedTests.runAll()),
+            ("Remote Receipt Print", RemoteReceiptPrintTests.runAll()),
+            ("Order Settlement", OrderSettlementTests.runAll()),
+            ("Checkout Lifecycle", CheckoutLifecycleTests.runAll()),
+            ("Print Routing", PrintRoutingTests.runAll()),
+            ("Receipt Compliance", ReceiptComplianceTests.runAll()),
+            ("Receipt Calculation Engine", ReceiptCalculationEngineTests.runAll()),
+            ("Kitchen Lifecycle", KitchenLifecycleTests.runAll()),
+            ("Notification Delivery", NotificationDeliveryPolicyTests.runAll()),
+            ("Daily Sales Bridge", DailySalesReportTests.runAll()),
+            ("Dashboard Calculation", DashboardCalculationTests.runAll()),
+            ("Business Day", BusinessDayTests.runAll()),
+            ("Force Close Session Scope", ForceCloseSessionScopeTests.runAll()),
+            ("Accounting Ledger", AccountingLedgerTests.runAll()),
+            ("Accounting Export", AccountingExportTests.runAll())
         ]
 
         printHeader()

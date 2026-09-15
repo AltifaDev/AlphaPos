@@ -10,23 +10,28 @@ import UniformTypeIdentifiers
 
 struct ProductEditSheet: View {
     let menuItem: MenuItem? // Nil when creating new
+    var authorizedByEmployeeId: UUID? = nil
     let onDismiss: () -> Void
 
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \Category.name) private var categories: [Category]
-    @Query(sort: \ModifierGroup.name) private var allModifierGroups: [ModifierGroup]
-    @Query(sort: \InventoryItem.name) private var allIngredients: [InventoryItem]
+    @Query(filter: #Predicate<Category> { !$0.isDeleted }, sort: \Category.name) private var categories: [Category]
+    @Query(filter: #Predicate<ModifierGroup> { !$0.isDeleted }, sort: \ModifierGroup.name) private var allModifierGroups: [ModifierGroup]
+    @Query(filter: #Predicate<InventoryItem> { !$0.isDeleted }, sort: \InventoryItem.name) private var allIngredients: [InventoryItem]
 
     @State private var viewModel = InventoryViewModel()
     @State private var activeTab = 0 // 0: Details, 1: Recipe, 2: Extras
+    @AppStorage("inventory_profile") private var inventoryProfile = "restaurant"
 
     // Tab 1: General Details
     @State private var name = ""
     @State private var priceString = ""
     @State private var description = ""
     @State private var selectedCategoryId: UUID? = nil
+    @State private var salesRole: MenuItemSalesRole = .main
+    @State private var salesRoleWasManuallySelected = false
     @State private var isAvailable = true
     @State private var showingDeleteAlert = false
+    @State private var saveErrorMessage: String?
 
     // Translations
     @State private var nameEn = ""
@@ -81,6 +86,7 @@ struct ProductEditSheet: View {
 
     // Tab 3: Modifier Groups linking
     @State private var linkedModifierGroupIds: Set<UUID> = []
+    @State private var stockPolicyOverrides: [UUID: OutOfStockPolicy] = [:]
 
     var isEditing: Bool { menuItem != nil }
 
@@ -113,6 +119,29 @@ struct ProductEditSheet: View {
         return (totalCost / menuPrice) * 100.0
     }
 
+    private struct MenuStockRequirement: Identifiable {
+        let ingredient: InventoryItem
+        let required: Double
+        var id: UUID { ingredient.id }
+    }
+
+    private var menuStockRequirements: [MenuStockRequirement] {
+        switch trackingMode {
+        case "finished_good":
+            guard let selectedIngredientId,
+                  let ingredient = allIngredients.first(where: { $0.id == selectedIngredientId }) else {
+                return []
+            }
+            return [MenuStockRequirement(ingredient: ingredient, required: 1)]
+        case "recipe_based":
+            return recipeLines.map {
+                MenuStockRequirement(ingredient: $0.ingredient, required: max(0, $0.qty))
+            }
+        default:
+            return []
+        }
+    }
+
     private var grossMarginPercent: Double {
         return max(0.0, 100.0 - foodCostPercent)
     }
@@ -123,20 +152,20 @@ struct ProductEditSheet: View {
                 Color.appBackground.ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    // Header tabs (Visible only if editing)
-                    if isEditing {
-                        Picker("Editor Segment", selection: $activeTab) {
-                            Text("product_tab_details".t).tag(0)
-                            Text("product_tab_recipe".t).tag(1)
+                    // Header tabs — stock linking available for create and edit
+                    Picker("Editor Segment", selection: $activeTab) {
+                        Text("product_tab_details".t).tag(0)
+                        Text("product_tab_recipe".t).tag(1)
+                        if isEditing {
                             Text("product_tab_extras".t).tag(2)
                         }
-                        .pickerStyle(.segmented)
-                        .padding(.horizontal, APSpacing.md)
-                        .padding(.vertical, APSpacing.sm)
-                        .background(Color.appSurface)
-
-                        Divider().background(Color.appDivider)
                     }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, APSpacing.md)
+                    .padding(.vertical, APSpacing.sm)
+                    .background(Color.appSurface)
+
+                    Divider().background(Color.appDivider)
 
                     ScrollView {
                         VStack(spacing: APSpacing.md) {
@@ -185,6 +214,14 @@ struct ProductEditSheet: View {
                 Button("ตกลง", role: .cancel) { mediaErrorMessage = nil }
             } message: {
                 Text(mediaErrorMessage ?? "")
+            }
+            .alert("ไม่สามารถบันทึกสินค้า", isPresented: Binding(
+                get: { saveErrorMessage != nil },
+                set: { if !$0 { saveErrorMessage = nil } }
+            )) {
+                Button("ตกลง", role: .cancel) { saveErrorMessage = nil }
+            } message: {
+                Text(saveErrorMessage ?? "")
             }
         }
         .apColorScheme()
@@ -312,6 +349,35 @@ struct ProductEditSheet: View {
                     .tint(.appAccent)
                 }
 
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("ประเภทการขาย")
+                        .font(.caption2)
+                        .foregroundColor(.textSecondary)
+
+                    Picker("ประเภทการขาย", selection: Binding(
+                        get: { salesRole },
+                        set: {
+                            salesRole = $0
+                            salesRoleWasManuallySelected = true
+                        }
+                    )) {
+                        Text("เมนูหลัก").tag(MenuItemSalesRole.main)
+                        Text("รายการเสริม").tag(MenuItemSalesRole.addOn)
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(salesRole == .main
+                         ? "รวมในจำนวนเมนูหลักที่ขาย"
+                         : "แสดงในรายการเสริมและไม่รวมในจำนวนเมนูหลัก")
+                        .font(.caption2)
+                        .foregroundColor(.textTertiary)
+                }
+                .onChange(of: selectedCategoryId) { _, categoryId in
+                    guard !salesRoleWasManuallySelected else { return }
+                    let categoryName = categories.first(where: { $0.id == categoryId })?.name
+                    salesRole = MenuItemSalesRole.inferred(from: categoryName)
+                }
+
                 inputFieldRow(label: "SKU Code (Optional)", placeholder: "e.g., SKU-12345", text: $sku)
                 inputFieldRow(label: "Barcode / UPC (Optional)", placeholder: "e.g., 8851234567890", text: $barcode)
 
@@ -381,7 +447,7 @@ struct ProductEditSheet: View {
                     }
                     Spacer()
 
-                    let availableBrands = ["GrabFood", "LINE MAN", "ShopeeFood", "Foodpanda", "Robinhood"].filter { brand in
+                    let availableBrands = ExternalSalesChannel.all.filter { brand in
                         !deliveryPriceInputs.contains(where: { $0.brandName == brand })
                     }
 
@@ -506,6 +572,11 @@ struct ProductEditSheet: View {
                     Text("stock_mode_recipe_based".t).tag("recipe_based")
                 }
                 .pickerStyle(.segmented)
+
+                Text(trackingModeHelpText)
+                    .font(.caption2)
+                    .foregroundColor(.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(APSpacing.md)
             .apCard()
@@ -601,7 +672,10 @@ struct ProductEditSheet: View {
                 .apCard()
             }
 
-            if trackingMode != "not_tracked" {
+            if isEditing && trackingMode != "not_tracked" {
+                menuStockPolicyCard
+                costingAnalysisCard
+            } else if trackingMode != "not_tracked" {
                 costingAnalysisCard
             }
         }
@@ -647,6 +721,88 @@ struct ProductEditSheet: View {
         }
         .padding(APSpacing.md)
         .apCard()
+    }
+
+    private var menuStockPolicyCard: some View {
+        VStack(alignment: .leading, spacing: APSpacing.md) {
+            HStack(alignment: .top, spacing: APSpacing.sm) {
+                Image(systemName: "lock.shield.fill")
+                    .foregroundColor(.appAccent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("menu_stock_policy_title".t)
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.textSecondary)
+                        .textCase(.uppercase)
+                    Text("menu_stock_policy_desc".t)
+                        .font(.caption2)
+                        .foregroundColor(.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if menuStockRequirements.isEmpty {
+                Text("menu_stock_policy_no_ingredient".t)
+                    .font(.caption)
+                    .foregroundColor(.textTertiary)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
+            } else {
+                ForEach(menuStockRequirements) { requirement in
+                    menuStockPolicyRow(requirement)
+                    if requirement.id != menuStockRequirements.last?.id {
+                        Divider().background(Color.appDivider)
+                    }
+                }
+            }
+        }
+        .padding(APSpacing.md)
+        .apCard()
+    }
+
+    private func menuStockPolicyRow(_ requirement: MenuStockRequirement) -> some View {
+        let ingredient = requirement.ingredient
+        let selectedPolicy = stockPolicyOverrides[ingredient.id] ?? ingredient.outOfStockPolicy
+        let isShort = ingredient.currentQuantity < requirement.required
+        let isBlocking = isShort && selectedPolicy == .block
+
+        return VStack(alignment: .leading, spacing: APSpacing.sm) {
+            HStack(alignment: .top, spacing: APSpacing.sm) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(ingredient.name)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.textPrimary)
+                    Text(LocalizationManager.shared.t(
+                        "menu_stock_policy_quantity_template",
+                        ingredient.currentQuantity,
+                        requirement.required,
+                        ingredient.unit
+                    ))
+                    .font(.caption2)
+                    .foregroundColor(isShort ? .appRose : .textSecondary)
+                }
+                Spacer()
+                if isBlocking {
+                    Label("menu_stock_policy_blocking_badge".t, systemImage: "lock.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.appRose)
+                        .clipShape(Capsule())
+                }
+            }
+
+            Picker("stock_policy_title".t, selection: Binding(
+                get: { stockPolicyOverrides[ingredient.id] ?? ingredient.outOfStockPolicy },
+                set: { stockPolicyOverrides[ingredient.id] = $0 }
+            )) {
+                Text("stock_policy_allow_negative".t).tag(OutOfStockPolicy.allowNegative)
+                Text("stock_policy_block".t).tag(OutOfStockPolicy.block)
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("menu-stock-policy-\(ingredient.id.uuidString)")
+        }
     }
 
     private func costRow(label: String, val: String) -> some View {
@@ -760,19 +916,36 @@ struct ProductEditSheet: View {
                 Text(isEditing ? "Save Changes" : "Create Product")
                     .font(.subheadline)
                     .fontWeight(.bold)
-                    .foregroundColor(name.isEmpty || priceString.isEmpty ? .textTertiary : .white)
+                    .foregroundColor(canSaveProduct ? .white : .textTertiary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
-                    .background(name.isEmpty || priceString.isEmpty ? nil : APGradient.accent)
-                    .backgroundColor(name.isEmpty || priceString.isEmpty ? Color.appSurfaceHigh : .clear)
+                    .background(canSaveProduct ? APGradient.accent : nil)
+                    .backgroundColor(canSaveProduct ? .clear : Color.appSurfaceHigh)
                     .cornerRadius(APRadius.md)
             }
-            .disabled(name.isEmpty || priceString.isEmpty)
+            .disabled(!canSaveProduct)
             .buttonStyle(.plain)
         }
         .padding(APSpacing.md)
         .background(Color.appSurface)
         .overlay(Rectangle().fill(Color.appDivider).frame(height: 1), alignment: .top)
+    }
+
+    private var canSaveProduct: Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty,
+              let price = Double(priceString),
+              price.isFinite,
+              price >= 0,
+              let taxRate = Double(taxRateString),
+              taxRate.isFinite,
+              (0...100).contains(taxRate) else {
+            return false
+        }
+        return deliveryPriceInputs.allSatisfy {
+            guard let price = Double($0.priceString) else { return false }
+            return price.isFinite && price >= 0
+        }
     }
 
     private func inputFieldRow(label: String, placeholder: String, text: Binding<String>) -> some View {
@@ -914,6 +1087,8 @@ struct ProductEditSheet: View {
             priceString = String(format: "%.2f", item.price)
             description = item.itemDescription ?? ""
             selectedCategoryId = item.category?.id
+            salesRole = item.resolvedSalesRole
+            salesRoleWasManuallySelected = item.isSalesRoleConfirmed
             isAvailable = item.isAvailable
 
             // Load new fields
@@ -943,17 +1118,17 @@ struct ProductEditSheet: View {
                 )
             }
 
-            // Load recipe
-            let recipes = item.recipes
-            if recipes.isEmpty {
-                trackingMode = "not_tracked"
-            } else if recipes.count == 1 && recipes.first?.quantityRequired == 1.0 {
-                trackingMode = "finished_good"
+            // Load recipe / explicit tracking mode
+            trackingMode = item.resolvedTrackingMode.rawValue
+            let recipes = item.recipes.filter { !$0.isDeleted }
+            switch item.resolvedTrackingMode {
+            case .notTracked:
+                break
+            case .finishedGood:
                 selectedIngredientId = recipes.first?.inventoryItem?.id
-            } else {
-                trackingMode = "recipe_based"
-                recipeLines = recipes.map { rec in
-                    let ing = rec.inventoryItem!
+            case .recipeBased:
+                recipeLines = recipes.compactMap { rec in
+                    guard let ing = rec.inventoryItem else { return nil }
                     return RecipeLineInput(
                         ingredient: ing,
                         qty: rec.quantityRequired,
@@ -961,15 +1136,42 @@ struct ProductEditSheet: View {
                     )
                 }
             }
+            stockPolicyOverrides = Dictionary(
+                uniqueKeysWithValues: recipes.compactMap { recipe in
+                    recipe.inventoryItem.map { ($0.id, $0.outOfStockPolicy) }
+                }
+            )
 
             // Load linked modifiers
             linkedModifierGroupIds = Set(item.modifierGroupsRelations.compactMap { $0.modifierGroup?.id })
+        } else {
+            // New product: simple/retail defaults to Finished Good (sell 1 = cut 1)
+            trackingMode = inventoryProfile == "simple" ? "finished_good" : "not_tracked"
+        }
+    }
+
+    private var trackingModeHelpText: String {
+        switch trackingMode {
+        case "finished_good": return "stock_mode_finished_good_help".t
+        case "recipe_based": return "stock_mode_recipe_based_help".t
+        default: return "stock_mode_not_tracked_help".t
         }
     }
 
     private func saveProduct() {
-        let price = Double(priceString) ?? 0.0
-        let taxRate = Double(taxRateString) ?? 7.0
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            saveErrorMessage = "กรุณาระบุชื่อสินค้า"
+            return
+        }
+        guard let price = Double(priceString), price.isFinite, price >= 0 else {
+            saveErrorMessage = "กรุณาระบุราคาขายเป็นตัวเลขตั้งแต่ 0 ขึ้นไป"
+            return
+        }
+        guard let taxRate = Double(taxRateString), taxRate.isFinite, (0...100).contains(taxRate) else {
+            saveErrorMessage = "กรุณาระบุอัตราภาษีระหว่าง 0 ถึง 100"
+            return
+        }
         let barcodeVal = barcode.trimmingCharacters(in: .whitespacesAndNewlines)
         let skuVal = sku.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -998,10 +1200,12 @@ struct ProductEditSheet: View {
         var savedItem: MenuItem?
 
         if let item = menuItem {
+            applyStockPolicyOverrides(menuName: trimmedName)
+
             // Update details
             viewModel.updateProduct(
                 menuItem: item,
-                name: name,
+                name: trimmedName,
                 price: price,
                 description: description.isEmpty ? nil : description,
                 categoryId: selectedCategoryId,
@@ -1018,7 +1222,9 @@ struct ProductEditSheet: View {
                 taxRate: taxRate,
                 deliveryPrices: deliveryPricesList,
                 nameTranslations: nameTrans,
-                descriptionTranslations: descTrans
+                descriptionTranslations: descTrans,
+                salesRole: salesRole,
+                isSalesRoleConfirmed: true
             )
 
             // Update recipes
@@ -1037,8 +1243,8 @@ struct ProductEditSheet: View {
 
         } else {
             // Add new product
-            viewModel.addProduct(
-                name: name,
+            savedItem = viewModel.addProduct(
+                name: trimmedName,
                 price: price,
                 description: description.isEmpty ? nil : description,
                 categoryId: selectedCategoryId,
@@ -1055,16 +1261,22 @@ struct ProductEditSheet: View {
                 taxRate: taxRate,
                 deliveryPrices: deliveryPricesList,
                 nameTranslations: nameTrans,
-                descriptionTranslations: descTrans
+                descriptionTranslations: descTrans,
+                salesRole: salesRole,
+                isSalesRoleConfirmed: true
             )
 
-            // Fetch the freshly created item so its media can be uploaded.
-            let newName = name
-            let descriptor = FetchDescriptor<MenuItem>(
-                predicate: #Predicate { $0.name == newName },
-                sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+            guard let created = savedItem else {
+                saveErrorMessage = "บันทึกสินค้าในเครื่องไม่สำเร็จ กรุณาลองอีกครั้ง"
+                return
+            }
+            let linesData = recipeLines.map { (ingredientId: $0.ingredient.id, qty: $0.qty) }
+            viewModel.saveRecipe(
+                for: created,
+                trackingMode: trackingMode,
+                selectedIngredientId: selectedIngredientId,
+                recipeLines: linesData
             )
-            savedItem = try? modelContext.fetch(descriptor).first
         }
 
         // Upload product images to Supabase Storage, then persist the returned URLs.
@@ -1101,6 +1313,29 @@ struct ProductEditSheet: View {
         }
 
         onDismiss()
+    }
+
+    private func applyStockPolicyOverrides(menuName: String) {
+        var changeDetails: [String] = []
+
+        for (ingredientId, newPolicy) in stockPolicyOverrides {
+            guard let ingredient = allIngredients.first(where: { $0.id == ingredientId }),
+                  ingredient.outOfStockPolicy != newPolicy else { continue }
+
+            let oldPolicy = ingredient.outOfStockPolicy
+            ingredient.outOfStockPolicy = newPolicy
+            ingredient.updatedAt = Date()
+            ingredient.isSynced = false
+            changeDetails.append("\(ingredient.name): \(oldPolicy.rawValue) -> \(newPolicy.rawValue)")
+        }
+
+        guard !changeDetails.isEmpty else { return }
+        modelContext.insert(AuditLog(
+            employeeId: authorizedByEmployeeId,
+            actionType: "menu_stock_policy_changed",
+            details: "Menu \(menuName) | \(changeDetails.joined(separator: ", "))"
+        ))
+        modelContext.saveWithLogging(label: "ProductEditSheet.applyStockPolicyOverrides")
     }
 }
 

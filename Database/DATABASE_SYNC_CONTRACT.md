@@ -31,8 +31,10 @@
 | table_sessions | TableSession | ✅ syncTableSessions | 001 | ✅ |
 | orders | Order | ✅ syncOrders | 001 + 002 | ✅ |
 | order_items | OrderItem | ✅ (via pull) | 001 + 002 | ✅ |
-| order_item_modifiers | OrderItemModifier | ❌ No sync | (existed) | ✅ |
+| order_item_modifiers | OrderItemModifier | ✅ syncOrderItemModifiers (+ nested in fetchCustomerOrders / create_order_atomic p_modifiers) | (existed) + realtime | ✅ |
 | payments | Payment | ✅ syncPayments | 001 + 002 | ✅ |
+| checkout_sessions | CheckoutSession | ✅ lifecycle sync | 038 | ✅ Code ready |
+| payment_attempts | PaymentAttempt | ✅ lifecycle sync | 038 | ✅ Code ready |
 | service_requests | (web-only) | ✅ syncServiceRequests | 001 | ✅ |
 | employees | Employee | ✅ syncEmployees | 001 + 002 + 008 | ✅ |
 | employee_shifts | EmployeeShift | ✅ syncEmployeeShifts | (existed) + 008 | ✅ |

@@ -1,0 +1,12 @@
+[Unit]
+Description=AlphaPos Docker published-port firewall
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/alphapos/scripts/vps-secure-docker-ports.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

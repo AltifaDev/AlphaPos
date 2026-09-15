@@ -14,7 +14,7 @@ extension SyncEngine {
 
     func syncShiftReports(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<ShiftReport>(
-            predicate: #Predicate<ShiftReport> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<ShiftReport> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let reports = try? modelContext.fetch(descriptor), !reports.isEmpty else { return }
@@ -25,16 +25,50 @@ extension SyncEngine {
                     if try await NetworkManager.shared.deleteShiftReportOnServer(id: report.id) {
                         modelContext.delete(report)
                     }
-                } else if try await NetworkManager.shared.uploadShiftReport(report) {
+                } else if try await uploadShiftReportResolvingOrphanFKs(report) {
                     report.isSynced = true
                     report.updatedAt = Date()
                 }
             } catch {
-                encounteredSyncError = true
-                print("SyncEngine [ShiftReport Push Error]: \(error.localizedDescription)")
+                let msg = error.localizedDescription
+                // Orphan FKs are recovered inside uploadShiftReportResolvingOrphanFKs;
+                // remaining failures stay soft so KDS / POS are not painted red.
+                reportSyncFailure("ShiftReport: \(msg)", soft: true)
+                print("SyncEngine [ShiftReport Push Error]: \(msg)")
             }
         }
         modelContext.saveWithLogging(label: #function)
+    }
+
+    /// Upload a shift report after ensuring parent FK rows exist on the server.
+    /// Missing `employees` / `register_sessions` are created from local SwiftData first.
+    private func uploadShiftReportResolvingOrphanFKs(_ report: ShiftReport) async throws -> Bool {
+        do {
+            let result = try await NetworkManager.shared.uploadShiftReportDetailed(report)
+            if result.createdGeneratedByEmployee || result.createdRegisterSession {
+                reportSyncFailure(
+                    "ShiftReport parents ensured (employee=\(result.createdGeneratedByEmployee), session=\(result.createdRegisterSession))",
+                    soft: true
+                )
+            }
+            return result.success
+        } catch {
+            // One more attempt after a short parent re-push — keep soft so KDS stays green.
+            let msg = error.localizedDescription
+            if msg.lowercased().contains("23503")
+                || msg.lowercased().contains("foreign key")
+                || msg.lowercased().contains("could not create") {
+                if let employee = report.generatedByEmployee, !employee.isDeleted {
+                    _ = try? await NetworkManager.shared.ensureEmployeeOnServer(employee)
+                }
+                if let session = report.registerSession, !session.isDeleted {
+                    _ = try? await NetworkManager.shared.ensureRegisterSessionOnServer(session)
+                }
+                let retry = try await NetworkManager.shared.uploadShiftReportDetailed(report)
+                return retry.success
+            }
+            throw error
+        }
     }
 
     func pullShiftReportsFromSupabase(_ modelContext: ModelContext) async {
@@ -60,7 +94,8 @@ extension SyncEngine {
                 let isDeletedRemote = remoteBool(remote["is_deleted"])
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if isDeletedRemote {
                         modelContext.delete(local)
                         localById.removeValue(forKey: idStr.lowercased())
@@ -122,7 +157,7 @@ extension SyncEngine {
 
     func syncOrderItemModifiers(_ modelContext: ModelContext) async {
         var descriptor = FetchDescriptor<OrderItemModifier>(
-            predicate: #Predicate<OrderItemModifier> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<OrderItemModifier> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let oims = try? modelContext.fetch(descriptor), !oims.isEmpty else { return }
@@ -171,7 +206,12 @@ extension SyncEngine {
                 }
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(
+                        localIsSynced: local.isSynced,
+                        localUpdatedAt: local.updatedAt,
+                        remoteUpdatedAt: updatedAt
+                    )
+                    guard decision == .applyRemote else { continue }
                     if isDeletedRemote {
                         modelContext.delete(local)
                         localById.removeValue(forKey: idStr.lowercased())
@@ -210,13 +250,16 @@ extension SyncEngine {
     // ──────────────────────────────────────────────────────────────────────
 
     func syncPromotionBundleItems(_ modelContext: ModelContext) async {
+        guard !OfflineSyncModeController.isEnabled,
+              !OfflineSyncModeController.isOfflineSubscriptionPlan else { return }
         var descriptor = FetchDescriptor<PromotionBundleItem>(
-            predicate: #Predicate<PromotionBundleItem> { $0.isDeleted == true || $0.isSynced == false }
+            predicate: #Predicate<PromotionBundleItem> { $0.isSynced == false }
         )
         descriptor.fetchLimit = 500
         guard let items = try? modelContext.fetch(descriptor), !items.isEmpty else { return }
 
         for item in items {
+            guard item.promotion?.isPublicPromotion == true else { continue }
             do {
                 // PromotionBundleItems are typically uploaded as part of the Promotion sync,
                 // but standalone sync ensures orphan items are also covered.
@@ -250,6 +293,8 @@ extension SyncEngine {
     }
 
     func pullPromotionBundleItemsFromSupabase(_ modelContext: ModelContext) async {
+        guard !OfflineSyncModeController.isEnabled,
+              !OfflineSyncModeController.isOfflineSubscriptionPlan else { return }
         do {
             let remoteItems = try await NetworkManager.shared.fetchPromotionBundleItemsFromSupabase()
             guard !remoteItems.isEmpty else { return }
@@ -271,13 +316,15 @@ extension SyncEngine {
 
                 var promotion: Promotion? = nil
                 if let pid = remote["promotion_id"] as? String { promotion = promoMap[pid.lowercased()] }
+                guard promotion?.isPublicPromotion == true else { continue }
                 var menuItem: MenuItem? = nil
                 if let mid = remote["menu_item_id"] as? String {
                     menuItem = (try? modelContext.fetch(FetchDescriptor<MenuItem>(predicate: #Predicate<MenuItem> { $0.id == mid })))?.first
                 }
 
                 if let local = localById[idStr.lowercased()] {
-                    guard local.isSynced, updatedAt > local.updatedAt else { continue }
+                    let decision = shouldApplyRemoteUpdate(localIsSynced: local.isSynced, localUpdatedAt: local.updatedAt, remoteUpdatedAt: updatedAt)
+                    guard decision == .applyRemote else { continue }
                     if isDeletedRemote {
                         modelContext.delete(local)
                         localById.removeValue(forKey: idStr.lowercased())

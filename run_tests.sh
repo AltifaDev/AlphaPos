@@ -31,6 +31,8 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────
+"$SCRIPT_DIR/scripts/verify_no_secrets.sh"
+
 if ! command -v swift &>/dev/null; then
     echo -e "${RED}ERROR: 'swift' command not found. Install Xcode or Swift toolchain.${RESET}"
     exit 1
@@ -45,9 +47,19 @@ echo ""
 # Order matters: shared helpers first, then TestResult, suites, then runner.
 SOURCES=(
     "$PROJECT_DIR/Core/Security/SecurityHelper.swift"
+    "$PROJECT_DIR/Core/Security/KeychainManager.swift"
+    "$PROJECT_DIR/Core/Auth/PermissionPolicyCore.swift"
     "$PROJECT_DIR/Core/Localization/AppLocalization.swift"
     "$PROJECT_DIR/Models/InventoryMovementType.swift"
+    "$PROJECT_DIR/Models/UnitOfMeasure.swift"
+    "$PROJECT_DIR/Features/Inventory/ViewModels/InventoryComplianceAnalytics.swift"
+    "$PROJECT_DIR/Features/Inventory/ViewModels/PrepRecipeMath.swift"
+    "$PROJECT_DIR/Features/Timecard/ShiftAttendanceMatcher.swift"
+    "$PROJECT_DIR/Core/Utilities/PlatformOrderNumber.swift"
+    "$PROJECT_DIR/Core/Utilities/ShiftSchedulingPolicy.swift"
+    "$PROJECT_DIR/Core/Notifications/NotificationDeliveryPolicy.swift"
     "$TESTS_DIR/TestResult.swift"
+    "$TESTS_DIR/PlatformOrderNumberTests.swift"
     "$TESTS_DIR/SecurityTests.swift"
     "$TESTS_DIR/POSTests.swift"
     "$TESTS_DIR/DecimalCurrencyTests.swift"
@@ -55,11 +67,32 @@ SOURCES=(
     "$TESTS_DIR/InventoryTests.swift"
     "$TESTS_DIR/InventoryEnhancementTests.swift"
     "$TESTS_DIR/InventoryEnterpriseTests.swift"
+    "$TESTS_DIR/InventoryComplianceTests.swift"
+    "$TESTS_DIR/PrepRecipeTests.swift"
     "$TESTS_DIR/TimecardTests.swift"
     "$TESTS_DIR/PayrollTests.swift"
+    "$TESTS_DIR/ShiftSchedulingPolicyTests.swift"
     "$TESTS_DIR/LocalizationTests.swift"
     "$TESTS_DIR/ExpenseTests.swift"
     "$TESTS_DIR/InventoryAdvancedTests.swift"
+    "$TESTS_DIR/RemoteReceiptPrintTests.swift"
+    "$TESTS_DIR/OrderSettlementTests.swift"
+    "$TESTS_DIR/CheckoutLifecycleTests.swift"
+    "$TESTS_DIR/PrintRoutingTests.swift"
+    "$TESTS_DIR/ReceiptComplianceTests.swift"
+    "$SCRIPT_DIR/AlphaPos/Core/Financial/ReceiptCalculationEngine.swift"
+    "$TESTS_DIR/ReceiptCalculationEngineTests.swift"
+    "$TESTS_DIR/KitchenLifecycleTests.swift"
+    "$TESTS_DIR/NotificationDeliveryPolicyTests.swift"
+    "$TESTS_DIR/DailySalesReportTests.swift"
+    "$TESTS_DIR/DashboardCalculationTests.swift"
+    "$TESTS_DIR/BusinessDayTests.swift"
+    "$PROJECT_DIR/Core/Financial/AccountingMath.swift"
+    "$PROJECT_DIR/Core/Financial/AccountingExport.swift"
+    "$PROJECT_DIR/Core/Financial/ForceCloseScopePolicy.swift"
+    "$TESTS_DIR/ForceCloseSessionScopeTests.swift"
+    "$TESTS_DIR/AccountingLedgerTests.swift"
+    "$TESTS_DIR/AccountingExportTests.swift"
     "$TESTS_DIR/TestRunner.swift"
 )
 
@@ -88,6 +121,7 @@ echo -e "${YELLOW}  Compiling test bundle …${RESET}"
 
 if ! swiftc \
         -D TEST_RUNNER \
+        -module-cache-path "$BUILD_DIR/module-cache" \
         "${SOURCES[@]}" \
         "$ENTRY_POINT" \
         -o "$BINARY" \

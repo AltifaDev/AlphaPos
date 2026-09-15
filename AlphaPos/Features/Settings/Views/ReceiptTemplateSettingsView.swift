@@ -40,11 +40,13 @@ struct ReceiptTemplateSettingsView: View {
     // ── Store info (AppStorage) ───────────────────────────────────────────────
     @AppStorage("store_name")        private var storeName       = "AlphaPos Restaurant"
     @AppStorage("store_phone")       private var storePhone      = "02-123-4567"
-    @AppStorage("store_address")     private var storeAddress    = "123 Sukhumvit Rd, Bangkok"
-    @AppStorage("store_tax_id")      private var storeTaxId      = "1234567890123"
+    @AppStorage("store_address")     private var storeAddress    = "123 Sukhumvit Rd, Bangkok, Thailand"
+    @AppStorage("store_tax_id")      private var storeTaxId      = ""
     @AppStorage("store_branch_code") private var storeBranchCode = "00000"
     @AppStorage("store_logo_path")   private var storeLogoPath   = ""
     @AppStorage("promptpay_number")  private var promptPayNumber = ""
+    @AppStorage("store_receipt_header") private var storeReceiptHeader = ""
+    @AppStorage("store_receipt_footer") private var storeReceiptFooter = ""
     @AppStorage("enable_tax")        private var enableTax       = true
     @AppStorage("enable_service_charge") private var enableServiceCharge = true
 
@@ -65,10 +67,10 @@ struct ReceiptTemplateSettingsView: View {
 
         var label: String {
             switch self {
-            case .receipt: return "Receipt"
-            case .kitchen: return "Kitchen"
-            case .bar:     return "Bar"
-            case .sticker: return "Sticker"
+            case .receipt: return "tpl_type_receipt".t
+            case .kitchen: return "tpl_type_kitchen".t
+            case .bar:     return "tpl_type_bar".t
+            case .sticker: return "tpl_type_sticker".t
             }
         }
         var icon: String {
@@ -89,10 +91,10 @@ struct ReceiptTemplateSettingsView: View {
         }
         var description: String {
             switch self {
-            case .receipt: return "Tax invoice · Customer receipt"
-            case .kitchen: return "Kitchen order ticket (ESC/POS)"
-            case .bar:     return "Beverage station ticket (ESC/POS)"
-            case .sticker: return "Cup label · TSPL 40×30 mm"
+            case .receipt: return "tpl_type_receipt_desc".t
+            case .kitchen: return "tpl_type_kitchen_desc".t
+            case .bar:     return "tpl_type_bar_desc".t
+            case .sticker: return "tpl_type_sticker_desc".t
             }
         }
         var previewType: ReceiptLivePreview.PreviewType {
@@ -130,7 +132,7 @@ struct ReceiptTemplateSettingsView: View {
                 Button {
                     saveTemplate()
                 } label: {
-                    Text(isCreatingNew ? "Create" : "Save")
+                    Text(isCreatingNew ? "tpl_create".t : "save".t)
                         .fontWeight(.bold)
                 }
                 .disabled(name.isEmpty)
@@ -201,8 +203,8 @@ struct ReceiptTemplateSettingsView: View {
             .background(Color.appSurface)
 
             Picker("Section", selection: $compactSection) {
-                Text("Settings").tag("editor")
-                Text("Preview").tag("preview")
+                Text("template_tab_edit".t).tag("editor")
+                Text("template_tab_preview".t).tag("preview")
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 16).padding(.vertical, 8)
@@ -228,8 +230,8 @@ struct ReceiptTemplateSettingsView: View {
 
     private var typeSelectorColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("PRINT TYPE")
-                .font(.system(size: 9, weight: .bold))
+            Text("tpl_print_type".t)
+                .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.textTertiary)
                 .tracking(1.2)
                 .padding(.horizontal, 12).padding(.top, 16).padding(.bottom, 8)
@@ -262,7 +264,7 @@ struct ReceiptTemplateSettingsView: View {
                     Image(systemName: type.icon)
                         .font(.system(size: 12, weight: .semibold))
                     Text(type.label)
-                        .font(.system(size: 13, weight: isSelected ? .bold : .regular))
+                        .font(.system(size: 12, weight: isSelected ? .bold : .regular))
                 }
                 .foregroundColor(isSelected ? .white : .textSecondary)
                 .padding(.horizontal, 14).padding(.vertical, 8)
@@ -279,7 +281,7 @@ struct ReceiptTemplateSettingsView: View {
                             .foregroundColor(isSelected ? .white : accent.opacity(0.8))
                     }
                     Text(type.label)
-                        .font(.system(size: 11, weight: isSelected ? .bold : .regular))
+                        .font(.system(size: 12, weight: isSelected ? .bold : .regular))
                         .foregroundColor(isSelected ? .textPrimary : .textSecondary)
                         .multilineTextAlignment(.center)
                 }
@@ -306,14 +308,14 @@ struct ReceiptTemplateSettingsView: View {
         HStack {
             VStack(alignment: .leading, spacing: 1) {
                 Text(selectedType.label + " Templates")
-                    .font(.headline).foregroundColor(.textPrimary)
+                    .font(.system(size: 12, weight: .semibold)).foregroundColor(.textPrimary)
                 Text(selectedType.description)
-                    .font(.caption2).foregroundColor(.textSecondary)
+                    .font(.system(size: 12)).foregroundColor(.textSecondary)
             }
             Spacer()
             Button { setupNewTemplateForm() } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.white)
                     .frame(width: 30, height: 30)
                     .background(Color.appAccent)
@@ -329,13 +331,13 @@ struct ReceiptTemplateSettingsView: View {
                 if templatesForType.isEmpty {
                     VStack(spacing: 10) {
                         Image(systemName: "doc.text.magnifyingglass")
-                            .font(.largeTitle).foregroundColor(.textTertiary)
-                        Text("No \(selectedType.label) templates")
-                            .font(.caption).foregroundColor(.textSecondary)
+                            .font(.system(size: 12, weight: .bold)).foregroundColor(.textTertiary)
+                        Text(LocalizationManager.shared.t("tpl_no_templates", selectedType.label))
+                            .font(.system(size: 12)).foregroundColor(.textSecondary)
                             .multilineTextAlignment(.center)
                         Button { setupNewTemplateForm() } label: {
-                            Label("Create First", systemImage: "plus")
-                                .font(.caption).fontWeight(.bold)
+                            Label("tpl_create_first".t, systemImage: "plus")
+                                .font(.system(size: 12)).fontWeight(.bold)
                                 .foregroundColor(.appAccent)
                         }
                         .buttonStyle(.plain)
@@ -358,13 +360,13 @@ struct ReceiptTemplateSettingsView: View {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(tmpl.name)
-                        .font(.subheadline)
+                        .font(.system(size: 12))
                         .fontWeight(isSelected ? .semibold : .regular)
                         .foregroundColor(.textPrimary)
                         .lineLimit(1)
                     HStack(spacing: 4) {
                         if tmpl.isDefault {
-                            Text("DEFAULT")
+                            Text("tpl_default_badge".t)
                                 .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 5).padding(.vertical, 2)
@@ -372,13 +374,13 @@ struct ReceiptTemplateSettingsView: View {
                                 .cornerRadius(4)
                         }
                         Text(tmpl.paperWidth)
-                            .font(.system(size: 9)).foregroundColor(.textTertiary)
+                            .font(.system(size: 12)).foregroundColor(.textTertiary)
                     }
                 }
                 Spacer()
                 if isSelected {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.appAccent)
                 }
             }
@@ -395,7 +397,7 @@ struct ReceiptTemplateSettingsView: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button(role: .destructive) { deleteTemplate(tmpl) } label: {
-                Label("Delete", systemImage: "trash")
+                Label("delete".t, systemImage: "trash")
             }
         }
     }
@@ -408,41 +410,41 @@ struct ReceiptTemplateSettingsView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 20) {
                 // ── Identity ────────────────────────────────────────────────
-                settingsSectionHeader("IDENTITY")
+                settingsSectionHeader("tpl_identity".t)
                 cardGroup {
-                    fieldLabel("Template Name")
-                    TextField("e.g. Standard Receipt", text: $name).apTemplateTextField()
+                    fieldLabel("tpl_name_lbl".t)
+                    TextField("tpl_name_ph".t, text: $name).apTemplateTextField()
                     apDivider
-                    fieldLabel("Paper Width")
-                    Picker("Paper Width", selection: $paperWidth) {
+                    fieldLabel("tpl_paper_width".t)
+                    Picker("tpl_paper_width".t, selection: $paperWidth) {
                         if selectedType != .sticker {
-                            Text("80 mm Thermal").tag("80mm")
-                            Text("58 mm Thermal").tag("58mm")
+                            Text("printer_paper_80".t).tag("80mm")
+                            Text("printer_paper_58".t).tag("58mm")
                         } else {
-                            Text("40 × 30 mm").tag("40x30")
-                            Text("50 × 25 mm").tag("50x25")
-                            Text("62 × 29 mm").tag("62x29")
+                            Text("tpl_paper_40x30".t).tag("40x30")
+                            Text("tpl_paper_50x25".t).tag("50x25")
+                            Text("tpl_paper_62x29".t).tag("62x29")
                         }
                     }
                     .pickerStyle(.segmented)
                     apDivider
                     Toggle(isOn: $isDefault) {
-                        toggleLabel("Set as Default",
-                                    sub: "Use this template when printing \(selectedType.label)")
+                        toggleLabel("set_as_default_lbl".t,
+                                    sub: LocalizationManager.shared.t("tpl_set_default_sub", selectedType.label))
                     }.tint(.appAccent)
                 }
 
                 // ── Type-specific settings ───────────────────────────────────
                 switch selectedType {
                 case .receipt:  receiptSpecificSettings
-                case .kitchen:  kitchenBarSettings(stationType: "Kitchen")
-                case .bar:      kitchenBarSettings(stationType: "Bar")
+                case .kitchen:  kitchenBarSettings(stationType: "kds_route_kitchen".t)
+                case .bar:      kitchenBarSettings(stationType: "kds_route_bar".t)
                 case .sticker:  stickerSettings
                 }
 
                 // ── Save button ──────────────────────────────────────────────
                 Button { saveTemplate() } label: {
-                    Text(isCreatingNew ? "Create Template" : "Save Changes")
+                    Text(isCreatingNew ? "tpl_create_template".t : "tpl_save_changes".t)
                         .fontWeight(.bold)
                 }
                 .apGradientButton(
@@ -460,56 +462,50 @@ struct ReceiptTemplateSettingsView: View {
     // ── Receipt-specific settings ────────────────────────────────────────────
     private var receiptSpecificSettings: some View {
         Group {
-            settingsSectionHeader("HEADER & FOOTER")
+            settingsSectionHeader("tpl_section_header_footer".t)
             cardGroup {
-                fieldLabel("Header Text")
-                TextField("e.g. Welcome to AlphaPos!", text: $headerText).apTemplateTextField()
+                fieldLabel("header_text_lbl".t)
+                TextField("tpl_header_ph".t, text: $headerText).apTemplateTextField()
                 apDivider
-                fieldLabel("Footer Text")
-                TextField("e.g. Follow us: @alphapos.cafe", text: $footerText).apTemplateTextField()
+                fieldLabel("footer_text_lbl".t)
+                TextField("tpl_footer_ph".t, text: $footerText).apTemplateTextField()
             }
 
-            settingsSectionHeader("BRANDING & MEDIA")
+            settingsSectionHeader("tpl_section_branding".t)
             cardGroup {
                 Toggle(isOn: $showLogo) {
-                    toggleLabel("Store Logo",
-                                sub: storeLogoPath.isEmpty
-                                    ? "⚠ No logo — set in Store Management"
-                                    : "✓ Logo configured")
+                    toggleLabel("tpl_store_logo".t, sub: "tpl_store_logo_sub".t)
                 }.tint(.appAccent)
                 apDivider
                 Toggle(isOn: $showQRCode) {
-                    toggleLabel("PromptPay QR",
-                                sub: promptPayNumber.isEmpty
-                                    ? "Set PromptPay number in Store Management"
-                                    : "PromptPay: \(maskedPromptPay)")
+                    toggleLabel("tpl_prebill_qr".t, sub: "tpl_prebill_qr_sub".t)
                 }.tint(.appAccent)
             }
 
-            settingsSectionHeader("CONTENT VISIBILITY")
+            settingsSectionHeader("tpl_section_visibility".t)
             cardGroup {
                 Toggle(isOn: $showTaxId) {
-                    toggleLabel("Tax ID & Branch Code", sub: "TAX ID · BR: 00000")
+                    toggleLabel("tpl_tax_branch".t, sub: "tpl_tax_branch_sub".t)
                 }.tint(.appAccent)
                 apDivider
                 Toggle(isOn: $showCustomerInfo) {
-                    toggleLabel("Customer Info", sub: "Customer name · Tax exemption no.")
+                    toggleLabel("tpl_customer_info".t, sub: "tpl_customer_info_sub".t)
                 }.tint(.appAccent)
                 apDivider
                 Toggle(isOn: $showTableInfo) {
-                    toggleLabel("Table & Queue", sub: "Table number · Queue number")
+                    toggleLabel("tpl_table_queue".t, sub: "tpl_table_queue_sub".t)
                 }.tint(.appAccent)
                 apDivider
                 Toggle(isOn: $showOrderType) {
-                    toggleLabel("Order Type Badge", sub: "Dine-in / Take-out / Delivery")
+                    toggleLabel("tpl_order_type".t, sub: "tpl_order_type_sub".t)
                 }.tint(.appAccent)
                 apDivider
                 Toggle(isOn: $showItemModifiers) {
-                    toggleLabel("Item Modifiers", sub: "+ Extra Cheese · Sweet 50%")
+                    toggleLabel("tpl_modifiers".t, sub: "tpl_modifiers_sub".t)
                 }.tint(.appAccent)
                 apDivider
                 Toggle(isOn: $showServiceCharge) {
-                    toggleLabel("Service Charge Line", sub: "10% service charge row")
+                    toggleLabel("tpl_service_line".t, sub: "tpl_service_line_sub".t)
                 }.tint(.appAccent)
             }
         }
@@ -518,46 +514,46 @@ struct ReceiptTemplateSettingsView: View {
     // ── Kitchen / Bar settings ────────────────────────────────────────────────
     @ViewBuilder
     private func kitchenBarSettings(stationType: String) -> some View {
-        settingsSectionHeader("\(stationType.uppercased()) TICKET OPTIONS")
+        settingsSectionHeader(LocalizationManager.shared.t("tpl_section_ticket_options", stationType))
         cardGroup {
             Toggle(isOn: $showTableInfo) {
-                toggleLabel("Show Table & Queue", sub: "Table number · Queue number")
+                toggleLabel("tpl_show_table_queue".t, sub: "tpl_table_queue_sub".t)
             }.tint(.appAccent)
             apDivider
             Toggle(isOn: $showOrderType) {
-                toggleLabel("Show Order Type", sub: "Dine-in / Take-out / Delivery")
+                toggleLabel("tpl_show_order_type".t, sub: "tpl_order_type_sub".t)
             }.tint(.appAccent)
             apDivider
             Toggle(isOn: $showItemModifiers) {
-                toggleLabel("Show Modifiers & Notes", sub: "Extra options · Special instructions")
+                toggleLabel("tpl_show_modifiers_notes".t, sub: "tpl_show_modifiers_notes_sub".t)
             }.tint(.appAccent)
         }
 
-        settingsSectionHeader("HEADER & FOOTER")
+        settingsSectionHeader("tpl_section_header_footer".t)
         cardGroup {
-            fieldLabel("Custom Header Text")
-            TextField("e.g. URGENT ORDER", text: $headerText).apTemplateTextField()
+            fieldLabel("tpl_custom_header".t)
+            TextField("tpl_header_ph".t, text: $headerText).apTemplateTextField()
             apDivider
-            fieldLabel("Custom Footer Text")
-            TextField("e.g. Please prepare ASAP", text: $footerText).apTemplateTextField()
+            fieldLabel("tpl_custom_footer".t)
+            TextField("tpl_footer_ph".t, text: $footerText).apTemplateTextField()
         }
     }
 
     // ── Sticker settings ──────────────────────────────────────────────────────
     private var stickerSettings: some View {
         Group {
-            settingsSectionHeader("LABEL OPTIONS")
+            settingsSectionHeader("tpl_section_label_options".t)
             cardGroup {
                 Toggle(isOn: $showTableInfo) {
-                    toggleLabel("Show Table Number", sub: "Printed on top-left of sticker")
+                    toggleLabel("tpl_show_table_num".t, sub: "tpl_show_table_num_sub".t)
                 }.tint(.appAccent)
                 apDivider
                 Toggle(isOn: $showItemModifiers) {
-                    toggleLabel("Show Modifiers", sub: "Up to 3 modifier lines")
+                    toggleLabel("tpl_show_mods_sticker".t, sub: "tpl_show_mods_sticker_sub".t)
                 }.tint(.appAccent)
                 apDivider
                 Toggle(isOn: $showOrderType) {
-                    toggleLabel("Show Queue Number", sub: "Printed bottom-right of sticker")
+                    toggleLabel("tpl_show_queue".t, sub: "tpl_show_queue_sub".t)
                 }.tint(.appAccent)
             }
         }
@@ -576,8 +572,8 @@ struct ReceiptTemplateSettingsView: View {
             storeBranchCode:   storeBranchCode,
             storeLogoPath:     storeLogoPath,
             promptPayNumber:   promptPayNumber,
-            headerText:        headerText,
-            footerText:        footerText,
+            headerText:        headerText.isEmpty ? storeReceiptHeader : headerText,
+            footerText:        footerText.isEmpty ? storeReceiptFooter : footerText,
             showTaxId:         showTaxId,
             showCustomerInfo:  showCustomerInfo,
             paperWidth:        paperWidth,
@@ -612,19 +608,19 @@ struct ReceiptTemplateSettingsView: View {
     }
 
     private func settingsSectionHeader(_ text: String) -> some View {
-        Text(text).font(.caption).fontWeight(.bold)
+        Text(text).font(.system(size: 12)).fontWeight(.bold)
             .foregroundColor(.appAccent).tracking(1.0)
     }
 
     private func fieldLabel(_ text: String) -> some View {
-        Text(text).font(.caption).fontWeight(.bold).foregroundColor(.textSecondary)
+        Text(text).font(.system(size: 12)).fontWeight(.bold).foregroundColor(.textSecondary)
     }
 
     @ViewBuilder
     private func toggleLabel(_ title: String, sub: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.body).foregroundColor(.textPrimary)
-            Text(sub).font(.caption2).foregroundColor(.textTertiary)
+            Text(title).font(.system(size: 12)).foregroundColor(.textPrimary)
+            Text(sub).font(.system(size: 12)).foregroundColor(.textTertiary)
         }
     }
 
@@ -682,7 +678,11 @@ struct ReceiptTemplateSettingsView: View {
     }
 
     private func saveTemplate() {
-        if isDefault { for t in templates { t.isDefault = false } }
+        if isDefault {
+            for t in templates where t.templateType == selectedType.rawValue {
+                t.isDefault = false
+            }
+        }
 
         if isCreatingNew {
             let t = ReceiptTemplate(
@@ -748,7 +748,7 @@ extension View {
             .background(Color.appSurfaceHigh)
             .foregroundColor(Color.textPrimary)
             .cornerRadius(8)
-            .font(.body)
+            .font(.system(size: 12))
     }
 }
 
@@ -761,6 +761,7 @@ extension View {
 struct ReceiptLivePreview: View {
     @AppStorage("enable_tax") private var enableTax = true
     @AppStorage("enable_service_charge") private var enableServiceCharge = true
+    @AppStorage("store_tax_type") private var storeTaxType = "inclusive"
 
     // Store info
     let storeName:         String
@@ -785,11 +786,19 @@ struct ReceiptLivePreview: View {
     let showOrderType:     Bool
     /// Fixed preview type driven by parent (overrides selector when set)
     var fixedPreviewType:   PreviewType = .receipt
+    /// Accent for toolbar title / eye icon (Store Settings uses teal).
+    var accentColor: Color = .appAccent
 
     // Computed
     private var paperPx: CGFloat { paperWidth == "58mm" ? 272 : 340 }
     private var hPad: CGFloat    { paperWidth == "58mm" ? 12 : 20 }
     private var divLen: Int      { paperWidth == "58mm" ? 32 : 42 }
+    private var isTaxInvoice: Bool {
+        storeTaxType == "inclusive" && ReceiptComplianceGate.canIssueAbbreviatedTaxInvoice(
+            vatEnabled: enableTax,
+            taxId: storeTaxId
+        )
+    }
 
     // Loaded assets
     @State private var logoImage:  UIImage? = nil
@@ -817,21 +826,21 @@ struct ReceiptLivePreview: View {
         VStack(spacing: 10) {
             // Toolbar
             HStack {
-                Image(systemName: "eye.fill").font(.caption).foregroundColor(.appAccent)
-                Text("LIVE PREVIEW")
-                    .font(.caption).fontWeight(.bold).foregroundColor(.appAccent).tracking(1)
+                Image(systemName: "eye.fill").font(.system(size: 12)).foregroundColor(accentColor)
+                Text("tpl_live_preview".t)
+                    .font(.system(size: 12)).fontWeight(.bold).foregroundColor(accentColor).tracking(1)
                 Spacer()
                 HStack(spacing: 6) {
                     if !storeLogoPath.isEmpty {
                         Image(systemName: "photo.fill")
-                            .font(.system(size: 9)).foregroundColor(.appTeal)
+                            .font(.system(size: 12)).foregroundColor(.appTeal)
                     }
                     if !promptPayNumber.isEmpty {
                         Image(systemName: "qrcode")
-                            .font(.system(size: 9)).foregroundColor(.appTeal)
+                            .font(.system(size: 12)).foregroundColor(.appTeal)
                     }
                     Text(paperWidth)
-                        .font(.system(size: 10)).fontWeight(.bold).foregroundColor(.textSecondary)
+                        .font(.system(size: 12)).fontWeight(.bold).foregroundColor(.textSecondary)
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .background(Color.appSurfaceHigh).cornerRadius(6)
                 }
@@ -868,8 +877,8 @@ struct ReceiptLivePreview: View {
 
             // ─────────────────────────────────────────────────────────
 
-            Text("Preview matches ESC/POS output • What you see is what prints")
-                .font(.system(size: 9)).foregroundColor(.textTertiary)
+            Text("tpl_preview_hint".t)
+                .font(.system(size: 12)).foregroundColor(.textTertiary)
                 .multilineTextAlignment(.center).padding(.horizontal, 8)
         }
         .padding()
@@ -878,6 +887,7 @@ struct ReceiptLivePreview: View {
         .onChange(of: storeLogoPath)   { _, _ in loadAssets() }
         .onChange(of: promptPayNumber) { _, _ in loadAssets() }
         .onChange(of: showQRCode)      { _, _ in if showQRCode { generateQR() } }
+        .onChange(of: fixedPreviewType) { _, _ in generateQR() }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -914,7 +924,7 @@ struct ReceiptLivePreview: View {
                 Text("#AP-102546")
                     .fontWeight(.bold)
             }
-            .font(.system(size: 9, design: .monospaced))
+            .font(.system(size: 12, design: .monospaced))
             .foregroundColor(.black)
 
             if showTableInfo {
@@ -923,7 +933,7 @@ struct ReceiptLivePreview: View {
                     Spacer()
                     Text("QUEUE: #32")
                 }
-                .font(.system(size: 9, design: .monospaced))
+                .font(.system(size: 12, design: .monospaced))
                 .foregroundColor(.black)
             }
         }
@@ -948,22 +958,22 @@ struct ReceiptLivePreview: View {
                     // Item name — double-height style
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text("x\(item.qty)")
-                            .font(.system(size: 16, weight: .black, design: .monospaced))
+                            .font(.system(size: 12, weight: .black, design: .monospaced))
                             .foregroundColor(accent)
                         Text(item.name)
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
                             .foregroundColor(.black)
                     }
                     // Modifiers
                     ForEach(item.mods, id: \.self) { mod in
                         Text("  >> \(mod)")
-                            .font(.system(size: 9, design: .monospaced))
+                            .font(.system(size: 12, design: .monospaced))
                             .foregroundColor(.black.opacity(0.65))
                     }
                     // Note
                     if let note = item.note {
                         Text("  ** \(note)")
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
                             .foregroundColor(accent)
                     }
                 }
@@ -1002,9 +1012,9 @@ struct ReceiptLivePreview: View {
         return VStack(spacing: 6) {
             // Label size picker label
             HStack {
-                Image(systemName: "tag.fill").font(.caption2).foregroundColor(.appAccent)
+                Image(systemName: "tag.fill").font(.system(size: 12)).foregroundColor(.appAccent)
                 Text("40 × 30 mm  (TSPL / Label Printer)")
-                    .font(.system(size: 9)).foregroundColor(.textSecondary)
+                    .font(.system(size: 12)).foregroundColor(.textSecondary)
                 Spacer()
             }
 
@@ -1029,11 +1039,11 @@ struct ReceiptLivePreview: View {
             // Row 1: Table (left) + Cup counter (right)
             HStack {
                 Text(table)
-                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                    .font(.system(size: 12, weight: .black, design: .monospaced))
                     .foregroundColor(.black)
                 Spacer()
                 Text("\(cupIdx)/\(totalCups)")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
                     .foregroundColor(.black)
             }
             .padding(.horizontal, 8).padding(.top, 6).padding(.bottom, 4)
@@ -1053,12 +1063,12 @@ struct ReceiptLivePreview: View {
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(mods.prefix(3), id: \.self) { mod in
                     Text("- \(mod)")
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(.system(size: 12, design: .monospaced))
                         .foregroundColor(.black.opacity(0.75))
                 }
                 if let note = note {
                     Text("* \(note)")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
                         .foregroundColor(.black)
                 }
             }
@@ -1102,88 +1112,73 @@ struct ReceiptLivePreview: View {
                 .frame(maxWidth: .infinity).padding(.top, 10).padding(.bottom, 2)
         }
 
-        // ── Logo ────────────────────────────────────────────────────────
-        VStack(spacing: 4) {
+        // ── Logo & Store Header (Centered) ──────────────────────────────
+        VStack(spacing: 3) {
             if showLogo, let img = logoImage {
                 Image(uiImage: img)
                     .resizable().scaledToFit()
-                    .frame(width: 56, height: 56)
+                    .frame(width: paperWidth == "58mm" ? 80 : 110, height: paperWidth == "58mm" ? 80 : 110)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .padding(.top, headerText.isEmpty ? 14 : 6)
-            } else if showLogo {
-                // Placeholder เมื่อยังไม่มีโลโก้
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [3,2]))
-                        .frame(width: 52, height: 52)
-                    Image(systemName: "storefront.fill")
-                        .font(.title2).foregroundColor(.gray.opacity(0.4))
-                }
-                .padding(.top, headerText.isEmpty ? 14 : 6)
-            } else {
-                // showLogo = false — icon เล็กๆ แทน
-                Image(systemName: "storefront.fill")
-                    .font(.title3).foregroundColor(.gray.opacity(0.3))
-                    .padding(.top, 14)
+                    .padding(.top, headerText.isEmpty ? 12 : 4)
             }
 
-            Text(storeName.uppercased())
-                .font(.system(.footnote, design: .monospaced)).fontWeight(.black)
+            Text(storeName)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .foregroundColor(.black).multilineTextAlignment(.center).frame(maxWidth: .infinity)
             Text(storeAddress)
-                .font(.system(size: 8, design: .monospaced)).foregroundColor(.gray)
-                .multilineTextAlignment(.center).frame(maxWidth: .infinity)
+                .font(.system(size: 7.5, design: .monospaced)).foregroundColor(.black.opacity(0.78))
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
             Text("TEL: \(storePhone)")
-                .font(.system(size: 7, design: .monospaced)).foregroundColor(.gray)
-            Text("TAX INVOICE (ABBREVIATED)")
-                .font(.system(size: 8, design: .monospaced)).fontWeight(.bold)
-                .foregroundColor(.black).padding(.vertical, 3)
+                .font(.system(size: 7.5, design: .monospaced)).foregroundColor(.black.opacity(0.78))
+            if showTaxId && !storeTaxId.isEmpty {
+                Text("TAX ID: \(storeTaxId)  BRANCH: \(storeBranchCode)")
+                    .font(.system(size: 7.5, design: .monospaced)).foregroundColor(.black.opacity(0.85))
+            }
+            Text(isTaxInvoice ? "ใบกำกับภาษีอย่างย่อ" : "ใบเสร็จรับเงิน")
+                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                .foregroundColor(.black).padding(.top, 2)
+            if showTableInfo {
+                Text("คิวที่ #32")
+                    .font(.system(size: 14, weight: .black, design: .monospaced))
+                    .foregroundColor(.black).padding(.bottom, 2)
+            }
         }
         .frame(maxWidth: .infinity)
 
         monoDiv
 
-        // ── Tax ID ──────────────────────────────────────────────────────
-        if showTaxId {
-            HStack {
-                Text("TAX ID: \(storeTaxId)")
-                Spacer()
-                Text("BR: \(storeBranchCode)")
+        // ── Customer & Order Info ───────────────────────────────────────
+        VStack(alignment: .leading, spacing: 1.5) {
+            if showCustomerInfo {
+                mono8("ลูกค้า (Customer): สมชาย ว. (Member)")
+                mono8("TAX ID ลูกค้า: 0105559876543")
+                monoDiv
             }
-            .font(.system(size: 8, design: .monospaced)).foregroundColor(.black).padding(.vertical, 2)
-        }
 
-        // ── Customer Info ───────────────────────────────────────────────
-        if showCustomerInfo {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("CUSTOMER : Somchai V. (Member)")
-                Text("TAX EXEMPT: EX-99221")
-            }
-            .font(.system(size: 8, design: .monospaced)).foregroundColor(.black).padding(.bottom, 2)
-        }
-
-        monoDiv
-
-        // ── Order Info ──────────────────────────────────────────────────
-        Group {
-            mono8("DATE : 2026-06-22  14:32")
-            mono8("ORDER: #AP-102546-CN")
+            mono8("วันที่ (Date): 2026-06-22 14:32")
+            mono8("เลขที่ใบเสร็จ: RCP-20260622-0001")
+            mono8("ออเดอร์ (Order): #AP-102546")
             if showTableInfo {
-                mono8("TABLE: Table 08 (Zone A)  QUEUE: #32")
+                mono8("โต๊ะ (Table): 08 (Zone A)")
             }
             if showOrderType {
-                mono8("TYPE : DINE-IN  ·  GUESTS: 3")
+                mono8("ประเภท: ทานที่ร้าน (Dine-In) | จำนวน: 3 ท่าน")
             }
+            mono8("พนักงาน (Cashier): แอดมิน (Admin)")
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 1)
 
         monoDiv
 
         // ── Items Header ────────────────────────────────────────────────
         HStack {
-            Text("ITEM").fontWeight(.bold).frame(maxWidth: .infinity, alignment: .leading)
-            Text("QTY").fontWeight(.bold).frame(width: 28, alignment: .center)
-            Text("PRICE").fontWeight(.bold).frame(width: 58, alignment: .trailing)
+            Text("รายการ / ITEM").fontWeight(.bold).frame(maxWidth: .infinity, alignment: .leading)
+            Text("จำนวน").fontWeight(.bold).frame(width: 32, alignment: .trailing)
+            Text("รวมเงิน").fontWeight(.bold).frame(width: 60, alignment: .trailing)
         }
         .font(.system(size: 8, design: .monospaced)).foregroundColor(.black)
 
@@ -1192,13 +1187,16 @@ struct ReceiptLivePreview: View {
         // ── Items ───────────────────────────────────────────────────────
         Group {
             itemRow("Premium Beef Burger", qty: 2, price: "440.00")
+            unitPriceRow(qty: 2, unitPrice: "220.00")
             if showItemModifiers {
                 modRow("+ Extra Cheese (+฿40)")
                 modRow("+ Medium Rare")
             }
             itemRow("Crispy French Fries", qty: 1, price: "120.00")
+            unitPriceRow(qty: 1, unitPrice: "120.00")
             if showItemModifiers { modRow("+ Spicy Seasoning") }
             itemRow("Matcha Latte (Oat)", qty: 2, price: "220.00")
+            unitPriceRow(qty: 2, unitPrice: "110.00")
             if showItemModifiers {
                 modRow("+ Sweet 50% (x2)")
                 modRow("+ Oat Milk (+฿30)")
@@ -1208,93 +1206,75 @@ struct ReceiptLivePreview: View {
         monoDiv
 
         // ── Totals ──────────────────────────────────────────────────────
-        let previewSubtotal = 780.00
-        let previewSC = (showServiceCharge && enableServiceCharge) ? 78.00 : 0.00
-        let previewDiscount = -39.00
-        let previewTotal = previewSubtotal + previewSC + previewDiscount
+        let previewCalculation = ReceiptCalculationEngine.calculate(.init(
+            lines: [
+                .init(id: "burger", name: "Premium Beef Burger", quantity: 2, unitPrice: 220, taxRate: enableTax ? 7 : 0, taxInclusive: storeTaxType == "inclusive"),
+                .init(id: "fries", name: "Crispy French Fries", quantity: 1, unitPrice: 120, taxRate: enableTax ? 7 : 0, taxInclusive: storeTaxType == "inclusive"),
+                .init(id: "latte", name: "Matcha Latte (Oat)", quantity: 2, unitPrice: 110, taxRate: enableTax ? 7 : 0, taxInclusive: storeTaxType == "inclusive")
+            ],
+            discount: 39,
+            serviceChargeRate: 10,
+            serviceChargeEnabled: showServiceCharge && enableServiceCharge,
+            serviceChargeTaxable: true,
+            serviceChargeTaxRate: enableTax ? 7 : 0,
+            serviceChargeTaxInclusive: storeTaxType == "inclusive",
+            customerTaxExempt: false,
+            roundingMode: .perLine
+        ))
+        let previewSubtotal = NSDecimalNumber(decimal: previewCalculation.subtotal).doubleValue
+        let previewSC = NSDecimalNumber(decimal: previewCalculation.serviceCharge).doubleValue
+        let previewTax = NSDecimalNumber(decimal: previewCalculation.tax).doubleValue
+        let previewTaxableBase = NSDecimalNumber(decimal: previewCalculation.taxableBase).doubleValue
+        let previewTotal = NSDecimalNumber(decimal: previewCalculation.total).doubleValue
         
         Group {
-            totalRow("SUBTOTAL", value: "780.00")
-            if showServiceCharge && enableServiceCharge { totalRow("SERVICE CHARGE (10%)", value: "78.00") }
-            if enableTax { totalRow("7% VAT (INCLUSIVE)", value: "59.36") }
-            totalRow("DISCOUNT (PROMO)", value: "-39.00")
+            totalRow("ยอดรวม (SUBTOTAL)", value: String(format: "%.2f", previewSubtotal))
+            if showServiceCharge && enableServiceCharge {
+                totalRow("ค่าบริการ (SERVICE 10%)", value: String(format: "%.2f", previewSC))
+            }
+            totalRow("ส่วนลด (DISCOUNT)", value: "-39.00")
+            if enableTax {
+                totalRow("ฐานภาษี (TAX BASE)", value: String(format: "%.2f", previewTaxableBase))
+                totalRow(storeTaxType == "inclusive" ? "ภาษี VAT 7% (INCLUDED)" : "ภาษี VAT 7%", value: String(format: "%.2f", previewTax))
+            }
         }
         .font(.system(size: 8, design: .monospaced)).foregroundColor(.black)
 
         Rectangle().fill(Color.black.opacity(0.5)).frame(height: 1).padding(.vertical, 3)
 
         HStack {
-            Text("GRAND TOTAL").fontWeight(.black)
+            Text("ยอดรวมสุทธิ (TOTAL)").fontWeight(.black)
             Spacer()
-            Text(String(format: "฿%.2f", previewTotal)).fontWeight(.black)
+            Text(String(format: "THB %.2f", previewTotal)).fontWeight(.black)
         }
         .font(.system(.caption, design: .monospaced)).foregroundColor(.black)
 
         monoDiv
 
-        // ── Payment + QR ────────────────────────────────────────────────
-        VStack(spacing: 4) {
-            Text(promptPayNumber.isEmpty ? "PAID VIA CASH / TRANSFER" : "SCAN TO PAY — PROMPTPAY")
-                .font(.system(size: 8, design: .monospaced)).fontWeight(.bold)
-                .foregroundColor(.black).frame(maxWidth: .infinity, alignment: .center)
+        // ── Payment & Change Breakdown ──────────────────────────────────
+        VStack(alignment: .leading, spacing: 2) {
+            totalRow("ชำระโดย (เงินสด / CASH)", value: String(format: "%.2f", previewTotal))
+            totalRow("  รับเงินมา (TENDERED)", value: "1000.00")
+            totalRow("  เงินทอน (CHANGE)", value: String(format: "%.2f", max(0, 1000.00 - previewTotal)))
+        }
+        .font(.system(size: 8, design: .monospaced)).foregroundColor(.black)
 
-            if showQRCode {
-                if let qr = qrImage {
-                    // QR จริงจาก CIQRCodeGenerator
-                    Image(uiImage: qr)
-                        .resizable().interpolation(.none).scaledToFit()
-                        .frame(width: 88, height: 88)
-                        .padding(4)
-                        .background(Color.white)
-                        .cornerRadius(4)
-                        .overlay(RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.black.opacity(0.15), lineWidth: 1))
-                        .padding(.vertical, 4)
-                    if !promptPayNumber.isEmpty {
-                        Text("PromptPay: \(maskedNumber(promptPayNumber))")
-                            .font(.system(size: 7, design: .monospaced)).foregroundColor(.gray)
-                    }
-                } else {
-                    // Placeholder ขณะ generating หรือไม่มี promptpay number
-                    ZStack {
-                        Rectangle().fill(Color.white).frame(width: 88, height: 88)
-                            .border(Color.black.opacity(0.2), width: 1)
-                        if promptPayNumber.isEmpty {
-                            VStack(spacing: 3) {
-                                Image(systemName: "qrcode")
-                                    .font(.system(size: 28)).foregroundColor(.black.opacity(0.15))
-                                Text("Set PromptPay\nnumber in\nStore Settings")
-                                    .font(.system(size: 6)).foregroundColor(.black.opacity(0.3))
-                                    .multilineTextAlignment(.center)
-                            }
-                        } else {
-                            ProgressView().scaleEffect(0.7)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
+        monoDiv
 
+        // ── Enhanced Footer ─────────────────────────────────────────────
+        VStack(spacing: 3) {
+            Text("ขอบคุณที่ใช้บริการ")
+                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                .foregroundColor(.black)
             Text("THANK YOU FOR YOUR PATRONAGE")
-                .font(.system(size: 8, design: .monospaced)).fontWeight(.bold)
-                .foregroundColor(.black).padding(.top, 2)
-
-            // Barcode (order number) — แสดงเสมอ ถ้า showQRCode เปิด
-            if showQRCode {
-                VStack(spacing: 2) {
-                    HStack(spacing: 0) {
-                        ForEach(Array(barcodeWidths.enumerated()), id: \.offset) { _, w in
-                            Rectangle().fill(Color.black).frame(width: w, height: 22)
-                            Rectangle().fill(Color.white).frame(width: 1, height: 22)
-                        }
-                    }
-                    Text("AP-102546-CN")
-                        .font(.system(size: 6, design: .monospaced)).foregroundColor(.black)
-                }
-                .padding(.top, 4)
-            }
+                .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                .foregroundColor(.black)
+            Text("โปรดตรวจสอบรายการและเงินทอนก่อนออกจากร้าน")
+                .font(.system(size: 7, design: .monospaced))
+                .foregroundColor(.black.opacity(0.75))
         }
         .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
 
         // ── Footer Text ─────────────────────────────────────────────────
         if !footerText.isEmpty {
@@ -1318,19 +1298,39 @@ struct ReceiptLivePreview: View {
     }
 
     private func loadLogo() {
-        guard !storeLogoPath.isEmpty else { logoImage = nil; return }
         Task.detached(priority: .userInitiated) {
             let fm = FileManager.default
             var img: UIImage? = nil
 
             // storeLogoPath อาจเป็น filename หรือ full path
-            if fm.fileExists(atPath: storeLogoPath) {
+            if let fileURL = URL(string: storeLogoPath), fileURL.isFileURL {
+                img = UIImage(contentsOfFile: fileURL.path)
+            } else if fm.fileExists(atPath: storeLogoPath) {
                 img = UIImage(contentsOfFile: storeLogoPath)
-            } else if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+            } else if !storeLogoPath.isEmpty,
+                      let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
                 let url = docs.appendingPathComponent(storeLogoPath)
                 if let data = try? Data(contentsOf: url) {
                     img = UIImage(data: data)
                 }
+            }
+
+            // ร้านที่ซิงก์มาจาก server เก็บโลโก้เป็น remote URL แทน local path
+            if img == nil,
+               let rawURL = UserDefaults.standard.string(forKey: "store_logo_url"),
+               let remoteURL = URL(string: rawURL),
+               let data = try? Data(contentsOf: remoteURL),
+               let remoteImage = UIImage(data: data) {
+                img = remoteImage
+                if let cacheURL = ESCPOSBuilder.remoteLogoCacheURL() {
+                    try? data.write(to: cacheURL, options: .atomic)
+                }
+            }
+
+            if img == nil,
+               let cacheURL = ESCPOSBuilder.remoteLogoCacheURL(),
+               let data = try? Data(contentsOf: cacheURL) {
+                img = UIImage(data: data)
             }
 
             let loadedImage = img
@@ -1341,10 +1341,14 @@ struct ReceiptLivePreview: View {
     private func generateQR() {
         guard showQRCode else { qrImage = nil; return }
 
-        // ถ้าไม่มีเบอร์ PromptPay → ใช้ URL ตัวอย่าง
-        let qrString = promptPayNumber.isEmpty
-            ? "https://alphapos.app/receipt/preview"
-            : buildPromptPayPayload(target: promptPayNumber, amount: 878.00)
+        let qrString: String
+        if previewType == .receipt {
+            qrString = "ALPHAPOS-RECEIPT:RCP-20260622-0001"
+        } else {
+            qrString = promptPayNumber.isEmpty
+                ? "https://alphapos.app/receipt/preview"
+                : buildPromptPayPayload(target: promptPayNumber, amount: 878.00)
+        }
 
         Task.detached(priority: .userInitiated) {
             guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return }
@@ -1421,10 +1425,16 @@ struct ReceiptLivePreview: View {
     private func itemRow(_ name: String, qty: Int, price: String) -> some View {
         HStack {
             Text(name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-            Text("\(qty)").frame(width: 28, alignment: .center)
-            Text(price).frame(width: 58, alignment: .trailing)
+            Text("\(qty)").frame(width: 32, alignment: .trailing)
+            Text(price).frame(width: 60, alignment: .trailing)
         }
         .font(.system(size: 8, design: .monospaced)).foregroundColor(.black)
+    }
+
+    private func unitPriceRow(qty: Int, unitPrice: String) -> some View {
+        Text("  \(qty) × THB \(unitPrice) / unit")
+            .font(.system(size: 7, design: .monospaced))
+            .foregroundColor(.black.opacity(0.65))
     }
 
     private func modRow(_ text: String) -> some View {

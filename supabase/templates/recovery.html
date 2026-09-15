@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
+  <title>AlphaPos</title>
+  <!--
+    Multi-locale recovery / forgot-password mail (GoTrue html/template).
+    Locale from user_metadata.preferred_language (en|th|zh|ja|ko|id|ms)
+    Vars: .ConfirmationURL .Token .Email .Data
+  -->
+</head>
+<body style="margin:0;padding:0;background-color:#F4F6F9;-webkit-text-size-adjust:100%;">
+{{ $lang := "en" }}
+{{ with .Data }}{{ with index . "preferred_language" }}{{ $lang = printf "%v" . }}{{ end }}{{ end }}
+{{ if eq $lang "th" }}
+  <div style="display:none;max-height:0;overflow:hidden;">รีเซ็ตรหัสผ่านบัญชี AlphaPos ของคุณ</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.3;font-weight:700;color:#0F172A;">รีเซ็ตรหัสผ่าน</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">{{ if .Email }}เราได้รับคำขอรีเซ็ตรหัสผ่านสำหรับ <strong style="color:#0F172A;">{{ .Email }}</strong> กดปุ่มด้านล่างเพื่อตั้งรหัสผ่านใหม่{{ else }}เราได้รับคำขอรีเซ็ตรหัสผ่าน กดปุ่มด้านล่างเพื่อตั้งรหัสผ่านใหม่{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">ตั้งรหัสผ่านใหม่</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#64748B;">หรือกรอกรหัสนี้ในแอป</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">รหัสหมดอายุในประมาณ 1 ชั่วโมง</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;line-height:1.55;color:#64748B;">ถ้าปุ่มใช้ไม่ได้ ให้คัดลอกลิงก์นี้ไปเปิดในเบราว์เซอร์:</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">หากคุณไม่ได้ขอรีเซ็ตรหัสผ่าน สามารถเพิกเฉยอีเมลนี้ได้ รหัสผ่านจะไม่เปลี่ยน</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+{{ else if eq $lang "zh" }}
+  <div style="display:none;max-height:0;overflow:hidden;">重置您的 AlphaPos 密码</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.3;font-weight:700;color:#0F172A;">重置密码</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">{{ if .Email }}我们收到了为 <strong style="color:#0F172A;">{{ .Email }}</strong> 重置密码的请求。点击下方按钮设置新密码。{{ else }}我们收到了重置密码的请求。点击下方按钮设置新密码。{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">设置新密码</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#64748B;">或在应用中输入此验证码</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">约 1 小时后过期</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;line-height:1.55;color:#64748B;">如果按钮无效，请复制此链接到浏览器：</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">如非本人请求，请忽略此邮件。您的密码不会被更改。</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+{{ else if eq $lang "ja" }}
+  <div style="display:none;max-height:0;overflow:hidden;">AlphaPosのパスワードをリセット</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.3;font-weight:700;color:#0F172A;">パスワードをリセット</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">{{ if .Email }}<strong style="color:#0F172A;">{{ .Email }}</strong> のパスワードリセット依頼を受け付けました。下のボタンから新しいパスワードを設定してください。{{ else }}パスワードリセット依頼を受け付けました。下のボタンから新しいパスワードを設定してください。{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">新しいパスワードを設定</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#64748B;">またはアプリでこのコードを入力</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">約1時間で期限切れ</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;line-height:1.55;color:#64748B;">ボタンが使えない場合は、このリンクをブラウザに貼り付けてください：</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">この操作に心当たりがない場合は、このメールを無視してください。パスワードは変更されません。</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+{{ else if eq $lang "ko" }}
+  <div style="display:none;max-height:0;overflow:hidden;">AlphaPos 비밀번호 재설정</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.3;font-weight:700;color:#0F172A;">비밀번호 재설정</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">{{ if .Email }}<strong style="color:#0F172A;">{{ .Email }}</strong> 계정의 비밀번호 재설정 요청을 받았습니다. 아래 버튼을 눌러 새 비밀번호를 설정하세요.{{ else }}비밀번호 재설정 요청을 받았습니다. 아래 버튼을 눌러 새 비밀번호를 설정하세요.{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">새 비밀번호 설정</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#64748B;">또는 앱에서 이 코드 입력</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">약 1시간 후 만료</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;line-height:1.55;color:#64748B;">버튼이 작동하지 않으면 이 링크를 브라우저에 붙여넣으세요:</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">요청하지 않으셨다면 이 이메일을 무시하세요. 비밀번호는 변경되지 않습니다.</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+{{ else if eq $lang "id" }}
+  <div style="display:none;max-height:0;overflow:hidden;">Atur ulang kata sandi AlphaPos Anda</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.3;font-weight:700;color:#0F172A;">Atur ulang kata sandi</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">{{ if .Email }}Kami menerima permintaan atur ulang kata sandi untuk <strong style="color:#0F172A;">{{ .Email }}</strong>. Ketuk tombol di bawah untuk membuat kata sandi baru.{{ else }}Kami menerima permintaan atur ulang kata sandi. Ketuk tombol di bawah untuk membuat kata sandi baru.{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">Buat kata sandi baru</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#64748B;">Atau masukkan kode ini di aplikasi</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">Kedaluwarsa dalam ~1 jam</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;line-height:1.55;color:#64748B;">Jika tombol tidak berfungsi, tempel tautan ini di browser:</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">Jika Anda tidak meminta ini, abaikan email ini. Kata sandi Anda tidak akan berubah.</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+{{ else if eq $lang "ms" }}
+  <div style="display:none;max-height:0;overflow:hidden;">Tetapkan semula kata laluan AlphaPos anda</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.3;font-weight:700;color:#0F172A;">Tetapkan semula kata laluan</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">{{ if .Email }}Kami menerima permintaan tetapan semula kata laluan untuk <strong style="color:#0F172A;">{{ .Email }}</strong>. Ketik butang di bawah untuk cipta kata laluan baharu.{{ else }}Kami menerima permintaan tetapan semula kata laluan. Ketik butang di bawah untuk cipta kata laluan baharu.{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">Cipta kata laluan baharu</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#64748B;">Atau masukkan kod ini dalam apl</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">Tamat dalam ~1 jam</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;line-height:1.55;color:#64748B;">Jika butang tidak berfungsi, tampal pautan ini dalam pelayar:</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">Jika anda tidak meminta ini, abaikan e-mel ini. Kata laluan anda tidak akan berubah.</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+{{ else }}
+  <div style="display:none;max-height:0;overflow:hidden;">Reset your AlphaPos password</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6F9;width:100%;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;">
+        <tr><td align="center" style="padding:0 0 28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <span style="font-size:24px;font-weight:700;color:#0F172A;">Alpha</span><span style="font-size:24px;font-weight:800;color:#2D71F8;">Pos</span>
+        </td></tr>
+        <tr><td style="background-color:#FFFFFF;border-radius:16px;border:1px solid #E2E8F0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="padding:40px 36px 8px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.3;font-weight:700;color:#0F172A;">Reset your password</h1>
+              <p style="margin:0;font-size:15px;line-height:1.6;color:#475569;">{{ if .Email }}We received a request to reset the password for <strong style="color:#0F172A;">{{ .Email }}</strong>. Tap the button below to choose a new password.{{ else }}We received a request to reset your password. Tap the button below to choose a new password.{{ end }}</p>
+            </td></tr>
+            <tr><td align="center" style="padding:28px 36px 8px 36px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;background-color:#2D71F8;color:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:10px;">Set new password</a>
+            </td></tr>
+            <tr><td style="padding:24px 36px 36px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
+                <tr><td align="center" style="padding:20px 16px;">
+                  <p style="margin:0 0 10px 0;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#64748B;">Or enter this code in the app</p>
+                  <p style="margin:0;font-size:30px;font-weight:700;letter-spacing:0.24em;color:#0F172A;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</p>
+                  <p style="margin:10px 0 0 0;font-size:12px;color:#94A3B8;">Expires in about 1 hour</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:28px 12px 0 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <p style="margin:0 0 10px 0;font-size:12px;line-height:1.55;color:#64748B;">If the button doesn’t work, copy and paste this link into your browser:</p>
+          <p style="margin:0 0 20px 0;font-size:12px;word-break:break-all;"><a href="{{ .ConfirmationURL }}" style="color:#2D71F8;">{{ .ConfirmationURL }}</a></p>
+          <p style="margin:0 0 8px 0;font-size:12px;color:#64748B;">If you didn’t request a password reset, you can safely ignore this email. Your password will stay the same.</p>
+          <p style="margin:0;font-size:11px;color:#94A3B8;">AlphaPos · no-reply@alphaposweb.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+{{ end }}
+</body>
+</html>

@@ -8,7 +8,14 @@ struct ManagerPINVerificationSheet: View {
     
     @Binding var isPresented: Bool
     var onSuccess: () -> Void
+    /// Optional: receives the manager user whose PIN authorized the action.
+    var onAuthorizedManager: ((User) -> Void)? = nil
     var onDismiss: (() -> Void)? = nil
+    var allowStoreOwnerPin = true
+    /// Restricts verification to the store-owner PIN. Employee and manager
+    /// PINs must not authorize ownership changes or account deletion.
+    var ownerOnly = false
+    var requiredPermission: AppPermission = .managerOverride
     // REMOVED: developer_mode_enabled bypass — tampered UserDefaults could bypass manager PIN
     
     @State private var enteredPin = ""
@@ -186,9 +193,15 @@ struct ManagerPINVerificationSheet: View {
     
     private func verifyPIN() {
         let hashedEntered = SecurityHelper.sha256(enteredPin)
+
+        if allowStoreOwnerPin, KeychainManager.shared.verifyOwnerPin(enteredPin) {
+            isPresented = false
+            onSuccess()
+            return
+        }
         
-        let matches = users.filter { user in
-            guard PermissionService.can(.managerOverride, role: user.role) else { return false }
+        let matches = ownerOnly ? [] : users.filter { user in
+            guard PermissionService.can(requiredPermission, role: user.role) else { return false }
             
             if let dbPin = user.pinCodeHash {
                 return SecurityHelper.verifyPIN(enteredPin, against: dbPin) || SecurityHelper.constantTimeCompare(dbPin, hashedEntered)
@@ -197,8 +210,9 @@ struct ManagerPINVerificationSheet: View {
         }
         
         // Developer PIN bypass removed — never allow hardcoded PIN to bypass manager verification
-        if !matches.isEmpty {
+        if let manager = matches.first {
             isPresented = false
+            onAuthorizedManager?(manager)
             onSuccess()
         } else {
             // Trigger failure shake animation and shake sound

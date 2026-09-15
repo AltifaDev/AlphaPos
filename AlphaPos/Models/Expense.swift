@@ -13,9 +13,25 @@ final class Expense {
     var amount: Double
     var vatRate: Double // e.g. 7.0
     var vatAmount: Double
+    var isVATRecoverable: Bool = true
     var paymentMethod: String // "Cash", "Credit Card", "Bank Transfer", "Accounts Payable"
     var status: String // "Paid", "Unpaid"
     var isCapEx: Bool
+    /// Accounting treatment. Legacy rows derive from isCapEx when empty.
+    var recognitionType: String = "operating_expense"
+    var expenseNature: String = "other"
+    var isRecurring: Bool = false
+    var recurrenceFrequency: String = "none"
+    var serviceStartDate: Date?
+    var serviceEndDate: Date?
+    // Fixed-asset / investment fields (IAS 16 management schedule)
+    var assetClass: String?
+    var availableForUseDate: Date?
+    var usefulLifeMonths: Int = 0
+    var residualValue: Double = 0
+    var investmentProject: String?
+    var expectedMonthlyCashBenefit: Double = 0
+    var expectedMonthlyIncrementalCost: Double = 0
     var date: Date
     var notes: String?
     
@@ -39,9 +55,23 @@ final class Expense {
         amount: Double = 0.0,
         vatRate: Double = 0.0,
         vatAmount: Double = 0.0,
+        isVATRecoverable: Bool = true,
         paymentMethod: String = "Cash",
         status: String = "Paid",
         isCapEx: Bool = false,
+        recognitionType: String? = nil,
+        expenseNature: String = "other",
+        isRecurring: Bool = false,
+        recurrenceFrequency: String = "none",
+        serviceStartDate: Date? = nil,
+        serviceEndDate: Date? = nil,
+        assetClass: String? = nil,
+        availableForUseDate: Date? = nil,
+        usefulLifeMonths: Int = 0,
+        residualValue: Double = 0,
+        investmentProject: String? = nil,
+        expectedMonthlyCashBenefit: Double = 0,
+        expectedMonthlyIncrementalCost: Double = 0,
         date: Date = Date(),
         notes: String? = nil,
         supplier: Supplier? = nil,
@@ -60,9 +90,23 @@ final class Expense {
         self.amount = amount == 0.0 ? (quantity * unitPrice) : amount
         self.vatRate = vatRate
         self.vatAmount = vatAmount
+        self.isVATRecoverable = isVATRecoverable
         self.paymentMethod = paymentMethod
         self.status = status
         self.isCapEx = isCapEx
+        self.recognitionType = recognitionType ?? (isCapEx ? "fixed_asset" : "operating_expense")
+        self.expenseNature = expenseNature
+        self.isRecurring = isRecurring
+        self.recurrenceFrequency = recurrenceFrequency
+        self.serviceStartDate = serviceStartDate
+        self.serviceEndDate = serviceEndDate
+        self.assetClass = assetClass
+        self.availableForUseDate = availableForUseDate
+        self.usefulLifeMonths = usefulLifeMonths
+        self.residualValue = residualValue
+        self.investmentProject = investmentProject
+        self.expectedMonthlyCashBenefit = expectedMonthlyCashBenefit
+        self.expectedMonthlyIncrementalCost = expectedMonthlyIncrementalCost
         self.date = date
         self.notes = notes
         self.supplier = supplier

@@ -79,10 +79,9 @@ row for the given merchant/table.  No merchant JWT is required for web ordering.
 
 ### Order push webhook
 `trg_send_order_push` fires `AFTER INSERT` on `orders` and calls the
-`send-order-push` Edge Function via `net.http_post`.  The base URL and
-service-role key are read from Vault at runtime so the same trigger works for
-both Local Docker (`http://kong:8000`) and hosted Supabase
-(`https://<project>.supabase.co`).
+`send-order-push` Edge Function via `net.http_post`. The base URL and
+service-role key are read from Vault at runtime and must point to Local Docker
+(`http://kong:8000`) or the self-hosted VPS only.
 
 ## Push notifications
 
@@ -93,9 +92,6 @@ APNs delivery additionally needs `APNS_KEY_ID`, `APNS_TEAM_ID`,
 `APNS_PRIVATE_KEY`, and the two bundle IDs in the Edge Function environment.
 Missing APNs credentials produce a clear 503 and do not roll back customer
 orders.
-
-For hosted Supabase, store the hosted project URL as Vault secret
-`edge_function_base_url` and its service-role key as `service_role_key`.
 
 ## End-to-end test checklist
 

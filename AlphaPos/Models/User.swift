@@ -11,7 +11,10 @@ final class User {
     var role: Role?
     var isActive: Bool
     
-    @Relationship(deleteRule: .cascade, inverse: \Employee.user)
+    // Authentication identities are replaceable during cloud reconciliation.
+    // HR history is not: deleting/merging a User must never cascade through the
+    // Employee into shifts and timecards.
+    @Relationship(deleteRule: .nullify, inverse: \Employee.user)
     var employeeProfile: Employee?
     
     // Offline-First Sync Metadata

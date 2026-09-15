@@ -1,0 +1,12 @@
+[Unit]
+Description=Run AlphaPos PostgreSQL backup every six hours
+
+[Timer]
+OnCalendar=*-*-* 00/6:15:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+Unit=alphapos-production-backup.service
+
+[Install]
+WantedBy=timers.target
+

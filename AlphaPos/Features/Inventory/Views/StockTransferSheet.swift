@@ -4,8 +4,10 @@ import SwiftData
 struct StockTransferSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var sessionManager: AppSessionManager
     
     let sourceBranch: Branch
+    let preselectedItem: InventoryItem?
     @Query(sort: \Branch.name) private var branches: [Branch]
     @Query(sort: \InventoryItem.name) private var allItems: [InventoryItem]
     
@@ -15,6 +17,11 @@ struct StockTransferSheet: View {
     @State private var notes = ""
     
     @State private var errorMessage = ""
+
+    init(sourceBranch: Branch, preselectedItem: InventoryItem? = nil) {
+        self.sourceBranch = sourceBranch
+        self.preselectedItem = preselectedItem
+    }
     
     private var sourceItems: [InventoryItem] {
         allItems.filter { $0.branch?.id == sourceBranch.id }
@@ -144,6 +151,11 @@ struct StockTransferSheet: View {
                     .disabled(!canTransfer)
                 }
             }
+            .onAppear {
+                if selectedItem == nil, preselectedItem?.branch?.id == sourceBranch.id {
+                    selectedItem = preselectedItem
+                }
+            }
         }
     }
     
@@ -155,10 +167,14 @@ struct StockTransferSheet: View {
               qty <= item.currentQuantity else {
             return false
         }
-        return true
+        return sessionManager.can(.inventoryTransfer) || sessionManager.can(.inventoryManage)
     }
     
     private func performTransfer() {
+        guard sessionManager.can(.inventoryTransfer) || sessionManager.can(.inventoryManage) else {
+            errorMessage = "You are not authorized to transfer inventory."
+            return
+        }
         guard let item = selectedItem,
               let dest = destinationBranch,
               let qty = Double(quantityString) else {

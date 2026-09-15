@@ -31,24 +31,48 @@ struct KDSTicket: Identifiable, Equatable {
 struct KitchenDisplayView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
-    @Query(filter: #Predicate<Order> { order in
-        order.status == "preparing" || order.status == "ready"
-    }, sort: \Order.createdAt) private var activeOrders: [Order]
+    @EnvironmentObject private var sessionManager: AppSessionManager
+    @ObservedObject private var syncEngine = SyncEngine.shared
+    @AppStorage(BranchContext.storageKey) private var activeBranchId = ""
+    @AppStorage("offline_sync_mode") private var offlineSyncMode = false
+    @Binding var columnVisibility: NavigationSplitViewVisibility
+    // Filter in memory: the compound SwiftData predicates become prohibitively
+    // expensive for the compiler now that Order.branch is a required relationship.
+    @Query(sort: \Order.createdAt) private var queriedOrders: [Order]
 
-    @Query(filter: #Predicate<Order> { order in
-        order.status == "served"
-    }, sort: \Order.updatedAt, order: .reverse) private var servedOrders: [Order]
+    private var branchActiveOrders: [Order] {
+        guard let branchId = UUID(uuidString: activeBranchId) else { return [] }
+        return queriedOrders.filter {
+            $0.branch.id == branchId &&
+            ($0.status == "preparing" || $0.status == "ready" || $0.status == "completed")
+        }
+    }
+    private var branchServedOrders: [Order] {
+        guard let branchId = UUID(uuidString: activeBranchId) else { return [] }
+        return queriedOrders
+            .filter {
+                $0.branch.id == branchId && ($0.status == "served" || $0.status == "completed")
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
 
     private let columns = [
         GridItem(.adaptive(minimum: 220), spacing: 12)
     ]
 
-    @State private var selectedTicket: KDSTicket? = nil
+    /// Keyboard / bump-bar focus — must NOT open the detail cover.
+    @State private var focusedTicket: KDSTicket? = nil
+    /// Explicit ticket opened in full-screen detail.
+    @State private var detailTicket: KDSTicket? = nil
     @State private var showingHelpView = false
     @State private var showingSettingsPopover = false
     @State private var showingHistoryDrawer = false
     @State private var isWide = true
     @State private var isViewAppeared = false
+
+    init(columnVisibility: Binding<NavigationSplitViewVisibility> = .constant(.all)) {
+        _columnVisibility = columnVisibility
+    }
 
     // Search and filter states
     @State private var searchText = ""
@@ -60,6 +84,7 @@ struct KitchenDisplayView: View {
     @AppStorage("kds_sound_enabled") private var kdsSoundEnabled = true
     // L-9: Physical KDS / Bump Bar — keyboard shortcut support
     @AppStorage("kds_keyboard_shortcuts_enabled") private var kdsKeyboardShortcutsEnabled = true
+    @AppStorage("enable_table_system") private var tableSystemEnabled = true
 
     // L-7: Category-based routing — JSON: {"CategoryName": "kitchen"|"bar"|"both"}
     @AppStorage("kds_category_routing_json") private var kdsCategoryRoutingJson = "{}"
@@ -69,9 +94,28 @@ struct KitchenDisplayView: View {
              from: kdsCategoryRoutingJson.data(using: .utf8) ?? Data())) ?? [:]
     }
 
+    private var currentActorName: String? {
+        let name = sessionManager.currentStaffSession?.displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? nil : name
+    }
+
+    private var canManageKitchen: Bool {
+        guard let session = sessionManager.currentStaffSession else {
+            return true // owner dashboard without staff lock
+        }
+        if session.permissions.contains(.kitchenManage)
+            || session.permissions.contains(.orderVoid) {
+            return true
+        }
+        // Legacy cook roles that only had kitchen.view before kitchen.manage existed
+        return session.permissions.contains(.kitchenView)
+            && !session.permissions.contains(.posSell)
+    }
+
     // Timer for refreshing delayed status every second
     @State private var currentSecond = Date()
-    @State private var previousActiveOrderCount = 0
+    @State private var previousTicketCount = 0
     // Use manual connect/cancel to prevent timer leak when view is hidden but not destroyed
     private let secondTimer = Timer.publish(every: 1, on: .main, in: .common)
     @State private var secondTimerCancellable: Cancellable? = nil
@@ -81,11 +125,11 @@ struct KitchenDisplayView: View {
         let now = Date()
         let routing = categoryRouting  // L-7: category → station routing map
 
-        for order in activeOrders {
-            // Skip ghost tickets belonging to inactive table sessions
-            if let session = order.tableSession, !session.isActive {
-                continue
-            }
+        for order in branchActiveOrders {
+            // Skip orphaned / stale tickets whose table was already cleared.
+            // Covers an inactive session AND a nullified (nil) session — the
+            // latter stranded ticket #9619 on screen for 1,622 minutes.
+            if order.isOrphanedKitchenTicket { continue }
             // L-7: Group items by their resolved station using the shared print/KDS routing rules.
             let activeItems = order.items.filter {
                 ($0.status == "cooking" || $0.status == "alert") && !$0.isDeleted
@@ -116,15 +160,54 @@ struct KitchenDisplayView: View {
         return tickets.sorted { $0.order.createdAt < $1.order.createdAt }
     }
 
+    /// Hint when SwiftData has live orders but filters/routing hide every ticket.
+    private var emptyStateSubtitle: String? {
+        let routing = categoryRouting
+        var awaitingApproval = false
+        var barOnly = false
+        var hasVisibleCandidate = false
+
+        for order in branchActiveOrders {
+            if order.isOrphanedKitchenTicket { continue }
+            if order.isAwaitingStaffApproval {
+                awaitingApproval = true
+                continue
+            }
+            let activeItems = order.items.filter {
+                ($0.status == "cooking" || $0.status == "alert") && !$0.isDeleted
+            }
+            guard !activeItems.isEmpty else { continue }
+
+            var kitchenItems: [OrderItem] = []
+            var barItems: [OrderItem] = []
+            for item in activeItems {
+                let stations = OrderRoutingResolver.stations(for: item, routing: routing)
+                if stations.contains(.kitchen) { kitchenItems.append(item) }
+                if stations.contains(.bar) { barItems.append(item) }
+            }
+
+            if kdsShowKitchen && !kitchenItems.isEmpty { hasVisibleCandidate = true }
+            if kdsShowBar && !barItems.isEmpty { hasVisibleCandidate = true }
+            if kdsShowKitchen && kitchenItems.isEmpty && !barItems.isEmpty { barOnly = true }
+        }
+
+        if awaitingApproval { return "kds_empty_pending_approval".t }
+        if barOnly && !hasVisibleCandidate { return "kds_empty_routed_to_bar".t }
+        return nil
+    }
+
     private func matchesSearchAndFilter(order: Order, items: [OrderItem], now: Date, filter: String) -> Bool {
         // 1. Search text filter
         if !searchText.isEmpty {
-            let tableNum = order.tableSession?.table?.tableNumber ?? ""
+            let identity = OrderDisplayIdentity(order: order, tableSystemEnabled: tableSystemEnabled)
+            let tableNum = identity.tableNumber ?? ""
+            let queueNum = identity.queueNumber ?? ""
             let orderNum = order.orderNumber
             let matchesTable = tableNum.localizedCaseInsensitiveContains(searchText)
+            let matchesQueue = queueNum.localizedCaseInsensitiveContains(searchText)
             let matchesOrder = orderNum.localizedCaseInsensitiveContains(searchText)
             let matchesItem = items.contains { $0.menuItem?.name.localizedCaseInsensitiveContains(searchText) ?? false }
-            guard matchesTable || matchesOrder || matchesItem else { return false }
+            guard matchesTable || matchesQueue || matchesOrder || matchesItem else { return false }
         }
 
         // 2. Filter type
@@ -143,12 +226,12 @@ struct KitchenDisplayView: View {
 
     var oldestDelayedOrder: Order? {
         let now = Date()
-        return activeOrders
+        return branchActiveOrders
             .filter { order in
-                // Skip ghost tickets belonging to inactive table sessions
-                if let session = order.tableSession, !session.isActive {
-                    return false
-                }
+                // Skip orphaned / stale tickets whose table was already cleared.
+                // Covers an inactive session AND a nullified (nil) session — the
+                // latter stranded ticket #9619 on screen for 1,622 minutes.
+                if order.isOrphanedKitchenTicket { return false }
                 let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
                 let matchedItems = activeItems.filter { $0.shouldDisplay(showKitchen: kdsShowKitchen, showBar: kdsShowBar) }
                 guard !matchedItems.isEmpty else { return false }
@@ -162,11 +245,11 @@ struct KitchenDisplayView: View {
     private func countForFilter(_ filter: String) -> Int {
         var count = 0
         let now = Date()
-        for order in activeOrders {
-            // Skip ghost tickets belonging to inactive table sessions
-            if let session = order.tableSession, !session.isActive {
-                continue
-            }
+        for order in branchActiveOrders {
+            // Skip orphaned / stale tickets whose table was already cleared.
+            // Covers an inactive session AND a nullified (nil) session — the
+            // latter stranded ticket #9619 on screen for 1,622 minutes.
+            if order.isOrphanedKitchenTicket { continue }
             let activeKitchenItems = order.items.filter { ($0.status == "cooking" || $0.status == "alert") && $0.shouldDisplay(on: .kitchen) }
             let activeBarItems = order.items.filter { ($0.status == "cooking" || $0.status == "alert") && $0.shouldDisplay(on: .bar) }
 
@@ -240,12 +323,20 @@ struct KitchenDisplayView: View {
                         // 1. Flashing warning banner for the oldest active delayed order (FIFO priority)
                         delayedOrderBanner
 
+                        // Sync health banner — tickets may be stale when sync is red
+                        kdsSyncStatusBanner
+
                         // 2. Search & Filter subbar
                         searchAndFilterSubbar
 
 
                         // 3. Main content area
-                        mainTicketsContent
+                        ZStack(alignment: .bottom) {
+                            mainTicketsContent
+                            if kdsKeyboardShortcutsEnabled {
+                                kdsKeyboardHintBar
+                            }
+                        }
 
                     }
                     .background(sizeDetector)
@@ -256,36 +347,20 @@ struct KitchenDisplayView: View {
                         historyDrawerOverlay
                     }
                 }
-                .navigationTitle(" ")
+                .navigationTitle(L.Nav.tabKitchen.t)
                 .navigationBarTitleDisplayMode(.inline)
                 .apNavBar(background: Color.appBackground)
-                .fullScreenCover(item: $selectedTicket) { ticket in
-                    KitchenOrderDetailView(ticket: ticket)
+                .fullScreenCover(item: $detailTicket) { ticket in
+                    KitchenOrderDetailView(ticket: ticket, canManageKitchen: canManageKitchen)
                 }
                 .sheet(isPresented: $showingHelpView) {
                     KDSHelpView()
                 }
                 .toolbar {
+                    // Intentionally empty leading slot — queue title lives in the
+                    // filter subbar with the sidebar toggle so they never collide.
                     ToolbarItem(placement: .topBarLeading) {
-                        HStack(spacing: 8) {
-                            Text(isWide ? "kds_queue_wide".t : "kds_queue_narrow".t)
-                                .font(.system(size: 16, weight: .bold, design: .rounded))
-                                .foregroundColor(.textPrimary)
-                                .layoutPriority(1)
-                                .fixedSize(horizontal: true, vertical: false)
-
-                            Text("\(filteredTickets.count)")
-                                .font(.system(size: 11, weight: .bold))
-                                .frame(minWidth: 18)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.appAccent.opacity(0.15))
-                                .foregroundColor(.appAccent)
-                                .clipShape(Capsule())
-                                .layoutPriority(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
-                        .fixedSize(horizontal: true, vertical: false)
+                        Color.clear.frame(width: 1, height: 1)
                     }
 
                     ToolbarItem(placement: .topBarTrailing) {
@@ -389,14 +464,20 @@ struct KitchenDisplayView: View {
                 performAutoCompleteCheck()
             }
 
-            // KDS Sound Alert: play notification sound when a new order arrives
+            // Keep bump-bar focus valid as the queue mutates
+            if let focused = focusedTicket,
+               !filteredTickets.contains(where: { $0.id == focused.id }) {
+                focusedTicket = nil
+            }
+
+            // KDS Sound Alert: chime when ticket count increases (kitchen/bar split aware)
             if kdsSoundEnabled {
-                let currentCount = activeOrders.count
-                if currentCount > previousActiveOrderCount && previousActiveOrderCount > 0 {
+                let currentCount = filteredTickets.count
+                if currentCount > previousTicketCount && previousTicketCount > 0 {
                     APHaptic.trigger()
                     AudioServicesPlaySystemSound(1007)
                 }
-                previousActiveOrderCount = currentCount
+                previousTicketCount = currentCount
             }
         }
         .onAppear {
@@ -404,6 +485,14 @@ struct KitchenDisplayView: View {
                 isViewAppeared = true
             }
             secondTimerCancellable = secondTimer.connect()
+            Task {
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
+                _ = KDSTicketActions.reconcileStaleQuickServiceOrders(
+                    branchActiveOrders,
+                    tableSystemEnabled: tableSystemEnabled,
+                    in: modelContext
+                )
+            }
         }
         .onDisappear {
             isViewAppeared = false
@@ -436,8 +525,8 @@ struct KitchenDisplayView: View {
                         .keyboardShortcut(.leftArrow, modifiers: [])
                         .opacity(0).frame(width: 0, height: 0).allowsHitTesting(false)
 
-                    // Escape → deselect
-                    Button("") { selectedTicket = nil }
+                    // Escape → deselect focus (does not dismiss detail cover)
+                    Button("") { focusedTicket = nil }
                         .keyboardShortcut(.escape, modifiers: [])
                         .opacity(0).frame(width: 0, height: 0).allowsHitTesting(false)
 
@@ -503,13 +592,47 @@ struct KitchenDisplayView: View {
         }
     }
 
+    private var kdsSyncStatusBanner: some View {
+        Group {
+            if !offlineSyncMode && syncEngine.syncStatus == .error {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(Color.appRose)
+                        .frame(width: 8, height: 8)
+                    Text("kds_sync_error_banner".t)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                    if let summary = syncEngine.lastSyncErrorSummary, !summary.isEmpty {
+                        Text(summary)
+                            .font(.system(size: 10))
+                            .foregroundColor(.white.opacity(0.8))
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.appRose.opacity(0.92))
+            }
+        }
+    }
+
     private var delayedOrderBanner: some View {
         Group {
             if let delayed = oldestDelayedOrder {
                 let minutes = Int(currentSecond.timeIntervalSince(delayed.createdAt) / 60)
-                let alertMsg = delayed.status == "ready"
-                    ? "Delivery Alert: Table \(delayed.tableSession?.table?.tableNumber ?? "1") (#\(delayed.orderNumber.suffix(4))) has been ready but not delivered for \(minutes) minutes!"
-                    : "Delayed Order Alert: Table \(delayed.tableSession?.table?.tableNumber ?? "1") (#\(delayed.orderNumber.suffix(4))) has been cooking for \(minutes) minutes!"
+                let identity = OrderDisplayIdentity(order: delayed, tableSystemEnabled: tableSystemEnabled)
+                let alertMsg: String = {
+                    if identity.isQuickService {
+                        return "\(identity.primaryLabel) • \(identity.orderLabel) • \(minutes) \("notif_minutes".t)"
+                    }
+                    let table = identity.tableNumber ?? "—"
+                    let orderSuffix = String(delayed.orderNumber.suffix(4))
+                    return delayed.status == "ready"
+                        ? LocalizationManager.shared.t("kds_delayed_banner_ready", table, orderSuffix, minutes)
+                        : LocalizationManager.shared.t("kds_delayed_banner_cooking", table, orderSuffix, minutes)
+                }()
                 HStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.headline)
@@ -532,7 +655,22 @@ struct KitchenDisplayView: View {
     }
 
     private var searchAndFilterSubbar: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Text(isWide ? "kds_queue_wide".t : "kds_queue_narrow".t)
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundColor(.textPrimary)
+                    .lineLimit(1)
+                Text("\(filteredTickets.count)")
+                    .font(.system(size: 11, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.appAccent.opacity(0.15))
+                    .foregroundColor(.appAccent)
+                    .clipShape(Capsule())
+            }
+            .layoutPriority(1)
+
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.textSecondary)
@@ -553,11 +691,11 @@ struct KitchenDisplayView: View {
             .padding(.vertical, 8)
             .background(Color.appSurfaceHigh.opacity(0.8))
             .cornerRadius(10)
-            .frame(width: isWide ? 260 : 180)
+            .frame(minWidth: isWide ? 200 : 140, maxWidth: isWide ? 240 : 180)
             .offset(x: isViewAppeared ? 0 : -40)
             .opacity(isViewAppeared ? 1 : 0)
 
-            Spacer()
+            Spacer(minLength: 4)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -591,6 +729,13 @@ struct KitchenDisplayView: View {
                     Text("kds_no_active_tickets".t)
                         .font(.title3)
                         .foregroundColor(.textSecondary)
+                    if let subtitle = emptyStateSubtitle {
+                        Text(subtitle)
+                            .font(.subheadline)
+                            .foregroundColor(.textTertiary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .offset(y: isViewAppeared ? 0 : 50)
@@ -601,7 +746,11 @@ struct KitchenDisplayView: View {
                         // New premium columns view (resembles the requested design)
                         HStack(alignment: .top, spacing: 16) {
                             ForEach(filteredTickets) { ticket in
-                                KitchenPremiumTicketCard(ticket: ticket, onSelect: { selectedTicket = ticket })
+                                KitchenPremiumTicketCard(
+                                    ticket: ticket,
+                                    isFocused: focusedTicket?.id == ticket.id,
+                                    onSelect: { detailTicket = ticket }
+                                )
                                     .transition(.asymmetric(
                                         insertion: .scale(scale: 0.9).combined(with: .opacity).combined(with: .move(edge: .bottom)),
                                         removal: .opacity
@@ -609,11 +758,16 @@ struct KitchenDisplayView: View {
                             }
                         }
                         .padding()
+                        .padding(.bottom, kdsKeyboardShortcutsEnabled ? 44 : 0)
                     } else {
                         // Enhanced original grid view (compact layout)
                         LazyVGrid(columns: columns, spacing: 12) {
                             ForEach(filteredTickets) { ticket in
-                                KitchenTicketView(ticket: ticket, onSelect: { selectedTicket = ticket })
+                                KitchenTicketView(
+                                    ticket: ticket,
+                                    isFocused: focusedTicket?.id == ticket.id,
+                                    onSelect: { detailTicket = ticket }
+                                )
                                     .transition(.asymmetric(
                                         insertion: .scale(scale: 0.9).combined(with: .opacity),
                                         removal: .opacity
@@ -621,6 +775,7 @@ struct KitchenDisplayView: View {
                             }
                         }
                         .padding()
+                        .padding(.bottom, kdsKeyboardShortcutsEnabled ? 44 : 0)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -675,7 +830,7 @@ struct KitchenDisplayView: View {
 
                 ScrollView {
                     VStack(spacing: 12) {
-                        let stationServedOrders = servedOrders.filter { order in
+                        let stationServedOrders = branchServedOrders.filter { order in
                             let activeItems = order.items.filter { $0.status == "served" || $0.status == "cancelled" }
                             let matchedItems = activeItems.filter { $0.shouldDisplay(showKitchen: kdsShowKitchen, showBar: kdsShowBar) }
                             return !matchedItems.isEmpty
@@ -694,13 +849,14 @@ struct KitchenDisplayView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                         } else {
                             ForEach(stationServedOrders.prefix(15)) { order in
+                                let identity = OrderDisplayIdentity(order: order, tableSystemEnabled: tableSystemEnabled)
                                 VStack(alignment: .leading, spacing: 10) {
                                     HStack(alignment: .top) {
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text(LocalizationManager.shared.t("table_number_template", order.tableSession?.table?.tableNumber ?? "1"))
+                                            Text(identity.primaryLabel)
                                                 .font(.system(size: 13, weight: .bold))
                                                 .foregroundColor(.textPrimary)
-                                            Text("#\(order.orderNumber.suffix(4))")
+                                            Text(identity.orderLabel)
                                                 .font(.system(size: 11, weight: .semibold))
                                                 .foregroundColor(.textSecondary)
                                         }
@@ -796,17 +952,12 @@ struct KitchenDisplayView: View {
 
     private func recallOrder(_ order: Order) {
         withAnimation {
-            order.status = "preparing"
-            for item in order.items {
-                if item.status == "served" && item.shouldDisplay(showKitchen: kdsShowKitchen, showBar: kdsShowBar) {
-                    item.status = "cooking"
-                    item.updatedAt = Date()
-                    item.isSynced = false
-                }
-            }
-            order.updatedAt = Date()
-            order.isSynced = false
-            modelContext.saveWithLogging(label: #function)
+            _ = KDSTicketActions.recallOrder(
+                order,
+                showKitchen: kdsShowKitchen,
+                showBar: kdsShowBar,
+                in: modelContext
+            )
             APHaptic.trigger()
         }
     }
@@ -827,17 +978,13 @@ struct KitchenDisplayView: View {
         let sorted = filtered.sorted(by: { $0.updatedAt > $1.updatedAt })
 
         if let lastOrder = sorted.first {
-            lastOrder.status = "preparing"
-            for item in lastOrder.items {
-                if item.status == "served" {
-                    item.status = "cooking"
-                    item.isSynced = false
-                    item.updatedAt = Date()
-                }
-            }
-            lastOrder.updatedAt = Date()
-            lastOrder.isSynced = false
-            modelContext.saveWithLogging(label: #function)
+            _ = KDSTicketActions.recallOrder(
+                lastOrder,
+                showKitchen: true,
+                showBar: true,
+                restoreAllServedItems: true,
+                in: modelContext
+            )
             APHaptic.trigger()
         }
     }
@@ -847,31 +994,20 @@ struct KitchenDisplayView: View {
     private func performAutoCompleteCheck() {
         var didAutoComplete = false
 
-        for order in activeOrders {
-            // Only auto-complete orders that are currently "ready" (all items cooked, awaiting delivery confirmation)
-            guard order.status == "ready" else { continue }
-
-            // Skip ghost tickets belonging to inactive table sessions
-            if let session = order.tableSession, !session.isActive {
-                continue
-            }
-
-            // Check if ALL items in the order are in a terminal state (served or cancelled)
-            let allItemsDone = order.items.allSatisfy { item in
-                item.status == "served" || item.status == "cancelled"
-            }
-
-            if allItemsDone {
-                order.status = "served"
-                order.updatedAt = Date()
-                order.isSynced = false
+        for order in branchActiveOrders {
+            if KDSTicketActions.markOrderDelivered(
+                order: order,
+                actorName: currentActorName,
+                in: modelContext,
+                sync: false
+            ) {
                 didAutoComplete = true
             }
         }
 
         if didAutoComplete {
-            modelContext.saveWithLogging(label: #function)
             APHaptic.trigger()
+            Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
         }
     }
 }
@@ -881,11 +1017,21 @@ struct KitchenDisplayView: View {
 struct KitchenPremiumTicketCard: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
+    @AppStorage("enable_table_system") private var tableSystemEnabled = true
     var ticket: KDSTicket
+    var isFocused: Bool = false
     var onSelect: () -> Void
 
     var order: Order { ticket.order }
     var station: KDSStation { ticket.station }
+    private var identity: OrderDisplayIdentity {
+        OrderDisplayIdentity(order: order, tableSystemEnabled: tableSystemEnabled)
+    }
+
+    private var readyButtonTitle: String {
+        if identity.isQuickService { return "kds_all_completed".t }
+        return station == .kitchen ? "kds_mark_kitchen_ready".t : "kds_mark_bar_ready".t
+    }
 
     @State private var elapsedTime = 0
     @State private var elapsedSeconds = 0
@@ -924,12 +1070,24 @@ struct KitchenPremiumTicketCard: View {
 
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(LocalizationManager.shared.t("table_number_template", order.tableSession?.table?.tableNumber ?? "1"))
-                            .font(.system(size: 13, weight: .bold))
+                        Text(identity.primaryLabel)
+                            .font(.system(
+                                size: identity.isQuickService ? 22 : 13,
+                                weight: identity.isQuickService ? .black : .bold,
+                                design: .rounded
+                            ))
                             .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .textSecondary)
-                        Text("#\(order.orderNumber.suffix(4))")
-                            .font(.system(size: 18, weight: .black))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Text(identity.orderLabel)
+                            .font(.system(
+                                size: identity.isQuickService ? 11 : 18,
+                                weight: identity.isQuickService ? .semibold : .black,
+                                design: identity.isQuickService ? .monospaced : .default
+                            ))
                             .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .textPrimary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.65)
                     }
                     Spacer()
                     HStack(spacing: 4) {
@@ -1008,15 +1166,15 @@ struct KitchenPremiumTicketCard: View {
                                                 HStack(spacing: 2) {
                                                     Image(systemName: "checkmark.circle.fill")
                                                     if let servedBy = item.servedBy, !servedBy.isEmpty {
-                                                        Text("เสิร์ฟโดย: \(servedBy)")
+                                                        Text(LocalizationManager.shared.t("kds_served_by_template", servedBy))
                                                     } else {
-                                                        Text("เสิร์ฟแล้ว")
+                                                        Text("kds_item_ready_badge".t)
                                                     }
                                                 }
                                                 .font(.system(size: 9, weight: .bold))
                                                 .foregroundColor(.appTeal)
                                             } else if item.status == "cancelled" {
-                                                Text("ยกเลิก")
+                                                Text("kds_item_cancelled_badge".t)
                                                     .font(.system(size: 9, weight: .bold))
                                                     .foregroundColor(.appRose)
                                             }
@@ -1044,17 +1202,19 @@ struct KitchenPremiumTicketCard: View {
 
             // Footer Action Panel
             HStack {
-                Button(action: alertWaiter) {
-                    Text("kds_request_waiter".t)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.appTeal)
+                if !identity.isQuickService {
+                    Button(action: alertWaiter) {
+                        Text("kds_request_waiter".t)
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.appTeal)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
 
                 Spacer()
 
                 Button(action: serveEntireTicket) {
-                    Text("kds_serve".t)
+                    Text(readyButtonTitle)
                         .font(.system(size: 11, weight: .bold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 4)
@@ -1067,8 +1227,8 @@ struct KitchenPremiumTicketCard: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Mark order as ready")
-                .accessibilityHint("Double-tap to mark all items as ready")
+                .accessibilityLabel(readyButtonTitle)
+                .accessibilityHint("kds_mark_ready_hint".t)
             }
             .padding(10)
             .background(Color.appSurfaceHigh.opacity(0.5))
@@ -1078,9 +1238,9 @@ struct KitchenPremiumTicketCard: View {
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(borderColor(), lineWidth: borderWidth())
+                .stroke(isFocused ? Color.appAccent : borderColor(), lineWidth: isFocused ? 3 : borderWidth())
         )
-        .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
+        .shadow(color: Color.black.opacity(isFocused ? 0.22 : 0.12), radius: isFocused ? 10 : 6, x: 0, y: 3)
         .onTapGesture(perform: onSelect)
         .accessibilityLabel("Order \(order.orderNumber), \(order.items.count) items")
         .accessibilityHint("Double-tap to view order details")
@@ -1127,71 +1287,28 @@ struct KitchenPremiumTicketCard: View {
 
     private func toggleItemServe(_ item: OrderItem) {
         withAnimation {
-            if item.status == "served" {
-                item.status = "cooking"
-                item.servedBy = nil
-            } else {
-                item.status = "served"
-                item.servedBy = nil
-            }
-            item.updatedAt = Date()
-            item.isSynced = false
-
-            order.isSynced = false
-            order.updatedAt = Date()
-
-            let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
-            if activeItems.isEmpty {
-                order.status = "ready"
-            } else {
-                order.status = "preparing"
-            }
-            modelContext.saveWithLogging(label: #function)
-
-            // Trigger sync
-            Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
-            }
+            _ = KDSTicketActions.toggleItemReady(
+                item,
+                order: order,
+                completeQuickServiceWhenReady: identity.isQuickService,
+                in: modelContext
+            )
         }
     }
 
     private func alertWaiter() {
-        Task {
-            let tableNum = order.tableSession?.table?.tableNumber ?? "1"
-            _ = try? await NetworkManager.shared.createServiceRequest(
-                tableNumber: tableNum,
-                type: "KDS Alert: Table \(tableNum) Requesting Waiter"
-            )
-        }
+        KDSTicketActions.requestWaiter(for: order)
         APHaptic.trigger()
     }
 
     private func serveEntireTicket() {
         withAnimation {
-            var didChange = false
-            for item in order.items {
-                let matchStation = item.shouldDisplay(on: station)
-                if (item.status == "cooking" || item.status == "alert") && matchStation {
-                    item.status = "served"
-                    item.updatedAt = Date()
-                    item.isSynced = false
-                    didChange = true
-                }
-            }
-            if didChange {
-                order.isSynced = false
-                order.updatedAt = Date()
-
-                let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
-                if !hasActiveItems {
-                    order.status = "ready"
-                }
-                modelContext.saveWithLogging(label: #function)
-
-                Task {
-                    await SyncEngine.shared.syncAll(modelContext: modelContext)
-                }
-            }
+            _ = KDSTicketActions.markStationReady(
+                order: order,
+                station: station,
+                completeQuickServiceWhenReady: identity.isQuickService,
+                in: modelContext
+            )
         }
         APHaptic.trigger()
     }
@@ -1202,11 +1319,28 @@ struct KitchenPremiumTicketCard: View {
 struct KitchenTicketView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
+    @EnvironmentObject private var sessionManager: AppSessionManager
+    @AppStorage("enable_table_system") private var tableSystemEnabled = true
     var ticket: KDSTicket
+    var isFocused: Bool = false
     var onSelect: () -> Void
 
     var order: Order { ticket.order }
     var station: KDSStation { ticket.station }
+    private var identity: OrderDisplayIdentity {
+        OrderDisplayIdentity(order: order, tableSystemEnabled: tableSystemEnabled)
+    }
+
+    private var readyButtonTitle: String {
+        if identity.isQuickService { return "kds_all_completed".t }
+        return station == .kitchen ? "kds_mark_kitchen_ready".t : "kds_mark_bar_ready".t
+    }
+
+    private var currentActorName: String? {
+        let name = sessionManager.currentStaffSession?.displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? nil : name
+    }
 
     @State private var elapsedTime = 0
     private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -1234,12 +1368,24 @@ struct KitchenTicketView: View {
 
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(LocalizationManager.shared.t("table_number_template", order.tableSession?.table?.tableNumber ?? "1"))
-                            .font(.system(size: 10, weight: .bold))
+                        Text(identity.primaryLabel)
+                            .font(.system(
+                                size: identity.isQuickService ? 18 : 10,
+                                weight: identity.isQuickService ? .black : .bold,
+                                design: .rounded
+                            ))
                             .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .textSecondary)
-                        Text("#\(order.orderNumber.suffix(4))")
-                            .font(.system(size: 14, weight: .black))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Text(identity.orderLabel)
+                            .font(.system(
+                                size: identity.isQuickService ? 9 : 14,
+                                weight: identity.isQuickService ? .semibold : .black,
+                                design: identity.isQuickService ? .monospaced : .default
+                            ))
                             .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .textPrimary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.65)
                     }
                     Spacer()
 
@@ -1315,15 +1461,15 @@ struct KitchenTicketView: View {
                                             HStack(spacing: 2) {
                                                 Image(systemName: "checkmark.circle.fill")
                                                 if let servedBy = item.servedBy, !servedBy.isEmpty {
-                                                    Text("เสิร์ฟโดย: \(servedBy)")
+                                                    Text(LocalizationManager.shared.t("kds_served_by_template", servedBy))
                                                 } else {
-                                                    Text("เสิร์ฟแล้ว")
+                                                    Text("kds_item_ready_badge".t)
                                                 }
                                             }
                                             .font(.system(size: 8, weight: .bold))
                                             .foregroundColor(.appTeal)
                                         } else if item.status == "cancelled" {
-                                            Text("ยกเลิก")
+                                            Text("kds_item_cancelled_badge".t)
                                                 .font(.system(size: 8, weight: .bold))
                                                 .foregroundColor(.appRose)
                                         }
@@ -1381,12 +1527,14 @@ struct KitchenTicketView: View {
 
             // Footer Action: unified two-button layout matching the premium tickets
             HStack {
-                Button(action: alertWaiter) {
-                    Text("kds_request_waiter".t)
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.appTeal)
+                if !identity.isQuickService {
+                    Button(action: alertWaiter) {
+                        Text("kds_request_waiter".t)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.appTeal)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
 
                 Spacer()
 
@@ -1396,7 +1544,7 @@ struct KitchenTicketView: View {
                 })
                 if hasActiveItemsForStation {
                     Button(action: serveEntireTicket) {
-                        Text("kds_serve".t)
+                        Text(readyButtonTitle)
                             .font(.system(size: 10, weight: .bold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 3)
@@ -1411,7 +1559,7 @@ struct KitchenTicketView: View {
                     .buttonStyle(.plain)
                 } else {
                     Button(action: completeTicket) {
-                        Text("pos_clear".t)
+                        Text("kds_clear_delivered".t)
                             .font(.system(size: 10, weight: .bold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 3)
@@ -1433,9 +1581,9 @@ struct KitchenTicketView: View {
         .cornerRadius(10)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(borderColor(), lineWidth: borderWidth())
+                .stroke(isFocused ? Color.appAccent : borderColor(), lineWidth: isFocused ? 3 : borderWidth())
         )
-        .shadow(color: Color.black.opacity(0.15), radius: 4)
+        .shadow(color: Color.black.opacity(isFocused ? 0.22 : 0.15), radius: isFocused ? 8 : 4)
         .onAppear(perform: updateElapsedTime)
         .onReceive(timer) { _ in
             updateElapsedTime()
@@ -1472,144 +1620,52 @@ struct KitchenTicketView: View {
 
     private func serveItem(_ item: OrderItem) {
         withAnimation {
-            item.status = "served"
-            item.servedBy = nil
-            item.updatedAt = Date()
-            item.isSynced = false
-
-            order.isSynced = false
-            order.updatedAt = Date()
-
-            let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
-            if activeItems.isEmpty {
-                order.status = "ready"
-            } else {
-                order.status = "preparing"
-            }
-            modelContext.saveWithLogging(label: #function)
-
-            Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
-            }
+            _ = KDSTicketActions.markItemReady(
+                item,
+                order: order,
+                completeQuickServiceWhenReady: identity.isQuickService,
+                in: modelContext
+            )
         }
     }
 
     private func recallItem(_ item: OrderItem) {
         withAnimation {
-            item.status = "cooking"
-            item.servedBy = nil
-            item.updatedAt = Date()
-            item.isSynced = false
-
-            order.isSynced = false
-            order.updatedAt = Date()
-
-            let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
-            if activeItems.isEmpty {
-                order.status = "ready"
-            } else {
-                order.status = "preparing"
-            }
-            modelContext.saveWithLogging(label: #function)
-
-            Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
-            }
+            _ = KDSTicketActions.recallItem(item, order: order, in: modelContext)
         }
     }
 
     private func alertItem(_ item: OrderItem) {
         withAnimation {
-            item.status = "alert"
-            item.updatedAt = Date()
-            item.isSynced = false
-
-            order.isSynced = false
-            order.updatedAt = Date()
-            modelContext.saveWithLogging(label: #function)
-
-            Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
-            }
-        }
-
-        Task {
-            let tableNum = order.tableSession?.table?.tableNumber ?? "1"
-            let itemName = item.menuItem?.name ?? item.itemName
-            _ = try? await NetworkManager.shared.createServiceRequest(
-                tableNumber: tableNum,
-                type: "Kitchen Alert: \(itemName) Issue"
-            )
+            _ = KDSTicketActions.alertItem(item, order: order, in: modelContext)
         }
     }
 
     private func alertWaiter() {
-        Task {
-            let tableNum = order.tableSession?.table?.tableNumber ?? "1"
-            _ = try? await NetworkManager.shared.createServiceRequest(
-                tableNumber: tableNum,
-                type: "KDS Alert: Table \(tableNum) Requesting Waiter"
-            )
-        }
+        KDSTicketActions.requestWaiter(for: order)
         APHaptic.trigger()
     }
 
     private func serveEntireTicket() {
         withAnimation {
-            var didChange = false
-            for item in order.items {
-                let matchStation = item.shouldDisplay(on: station)
-                if (item.status == "cooking" || item.status == "alert") && matchStation {
-                    item.status = "served"
-                    item.updatedAt = Date()
-                    item.isSynced = false
-                    didChange = true
-                }
-            }
-            if didChange {
-                order.isSynced = false
-                order.updatedAt = Date()
-
-                let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
-                if !hasActiveItems {
-                    order.status = "ready"
-                }
-                modelContext.saveWithLogging(label: #function)
-
-                Task {
-                    await SyncEngine.shared.syncAll(modelContext: modelContext)
-                }
-            }
+            _ = KDSTicketActions.markStationReady(
+                order: order,
+                station: station,
+                completeQuickServiceWhenReady: identity.isQuickService,
+                in: modelContext
+            )
         }
         APHaptic.trigger()
     }
 
     private func completeTicket() {
         withAnimation {
-            var didChange = false
-            for item in order.items {
-                let matchStation = item.shouldDisplay(on: station)
-                if (item.status == "cooking" || item.status == "alert") && matchStation {
-                    item.status = "served"
-                    item.updatedAt = Date()
-                    item.isSynced = false
-                    didChange = true
-                }
-            }
-            if didChange {
-                order.isSynced = false
-                order.updatedAt = Date()
-
-                let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
-                if !hasActiveItems {
-                    order.status = "served"
-                }
-                modelContext.saveWithLogging(label: #function)
-
-                Task {
-                    await SyncEngine.shared.syncAll(modelContext: modelContext)
-                }
-            }
+            _ = KDSTicketActions.markStationDelivered(
+                order: order,
+                station: station,
+                actorName: currentActorName,
+                in: modelContext
+            )
         }
         APHaptic.trigger()
     }
@@ -1619,53 +1675,43 @@ struct KitchenTicketView: View {
 
 extension KitchenDisplayView {
 
-    /// Space / Return — bump (complete) currently selected ticket, or oldest FIFO ticket
+    /// Space / Return — bump (mark station ready) focused ticket, or oldest FIFO ticket
     func bumpSelectedOrOldest() {
         guard kdsKeyboardShortcutsEnabled else { return }
-        let target = selectedTicket ?? filteredTickets.first
+        let target = focusedTicket ?? filteredTickets.first
         guard let ticket = target else { return }
         bumpTicket(ticket)
     }
 
-    /// Arrow Left/Right — cycle through visible tickets
+    /// Arrow Left/Right — cycle focus through visible tickets (does not open detail)
     func selectNextTicket(forward: Bool) {
         guard kdsKeyboardShortcutsEnabled, !filteredTickets.isEmpty else { return }
-        if let current = selectedTicket,
+        if let current = focusedTicket,
            let idx = filteredTickets.firstIndex(where: { $0.id == current.id }) {
             let next = forward
                 ? (idx + 1 < filteredTickets.count ? idx + 1 : 0)
                 : (idx - 1 >= 0 ? idx - 1 : filteredTickets.count - 1)
-            selectedTicket = filteredTickets[next]
+            focusedTicket = filteredTickets[next]
         } else {
-            selectedTicket = forward ? filteredTickets.first : filteredTickets.last
+            focusedTicket = forward ? filteredTickets.first : filteredTickets.last
         }
         APHaptic.trigger()
     }
 
-    /// Bump (mark as served) a specific KDSTicket
+    /// Bump = mark station ready (order → ready when all stations done). Same as footer Ready.
     private func bumpTicket(_ ticket: KDSTicket) {
-        let order = ticket.order
-        let station = ticket.station
         withAnimation {
-            var changed = false
-            for item in order.items {
-                let matchStation = item.shouldDisplay(on: station)
-                if (item.status == "cooking" || item.status == "alert") && matchStation {
-                    item.status = "served"
-                    item.updatedAt = Date()
-                    item.isSynced = false
-                    changed = true
-                }
-            }
-            if changed {
-                order.isSynced = false; order.updatedAt = Date()
-                let stillActive = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
-                if !stillActive { order.status = "served" }
-                modelContext.saveWithLogging(label: "KDS.bumpTicket")
-                Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
-            }
+            _ = KDSTicketActions.markStationReady(
+                order: ticket.order,
+                station: ticket.station,
+                completeQuickServiceWhenReady: OrderDisplayIdentity(
+                    order: ticket.order,
+                    tableSystemEnabled: tableSystemEnabled
+                ).isQuickService,
+                in: modelContext
+            )
         }
-        if selectedTicket?.id == ticket.id { selectedTicket = nil }
+        if focusedTicket?.id == ticket.id { focusedTicket = nil }
         APHaptic.trigger()
         if kdsSoundEnabled { AudioServicesPlaySystemSound(1054) }
     }
@@ -1676,15 +1722,43 @@ struct KitchenOrderDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var lm: LocalizationManager
+    @EnvironmentObject private var sessionManager: AppSessionManager
+    @AppStorage("enable_table_system") private var tableSystemEnabled = true
     var ticket: KDSTicket
+    var canManageKitchen: Bool = true
 
     var order: Order { ticket.order }
     var station: KDSStation { ticket.station }
+    private var identity: OrderDisplayIdentity {
+        OrderDisplayIdentity(order: order, tableSystemEnabled: tableSystemEnabled)
+    }
 
     @State private var elapsedTime = 0
+    @State private var contentVisible = false
     private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
+    private var displayedItems: [OrderItem] {
+        order.items.filter { $0.shouldDisplay(on: station) && !$0.isDeleted }
+    }
+
+    private var activeItems: [OrderItem] {
+        displayedItems.filter { $0.status == "cooking" || $0.status == "alert" }
+    }
+
+    private var completedCount: Int {
+        displayedItems.filter { $0.status == "served" }.count
+    }
+
+    private var totalCount: Int {
+        displayedItems.count
+    }
+
+    private var totalQuantity: Int {
+        displayedItems.reduce(0) { $0 + $1.quantity }
+    }
+
     private var footerActionTitle: String {
+        if identity.isQuickService { return "kds_all_completed".t }
         if station == .kitchen {
             return "kds_mark_kitchen_ready".t
         } else {
@@ -1692,330 +1766,195 @@ struct KitchenOrderDetailView: View {
         }
     }
 
+    private var currentActorName: String? {
+        let name = sessionManager.currentStaffSession?.displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? nil : name
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Header Panel - Redesigned to be charcoal gray dark mode
-                HStack(spacing: 20) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 12) {
-                            Text(LocalizationManager.shared.t("table_number_template", order.tableSession?.table?.tableNumber ?? "1"))
-                                .font(.system(size: 32, weight: .black, design: .rounded))
-                                .foregroundColor(.textPrimary)
-
-                            // Station badge
-                            HStack(spacing: 4) {
-                                Image(systemName: station == .kitchen ? "flame.fill" : "wineglass.fill")
-                                Text(station == .kitchen ? "kds_station_kitchen_upper".t : "kds_station_bar_upper".t)
-                            }
-                            .font(.system(size: 11, weight: .black))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(station == .kitchen ? Color.appRose.opacity(0.15) : Color.appTeal.opacity(0.15))
-                            .foregroundColor(station == .kitchen ? .appRose : .appTeal)
-                            .cornerRadius(6)
-                        }
-
-                        HStack(spacing: 12) {
-                            Text("#\(order.orderNumber.suffix(4))")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.textSecondary)
-
-                            // Premium Styled Order Type Badge
-                            Text(order.orderType == "dine_in" ? "Dine-In" : "Take-Out")
-                                .font(.system(size: 11, weight: .bold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(order.orderType == "dine_in" ? Color.appTeal.opacity(0.15) : Color.appAmber.opacity(0.15))
-                                .foregroundColor(order.orderType == "dine_in" ? .appTeal : .appAmber)
-                                .cornerRadius(6)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .stroke(order.orderType == "dine_in" ? Color.appTeal.opacity(0.3) : Color.appAmber.opacity(0.3), lineWidth: 0.8)
-                                )
-                        }
-                    }
-
-                    Spacer()
-
-                    // Large Timer Badge
-                    HStack(spacing: 6) {
-                        Image(systemName: "timer")
-                            .font(.system(size: 13, weight: .bold))
-                        Text(LocalizationManager.shared.t("kds_active_timer_template", elapsedTime))
-                            .font(.system(size: 13, weight: .bold))
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(timerColor().opacity(0.15))
-                    .foregroundColor(timerColor())
-                    .cornerRadius(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(timerColor().opacity(0.3), lineWidth: 0.8)
-                    )
-
-                    // Sleek Close button
-                    Button(action: { dismiss() }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .black))
-                            .foregroundColor(.textSecondary)
-                            .padding(12)
-                            .background(Color.appSurfaceHigh)
-                            .clipShape(Circle())
-                            .overlay(
-                                Circle()
-                                    .stroke(Color.appBorderSubtle, lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
+                // Header with live progress bar and urgency indicator
+                KDSOrderDetailHeader(
+                    ticket: ticket,
+                    completedCount: completedCount,
+                    totalCount: totalCount
+                ) {
+                    dismiss()
                 }
-                .padding(.horizontal, 32)
-                .padding(.vertical, 20)
-                .background(Color.appSurfaceHigh)
-                .overlay(
-                    Rectangle()
-                        .frame(height: 1)
-                        .foregroundColor(Color.appDivider),
-                    alignment: .bottom
-                )
 
-                // Detailed Items List
+                // Main body with responsive centered container on iPad
                 ScrollView {
-                    VStack(spacing: 16) {
-                        let displayedItems = order.items.filter { item in
-                            item.shouldDisplay(on: station)
+                    VStack(spacing: APSpacing.md) {
+                        // Special Order/Customer Notes Banner
+                        if let customerNotes = order.customer?.notes, !customerNotes.isEmpty {
+                            orderNotesBanner(customerNotes)
                         }
 
                         if displayedItems.isEmpty {
-                            VStack(spacing: 20) {
-                                Spacer()
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 70))
-                                    .foregroundColor(.appTeal)
-                                Text("kds_all_station_completed".t)
-                                    .font(.title2)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.textPrimary)
-                                Text("kds_dismiss_ticket_hint".t)
-                                    .font(.subheadline)
-                                    .foregroundColor(.textSecondary)
-                                Spacer()
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 450)
-                            ForEach(displayedItems) { item in
-                                let isDone = item.status == "served" || item.status == "cancelled"
-                                HStack(alignment: .center, spacing: 20) {
-                                    // Big Quantity Label
-                                    Text("\(item.quantity)x")
-                                        .font(.system(size: 22, weight: .black, design: .rounded))
-                                        .foregroundColor(item.status == "alert" ? .appRose : (isDone ? .textTertiary : .appAmber))
-                                        .frame(width: 54, height: 54)
-                                        .background(item.status == "alert" ? Color.appRose.opacity(0.12) : (isDone ? Color.appSurfaceHigh.opacity(0.4) : Color.appAmber.opacity(0.12)))
-                                        .cornerRadius(10)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 10)
-                                                .stroke(item.status == "alert" ? Color.appRose.opacity(0.25) : (isDone ? Color.appBorderSubtle : Color.appAmber.opacity(0.25)), lineWidth: 1)
-                                        )
-                                        .strikethrough(isDone)
-
-                                    // Food details
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(item.menuItem?.name ?? item.itemName)
-                                            .font(.system(size: 20, weight: .bold))
-                                            .foregroundColor(item.status == "alert" ? .appRose : (isDone ? .textTertiary : .textPrimary))
-                                            .strikethrough(isDone)
-
-                                        if !item.modifiers.isEmpty {
-                                            Text(item.modifiers.compactMap { $0.modifier?.name }.joined(separator: ", "))
-                                                .font(.system(size: 13, weight: .medium))
-                                                .foregroundColor(isDone ? .textTertiary : .appTeal)
-                                                .strikethrough(isDone)
-                                        }
-
-                                        if item.status == "served" {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "checkmark.circle.fill")
-                                                if let servedBy = item.servedBy, !servedBy.isEmpty {
-                                                    Text("เสิร์ฟโดย: \(servedBy)")
-                                                } else {
-                                                    Text("เสิร์ฟแล้ว")
-                                                }
-                                            }
-                                            .font(.system(size: 12, weight: .bold))
-                                            .foregroundColor(.appTeal)
-                                        } else if item.status == "alert" {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "exclamationmark.triangle.fill")
-                                                    .font(.caption2)
-                                                Text("kds_staff_alerted".t)
-                                                    .font(.system(size: 11, weight: .bold))
-                                            }
-                                            .foregroundColor(.appAmber)
-                                            .padding(.top, 2)
-                                        }
-                                    }
-
-                                    Spacer()
-
-                                    // Premium Action Buttons
-                                    HStack(spacing: 10) {
-                                        if isDone {
-                                            // Recall Button
-                                            Button(action: { recallItem(item) }) {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "arrow.uturn.backward")
-                                                    Text("pos_recall".t)
-                                                }
-                                                .font(.system(size: 12, weight: .bold))
-                                                .padding(.horizontal, 16)
-                                                .padding(.vertical, 10)
-                                                .background(Color.appAccent.opacity(0.12))
-                                                .foregroundColor(.appAccent)
-                                                .cornerRadius(8)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 8)
-                                                        .stroke(Color.appAccent.opacity(0.3), lineWidth: 0.8)
-                                                )
-                                            }
-                                            .buttonStyle(.plain)
-                                        } else {
-                                            // Alert Waiter Button
-                                            Button(action: { alertItem(item) }) {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "exclamationmark.triangle")
-                                                    Text("kds_alert_staff".t)
-                                                }
-                                                .font(.system(size: 12, weight: .bold))
-                                                .padding(.horizontal, 14)
-                                                .padding(.vertical, 10)
-                                                .background(Color.appAmber.opacity(item.status == "alert" ? 0.05 : 0.12))
-                                                .foregroundColor(item.status == "alert" ? Color.appAmber.opacity(0.4) : .appAmber)
-                                                .cornerRadius(8)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 8)
-                                                        .stroke(Color.appAmber.opacity(item.status == "alert" ? 0.1 : 0.3), lineWidth: 0.8)
-                                                )
-                                            }
-                                            .buttonStyle(.plain)
-                                            .disabled(item.status == "alert")
-
-                                            // Cancel Button
-                                            Button(action: { rejectItem(item) }) {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "xmark.circle")
-                                                    Text("cancel".t)
-                                                }
-                                                .font(.system(size: 12, weight: .bold))
-                                                .padding(.horizontal, 14)
-                                                .padding(.vertical, 10)
-                                                .background(Color.appRose.opacity(0.12))
-                                                .foregroundColor(.appRose)
-                                                .cornerRadius(8)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 8)
-                                                        .stroke(Color.appRose.opacity(0.3), lineWidth: 0.8)
-                                                )
-                                            }
-                                            .buttonStyle(.plain)
-
-                                            // Serve Button
-                                            Button(action: { serveItem(item) }) {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "checkmark.circle")
-                                                    Text("kds_serve".t)
-                                                }
-                                                .font(.system(size: 12, weight: .bold))
-                                                .padding(.horizontal, 16)
-                                                .padding(.vertical, 10)
-                                                .background(Color.appTeal.opacity(0.12))
-                                                .foregroundColor(.appTeal)
-                                                .cornerRadius(8)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 8)
-                                                        .stroke(Color.appTeal.opacity(0.3), lineWidth: 0.8)
-                                                )
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
+                            kdsDetailEmptyState
+                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        } else {
+                            // Food Items List
+                            LazyVStack(spacing: 10) {
+                                ForEach(Array(displayedItems.enumerated()), id: \.element.id) { index, item in
+                                    KDSOrderDetailItemCard(
+                                        item: item,
+                                        station: station,
+                                        canManageKitchen: canManageKitchen,
+                                        onReady: { serveItem(item) },
+                                        onAlert: { alertItem(item) },
+                                        onCancel: { rejectItem(item) },
+                                        onRecall: { recallItem(item) }
+                                    )
+                                    .transition(.asymmetric(
+                                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                                        removal: .opacity
+                                    ))
+                                    .animation(
+                                        .spring(response: 0.45, dampingFraction: 0.82)
+                                            .delay(Double(index) * 0.05),
+                                        value: contentVisible
+                                    )
                                 }
-                                .padding(18)
-                                .background(Color.appSurface)
-                                .cornerRadius(12)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color.appBorderSubtle, lineWidth: 1)
-                                )
                             }
+
+                            // Order Summary Strip
+                            KDSOrderSummaryStrip(
+                                itemCount: displayedItems.count,
+                                totalQuantity: totalQuantity,
+                                orderTime: order.createdAt,
+                                actorName: currentActorName
+                            )
+                            .padding(.top, 4)
                         }
                     }
-                    .padding(32)
+                    .padding(.horizontal, APSpacing.lg)
+                    .padding(.vertical, APSpacing.md)
+                    .frame(maxWidth: 820)
+                    .frame(maxWidth: .infinity)
                 }
                 .background(Color.appBackground)
 
-                // Big Action Footer Panel
-                VStack(spacing: 0) {
-                    let hasActiveItemsForStation = order.items.contains(where: {
-                        let matchStation = $0.shouldDisplay(on: station)
-                        return ($0.status == "cooking" || $0.status == "alert") && matchStation
-                    })
-                    if hasActiveItemsForStation {
-                        Button(action: {
-                            serveEntireTicket()
-                            dismiss()
-                        }) {
-                            Text(footerActionTitle)
-                                .font(.system(size: 18, weight: .bold))
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 18)
-                                .background(APGradient.positive)
-                                .cornerRadius(12)
-                                .shadow(color: Color.appTeal.opacity(0.2), radius: 8, x: 0, y: 4)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .accessibilityLabel("Mark order as ready")
-                        .accessibilityHint("Double-tap to mark all items as ready")
-                        .padding(.horizontal, 32)
-                        .padding(.vertical, 20)
-                    } else {
-                        Button(action: {
-                            completeTicket()
-                            dismiss()
-                        }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 16, weight: .bold))
-                                Text("kds_clear_delivered".t)
-                            }
-                            .font(.system(size: 18, weight: .bold))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 18)
-                            .background(Color.appTeal)
-                            .cornerRadius(12)
-                            .shadow(color: Color.appTeal.opacity(0.2), radius: 8, x: 0, y: 4)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .padding(.horizontal, 32)
-                        .padding(.vertical, 20)
-                    }
-                }
-                .background(Color.appSurfaceHigh)
-                .overlay(
-                    Rectangle()
-                        .frame(height: 1)
-                        .foregroundColor(Color.appDivider),
-                    alignment: .top
-                )
+                // Sticky Action Footer
+                detailFooter
             }
             .background(Color.appBackground)
-            .apColorScheme() // Force custom color scheme resolution!
+            .apColorScheme()
         }
-        .onAppear(perform: updateElapsedTime)
+        .onAppear {
+            updateElapsedTime()
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.85)) {
+                contentVisible = true
+            }
+        }
         .onReceive(timer) { _ in
             updateElapsedTime()
+        }
+    }
+
+    private func orderNotesBanner(_ notes: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.bubble.fill")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(Color(hex: "F59E0B"))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("order_notes".t.uppercased())
+                    .font(.system(size: 10, weight: .black))
+                    .foregroundColor(Color(hex: "F59E0B"))
+                    .tracking(0.6)
+                Text(notes)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.textPrimary)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, APSpacing.md)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                .fill(Color(hex: "F59E0B").opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                .stroke(Color(hex: "F59E0B").opacity(0.3), lineWidth: 1)
+        )
+    }
+
+    private var kdsDetailEmptyState: some View {
+        VStack(spacing: APSpacing.lg) {
+            Spacer(minLength: 40)
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(APGradient.positive)
+                .symbolEffect(.bounce, value: contentVisible)
+            Text("kds_all_station_completed".t)
+                .font(.title2.weight(.bold))
+                .foregroundColor(.textPrimary)
+            Text("kds_dismiss_ticket_hint".t)
+                .font(.subheadline)
+                .foregroundColor(.textSecondary)
+                .multilineTextAlignment(.center)
+            Spacer(minLength: 40)
+        }
+        .frame(maxWidth: .infinity, minHeight: 420)
+    }
+
+    @ViewBuilder
+    private var detailFooter: some View {
+        VStack(spacing: 0) {
+            let activeCount = activeItems.count
+
+            if activeCount > 0 {
+                KDSPrimaryFooterButton(
+                    title: footerActionTitle,
+                    badgeCount: activeCount,
+                    systemImage: "checkmark.circle.fill",
+                    gradient: LinearGradient(
+                        colors: station == .kitchen
+                            ? [Color(hex: "10B981"), Color(hex: "059669")]
+                            : [Color(hex: "06B6D4"), Color(hex: "0891B2")],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                ) {
+                    serveEntireTicket()
+                    dismiss()
+                }
+                .accessibilityHint("kds_mark_ready_hint".t)
+                .padding(.horizontal, APSpacing.lg)
+                .padding(.vertical, APSpacing.md)
+                .frame(maxWidth: 820)
+                .frame(maxWidth: .infinity)
+            } else {
+                KDSPrimaryFooterButton(
+                    title: "kds_clear_delivered".t,
+                    systemImage: "hand.thumbsup.fill",
+                    gradient: LinearGradient(
+                        colors: [Color(hex: "0D9488"), Color(hex: "059669")],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                ) {
+                    completeTicket()
+                    dismiss()
+                }
+                .padding(.horizontal, APSpacing.lg)
+                .padding(.vertical, APSpacing.md)
+                .frame(maxWidth: 820)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .background(
+            .ultraThinMaterial
+        )
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.appDivider.opacity(0.6))
+                .frame(height: 1)
         }
     }
 
@@ -2024,34 +1963,15 @@ struct KitchenOrderDetailView: View {
         elapsedTime = Int(diff / 60)
     }
 
-    private func timerColor() -> Color {
-        if elapsedTime >= 15 { return .appRose }
-        if elapsedTime >= 8  { return .appAmber }
-        return .appTeal
-    }
-
     private func serveItem(_ item: OrderItem) {
         withAnimation {
-            item.status = "served"
-            item.updatedAt = Date()
-            item.isSynced = false
-
-            order.isSynced = false
-            order.updatedAt = Date()
-
-            let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
-            if activeItems.isEmpty {
-                order.status = "ready"
-            }
-            modelContext.saveWithLogging(label: #function)
-
-            Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
-            }
-
-            // Check if all active items matching this station have been served
-            let activeItemsForStation = order.items.filter { ($0.status == "cooking" || $0.status == "alert") && $0.shouldDisplay(on: station) }
-            if activeItemsForStation.isEmpty {
+            _ = KDSTicketActions.markItemReady(
+                item,
+                order: order,
+                completeQuickServiceWhenReady: identity.isQuickService,
+                in: modelContext
+            )
+            if !KDSTicketActions.stationHasActiveItems(order: order, station: station) {
                 dismiss()
             }
         }
@@ -2059,125 +1979,48 @@ struct KitchenOrderDetailView: View {
 
     private func recallItem(_ item: OrderItem) {
         withAnimation {
-            item.status = "cooking"
-            item.servedBy = nil
-            item.updatedAt = Date()
-            item.isSynced = false
-
-            order.isSynced = false
-            order.updatedAt = Date()
-
-            let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
-            if activeItems.isEmpty {
-                order.status = "ready"
-            } else {
-                order.status = "preparing"
-            }
-            modelContext.saveWithLogging(label: #function)
-
-            Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
-            }
+            _ = KDSTicketActions.recallItem(item, order: order, in: modelContext)
         }
     }
 
     private func alertItem(_ item: OrderItem) {
         withAnimation {
-            item.status = "alert"
-            item.updatedAt = Date()
-            item.isSynced = false
-
-            order.isSynced = false
-            order.updatedAt = Date()
-            modelContext.saveWithLogging(label: #function)
-        }
-
-        Task {
-            let tableNum = order.tableSession?.table?.tableNumber ?? "1"
-            let itemName = item.menuItem?.name ?? item.itemName
-            _ = try? await NetworkManager.shared.createServiceRequest(
-                tableNumber: tableNum,
-                type: "Kitchen Alert: \(itemName) Issue"
-            )
+            _ = KDSTicketActions.alertItem(item, order: order, in: modelContext)
         }
     }
 
     private func rejectItem(_ item: OrderItem) {
+        guard canManageKitchen else { return }
         withAnimation {
-            item.status = "cancelled"
-            item.updatedAt = Date()
-            item.isSynced = false
-
-            order.isSynced = false
-            order.updatedAt = Date()
-
-            let activeItems = order.items.filter { $0.status == "cooking" || $0.status == "alert" }
-            if activeItems.isEmpty {
-                order.status = "ready"
-            }
-            modelContext.saveWithLogging(label: #function)
-
-            // Check if all active items matching this station have been served/cancelled
-            let activeItemsForStation = order.items.filter { ($0.status == "cooking" || $0.status == "alert") && $0.shouldDisplay(on: station) }
-            if activeItemsForStation.isEmpty {
+            _ = KDSTicketActions.cancelItem(
+                item,
+                order: order,
+                station: station,
+                completeQuickServiceWhenReady: identity.isQuickService,
+                in: modelContext
+            )
+            if !KDSTicketActions.stationHasActiveItems(order: order, station: station) {
                 dismiss()
             }
         }
     }
 
     private func serveEntireTicket() {
-        var didChange = false
-        for item in order.items {
-            let matchStation = item.shouldDisplay(on: station)
-            if (item.status == "cooking" || item.status == "alert") && matchStation {
-                item.status = "served"
-                item.updatedAt = Date()
-                item.isSynced = false
-                didChange = true
-            }
-        }
-        if didChange {
-            order.isSynced = false
-            order.updatedAt = Date()
-
-            let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
-            if !hasActiveItems {
-                order.status = "ready"
-            }
-            modelContext.saveWithLogging(label: #function)
-
-            Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
-            }
-        }
+        _ = KDSTicketActions.markStationReady(
+            order: order,
+            station: station,
+            completeQuickServiceWhenReady: identity.isQuickService,
+            in: modelContext
+        )
     }
 
     private func completeTicket() {
-        // Serve all items for this station (just in case)
-        var didChange = false
-        for item in order.items {
-            let matchStation = item.shouldDisplay(on: station)
-            if (item.status == "cooking" || item.status == "alert") && matchStation {
-                item.status = "served"
-                item.updatedAt = Date()
-                item.isSynced = false
-                didChange = true
-            }
-        }
-        if didChange {
-            order.isSynced = false
-            order.updatedAt = Date()
-
-            let hasActiveItems = order.items.contains { $0.status == "cooking" || $0.status == "alert" }
-            if !hasActiveItems {
-                order.status = "served"
-            }
-            modelContext.saveWithLogging(label: #function)
-
-            Task {
-                await SyncEngine.shared.syncAll(modelContext: modelContext)
-            }
-        }
+        _ = KDSTicketActions.markStationDelivered(
+            order: order,
+            station: station,
+            actorName: currentActorName,
+            in: modelContext
+        )
     }
 }
 

@@ -12,6 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import Foundation
+import os
 import SwiftData
 
 // MARK: - ExpiryStatus
@@ -218,14 +219,20 @@ final class InventoryExpiryManager {
         costPrice: Double,
         expiryDate: Date?,
         lotNumber: String?,
-        sourceTransactionId: UUID?
-    ) {
-        guard let modelContext else { return }
+        sourceTransactionId: UUID?,
+        saveImmediately: Bool = true
+    ) -> InventoryLot? {
+        guard let modelContext, let branch = item.branch else {
+            AppLogger.inventory.error("InventoryExpiryManager: Refused lot without an item branch")
+            return nil
+        }
 
+        let normalizedLotNumber = lotNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let generatedLotNumber = "AUTO-\(UUID().uuidString.prefix(8).uppercased())"
         let lot = InventoryLot(
             inventoryItem: item,
-            branch: item.branch,
-            lotNumber: lotNumber,
+            branch: branch,
+            lotNumber: normalizedLotNumber?.isEmpty == false ? normalizedLotNumber : generatedLotNumber,
             receivedDate: Date(),
             expiryDate: expiryDate,
             initialQuantity: quantity,
@@ -235,12 +242,14 @@ final class InventoryExpiryManager {
         )
         modelContext.insert(lot)
 
-        do {
-            try modelContext.save()
-        } catch {
-            // TODO: surface through AppErrorHandler
-            print("InventoryExpiryManager: Failed to save lot — \(error.localizedDescription)")
+        if saveImmediately {
+            do {
+                try modelContext.save()
+            } catch {
+                AppLogger.inventory.error("InventoryExpiryManager: Failed to save lot — \(error.localizedDescription)")
+            }
         }
+        return lot
     }
 
     // MARK: - FEFO Consumption Engine
@@ -468,7 +477,10 @@ final class InventoryExpiryManager {
         for item: InventoryItem,
         referenceDate: Date = Date()
     ) -> Double {
-        guard let modelContext else { return 0 }
+        guard let modelContext, let branch = item.branch else {
+            AppLogger.inventory.error("Refused expiry waste without an item branch")
+            return 0
+        }
 
         let expiredLots = lots(for: item).filter {
             $0.expiryStatus(referenceDate: referenceDate) == .expired
@@ -480,13 +492,16 @@ final class InventoryExpiryManager {
             guard qty > 0 else { continue }
 
             // Create waste transaction
+            // Outbound movement: quantity is stored negative (enforced centrally
+            // in InventoryTransaction.init, passed negative here for clarity).
             let txn = InventoryTransaction(
                 item: item,
                 transactionType: InventoryMovementType.waste.rawValue,
-                quantity: qty,
+                quantity: -qty,
                 costPrice: lot.lotCostPrice,
                 notes: "Auto-waste: lot \(lot.lotNumber ?? lot.id.uuidString.prefix(8).description) expired \(lot.expiryDate.map { DateFormatter.shortDate.string(from: $0) } ?? "")",
-                branch: item.branch
+                branch: branch,
+                reasonCode: "expiry_waste"
             )
             modelContext.insert(txn)
 
@@ -507,7 +522,7 @@ final class InventoryExpiryManager {
             do {
                 try modelContext.save()
             } catch {
-                print("InventoryExpiryManager: wasteExpiredLots save failed — \(error.localizedDescription)")
+                AppLogger.inventory.error("InventoryExpiryManager: wasteExpiredLots save failed — \(error.localizedDescription)")
             }
         }
 

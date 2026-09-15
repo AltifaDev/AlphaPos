@@ -36,11 +36,11 @@ struct StockStatusBadge: View {
 
     private var badgeColor: Color {
         switch status {
-        case .outOfStock, .lowStock: return Color("appRose",   bundle: nil)
-        case .atReorderPoint:        return Color("appYellow", bundle: nil)
+        case .outOfStock, .lowStock: return .appRose
+        case .atReorderPoint:        return .appAmber
         case .belowSafety:           return .orange
-        case .overstock:             return Color("appIndigo", bundle: nil)
-        case .adequate:              return Color("appTeal",   bundle: nil)
+        case .overstock:             return .appIndigo
+        case .adequate:              return .appTeal
         }
     }
 }
@@ -64,13 +64,13 @@ struct StockLevelBar: View {
     }
 
     private var barColor: Color {
-        if current <= 0             { return Color("appRose",   bundle: nil) }
-        if current <= reorderLevel  { return Color("appYellow", bundle: nil) }
+        if current <= 0             { return .appRose }
+        if current <= reorderLevel  { return .appAmber }
         if safetyLevel > 0,
            current <= safetyLevel   { return .orange }
         if maxLevel > 0,
-           current > maxLevel       { return Color("appIndigo", bundle: nil) }
-        return Color("appTeal",     bundle: nil)
+           current > maxLevel       { return .appIndigo }
+        return .appTeal
     }
 
     var body: some View {
@@ -133,76 +133,148 @@ struct SafetyStockFields: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Safety Stock
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Image(systemName: "shield.fill").font(.caption).foregroundColor(.orange)
-                    Text("safety_stock_label".t)
-                        .font(.caption).foregroundColor(.secondary)
-                    Spacer()
-                    Text("สต็อกกันชน").font(.caption2).foregroundColor(.secondary)
+            // Row 1: Safety Stock & Max Stock (2 Columns)
+            HStack(spacing: 12) {
+                // Safety Stock
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "shield.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.orange)
+                        Text("safety_stock_label".t)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.textSecondary)
+                        Spacer()
+                        Text("สต็อกกันชน")
+                            .font(.system(size: 10))
+                            .foregroundColor(.textTertiary)
+                    }
+                    HStack(spacing: 6) {
+                        TextField("0.0", text: $safetyStockString)
+                            .keyboardType(.decimalPad)
+                            .font(.system(size: 14))
+                            .foregroundColor(.textPrimary)
+                        if !unit.isEmpty {
+                            Text(unit)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.textTertiary)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.appSurfaceHigh)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.appBorderSubtle, lineWidth: 1)
+                    )
                 }
-                HStack {
-                    TextField("0.0", text: $safetyStockString)
-                        .keyboardType(.decimalPad)
-                        .textFieldStyle(.roundedBorder)
-                    if !unit.isEmpty {
-                        Text(unit).font(.caption).foregroundColor(.secondary).frame(width: 40)
+                .frame(maxWidth: .infinity)
+
+                // Max Stock Level
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.appAccent)
+                        Text("max_stock_label".t)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.textSecondary)
+                        Spacer()
+                        Text("ป้องกันสั่งเกิน")
+                            .font(.system(size: 10))
+                            .foregroundColor(.textTertiary)
+                    }
+                    HStack(spacing: 6) {
+                        TextField("0 = ไม่จำกัด", text: $maxStockString)
+                            .keyboardType(.decimalPad)
+                            .font(.system(size: 14))
+                            .foregroundColor(.textPrimary)
+                        if !unit.isEmpty {
+                            Text(unit)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.textTertiary)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.appSurfaceHigh)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.appBorderSubtle, lineWidth: 1)
+                    )
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            // Row 2: Lead Time & ROP Live Hint (2 Columns)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 11))
+                            .foregroundColor(.blue)
+                        Text("lead_time_days_label".t)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.textSecondary)
+                        Spacer()
+                        Text("เวลาจัดส่ง")
+                            .font(.system(size: 10))
+                            .foregroundColor(.textTertiary)
+                    }
+                    HStack(spacing: 6) {
+                        TextField("1", text: $leadTimeDaysString)
+                            .keyboardType(.numberPad)
+                            .font(.system(size: 14))
+                            .foregroundColor(.textPrimary)
+                        Text("วัน")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.textTertiary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.appSurfaceHigh)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.appBorderSubtle, lineWidth: 1)
+                    )
+                }
+                .frame(maxWidth: .infinity)
+
+                // ROP Live Hint or empty balancer
+                Group {
+                    if let hint = ropHint {
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "cart.badge.plus")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.appTeal)
+                                Text("Reorder Point")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.textSecondary)
+                            }
+                            HStack {
+                                Text(hint)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(.appTeal)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color.appTeal.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(Color.appTeal.opacity(0.2), lineWidth: 1)
+                            )
+                        }
+                    } else {
+                        Color.clear
                     }
                 }
-            }
-
-            Divider()
-
-            // Max Stock Level
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.up.circle").font(.caption).foregroundColor(Color("appIndigo", bundle: nil))
-                    Text("max_stock_label".t)
-                        .font(.caption).foregroundColor(.secondary)
-                    Spacer()
-                    Text("ป้องกันสั่งเกิน").font(.caption2).foregroundColor(.secondary)
-                }
-                HStack {
-                    TextField("0 = ไม่จำกัด", text: $maxStockString)
-                        .keyboardType(.decimalPad)
-                        .textFieldStyle(.roundedBorder)
-                    if !unit.isEmpty {
-                        Text(unit).font(.caption).foregroundColor(.secondary).frame(width: 40)
-                    }
-                }
-            }
-
-            Divider()
-
-            // Lead Time
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Image(systemName: "clock.arrow.circlepath").font(.caption).foregroundColor(.blue)
-                    Text("lead_time_days_label".t)
-                        .font(.caption).foregroundColor(.secondary)
-                    Spacer()
-                    Text("เวลาจัดส่งจาก Supplier").font(.caption2).foregroundColor(.secondary)
-                }
-                HStack {
-                    TextField("1", text: $leadTimeDaysString)
-                        .keyboardType(.numberPad)
-                        .textFieldStyle(.roundedBorder)
-                    Text("วัน").font(.caption).foregroundColor(.secondary).frame(width: 40)
-                }
-            }
-
-            // Reorder Point hint (live computed)
-            if let hint = ropHint {
-                HStack(spacing: 6) {
-                    Image(systemName: "cart.badge.plus").font(.caption2)
-                    Text(hint).font(.caption2)
-                }
-                .foregroundColor(Color("appTeal", bundle: nil))
-                .padding(.vertical, 6)
-                .padding(.horizontal, 10)
-                .background(Color("appTeal", bundle: nil).opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(maxWidth: .infinity)
             }
         }
     }
@@ -301,11 +373,11 @@ struct ReorderSuggestionDashboard: View {
 
     private func chipColor(_ status: StockStatus) -> Color {
         switch status {
-        case .outOfStock, .lowStock: return Color("appRose",   bundle: nil)
-        case .atReorderPoint:        return Color("appYellow", bundle: nil)
+        case .outOfStock, .lowStock: return .appRose
+        case .atReorderPoint:        return .appAmber
         case .belowSafety:           return .orange
-        case .overstock:             return Color("appIndigo", bundle: nil)
-        case .adequate:              return Color("appTeal",   bundle: nil)
+        case .overstock:             return .appIndigo
+        case .adequate:              return .appTeal
         }
     }
 }
@@ -333,7 +405,7 @@ struct ReorderSuggestionRow: View {
                         let dayInt = Int(days)
                         Text(dayInt <= 0 ? "หมดแล้ว" : "เหลือ ~\(dayInt) วัน")
                             .font(.caption2)
-                            .foregroundColor(dayInt <= suggestion.leadTimeDays ? Color("appRose", bundle: nil) : .secondary)
+                            .foregroundColor(dayInt <= suggestion.leadTimeDays ? .appRose : .secondary)
                     } else {
                         Text("ไม่ทราบการใช้เฉลี่ย")
                             .font(.caption2).foregroundColor(.secondary)
@@ -356,7 +428,7 @@ struct ReorderSuggestionRow: View {
             VStack(alignment: .trailing, spacing: 3) {
                 StockStatusBadge(status: suggestion.status)
                 Text(String(format: "สั่ง %.1f %@", suggestion.suggestedOrderQty, suggestion.item.unit))
-                    .font(.caption2).foregroundColor(Color("appTeal", bundle: nil))
+                    .font(.caption2).foregroundColor(.appTeal)
             }
         }
         .padding(.horizontal, 14)
@@ -365,11 +437,11 @@ struct ReorderSuggestionRow: View {
 
     private var dotColor: Color {
         switch suggestion.status {
-        case .outOfStock, .lowStock: return Color("appRose",   bundle: nil)
-        case .atReorderPoint:        return Color("appYellow", bundle: nil)
+        case .outOfStock, .lowStock: return .appRose
+        case .atReorderPoint:        return .appAmber
         case .belowSafety:           return .orange
-        case .overstock:             return Color("appIndigo", bundle: nil)
-        case .adequate:              return Color("appTeal",   bundle: nil)
+        case .overstock:             return .appIndigo
+        case .adequate:              return .appTeal
         }
     }
 }
@@ -405,12 +477,12 @@ struct StockLevelInfoCard: View {
                     )
                     // Zone legend
                     HStack(spacing: 12) {
-                        legendDot(color: Color("appYellow", bundle: nil), label: "Reorder")
+                        legendDot(color: .appAmber, label: "Reorder")
                         if item.safetyStockLevel > 0 {
                             legendDot(color: .orange, label: "Safety")
                         }
                         if item.maxStockLevel > 0 {
-                            legendDot(color: Color("appIndigo", bundle: nil), label: "Max")
+                            legendDot(color: .appIndigo, label: "Max")
                         }
                     }
                     .padding(.top, 2)
@@ -430,13 +502,13 @@ struct StockLevelInfoCard: View {
                     metricCell(label: "Reorder Point",
                                value: String(format: "%.1f %@", m.reorderPoint, item.unit),
                                icon: "cart.badge.plus",
-                               color: Color("appYellow", bundle: nil))
+                               color: .appAmber)
 
                     if let days = m.daysOfStockRemaining {
                         metricCell(label: "เหลืออีก",
                                    value: String(format: "%.0f วัน", days),
                                    icon: "clock.fill",
-                                   color: days <= Double(item.leadTimeDays) ? Color("appRose", bundle: nil) : Color("appTeal", bundle: nil))
+                                   color: days <= Double(item.leadTimeDays) ? .appRose : .appTeal)
                     }
 
                     metricCell(label: "Lead Time",
@@ -455,13 +527,13 @@ struct StockLevelInfoCard: View {
                         metricCell(label: "Max Stock",
                                    value: String(format: "%.1f %@", item.maxStockLevel, item.unit),
                                    icon: "arrow.up.circle.fill",
-                                   color: Color("appIndigo", bundle: nil))
+                                   color: .appIndigo)
 
                         if m.isOverstocked {
                             metricCell(label: "Overstock",
                                        value: String(format: "+%.1f %@", m.overstockQty, item.unit),
                                        icon: "exclamationmark.triangle.fill",
-                                       color: Color("appIndigo", bundle: nil))
+                                       color: .appIndigo)
                         }
                     }
                 }
@@ -470,7 +542,7 @@ struct StockLevelInfoCard: View {
                 if m.suggestedOrderQty > 0 {
                     HStack(spacing: 8) {
                         Image(systemName: "cart.badge.plus")
-                            .font(.callout).foregroundColor(Color("appTeal", bundle: nil))
+                            .font(.callout).foregroundColor(.appTeal)
                         Text("แนะนำสั่งซื้อ")
                             .font(.caption).foregroundColor(.secondary)
                         Spacer()

@@ -1,0 +1,9 @@
+[Unit]
+Description=Detect unexpected AlphaPos database row-count loss
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/alphapos-db-integrity-guard
+
