@@ -924,6 +924,12 @@ struct MainDashboardView: View {
             .onTapGesture {
                 sessionManager.touchActivity()
                 let selectTab = {
+                    // Orders is the direct entry point for counter/Quick
+                    // Order. Only a table selected from Table Management
+                    // should put POS into table-service mode.
+                    if tab == .pos, posTableSession == nil {
+                        posQuickOrderMode = true
+                    }
                     if selectedTab == tab {
                         navigationPath = NavigationPath()
                     } else {
