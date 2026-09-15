@@ -7,7 +7,7 @@ struct POSPaymentSheets: ViewModifier {
     @Binding var activePayment: POSActivePaymentMethod?
     let totalAmount: Double
     let onPark: (String) -> Void
-    let onCash: (Double) async -> Void
+    let onCash: (Double) async -> Bool
     let onQRCode: () -> Void
     let onCard: () -> Void
     let onThaiChuaThaiPlus: (String) -> Void
