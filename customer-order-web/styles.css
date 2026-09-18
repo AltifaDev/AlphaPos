@@ -4054,6 +4054,11 @@ body {
 }
 .list-item-card { content-visibility: auto; contain-intrinsic-size: 135px; }
 
+/* IntersectionObserver owns visibility. Avoid browser content-visibility
+   promotion/demotion changing the paint state while the user scrolls. */
+.menu-grid.grid-view .list-item-card,
+.menu-grid.list-view .list-item-card { content-visibility: visible; }
+
 /* Checkout bar: Navy slate theme matching Image 2 */
 .cart-bar-container { bottom: calc(14px + var(--safe-bottom)) !important; padding: 0 12px !important; z-index: 110 !important; }
 .cart-bar-content {
@@ -9409,50 +9414,30 @@ body.dark-theme #menuView .featured-item-img-container {
     .promo-banner-container { border-radius: 14px 14px 0 0 !important; height: 200px !important; }
 }
 
-/* Reference-video motion language: cinematic reveal, staggered food cards and
-   spring sheets. Transform/opacity only keeps Safari scrolling layout-stable. */
-body.motion-ready .app-header {
-    animation: motionHeaderDrop .56s cubic-bezier(.16, 1, .3, 1) both;
-}
-body.motion-ready .promo-banner-container {
-    animation: motionHeroReveal .78s cubic-bezier(.16, 1, .3, 1) both;
-}
-body.motion-ready .promo-slide.active > img,
-body.motion-ready .promo-slide.active > video,
-body.motion-ready .promo-slide.active > .promo-placeholder-bg {
-    animation: motionHeroMedia 8s ease-out both;
-}
-body.motion-ready .promo-slide.active .promo-kicker {
-    animation: motionTextRise .48s .18s cubic-bezier(.16, 1, .3, 1) both;
-}
-body.motion-ready .promo-slide.active .promo-title {
-    animation: motionTextRise .62s .25s cubic-bezier(.16, 1, .3, 1) both;
-}
-body.motion-ready .promo-slide.active .promo-desc {
-    animation: motionTextRise .56s .36s cubic-bezier(.16, 1, .3, 1) both;
-}
-body.motion-ready .app-nav-tabs {
-    animation: motionNavPop .58s .32s cubic-bezier(.2, .9, .2, 1.15) both;
-}
-
+/* Stable motion layer. Page-level entrance animations were intentionally
+   removed: they restarted during menu redraws and caused visible flicker. */
 [data-motion="reveal"] {
     opacity: 0;
-    transform: translate3d(0, 20px, 0) scale(.975);
+    transform: translate3d(0, 28px, 0);
     transition:
-        opacity .52s cubic-bezier(.16, 1, .3, 1),
+        opacity .48s cubic-bezier(.16, 1, .3, 1),
         transform .58s cubic-bezier(.16, 1, .3, 1);
-    transition-delay: calc(var(--motion-index, 0) * 45ms);
-    will-change: transform, opacity;
+    transition-delay: calc(var(--motion-index, 0) * 35ms);
+    will-change: opacity, transform;
+    /* Prevent content-visibility from re-triggering a visual animation. */
+    contain: layout paint;
 }
 [data-motion="reveal"].motion-visible {
     opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: translate3d(0, 0, 0);
+    transition-delay: 0ms;
+    will-change: auto;
 }
 
-#menuView .featured-item-card.motion-visible .featured-item-img,
-#menuView .list-item-card.motion-visible .list-item-img {
-    animation: motionFoodSettle .72s calc(var(--motion-index, 0) * 45ms + 80ms) cubic-bezier(.16, 1, .3, 1) both;
-}
+/* The card itself is the only scroll reveal. Images must not animate again
+   when they finish decoding or when the menu is repainted. */
+#menuView .featured-item-card .featured-item-img,
+#menuView .list-item-card .list-item-img { animation: none !important; }
 .add-btn-only:active,
 .pill-qty-btn:active,
 .modal-qty-btn:active {
