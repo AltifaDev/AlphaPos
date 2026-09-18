@@ -2603,7 +2603,6 @@ class AlphaPosApp {
                 ? `featured-item-card ${inCartQty > 0 ? 'selected' : ''} ${!isAvailable ? 'out-of-stock' : ''}`
                 : `list-item-card ${inCartQty > 0 ? 'selected' : ''} ${!isAvailable ? 'out-of-stock' : ''}`;
 
-            element.style.animationDelay = `${index * 0.05}s`;
             element.setAttribute("role", "button");
             element.setAttribute("tabindex", "0");
             element.setAttribute("aria-label", `${this.getItemName(item)} ฿${item.price.toFixed(2)}`);
