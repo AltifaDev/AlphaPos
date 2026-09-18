@@ -12,12 +12,6 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
-  "routes": [
-    {
-      "pattern": "sync.alphaposweb.com/*",
-      "zone_name": "alphaposweb.com"
-    }
-  ],
   "vars": {
     "SUPABASE_URL": "https://api.alphaposweb.com",
     "LOCAL_SERVER_URL": "https://sync.alphaposweb.com"
