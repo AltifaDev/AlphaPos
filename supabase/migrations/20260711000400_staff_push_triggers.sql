@@ -174,7 +174,7 @@ BEGIN
       'order_id',     NEW.id::text,
       'order_number', NEW.order_number::text,
       'table_number', NEW.table_number,
-      'message',      'New web order requires staff confirmation'
+      'message',      'New web order received — send to kitchen'
     ));
   END IF;
   RETURN NEW;

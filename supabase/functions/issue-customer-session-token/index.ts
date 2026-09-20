@@ -89,17 +89,24 @@ Deno.serve(async (req) => {
           }));
           return json(503, { code: "PERMANENT_QR_UNAVAILABLE", title: "Table ordering is temporarily unavailable", status: 503, traceId: requestId });
         }
+        // The RPC is authoritative and already locks/validates the table and
+        // returns the active-or-new session. Do not perform a second
+        // PostgREST lookup here: it creates a TOCTOU window and can turn a
+        // valid self-service scan into a false QR_INVALID/502 when the REST
+        // schema cache or internal gateway is unavailable.
+        if (requested.status === "approved" && requested.table_session_id && requested.session_token && requested.branch_id) {
+          const approvedSession = {
+            id: requested.table_session_id,
+            merchant_id: requested.merchant_id || merchant_id,
+            branch_id: requested.branch_id,
+            table_number: requested.table_number || String(table_number),
+            session_token: requested.session_token,
+          };
+          const responseBody = await issueToken(approvedSession, jwtSecret, projectRef);
+          return new Response(JSON.stringify(responseBody), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
+        }
         if (!requested?.request_id) {
           return json(401, { code: "PERMANENT_QR_INVALID", title: "Permanent table QR is invalid or revoked", status: 401, traceId: requestId });
-        }
-        if (requested.status === "approved" && requested.table_session_id) {
-          const { data: approvedSession } = await admin.from("table_sessions")
-            .select("id,merchant_id,branch_id,table_number,session_token,is_active,ended_at")
-            .eq("id", requested.table_session_id).eq("is_active", 1).is("ended_at", null).maybeSingle();
-          if (approvedSession?.branch_id) {
-            const responseBody = await issueToken(approvedSession, jwtSecret, projectRef);
-            return new Response(JSON.stringify(responseBody), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
-          }
         }
         return json(202, {
           code: "STAFF_APPROVAL_REQUIRED", title: "Waiting for staff confirmation", status: 202,

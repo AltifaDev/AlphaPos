@@ -928,6 +928,10 @@ class AlphaPosApp {
                     this.tableSessionId = body.table_session_id;
                     this.tableNumber = String(body.table_number);
                     this.sessionToken = body.session_token;
+                    // A permanent QR is the durable identity of the table. Keep
+                    // it as the recovery source; the session token is only the
+                    // current bill/session and may be closed after payment.
+                    this.permanentQRKey = permanentKey;
                     safeStorageSet(localStorage, 'active_merchant_id', body.merchant_id);
                     safeStorageSet(localStorage, `sessionToken_T${this.tableNumber}`, body.session_token);
                     this.hideBlockingState();
@@ -1655,10 +1659,9 @@ class AlphaPosApp {
                 url.searchParams.delete('jwt');
                 replaced = true;
             }
-            if (url.searchParams.has('key')) {
-                url.searchParams.delete('key');
-                replaced = true;
-            }
+            // Keep the permanent QR key in the URL. It is the recovery source
+            // after payment/session close and after a JWT refresh. Only
+            // one-time/session-derived parameters may be removed here.
             if (replaced) {
                 window.history.replaceState({}, document.title, url.pathname + url.search);
             }
@@ -1710,6 +1713,25 @@ class AlphaPosApp {
         }
 
         return isActive;
+    }
+
+    async recoverPermanentTableSession(reason = 'session-closed') {
+        if (!this.permanentQRKey || !this.tableNumber) return false;
+
+        console.warn('[CustomerSession] Recovering permanent QR session:', reason);
+        try {
+            const recovered = await this.exchangePermanentQR(this.permanentQRKey);
+            if (!recovered) return false;
+
+            orderingSessionGate.clearSessionClosed();
+            this.hideBlockingState();
+            this._lastSessionCheckAt = Date.now();
+            this.setupCustomerRealtime();
+            return true;
+        } catch (error) {
+            console.error('[CustomerSession] Permanent QR recovery failed:', error);
+            return false;
+        }
     }
 
     /**
@@ -3749,6 +3771,13 @@ class AlphaPosApp {
                     this.sessionToken = null;
                     localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
 
+                    // A permanent QR represents the table, not the closed
+                    // bill. Recover a fresh table session automatically so a
+                    // new guest never sees a terminal "session closed" page.
+                    if (await this.recoverPermanentTableSession('polling')) {
+                        return;
+                    }
+
                     this.cart = {};
                     this.saveCartToStorage();
 
@@ -3963,19 +3992,25 @@ class AlphaPosApp {
 
         // Block after payment / session close (not GPS/Wi-Fi).
         if (!orderingSessionGate.canOrder()) {
+            if (await this.recoverPermanentTableSession('submit')) {
+                // Continue with the same cart after a transparent recovery.
+            } else {
             this._showToast(this.translate(
                 "orderingBlockedSession",
                 "This table session is closed. Please scan the QR code again if you need to order."
             ));
             this._submitInProgress = false;
             return;
+            }
         }
 
         // Revalidate at checkout: cached pages/QR tokens may outlive the table session.
         if (!this.sessionToken || !(await this.verifySessionWithServer(this.sessionToken))) {
-            this.showQrInvalidError();
-            this._submitInProgress = false;
-            return;
+            if (!(await this.recoverPermanentTableSession('checkout'))) {
+                this.showQrInvalidError();
+                this._submitInProgress = false;
+                return;
+            }
         }
 
         const btn = document.getElementById("submitOrderBtn");

@@ -122,8 +122,10 @@ interface NotificationContent {
   type: string;
 }
 
-function buildContent(payload: PushPayload, activeBadgeCount: number): NotificationContent {
-  const tbl = payload.table_number ? `Table ${payload.table_number}` : "";
+function buildContent(payload: PushPayload, activeBadgeCount: number, languageCode = "en"): NotificationContent {
+  const thai = languageCode === "th";
+  const lao = languageCode === "lo";
+  const tbl = payload.table_number ? (thai ? `โต๊ะ ${payload.table_number}` : lao ? `ໂຕະ ${payload.table_number}` : `Table ${payload.table_number}`) : "";
   const ord = payload.order_number ? `Order #${payload.order_number}` : "";
 
   switch (payload.event_type) {
@@ -180,7 +182,7 @@ function buildContent(payload: PushPayload, activeBadgeCount: number): Notificat
     case "web_order_new":
       return {
         title: `🌐 Web Order ${ord}`,
-        body: payload.message ?? (tbl ? `${tbl} — new web order requires confirmation` : "New web order requires confirmation"),
+        body: payload.message ?? (tbl ? `${tbl} — web order received` : "New web order received"),
         sound: "default",
         badge: activeBadgeCount,
         interruptionLevel: "time-sensitive",
@@ -203,8 +205,8 @@ function buildContent(payload: PushPayload, activeBadgeCount: number): Notificat
 
     case "table_occupied":
       return {
-        title: `🚪 ${tbl || "Table"} Occupied`,
-        body: payload.message ?? "A new session has started",
+        title: `🚪 ${tbl || (thai ? "โต๊ะ" : lao ? "ໂຕະ" : "Table")} ${thai ? "มีลูกค้าเข้าใช้บริการ" : lao ? "ມີລູກຄ້າເຂົ້າໃຊ້ບໍລິການ" : "Occupied"}`,
+        body: payload.message ?? (thai ? "เริ่มรอบการใช้งานใหม่แล้ว" : lao ? "ເລີ່ມຮອບການໃຊ້ງານໃໝ່ແລ້ວ" : "A new session has started"),
         sound: "default",
         badge: activeBadgeCount,
         interruptionLevel: "active",
@@ -215,8 +217,8 @@ function buildContent(payload: PushPayload, activeBadgeCount: number): Notificat
 
     case "table_vacant":
       return {
-        title: `💳 ${tbl || "Table"} Vacant`,
-        body: payload.message ?? "Session ended / table cleared",
+        title: `💳 ${tbl || (thai ? "โต๊ะ" : lao ? "ໂຕະ" : "Table")} ${thai ? "ว่าง" : lao ? "ຫວ່າງ" : "Vacant"}`,
+        body: payload.message ?? (thai ? "จบรอบการใช้งาน / เคลียร์โต๊ะแล้ว" : lao ? "ຈົບຮອບການໃຊ້ງານ / ເຄຍໂຕະແລ້ວ" : "Session ended / table cleared"),
         sound: "default",
         badge: activeBadgeCount,
         interruptionLevel: "active",
@@ -390,10 +392,23 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
+    // Staff iPhones receive only actionable operational events. The master
+    // iPad uses the POS channel and is intentionally not affected here.
+    const staffActionableEvents = new Set([
+      "new_order", "order_new", "web_order", "web_order_new",
+      "order_ready", "order_cancelled", "service_request", "urgent",
+    ]);
+    if (!staffActionableEvents.has(body.event_type)) {
+      return Response.json(
+        { delivered: 0, total: 0, suppressed: true, reason: "non_actionable_staff_event" },
+        { headers: corsHeaders },
+      );
+    }
+
     // Filter by employee_id when pushing a targeted staff notification (shift/timecard)
     let deviceQuery = admin
       .from("push_devices")
-      .select("device_token, app_id, employee_id, environment")
+      .select("device_token, app_id, employee_id, environment, language_code")
       .eq("merchant_id", merchant_id)
       .eq("is_active", true)
       .eq("app_id", "staff");  // Only Staff app devices
@@ -409,7 +424,22 @@ Deno.serve(async (req) => {
       throw new Error(`Failed to fetch push devices: ${devicesError.message}`);
     }
 
-    if (!devices || devices.length === 0) {
+    // A staff device is eligible only while its employee has an open
+    // timecard. This is enforced server-side so it also works when the app is
+    // closed and prevents stale device registrations from receiving pushes.
+    const { data: activeTimecards, error: timecardError } = await admin
+      .from("timecards")
+      .select("employee_id")
+      .eq("merchant_id", merchant_id)
+      .is("clock_out", null)
+      .lte("clock_in", new Date().toISOString());
+    if (timecardError) throw new Error(`Failed to check active timecards: ${timecardError.message}`);
+    const activeEmployeeIds = new Set((activeTimecards ?? []).map((row) => row.employee_id));
+    const eligibleDevices = (devices ?? []).filter((device) =>
+      typeof device.employee_id === "string" && activeEmployeeIds.has(device.employee_id)
+    );
+
+    if (eligibleDevices.length === 0) {
       return Response.json(
         { delivered: 0, total: 0, message: "No active staff devices registered" },
         { headers: corsHeaders },
@@ -432,7 +462,6 @@ Deno.serve(async (req) => {
     const badgeCount = (pendingRequests ?? 0) + (activeOrders ?? 0);
 
     // ── 5. Build notification content ─────────────────────────────────────────
-    const content = buildContent(body, badgeCount);
 
     // ── 6. Get APNs provider token ────────────────────────────────────────────
     let providerToken: string;
@@ -462,11 +491,12 @@ Deno.serve(async (req) => {
 
     // ── 8. Send to all devices concurrently ──────────────────────────────────
     const results = await Promise.all(
-      devices.map((device) => {
+      eligibleDevices.map((device) => {
         const environment = device.environment ?? defaultEnvironment;
         const apnsHost = environment === "sandbox"
           ? "https://api.sandbox.push.apple.com"
           : "https://api.push.apple.com";
+        const content = buildContent(body, badgeCount, device.language_code ?? "en");
         return sendAPNs(device.device_token, staffBundleId, apnsHost, providerToken, content, extraData);
       }),
     );

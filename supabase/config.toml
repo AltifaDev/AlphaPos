@@ -92,7 +92,7 @@ enabled = true
 # max_header_length = 4096
 
 [studio]
-enabled = true
+enabled = false
 # Port to use for Supabase Studio.
 port = 54323
 # External URL of the API server that frontend connects to.
@@ -103,7 +103,7 @@ openai_api_key = "env(OPENAI_API_KEY)"
 # Email testing server. Emails sent with the local dev setup are not actually sent - rather, they
 # are monitored, and you can view the emails that would have been sent from the web interface.
 [inbucket]
-enabled = true
+enabled = false
 # Port to use for the email testing server web interface.
 port = 54324
 # Uncomment to expose additional ports for testing user applications that send emails.
@@ -210,11 +210,10 @@ token_verifications = 30
 # Number of Web3 logins that can be made in a 5 minute interval per IP address.
 web3 = 30
 
-# Configure one of the supported captcha providers: `hcaptcha`, `turnstile`.
+# CAPTCHA is intentionally disabled. Authentication uses password + MFA and
+# must remain usable from the native iPad/iPhone clients.
 [auth.captcha]
-enabled = true
-provider = "turnstile"
-secret = "env(SUPABASE_AUTH_CAPTCHA_SECRET)"
+enabled = false
 
 [auth.email]
 # Allow/disallow new user signups via email to your project.
@@ -426,7 +425,7 @@ PAYPAL_CLIENT_SECRET = "env(PAYPAL_CLIENT_SECRET)"
 PAYPAL_WEBHOOK_ID = "env(PAYPAL_WEBHOOK_ID)"
 
 [analytics]
-enabled = true
+enabled = false
 port = 54327
 # Configure one of the supported backends: `postgres`, `bigquery`.
 backend = "postgres"
