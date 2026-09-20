@@ -7497,21 +7497,21 @@
     "zh": "厨房打印机已启用"
   },
   "kitchen_workflow_required": {
-    "en": "Kitchen Workflow Required",
+    "en": "Check serving before payment",
     "id": "Alur Kerja Dapur Diperlukan",
     "ja": "キッチンワークフロー必須",
     "ko": "주방 워크플로우 필요",
     "ms": "Aliran Kerja Dapur Diperlukan",
-    "th": "ต้องใช้ขั้นตอนครัว",
+    "th": "ตรวจสอบการเสิร์ฟก่อนชำระเงิน",
     "zh": "需要厨房工作流程"
   },
   "kitchen_workflow_required_desc": {
-    "en": "When enabled, all items must be served by kitchen/bar before checkout is allowed. Disable to skip kitchen confirmation.",
+    "en": "When enabled, all items must be served by kitchen/bar before payment. When disabled, payment immediately closes any remaining kitchen tickets as served.",
     "id": "Jika aktif, semua item harus disajikan dapur/bar sebelum checkout. Nonaktifkan untuk lewati konfirmasi.",
     "ja": "有効時は会計前にキッチン/バーの提供完了が必要です。無効で確認をスキップ。",
     "ko": "활성화 시 결제 전 주방/바 서빙이 필요합니다. 끄면 주방 확인을 건너뜁니다.",
     "ms": "Jika diaktifkan, semua item mesti dihidang dapur/bar sebelum bayar. Nyahaktif untuk langkau pengesahan.",
-    "th": "เมื่อเปิด ทุกรายการต้องถูกเสิร์ฟจากครัว/บาร์ก่อนจึงจะชำระเงินได้ ปิดเพื่อข้ามการยืนยันจากครัว",
+    "th": "เมื่อเปิด ทุกรายการต้องเสิร์ฟจากครัว/บาร์ก่อนจึงชำระเงินได้ เมื่อปิด สามารถชำระได้ทันทีและปิดตั๋วครัวที่ค้างเป็นเสิร์ฟอัตโนมัติ",
     "zh": "启用后，结账前厨房/吧台必须完成上菜。关闭可跳过厨房确认。"
   },
   "kpi_active_orders": {
@@ -14866,6 +14866,24 @@
     "ms": "Pencetak Dapur/Bar/Pelekat",
     "th": "เครื่องพิมพ์ครัว/บาร์/สติกเกอร์",
     "zh": "厨房/吧台/贴纸打印机"
+  },
+  "printer_split_kitchen_title": {
+    "en": "Split kitchen tickets by category",
+    "id": "Pisahkan tiket dapur berdasarkan kategori",
+    "ja": "カテゴリー別にキッチン伝票を分ける",
+    "ko": "카테고리별 주방 티켓 분리",
+    "ms": "Pisahkan tiket dapur mengikut kategori",
+    "th": "แยกใบครัวตามหมวดหมู่",
+    "zh": "按类别拆分厨房票据"
+  },
+  "printer_split_kitchen_desc": {
+    "en": "Print one kitchen ticket per menu category while keeping the same bill and queue number on every ticket.",
+    "id": "Cetak satu tiket dapur untuk setiap kategori menu dengan nomor tagihan dan antrean yang sama.",
+    "ja": "メニューカテゴリーごとにキッチン伝票を分け、各伝票に同じ伝票番号とキュー番号を印刷します。",
+    "ko": "메뉴 카테고리별로 주방 티켓을 나누며 모든 티켓에 동일한 영수증 및 대기 번호를 표시합니다.",
+    "ms": "Cetak satu tiket dapur bagi setiap kategori menu dengan nombor bil dan giliran yang sama.",
+    "th": "พิมพ์ใบครัวแยก 1 ใบต่อ 1 หมวดเมนู โดยใช้เลขบิลและเลขคิวเดิมทุกใบ",
+    "zh": "按菜单类别分别打印厨房票据，每张票据使用相同的账单号和排队号。"
   },
   "printer_media_section": {
     "en": "MEDIA SPECIFICATIONS",
@@ -22874,7 +22892,7 @@
     "ja": "注文",
     "ko": "주문",
     "ms": "Pesanan",
-    "th": "ออเดอร์",
+    "th": "POS",
     "zh": "订单"
   },
   "tab_promotions": {

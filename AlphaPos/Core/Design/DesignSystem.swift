@@ -736,15 +736,52 @@ struct APHaptic {
     }
 }
 
-/// Feedback for high-frequency numeric input. Uses the system key-click sound
-/// and UIKit haptics only; it never creates or activates an app AVAudioSession.
+/// Audible feedback for the order-detail controls.
+enum APNativeOrderSound {
+    static func buttonTap() {
+        guard APSoundEffect.isEnabled else { return }
+        APSoundManager.shared.playTap()
+    }
+
+    static func printer(isEnabled: Bool) {
+        guard APSoundEffect.isEnabled else { return }
+        APSoundManager.shared.playPrinterToggle(isEnabled: isEnabled)
+    }
+}
+
+/// Adds native click feedback to every SwiftUI Button inside Order Detail.
+struct APNativeOrderButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .onChange(of: configuration.isPressed) { _, isPressed in
+                if isPressed { APNativeOrderSound.buttonTap() }
+            }
+    }
+}
+
+/// Adds the same native click to controls that must keep an Apple-provided
+/// button style (for example Liquid Glass). Applying this to the styled Button
+/// avoids replacing its visual style while still covering the tap.
+private struct APNativeOrderTapSoundModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content.simultaneousGesture(
+            TapGesture().onEnded { APNativeOrderSound.buttonTap() }
+        )
+    }
+}
+
+extension View {
+    func apNativeOrderTapSound() -> some View {
+        modifier(APNativeOrderTapSoundModifier())
+    }
+}
+
+/// Feedback for high-frequency numeric input. Keep this haptic-only: scheduling
+/// AudioServicesPlaySystemSound for every rapid tap can queue audio service work
+/// faster than it is consumed and makes keypad latency progressively worse.
 enum APNativeKeypadFeedback {
     static func tap() {
         #if os(iOS)
-        // Never make the input frame wait for the system audio service.
-        DispatchQueue.global(qos: .userInteractive).async {
-            AudioServicesPlaySystemSound(SystemSoundID(1104))
-        }
         APHaptic.nonBlockingTrigger()
         #endif
     }
@@ -766,6 +803,8 @@ final class APSoundManager {
     private var paymentPlayer: AVAudioPlayer?
     private var removePlayer: AVAudioPlayer?
     private var alertPlayer: AVAudioPlayer?
+    private var printerOnPlayer: AVAudioPlayer?
+    private var printerOffPlayer: AVAudioPlayer?
 
     private init() {
         // AVAudioSession activation can block while the system audio route is
@@ -785,6 +824,7 @@ final class APSoundManager {
                 mode: .default,
                 options: [.mixWithOthers]
             )
+            try AVAudioSession.sharedInstance().setActive(true)
         } catch {
             print("APSoundManager audio session configuration: \(error)")
         }
@@ -832,6 +872,24 @@ final class APSoundManager {
         }
         alertPlayer = try? AVAudioPlayer(data: alertData)
         alertPlayer?.prepareToPlay()
+
+        // Dedicated loud tones for the printer toggle. System sound IDs are
+        // volume-limited on iPad and can remain too quiet at maximum volume.
+        let printerOnData = generateWAV(duration: 0.20, sampleRate: 44100) { t in
+            let envelope = min(1.0, t / 0.008) * max(0.0, 1.0 - (t / 0.20))
+            return (sin(2.0 * .pi * 880.0 * t) * 0.72
+                + sin(2.0 * .pi * 1320.0 * t) * 0.28) * envelope
+        }
+        printerOnPlayer = try? AVAudioPlayer(data: printerOnData)
+        printerOnPlayer?.prepareToPlay()
+
+        let printerOffData = generateWAV(duration: 0.20, sampleRate: 44100) { t in
+            let envelope = min(1.0, t / 0.008) * max(0.0, 1.0 - (t / 0.20))
+            return (sin(2.0 * .pi * 440.0 * t) * 0.72
+                + sin(2.0 * .pi * 660.0 * t) * 0.28) * envelope
+        }
+        printerOffPlayer = try? AVAudioPlayer(data: printerOffData)
+        printerOffPlayer?.prepareToPlay()
     }
 
     private func generateCashRegisterChaChingWAV() -> Data {
@@ -902,41 +960,41 @@ final class APSoundManager {
 
     func playTap() {
         guard APSoundEffect.isEnabled else { return }
-        DispatchQueue.main.async {
-            self.tapPlayer?.stop()
-            self.tapPlayer?.currentTime = 0
-            self.tapPlayer?.volume = Float(APSoundEffect.volume)
-            self.tapPlayer?.play()
-        }
+        play(player: tapPlayer)
+    }
+
+    func playPrinterToggle(isEnabled: Bool) {
+        guard APSoundEffect.isEnabled else { return }
+        play(player: isEnabled ? printerOnPlayer : printerOffPlayer)
     }
 
     func playPaymentSuccess() {
         guard APSoundEffect.isEnabled else { return }
-        DispatchQueue.main.async {
-            self.paymentPlayer?.stop()
-            self.paymentPlayer?.currentTime = 0
-            self.paymentPlayer?.volume = Float(APSoundEffect.volume)
-            self.paymentPlayer?.play()
-        }
+        // Keep the established payment-success playback path unchanged.
+        paymentPlayer?.currentTime = 0
+        paymentPlayer?.volume = Float(APSoundEffect.volume)
+        paymentPlayer?.play()
     }
 
     func playItemRemoved() {
         guard APSoundEffect.isEnabled else { return }
-        DispatchQueue.main.async {
-            self.removePlayer?.stop()
-            self.removePlayer?.currentTime = 0
-            self.removePlayer?.volume = Float(APSoundEffect.volume)
-            self.removePlayer?.play()
-        }
+        play(player: removePlayer)
     }
 
     func playAlert() {
         guard APSoundEffect.isEnabled else { return }
+        play(player: alertPlayer)
+    }
+
+    private func play(player: AVAudioPlayer?) {
+        guard let player else { return }
+        // AVAudioPlayer must be driven on the main actor. Restarting the
+        // prepared player also makes rapid POS taps deterministic on iPad.
         DispatchQueue.main.async {
-            self.alertPlayer?.stop()
-            self.alertPlayer?.currentTime = 0
-            self.alertPlayer?.volume = Float(APSoundEffect.volume)
-            self.alertPlayer?.play()
+            player.stop()
+            player.currentTime = 0
+            player.volume = Float(APSoundEffect.volume)
+            player.play()
         }
     }
 }
