@@ -200,7 +200,7 @@ final class PrintService: ObservableObject {
             let maxDots = printer.paperWidth == "58mm" ? 180 : 240
             let logoBitmap = ESCPOSBuilder.loadLogoBitmap(maxWidthDots: maxDots)
             let emulation = getEffectiveEmulation(for: printer)
-            let data = ESCPOSBuilder.buildPreBill(
+            let rawData = ESCPOSBuilder.buildPreBill(
                 orders: activeOrders,
                 template: template,
                 logoBitmap: logoBitmap,
@@ -209,6 +209,7 @@ final class PrintService: ObservableObject {
             )
             let transport = getTransport(for: printer)
             let logger = PrintLogger()
+            let data = prepareReceiptPayload(rawData, printer: printer, emulation: emulation, logger: logger)
             let result = await transport.deliver(data: data, printer: printer, logger: logger)
             if result.success {
                 finalResult = result
@@ -233,17 +234,20 @@ final class PrintService: ObservableObject {
         for printer in printers {
             let template = defaultTemplate(forRole: "receipt", paperWidth: printer.paperWidth)
             let maxDots = printer.paperWidth == "58mm" ? 180 : 240
-            let data = ESCPOSBuilder.buildPreBill(
+            let rawData = ESCPOSBuilder.buildPreBill(
                 draft: draft,
                 template: template,
                 logoBitmap: ESCPOSBuilder.loadLogoBitmap(maxWidthDots: maxDots),
                 emulation: getEffectiveEmulation(for: printer),
                 paperWidth: printer.paperWidth
             )
+            let emulation = getEffectiveEmulation(for: printer)
+            let logger = PrintLogger()
+            let data = prepareReceiptPayload(rawData, printer: printer, emulation: emulation, logger: logger)
             let result = await getTransport(for: printer).deliver(
                 data: data,
                 printer: printer,
-                logger: PrintLogger()
+                logger: logger
             )
             if result.success || !finalResult.success { finalResult = result }
         }
@@ -334,16 +338,45 @@ final class PrintService: ObservableObject {
             if let trigger = trigger, !printerResponds(printer, to: trigger) { continue }
             let filtered = routedItems(items: items, printer: printer, stationRole: "kitchen")
             guard !filtered.isEmpty else { continue }
-            let job = PrintJob(
-                order: order,
-                role: "kitchen",
-                template: defaultTemplate(forRole: "kitchen", paperWidth: printer.paperWidth),
-                hardwarePaperWidth: printer.paperWidth
-            )
-            let result = await enqueueAndSend(job, to: printer, customItems: filtered, trigger: trigger ?? .legacy)
-            if !result.success {
-                await postFailureNotification(printerName: printer.name, role: "ครัว", itemCount: filtered.count, message: result.message, order: order)
+            for group in kitchenTicketGroups(from: filtered) {
+                let job = PrintJob(
+                    order: order,
+                    role: "kitchen",
+                    template: defaultTemplate(forRole: "kitchen", paperWidth: printer.paperWidth),
+                    categoryLabel: group.label,
+                    hardwarePaperWidth: printer.paperWidth
+                )
+                let result = await enqueueAndSend(job, to: printer, customItems: group.items, trigger: trigger ?? .legacy)
+                if !result.success {
+                    await postFailureNotification(printerName: printer.name, role: "ครัว", itemCount: group.items.count, message: result.message, order: order)
+                }
             }
+        }
+    }
+
+    /// Splits one routed kitchen run into one ticket per menu category.
+    /// The same Order is deliberately reused for every group, so the bill,
+    /// queue, table and timestamp are identical on each physical ticket.
+    private func kitchenTicketGroups(from items: [OrderItem]) -> [(label: String?, items: [OrderItem])] {
+        let splitEnabled = UserDefaults.standard.object(forKey: "split_kitchen_print_by_category") as? Bool ?? true
+        guard splitEnabled else { return [(nil, items)] }
+
+        var orderedKeys: [String] = []
+        var grouped: [String: (label: String, items: [OrderItem])] = [:]
+        for item in items {
+            let rawName = item.menuItem?.category?.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = (rawName?.isEmpty == false) ? rawName! : "ไม่ระบุหมวด"
+            let key = OrderRoutingResolver.slug(label)
+            if grouped[key] == nil {
+                orderedKeys.append(key)
+                grouped[key] = (label: label, items: [])
+            }
+            grouped[key]?.items.append(item)
+        }
+
+        return orderedKeys.compactMap { key in
+            guard let group = grouped[key], !group.items.isEmpty else { return nil }
+            return (group.label, group.items)
         }
     }
 
@@ -447,13 +480,14 @@ final class PrintService: ObservableObject {
         guard let printers = activePrinters(forRole: "receipt"), !printers.isEmpty else { return }
         for printer in printers {
             let emulation = getEffectiveEmulation(for: printer)
-            let data = ShiftReportBuilder.buildOpenShift(
+            let rawData = ShiftReportBuilder.buildOpenShift(
                 session: session,
                 cashierName: cashierName,
                 emulation: emulation
             )
             let transport = getTransport(for: printer)
             let logger = PrintLogger()
+            let data = prepareReceiptPayload(rawData, printer: printer, emulation: emulation, logger: logger)
             _ = await transport.deliver(data: data, printer: printer, logger: logger)
         }
     }
@@ -479,7 +513,7 @@ final class PrintService: ObservableObject {
         var didPrint = false
         for printer in printers {
             let emulation = getEffectiveEmulation(for: printer)
-            let data = ShiftReportBuilder.buildZReport(
+            let rawData = ShiftReportBuilder.buildZReport(
                 session: session,
                 report: report,
                 tenders: tenders,
@@ -494,6 +528,7 @@ final class PrintService: ObservableObject {
             )
             let transport = getTransport(for: printer)
             let logger = PrintLogger()
+            let data = prepareReceiptPayload(rawData, printer: printer, emulation: emulation, logger: logger)
             let result = await transport.deliver(data: data, printer: printer, logger: logger)
             didPrint = didPrint || result.success
         }
@@ -518,21 +553,24 @@ final class PrintService: ObservableObject {
         logger.append("    Emulation: \(emulation.uppercased())")
 
         logger.append("[2] Compiling print payload...")
-        let data: Data
+        let rawData: Data
         switch type {
         case "receipt":
             let maxDots = printer.paperWidth == "58mm" ? 180 : 240
             let logoBitmap = ESCPOSBuilder.loadLogoBitmap(maxWidthDots: maxDots)
-            data = ESCPOSBuilder.buildTestReceipt(printer: printer, template: template, logoBitmap: logoBitmap, emulation: emulation)
+            rawData = ESCPOSBuilder.buildTestReceipt(printer: printer, template: template, logoBitmap: logoBitmap, emulation: emulation)
         case "kitchen":
-            data = ESCPOSBuilder.buildTestKitchenTicket(printer: printer, stationLabel: "KITCHEN TICKET", template: template, emulation: emulation)
+            rawData = ESCPOSBuilder.buildTestKitchenTicket(printer: printer, stationLabel: "KITCHEN TICKET", template: template, emulation: emulation)
         case "bar":
-            data = ESCPOSBuilder.buildTestKitchenTicket(printer: printer, stationLabel: "BAR TICKET", template: template, emulation: emulation)
+            rawData = ESCPOSBuilder.buildTestKitchenTicket(printer: printer, stationLabel: "BAR TICKET", template: template, emulation: emulation)
         case "label", "sticker":
-            data = TSPLBuilder.buildTestSticker(printer: printer, template: template)
+            rawData = TSPLBuilder.buildTestSticker(printer: printer, template: template)
         default:
-            data = ESCPOSBuilder.buildTestReceipt(printer: printer, template: template, emulation: emulation)
+            rawData = ESCPOSBuilder.buildTestReceipt(printer: printer, template: template, emulation: emulation)
         }
+        let data = type == "receipt"
+            ? prepareReceiptPayload(rawData, printer: printer, emulation: emulation, logger: logger)
+            : rawData
         logger.append("    Compiled \(data.count) bytes of print payload.")
 
         logger.append("[3] Establishing connection...")
@@ -543,6 +581,26 @@ final class PrintService: ObservableObject {
         logger.append("    Detail: \(result.message)")
 
         return (result.success, logger.logs)
+    }
+
+    /// Xprinter's raw text code page is not consistent across XP-C300H
+    /// firmware variants. Rasterize only receipt-like payloads for Xprinter;
+    /// other brands and cash-drawer commands continue using their original
+    /// ESC/POS payloads.
+    private func prepareReceiptPayload(
+        _ data: Data,
+        printer: Printer,
+        emulation: String,
+        logger: PrintLogger
+    ) -> Data {
+        guard emulation.lowercased() == "xprinter" else { return data }
+        guard let rasterized = StarUSBTransport().rasterizedPayloadForXprinter(data, printer: printer),
+              rasterized.count > 32 else {
+            logger.append("    WARNING: Xprinter rasterization failed; sending original ESC/POS payload.")
+            return data
+        }
+        logger.append("    Xprinter receipt rasterized: \(data.count) -> \(rasterized.count) bytes (GS v 0).")
+        return rasterized
     }
 
     func testCashDrawer(to printer: Printer) async -> (success: Bool, log: [String]) {
@@ -679,23 +737,31 @@ final class PrintService: ObservableObject {
         let logger = PrintLogger()
         let emulation = getEffectiveEmulation(for: printer)
         let renderer = getRenderer(for: printer, emulation: emulation)
+        var renderJob = job
+        renderJob.typography = job.typography ?? printer.typographyProfile
 
-        let data: Data
+        let rawData: Data
         if let customItems = customItems, (job.role == "kitchen" || job.role == "bar") {
             let stationLabel = job.role == "bar" ? "BAR TICKET" : "KITCHEN TICKET"
-            data = ESCPOSBuilder.buildKitchenTicket(
+            rawData = ESCPOSBuilder.buildKitchenTicket(
                 order: job.order,
                 items: customItems,
                 stationLabel: stationLabel,
+                categoryLabel: job.categoryLabel,
                 template: job.template,
                 emulation: emulation,
-                paperWidth: printer.paperWidth
+                paperWidth: printer.paperWidth,
+                typography: renderJob.typography
             )
         } else if let customItems = customItems, job.role == "label" || job.role == "sticker" {
-            data = buildLabelPayload(order: job.order, items: customItems, template: job.template, emulation: emulation)
+            rawData = buildLabelPayload(order: job.order, items: customItems, template: job.template, emulation: emulation, typography: renderJob.typography)
         } else {
-            data = renderer.render(job: job, emulation: emulation)
+            rawData = renderer.render(job: renderJob, emulation: emulation)
         }
+
+        let data = job.role == "receipt"
+            ? prepareReceiptPayload(rawData, printer: printer, emulation: emulation, logger: logger)
+            : rawData
 
         guard !data.isEmpty, job.role != "receipt" || data.count >= 32 else {
             return PrintResult(success: false, message: "Receipt renderer produced an empty or incomplete payload.")
@@ -750,6 +816,11 @@ final class PrintService: ObservableObject {
                 job.logoBitmap = ESCPOSBuilder.loadLogoBitmap(maxWidthDots: maxDots)
             }
             let customItems = record.role == "receipt" ? nil : items(from: order, csv: record.itemIdsCSV)
+            if record.role == "kitchen", let customItems, !customItems.isEmpty {
+                // Reconstruct the category heading for a failed split ticket
+                // when the retry happens after the app has been relaunched.
+                job.categoryLabel = kitchenCategoryLabel(for: customItems)
+            }
             _ = await enqueueAndSend(job, to: printer, customItems: customItems, trigger: PrintTrigger(rawValue: record.trigger) ?? .legacy)
         }
         try? ctx.save()
@@ -768,6 +839,13 @@ final class PrintService: ObservableObject {
     private func itemIdsCSV(_ items: [OrderItem]?) -> String {
         guard let items, !items.isEmpty else { return "all" }
         return items.map { $0.id.uuidString }.sorted().joined(separator: ",")
+    }
+
+    private func kitchenCategoryLabel(for items: [OrderItem]) -> String? {
+        guard let item = items.first else { return nil }
+        let rawName = item.menuItem?.category?.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let rawName, !rawName.isEmpty else { return "ไม่ระบุหมวด" }
+        return rawName
     }
 
     private func items(from order: Order, csv: String) -> [OrderItem] {
@@ -797,7 +875,7 @@ final class PrintService: ObservableObject {
         }
     }
 
-    private func buildLabelPayload(order: Order, items: [OrderItem], template: ReceiptTemplate?, emulation: String) -> Data {
+    private func buildLabelPayload(order: Order, items: [OrderItem], template: ReceiptTemplate?, emulation: String, typography: PrintTypographyProfile? = nil) -> Data {
         let rawTable = order.tableSession?.table?.tableNumber
         let tableLabel: String = {
             guard let rawTable, !rawTable.isEmpty, rawTable.uppercased() != "QUICK" else { return "Takeaway" }
@@ -824,7 +902,8 @@ final class PrintService: ObservableObject {
                     cupIndex: index + 1,
                     totalCups: items.count,
                     template: template,
-                    emulation: emulation
+                    emulation: emulation,
+                    typography: typography
                 ))
             }
         }

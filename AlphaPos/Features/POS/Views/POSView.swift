@@ -23,8 +23,8 @@ enum POSActivePaymentMethod: Identifiable {
 
 struct POSView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @EnvironmentObject private var sessionManager: AppSessionManager
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var sessionManager: AppSessionManager
     @EnvironmentObject private var lm: LocalizationManager
     @ObservedObject private var printService = PrintService.shared
     @Query(filter: #Predicate<Category> { !$0.isDeleted }, sort: \Category.name) private var categories: [Category]
@@ -36,9 +36,10 @@ struct POSView: View {
     private var parkedCheckouts: [CheckoutSession]
     @Query(filter: #Predicate<Order> {
         !$0.isDeleted && $0.orderType != "dine_in" &&
-        $0.status != "completed" && $0.status != "cancelled"
+        $0.status != "completed" && $0.status != "cancelled" &&
+        $0.orderSource == "staff"
     }, sort: \Order.createdAt, order: .forward)
-    private var quickOrderQueue: [Order]
+    private var staffQuickOrderCandidates: [Order]
 
     @Binding var activeSession: TableSession?
     @Binding var selectedTab: MainDashboardView.DashboardTab
@@ -47,6 +48,12 @@ struct POSView: View {
     @Binding var quickOrderMode: Bool
 
     @AppStorage("enable_table_system") private var enableTableSystem = true
+    @AppStorage("offline_sync_mode") private var offlineSyncMode = false
+    @AppStorage("enable_table_cleaning_after_checkout") private var enableTableCleaningAfterCheckout = true
+    /// Merchant-wide policy: when enabled, payment is gated until every
+    /// kitchen/bar item is served. When disabled, checkout auto-serves any
+    /// remaining kitchen work as part of the payment transaction.
+    @AppStorage("kitchen_workflow_required") private var kitchenWorkflowRequired = true
     @AppStorage("require_manager_override_for_void") private var requireManagerOverrideForVoid = true
 
     @AppStorage("payment_method_cash_enabled") private var cashEnabled = true
@@ -83,6 +90,15 @@ struct POSView: View {
     @State private var showPrinterControls = false
     @State private var didTriggerPrinterLongPress = false
     @State private var isPrinterButtonPressed = false
+
+    /// Staff-phone orders require a sync/realtime path. Local POS drafts and
+    /// held counter bills belong to the normal cart/held-order workflow, never
+    /// this queue. Hiding cached staff orders while offline also prevents the
+    /// UI from implying that a phone order arrived live without connectivity.
+    private var quickOrderQueue: [Order] {
+        guard !offlineSyncMode else { return [] }
+        return staffQuickOrderCandidates
+    }
     @State private var showReceiptCopyPicker = false
     @State private var showPromotionPicker = false
     @State private var noteText = ""
@@ -102,8 +118,14 @@ struct POSView: View {
     @State private var showPendingCheckouts = false
     @State private var showRefund = false
     @State private var focusedNotificationOrder: Order?
+    @State private var orderToPay: Order?
+    // Keep an ID rather than a live SwiftData model instance. Realtime sync can
+    // refresh an Order while the queue sheet is dismissing; retaining the model
+    // directly could then leave the cart surface with no selected order.
+    @State private var selectedQuickOrderID: UUID?
     @State private var showSplitPayment = false
     @State private var showDeliveryNumberModal = false
+    @State private var pendingDeliveryBrand: String?
     @State private var deliveryCanScrollLeading = false
     @State private var deliveryCanScrollTrailing = true
     // C-1: Gift Card
@@ -140,7 +162,12 @@ struct POSView: View {
     /// Prefer a non–soft-deleted session. Callers must clear `activeSession`
     /// before any hard wipe so this never observes an invalidated model.
     private var liveActiveSession: TableSession? {
-        guard let session = activeSession, session.isActive, !session.isDeleted else { return nil }
+        // Quick Order is deliberately tableless. Ignore a stale table binding
+        // immediately while SwiftUI navigation is still reconciling state.
+        guard isTableServiceMode else { return nil }
+        guard let session = activeSession,
+              let table = session.table,
+              session.isOperationallyActive(for: table) else { return nil }
         return session
     }
 
@@ -174,20 +201,85 @@ struct POSView: View {
     }
 
     private var sessionOrdersForDisplay: [Order] {
+        if !isTableServiceMode, let order = selectedQuickOrder,
+           !order.isDeleted, !order.isSettled {
+            return [order]
+        }
         guard let session = liveActiveSession else { return [] }
         // Exclude orders that are already settled (paid / completed). A bill
         // paid on a staff phone syncs back here with status "completed" and a
         // completed payment; without this filter it would keep showing in the
         // cart and the payment buttons would stay active — allowing a double
         // charge and leaving served items on screen.
-        var orders = session.orders.filter { !$0.isDeleted && !Self.isOrderSettled($0) }
+        var orders = session.orders.filter {
+            !$0.isDeleted
+                && !Self.isOrderSettled($0)
+                && session.ownsCurrentOrder($0)
+        }
         if let recent = viewModel.recentlySubmittedTableOrder,
            recent.tableSession?.id == session.id,
            !recent.isDeleted,
+           !Self.isOrderSettled(recent),
+           session.ownsCurrentOrder(recent),
            !orders.contains(where: { $0.id == recent.id }) {
             orders.append(recent)
         }
+
+        // Self-healing fallback: if relationship is empty, search context for active uncompleted orders
+        // matching this table session or table number, and repair the relationship link.
+        if orders.isEmpty {
+            let sessionId = session.id
+            let tableNumber = session.table?.tableNumber ?? ""
+            let canonicalTarget = SyncEngine.shared.canonicalTableNumber(tableNumber)
+            var descriptor = FetchDescriptor<Order>(
+                predicate: #Predicate<Order> {
+                    !$0.isDeleted
+                        && $0.status != "completed"
+                        && $0.status != "cancelled"
+                }
+            )
+            descriptor.fetchLimit = 200
+            if let candidates = try? modelContext.fetch(descriptor) {
+                var repaired = false
+                for cand in candidates {
+                    if Self.isOrderSettled(cand) { continue }
+                    // A table number is reusable. Historical orders must never
+                    // migrate into a newly-opened session merely because the
+                    // number matches. This was the remaining path that revived
+                    // old served items after the table had been cleared.
+                    guard session.acceptsOrder(createdAt: cand.createdAt) else { continue }
+                    let matchesSession = cand.tableSession?.id == sessionId
+                    let matchesTable: Bool = {
+                        guard !canonicalTarget.isEmpty,
+                              let floor = cand.floorTableNumber, !floor.isEmpty else { return false }
+                        return SyncEngine.shared.canonicalTableNumber(floor) == canonicalTarget
+                    }()
+                    if matchesSession || matchesTable {
+                        if cand.tableSession?.id != sessionId {
+                            cand.tableSession = session
+                            repaired = true
+                        }
+                        if !orders.contains(where: { $0.id == cand.id }) {
+                            orders.append(cand)
+                        }
+                    }
+                }
+                if repaired {
+                    _ = modelContext.saveWithLogging(label: "\(Self.self).sessionOrdersForDisplay.repair")
+                }
+            }
+        }
+
         return orders
+    }
+
+    private var selectedQuickOrder: Order? {
+        guard let orderID = selectedQuickOrderID else { return nil }
+        var descriptor = FetchDescriptor<Order>(
+            predicate: #Predicate<Order> { $0.id == orderID && !$0.isDeleted }
+        )
+        descriptor.fetchLimit = 1
+        return (try? modelContext.fetch(descriptor))?.first
     }
 
     private var groupedOrderedItems: [GroupedOrderedItem] {
@@ -353,14 +445,50 @@ struct POSView: View {
         return hasher.finalize()
     }
 
+    private var quickOrderQueueFingerprint: String {
+        quickOrderQueue.map { order in
+            "\(order.id.uuidString):\(order.updatedAt.timeIntervalSince1970):\(order.items.count)"
+        }.joined(separator: "|")
+    }
+
     private var shouldShowPaymentActions: Bool {
+        if selectedQuickOrder != nil { return false }
         if isTableServiceMode {
             if liveActiveSession == nil {
                 return !viewModel.cart.isEmpty
             }
-            return viewModel.cart.isEmpty && isAllServed
+            return viewModel.cart.isEmpty
+                && (!kitchenWorkflowRequired || isAllServed)
         }
         return !viewModel.cart.isEmpty
+    }
+
+    /// Apply the merchant's checkout policy to one order. This is deliberately
+    /// shared by normal and split checkout so no path can leave a KDS ticket
+    /// open after taking payment.
+    private func terminalizeForCheckout(_ order: Order) {
+        if !kitchenWorkflowRequired {
+            order.markServed()
+            // Pending is normally reserved for staff approval and therefore
+            // is not covered by Order.markServed(). Once a cashier explicitly
+            // takes payment with this policy disabled, close those tickets too.
+            if order.status == "pending" {
+                let now = Date()
+                for item in order.items where !item.isDeleted && OrderItemStatus.active.contains(item.status) {
+                    item.status = OrderItemStatus.served
+                    item.isSynced = false
+                    item.updatedAt = now
+                }
+            }
+        }
+        if order.status == "pending"
+            || order.status == OrderStatus.preparing
+            || order.status == OrderStatus.ready
+            || order.status == OrderStatus.served {
+            order.status = OrderStatus.completed
+            order.isSynced = false
+            order.updatedAt = Date()
+        }
     }
 
     private var canPrintPreBill: Bool {
@@ -370,6 +498,14 @@ struct POSView: View {
 
     @discardableResult
     private func completePayment(methodName: String, cashTendered: Double? = nil, transactionReference: String? = nil) async -> Bool {
+        if let quickOrder = selectedQuickOrder, !quickOrder.isSettled {
+            handleQuickOrderPayment(
+                for: quickOrder,
+                method: methodName,
+                cashTendered: cashTendered
+            )
+            return true
+        }
         if isTableServiceMode, liveActiveSession != nil {
             return await completeCheckout(methodName: methodName, cashTendered: cashTendered, transactionReference: transactionReference)
         } else {
@@ -486,19 +622,7 @@ struct POSView: View {
             if order.receiptNumber?.isEmpty != false {
                 order.receiptNumber = NetworkManager.localFallbackReceiptNumber(merchantId: merchantId)
             }
-            if order.status == "preparing" || order.status == "ready" {
-                order.status = "completed"
-                order.isSynced = false
-                order.updatedAt = Date()
-
-                for item in order.items {
-                    if item.status == "cooking" {
-                        item.status = "served"
-                        item.isSynced = false
-                        item.updatedAt = Date()
-                    }
-                }
-            }
+            terminalizeForCheckout(order)
             let customerOutstanding = order.usesGovernmentSupport
                 ? max(0, order.supportCitizenAmount - order.paidAmount)
                 : order.outstandingAmount
@@ -512,6 +636,7 @@ struct POSView: View {
                     payment.transactionReference = Payment.thaiChuaThaiInternalReference(orderNumber: order.orderNumber)
                 }
                 payment.order = order
+                order.payments.append(payment)
                 BusinessDayContext.stamp(payment: payment, order: order, in: modelContext)
                 modelContext.insert(payment)
                 AccountingLedgerService.recordCapturedPayment(payment, order: order, in: modelContext)
@@ -519,8 +644,8 @@ struct POSView: View {
             }
         }
 
-        // 2. Close remote sessions (leader + joined children), then sync.
-        // Always run syncAll even if close fails so local dirty state still pushes.
+        // 2. Capture every table in the joined group for a best-effort close
+        // after the authoritative atomic checkout has synced.
         let leader = session.table?.joinedParent ?? session.table
         let tableNumbers: [String] = {
             guard let leader else {
@@ -530,23 +655,24 @@ struct POSView: View {
             return ([leader] + leader.joinedChildren).map(\.tableNumber).filter { !$0.isEmpty }
         }()
 
-        // 3. Mark session inactive and set group status to cleaning
+        // 3. Mark session inactive and apply the configured post-checkout status.
+        let postCheckoutTableStatus = enableTableCleaningAfterCheckout ? "cleaning" : "vacant"
         session.isActive = false
         session.endedAt = Date()
         session.isSynced = false
         session.updatedAt = Date()
 
         if let leader {
-            leader.status = "cleaning"
+            leader.status = postCheckoutTableStatus
             leader.isSynced = false
             leader.updatedAt = Date()
             for child in leader.joinedChildren {
-                child.status = "cleaning"
+                child.status = postCheckoutTableStatus
                 child.isSynced = false
                 child.updatedAt = Date()
             }
         } else if let table = session.table {
-            table.status = "cleaning"
+            table.status = postCheckoutTableStatus
             table.isSynced = false
             table.updatedAt = Date()
         }
@@ -558,6 +684,10 @@ struct POSView: View {
         }
 
         Task {
+            // The atomic checkout is the authoritative remote transition. It
+            // must land before a standalone session close, otherwise realtime
+            // can briefly resurrect the old active session and occupied badge.
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
             var closeFailed = false
             for number in tableNumbers {
                 do {
@@ -566,7 +696,6 @@ struct POSView: View {
                     closeFailed = true
                 }
             }
-            await SyncEngine.shared.syncAll(modelContext: modelContext)
             if closeFailed {
                 await MainActor.run {
                     showError(L.Errors.syncError.t)
@@ -615,19 +744,7 @@ struct POSView: View {
             if order.receiptNumber?.isEmpty != false {
                 order.receiptNumber = NetworkManager.localFallbackReceiptNumber(merchantId: merchantId)
             }
-            if order.status == "preparing" || order.status == "ready" {
-                order.status = "completed"
-                order.isSynced = false
-                order.updatedAt = Date()
-
-                for item in order.items {
-                    if item.status == "cooking" {
-                        item.status = "served"
-                        item.isSynced = false
-                        item.updatedAt = Date()
-                    }
-                }
-            }
+            terminalizeForCheckout(order)
         }
 
         var remainingPaymentEntries = entries.map { (method: $0.method, amount: $0.amount) }
@@ -643,6 +760,7 @@ struct POSView: View {
                 let payAmount = min(orderRemaining, entry.amount)
                 let payment = Payment(paymentMethod: entry.method, amount: payAmount)
                 payment.order = order
+                order.payments.append(payment)
                 BusinessDayContext.stamp(payment: payment, order: order, in: modelContext)
                 modelContext.insert(payment)
                 AccountingLedgerService.recordCapturedPayment(payment, order: order, in: modelContext)
@@ -683,9 +801,10 @@ struct POSView: View {
         session.isSynced = false
         session.updatedAt = Date()
 
+        let postCheckoutTableStatus = enableTableCleaningAfterCheckout ? "cleaning" : "vacant"
         if let leader {
             for table in [leader] + leader.joinedChildren {
-                table.status = "cleaning"
+                table.status = postCheckoutTableStatus
                 table.isSynced = false
                 table.updatedAt = Date()
             }
@@ -727,6 +846,7 @@ struct POSView: View {
             for entry in entries {
                 let payment = Payment(paymentMethod: entry.method, amount: entry.amount)
                 payment.order = order
+                order.payments.append(payment)
                 BusinessDayContext.stamp(payment: payment, order: order, in: modelContext)
                 modelContext.insert(payment)
                 AccountingLedgerService.recordCapturedPayment(payment, order: order, in: modelContext)
@@ -1065,20 +1185,27 @@ struct POSView: View {
     }
 
     var body: some View {
-        @Bindable var viewModel = viewModel
-        return POSWorkspaceView(
+        let base = workspaceBase
+        let withDialogs = applyDialogs(to: base)
+        let withOrderSheets = applyOrderSheets(to: withDialogs)
+        let withAdminSheets = applyAdminSheets(to: withOrderSheets)
+        return applyLifecycleHandlers(to: withAdminSheets)
+            .buttonStyle(APNativeOrderButtonStyle())
+    }
+
+    // MARK: - Sub-Expressions for Compiler Optimization
+
+    @ViewBuilder
+    private var workspaceBase: some View {
+        POSWorkspaceView(
             hasLoadedCatalog: catalog.hasLoaded,
             hasCatalogItems: catalog.totalAvailableItems > 0,
             requiresTable: isTableServiceMode && liveActiveSession == nil,
-            menuContent: { erasedMenuPanel },
+            menuContent: { selectedQuickOrder == nil ? erasedMenuPanel : erasedQuickOrderLockedPanel },
             cartContent: { erasedCartPanel },
-            emptyContent: { emptyState },
-            tableContent: { tableRequiredState },
-            headerContent: {
-                if let activeShift = activeRegisterSessions.first, isShiftStale(activeShift) {
-                    staleShiftWarningBanner(activeShift)
-                }
-            }
+            emptyContent: { erasedEmptyState },
+            tableContent: { erasedTableRequiredState },
+            headerContent: { erasedWorkspaceHeader }
         )
         .modifier(POSAlerts(
             showingErrorBanner: $showingErrorBanner,
@@ -1088,361 +1215,467 @@ struct POSView: View {
         .navigationBarTitleDisplayMode(.inline)
         .disabled(externalAppHandoff.isPending)
         .overlay {
-            if externalAppHandoff.isPending {
-                VStack(spacing: 16) {
-                    Text("รอกลับจากแอปถุงเงิน")
-                        .font(.headline)
-                    Text("บิลนี้ยังไม่ได้บันทึกชำระเงิน")
-                        .font(.subheadline)
-                    Button("กลับไปยังบิล") { externalAppHandoff.cancel() }
-                }
-                .padding(24)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-            }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if externalAppHandoff.activityChanged(isActive: phase == .active) {
-                activePayment = .thaiChuaThaiPlus
-            }
+            externalAppHandoffOverlay
         }
         .background(externalAppAlerts)
         .toolbar(.visible, for: .navigationBar)
         .toolbar {
             posToolbarContent
         }
-        .sheet(item: $viewModel.selectedItemForCustomization) { item in
-            ModifierCustomizerView(item: item) { modifiers in
-                if let editId = cartItemBeingEdited,
-                   let idx = viewModel.cart.firstIndex(where: { $0.id == editId }) {
-                    let (allowed, reason) = viewModel.checkStockBeforeAdding(item, modifiers: modifiers, quantity: viewModel.cart[idx].quantity)
-                    if allowed {
-                        viewModel.cart[idx] = CartItem(
-                            item: item,
-                            selectedModifiers: modifiers,
-                            quantity: viewModel.cart[idx].quantity,
-                            notes: viewModel.cart[idx].notes,
-                            unitPrice: viewModel.salesChannelUnitPrice(for: item)
-                        )
-                        viewModel.presentStockWarningIfNeeded()
-                    } else {
-                        viewModel.presentAlert(reason)
-                    }
-                    cartItemBeingEdited = nil
-                } else {
-                    viewModel.addToCart(item, modifiers: modifiers)
-                }
-            }
-        }
-        .alert("Add Note", isPresented: $showNoteAlert) {
-            TextField("Enter note...", text: $noteText)
-            Button("Cancel", role: .cancel) {
-                noteText = ""
-                itemToEditNote = nil
-                editingNoteForOrderedItem = nil
-            }
-            Button("save_btn_label".t) {
-                if let itemId = itemToEditNote {
-                    if let idx = viewModel.cart.firstIndex(where: { $0.id == itemId }) {
-                        viewModel.cart[idx].notes = noteText
-                    }
-                } else if let orderedTarget = editingNoteForOrderedItem {
-                    let rawItems = sessionOrdersForDisplay.flatMap { $0.items }.filter { !$0.isDeleted }
-                    for item in rawItems {
-                        if orderedItemIdentity(item) == orderedTarget.identity && item.status == orderedTarget.status {
-                            item.notes = noteText
-                            item.isSynced = false
-                            item.updatedAt = Date()
-                        }
-                    }
-                    modelContext.saveWithLogging(label: #function)
-                    viewModel.syncFromSession(liveActiveSession, activeCashierName: activeCashierDisplayName)
-                }
-                noteText = ""
-                itemToEditNote = nil
-                editingNoteForOrderedItem = nil
-                APHaptic.trigger()
-            }
-        } message: {
-            Text("pos_instructions_hint".t)
-        }
-        .alert("Cash Drawer is Locked", isPresented: $showNoActiveShiftAlert) {
-            Button("go_to_cash_drawer".t) {
-                selectedTab = .cashDrawer
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("pos_shift_required_hint".t)
-        }
-        .alert("พิมพ์ใบตรวจรายการ", isPresented: $showPreBillPrintAlert) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(preBillPrintMessage)
-        }
-        .alert("pos_out_of_stock".t, item: $viewModel.activeAlert) { _ in
-            Button("OK", role: .cancel) { viewModel.activeAlert = nil }
-        } message: {
-            Text($0.message)
-        }
-        .confirmationDialog("void_reason_title".t, isPresented: $showVoidReasonDialog, titleVisibility: .visible) {
-            Button("void_reason_entry_error".t) { authorizePendingVoid(reason: "entry_error") }
-            Button("void_reason_customer_cancel".t) { authorizePendingVoid(reason: "customer_cancelled") }
-            Button("void_reason_unavailable".t) { authorizePendingVoid(reason: "item_unavailable") }
-            Button("void_reason_waste".t) { authorizePendingVoid(reason: "damaged_or_waste") }
-            Button(L.Common.cancel.t, role: .cancel) {
-                pendingVoidItem = nil
-                pendingVoidReason = ""
-            }
-        }
-        // Payment sheets are isolated from the root view builder. This keeps
-        // each payment branch type-checked independently.
-        .modifier(POSPaymentSheets(
-            activePayment: $activePayment,
-            totalAmount: displayTotal,
-            onPark: { parkPayment(methodName: $0) },
-            onCash: { amount in
-                await completePayment(methodName: "Cash", cashTendered: amount)
-            },
-            onQRCode: {
-                Task { await completePayment(methodName: "QR PromptPay") }
-            },
-            onCard: {
-                Task { await completePayment(methodName: "Credit Card") }
-            },
-            onThaiChuaThaiPlus: { reference in
-                Task {
-                    await completePayment(
-                        methodName: GovernmentSupportProgram.thaiChuaThaiPlus,
-                        transactionReference: reference
-                    )
-                }
-            }
-        ))
-        .sheet(isPresented: $showCustomerPicker) {
-            CustomerPickerView { customer in
-                viewModel.selectedCustomer = customer
-            }
-        }
-        .sheet(isPresented: $showDeliveryNumberModal) {
-            if let brand = viewModel.deliveryBrand {
-                let brandColor: Color = {
-                    switch brand {
-                    case "GrabFood": return Color(hex: "00B14F")
-                    case "LINE MAN": return Color(hex: "00C25B")
-                    case "ShopeeFood": return Color(hex: "F04D23")
-                    case "Foodpanda": return Color(hex: "D6125D")
-                    case "Robinhood": return Color(hex: "7E22CE")
-                    default: return POSReferencePalette.accent
-                    }
-                }()
-                DeliveryOrderNumberSheet(
-                    brand: brand,
-                    brandColor: brandColor,
-                    brandAssetName: deliveryBrandAssetName(for: brand),
-                    placeholder: platformOrderPlaceholder,
-                    platformOrderNumber: $viewModel.platformOrderNumber,
-                    onSetFromRaw: { viewModel.setPlatformOrderNumberFromRaw($0) },
-                    onPasteFromClipboard: { viewModel.pastePlatformOrderNumberFromClipboard() }
-                )
-            }
-        }
-        .sheet(isPresented: $showHeldOrders) {
-            HeldOrdersView { order in
-                viewModel.recallHeldOrder(order)
-            }
-        }
-        .sheet(isPresented: $showQuickOrderQueue) {
-            POSQuickOrderQueue(orders: quickOrderQueue) { order in
-                quickOrderQueueSelection(order)
-            }
-        }
-        .sheet(isPresented: $showPendingCheckouts) {
-            PendingCheckoutsView { session in
-                guard session.order != nil else { return }
-                let deviceId = UIDevice.current.identifierForVendor?.uuidString ?? "local-device"
-                guard session.acquireLock(deviceId: deviceId) else {
-                    showError("รายการนี้กำลังถูกใช้งานจากเครื่องอื่น")
-                    return
-                }
-                viewModel.recallParkedCheckout(session)
-                session.lifecycleState = .open
-                modelContext.saveWithLogging(label: "resumeParkedCheckout")
-            }
-        }
-        .sheet(item: $focusedNotificationOrder, onDismiss: {
-            focusedOrderNumber = nil
-        }) { order in
-            POSNotificationOrderDetailSheet(
-                order: order,
-                onApprove: {
-                    approveFocusedNotificationOrder(order)
-                },
-                onRecoverOriginalTable: {
-                    guard let tableNumber = order.recoveryTableNumber else {
-                        return "notif_recovery_no_table".t
-                    }
-                    return recoverFocusedNotificationOrder(
-                        order,
-                        tableNumber: tableNumber
-                    )
-                },
-                onAssignTable: { tableNumber in
-                    recoverFocusedNotificationOrder(
-                        order,
-                        tableNumber: tableNumber
-                    )
-                },
-                onOpenTableLayout: {
-                    focusedNotificationOrder = nil
-                    focusedOrderNumber = nil
-                    selectedTab = .tables
-                    columnVisibility = .all
-                }
-            )
-        }
-        .fullScreenCover(isPresented: $showRefund) {
-            RefundView()
-        }
-        .onAppear {
-            openFocusedNotificationOrder()
-        }
-        .task(id: catalogFilterKey) {
-            catalog.configure(modelContext)
-            await catalog.reload(
-                favoritesOnly: showFavoritesOnly,
-                categoryID: viewModel.selectedCategory?.id,
-                searchQuery: searchQuery
-            )
-        }
-        .onChange(of: focusedOrderNumber) { _, _ in
-            openFocusedNotificationOrder()
-        }
-        .onChange(of: activeSession?.id) { _, newID in
-            // Selecting a real table always returns POS to Table Service.
-            if newID != nil {
-                quickOrderMode = false
-                isQuickServiceCheckoutConfirmed = false
-            }
-        }
         .modifier(POSNavigationHandlers(
             selectedTab: $selectedTab,
             showUnsavedCartAlert: $showUnsavedCartNavigationAlert,
             hasUnsavedCart: !viewModel.cart.isEmpty
         ))
-        .fullScreenCover(isPresented: $showStartShiftSheet) {
-            StartShiftRegisterSheet(onCancel: {
-                selectedTab = isTableServiceMode ? .tables : .pos
-            })
-        }
-        .fullScreenCover(isPresented: $showOwnerPinSetup) {
-            OwnerSetupView(
-                initialDisplayName: UserDefaults.standard.string(forKey: "logged_in_name") ?? "",
-                showMfaSoftPrompt: false,
-                onFinished: { displayName, _ in
-                    if !displayName.isEmpty {
-                        UserDefaults.standard.set(displayName, forKey: "logged_in_name")
-                    }
-                    let mid = MerchantAuthManager.shared.merchantId
-                        ?? UserDefaults.standard.string(forKey: "active_merchant_id")
-                        ?? ""
-                    if !mid.isEmpty {
-                        MerchantOnboardingGate.markCompleted(.ownerPin, for: mid)
-                    }
-                    showOwnerPinSetup = false
-                    showStartShiftSheet = true
-                }
-            )
-        }
-        .sheet(item: $staleSessionToClose) { session in
-            ForceCloseStaleShiftSheet(session: session, onComplete: {
-                staleSessionToClose = nil
-                presentStartShiftFlow()
-            }, onCancel: {
-                // Stay on current page; warning banner remains visible
-            })
-        }
-        .sheet(isPresented: $showSplitPayment) {
-            SplitPaymentView(totalAmount: displayTotal) { entries in
-                completeSplitCheckout(entries: entries)
+    }
+
+    @ViewBuilder
+    private var externalAppHandoffOverlay: some View {
+        if externalAppHandoff.isPending {
+            VStack(spacing: 16) {
+                Text("รอกลับจากแอปถุงเงิน")
+                    .font(.headline)
+                Text("บิลนี้ยังไม่ได้บันทึกชำระเงิน")
+                    .font(.subheadline)
+                Button("กลับไปยังบิล") { externalAppHandoff.cancel() }
             }
+            .padding(24)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         }
-        // C-1: Gift Card Picker Sheet
-        .sheet(isPresented: $showGiftCardPicker) {
-            GiftCardPickerSheet(
-                cards: activeGiftCards,
-                totalAmount: displayTotal,
-                onSelect: { card, amount in
-                    viewModel.selectedGiftCard = card
-                    viewModel.giftCardRedeemAmount = min(amount, displayTotal)
+    }
+
+    @ViewBuilder
+    private func applyDialogs<Content: View>(to content: Content) -> some View {
+        @Bindable var viewModel = viewModel
+        content
+            .alert("Add Note", isPresented: $showNoteAlert) {
+                TextField("Enter note...", text: $noteText)
+                Button("Cancel", role: .cancel) {
+                    noteText = ""
+                    itemToEditNote = nil
+                    editingNoteForOrderedItem = nil
                 }
-            )
-        }
-        // Manager identity is captured separately from the employee performing the void.
-        .sheet(isPresented: $showVoidPINSheet) {
-            ManagerPINVerificationSheet(
-                isPresented: $showVoidPINSheet,
-                onSuccess: {},
-                onAuthorizedManager: { manager in
-                    if let item = pendingVoidItem {
-                        voidOrderedItem(item, approvedBy: manager.employeeProfile?.id)
+                Button("save_btn_label".t) {
+                    saveNote()
+                }
+            } message: {
+                Text("pos_instructions_hint".t)
+            }
+            .alert("Cash Drawer is Locked", isPresented: $showNoActiveShiftAlert) {
+                Button("go_to_cash_drawer".t) {
+                    selectedTab = .cashDrawer
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("pos_shift_required_hint".t)
+            }
+            .alert("พิมพ์ใบตรวจรายการ", isPresented: $showPreBillPrintAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(preBillPrintMessage)
+            }
+            .alert("pos_out_of_stock".t, item: $viewModel.activeAlert) { _ in
+                Button("OK", role: .cancel) { viewModel.activeAlert = nil }
+            } message: {
+                Text($0.message)
+            }
+            .confirmationDialog("void_reason_title".t, isPresented: $showVoidReasonDialog, titleVisibility: .visible) {
+                Button("void_reason_entry_error".t) { authorizePendingVoid(reason: "entry_error") }
+                Button("void_reason_customer_cancel".t) { authorizePendingVoid(reason: "customer_cancelled") }
+                Button("void_reason_unavailable".t) { authorizePendingVoid(reason: "item_unavailable") }
+                Button("void_reason_waste".t) { authorizePendingVoid(reason: "damaged_or_waste") }
+                Button(L.Common.cancel.t, role: .cancel) {
+                    pendingVoidItem = nil
+                    pendingVoidReason = ""
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func applyOrderSheets<Content: View>(to content: Content) -> some View {
+        @Bindable var viewModel = viewModel
+        content
+            .sheet(item: $viewModel.selectedItemForCustomization) { item in
+                ModifierCustomizerView(item: item) { modifiers in
+                    handleModifierCustomization(for: item, modifiers: modifiers)
+                }
+            }
+            .modifier(POSPaymentSheets(
+                activePayment: $activePayment,
+                totalAmount: displayTotal,
+                onPark: { parkPayment(methodName: $0) },
+                onCash: { amount in
+                    await completePayment(methodName: "Cash", cashTendered: amount)
+                },
+                onQRCode: {
+                    Task { await completePayment(methodName: "QR PromptPay") }
+                },
+                onCard: {
+                    Task { await completePayment(methodName: "Credit Card") }
+                },
+                onThaiChuaThaiPlus: { reference in
+                    Task {
+                        await completePayment(
+                            methodName: GovernmentSupportProgram.thaiChuaThaiPlus,
+                            transactionReference: reference
+                        )
+                    }
+                }
+            ))
+            .sheet(isPresented: $showCustomerPicker) {
+                CustomerPickerView { customer in
+                    viewModel.selectedCustomer = customer
+                }
+            }
+            .sheet(isPresented: $showDeliveryNumberModal) {
+                if let brand = viewModel.deliveryBrand {
+                    DeliveryOrderNumberSheet(
+                        brand: brand,
+                        brandColor: deliveryBrandColor(for: brand),
+                        brandAssetName: deliveryBrandAssetName(for: brand),
+                        placeholder: platformOrderPlaceholder,
+                        platformOrderNumber: $viewModel.platformOrderNumber,
+                        onSetFromRaw: { viewModel.setPlatformOrderNumberFromRaw($0) },
+                        onPasteFromClipboard: { viewModel.pastePlatformOrderNumberFromClipboard() }
+                    )
+                }
+            }
+            .sheet(isPresented: $showHeldOrders) {
+                HeldOrdersView { order in
+                    viewModel.recallHeldOrder(order)
+                }
+            }
+            .fullScreenCover(isPresented: $showQuickOrderQueue) {
+                POSQuickOrderQueue(orders: quickOrderQueue) { order in
+                    quickOrderQueueSelection(order)
+                }
+            }
+            .sheet(item: $orderToPay) { order in
+                QuickOrderPaymentSheet(order: order) { method, cashTendered in
+                    handleQuickOrderPayment(for: order, method: method, cashTendered: cashTendered)
+                }
+            }
+            .sheet(isPresented: $showPendingCheckouts) {
+                PendingCheckoutsView { session in
+                    resumePendingCheckout(session)
+                }
+            }
+            .sheet(item: $focusedNotificationOrder, onDismiss: {
+                focusedOrderNumber = nil
+            }) { order in
+                POSNotificationOrderDetailSheet(
+                    order: order,
+                    onOpenInCart: {
+                        focusedNotificationOrder = nil
+                        focusedOrderNumber = nil
+                        DispatchQueue.main.async {
+                            quickOrderQueueSelection(order)
+                        }
+                    },
+                onPay: {
+                    focusedNotificationOrder = nil
+                    focusedOrderNumber = nil
+                    DispatchQueue.main.async {
+                        if order.orderType != "dine_in" {
+                            quickOrderQueueSelection(order)
+                        } else {
+                            orderToPay = order
+                        }
                     }
                 },
-                onDismiss: {
-                    if !showVoidPINSheet {
-                        pendingVoidItem = nil
-                        pendingVoidReason = ""
+                    onApprove: {
+                        approveFocusedNotificationOrder(order)
+                    },
+                    onRecoverOriginalTable: {
+                        guard let tableNumber = order.recoveryTableNumber else {
+                            return "notif_recovery_no_table".t
+                        }
+                        return recoverFocusedNotificationOrder(
+                            order,
+                            tableNumber: tableNumber
+                        )
+                    },
+                    onAssignTable: { tableNumber in
+                        recoverFocusedNotificationOrder(
+                            order,
+                            tableNumber: tableNumber
+                        )
+                    },
+                    onOpenTableLayout: {
+                        focusedNotificationOrder = nil
+                        focusedOrderNumber = nil
+                        selectedTab = .tables
+                        columnVisibility = .all
+                    }
+                )
+            }
+    }
+
+    @ViewBuilder
+    private func applyAdminSheets<Content: View>(to content: Content) -> some View {
+        @Bindable var viewModel = viewModel
+        content
+            .fullScreenCover(isPresented: $showRefund) {
+                RefundView()
+            }
+            .fullScreenCover(isPresented: $showStartShiftSheet) {
+                StartShiftRegisterSheet(onCancel: {
+                    selectedTab = isTableServiceMode ? .tables : .pos
+                })
+            }
+            .fullScreenCover(isPresented: $showOwnerPinSetup) {
+                OwnerSetupView(
+                    initialDisplayName: UserDefaults.standard.string(forKey: "logged_in_name") ?? "",
+                    showMfaSoftPrompt: false,
+                    onFinished: { displayName, _ in
+                        handleOwnerPinSetupFinished(displayName: displayName)
+                    }
+                )
+            }
+            .sheet(item: $staleSessionToClose) { session in
+                ForceCloseStaleShiftSheet(session: session, onComplete: {
+                    staleSessionToClose = nil
+                    presentStartShiftFlow()
+                }, onCancel: {
+                    // Stay on current page; warning banner remains visible
+                })
+            }
+            .sheet(isPresented: $showSplitPayment) {
+                SplitPaymentView(totalAmount: displayTotal) { entries in
+                    completeSplitCheckout(entries: entries)
+                }
+            }
+            .sheet(isPresented: $showGiftCardPicker) {
+                GiftCardPickerSheet(
+                    cards: activeGiftCards,
+                    totalAmount: displayTotal,
+                    onSelect: { card, amount in
+                        viewModel.selectedGiftCard = card
+                        viewModel.giftCardRedeemAmount = min(amount, displayTotal)
+                    }
+                )
+            }
+            .sheet(isPresented: $showVoidPINSheet) {
+                ManagerPINVerificationSheet(
+                    isPresented: $showVoidPINSheet,
+                    onSuccess: {},
+                    onAuthorizedManager: { manager in
+                        if let item = pendingVoidItem {
+                            voidOrderedItem(item, approvedBy: manager.employeeProfile?.id)
+                        }
+                    },
+                    onDismiss: {
+                        if !showVoidPINSheet {
+                            pendingVoidItem = nil
+                            pendingVoidReason = ""
+                        }
+                    }
+                )
+            }
+    }
+
+    @ViewBuilder
+    private func applyLifecycleHandlers<Content: View>(to content: Content) -> some View {
+        content
+            .onAppear {
+                openFocusedNotificationOrder()
+                handlePOSAppear()
+                activatePendingQuickOrderIfNeeded()
+            }
+            .onDisappear {
+                animateItems = false
+            }
+            .task(id: catalogFilterKey) {
+                await reloadCatalog()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if externalAppHandoff.activityChanged(isActive: phase == .active) {
+                    activePayment = .thaiChuaThaiPlus
+                }
+            }
+            .onChange(of: focusedOrderNumber) { _, _ in
+                openFocusedNotificationOrder()
+            }
+            .onChange(of: quickOrderMode) { _, isQuickOrderMode in
+                if isQuickOrderMode {
+                    // Never let Quick Order replace an active table session.
+                    // This guard protects against a stale binding during tab
+                    // transitions and preserves the table's existing cart.
+                    if activeSession != nil {
+                        quickOrderMode = false
+                    } else {
+                        activatePendingQuickOrderIfNeeded()
                     }
                 }
-            )
-        }
-        .onAppear {
-            handlePOSAppear()
-        }
-        .onDisappear {
-            animateItems = false
-        }
-        .onChange(of: activeSession) { _, newSession in
-            if let newSession, newSession.isDeleted {
-                activeSession = nil
-                viewModel.syncFromSession(nil, activeCashierName: activeCashierDisplayName)
-            } else {
-                viewModel.syncFromSession(newSession, activeCashierName: activeCashierDisplayName)
             }
-            // Reset send-to-kitchen counter so the empty-state guard is lifted for the new session
-            sentToKitchenVersion = 0
-            animateItems = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                withAnimation(.spring(response: 0.6, dampingFraction: 0.75, blendDuration: 0)) {
-                    animateItems = true
+            .onChange(of: quickOrderQueueFingerprint) { _, _ in
+                guard !isTableServiceMode && activeSession == nil else { return }
+                activatePendingQuickOrderIfNeeded()
+            }
+            .onChange(of: activeSession?.id) { _, newID in
+                if newID != nil {
+                    selectedQuickOrderID = nil
+                    quickOrderMode = false
+                    isQuickServiceCheckoutConfirmed = false
+                }
+            }
+            .onChange(of: viewModel.cart.count) { _, newCount in
+                if newCount > 0 { selectedQuickOrderID = nil }
+            }
+            .onChange(of: activeSession) { _, newSession in
+                handleActiveSessionChanged(newSession)
+            }
+            .onChange(of: quickServiceCartFingerprint) { _, _ in
+                isQuickServiceCheckoutConfirmed = false
+            }
+            .onChange(of: localUseLoyaltyPoints) { _, newValue in
+                if viewModel.useLoyaltyPoints != newValue {
+                    viewModel.useLoyaltyPoints = newValue
+                }
+            }
+            .onChange(of: localRedeemLoyaltyPoints) { _, newValue in
+                if viewModel.redeemLoyaltyPoints != newValue {
+                    viewModel.redeemLoyaltyPoints = newValue
+                }
+            }
+            .onChange(of: viewModel.useLoyaltyPoints) { _, newValue in
+                if localUseLoyaltyPoints != newValue {
+                    localUseLoyaltyPoints = newValue
+                }
+            }
+            .onChange(of: viewModel.redeemLoyaltyPoints) { _, newValue in
+                if localRedeemLoyaltyPoints != newValue {
+                    localRedeemLoyaltyPoints = newValue
+                }
+            }
+    }
+
+    private func handleModifierCustomization(for item: MenuItem, modifiers: [Modifier]) {
+        if let editId = cartItemBeingEdited,
+           let idx = viewModel.cart.firstIndex(where: { $0.id == editId }) {
+            let (allowed, reason) = viewModel.checkStockBeforeAdding(item, modifiers: modifiers, quantity: viewModel.cart[idx].quantity)
+            if allowed {
+                viewModel.cart[idx] = CartItem(
+                    item: item,
+                    selectedModifiers: modifiers,
+                    quantity: viewModel.cart[idx].quantity,
+                    notes: viewModel.cart[idx].notes,
+                    unitPrice: viewModel.salesChannelUnitPrice(for: item)
+                )
+                viewModel.presentStockWarningIfNeeded()
+            } else {
+                viewModel.presentAlert(reason)
+            }
+            cartItemBeingEdited = nil
+        } else {
+            viewModel.addToCart(item, modifiers: modifiers)
+        }
+    }
+
+    private func saveNote() {
+        if let itemId = itemToEditNote {
+            if let idx = viewModel.cart.firstIndex(where: { $0.id == itemId }) {
+                viewModel.cart[idx].notes = noteText
+            }
+        } else if let orderedTarget = editingNoteForOrderedItem {
+            let rawItems = sessionOrdersForDisplay.flatMap { $0.items }.filter { !$0.isDeleted }
+            for item in rawItems {
+                if orderedItemIdentity(item) == orderedTarget.identity && item.status == orderedTarget.status {
+                    item.notes = noteText
+                    item.isSynced = false
+                    item.updatedAt = Date()
+                }
+            }
+            modelContext.saveWithLogging(label: #function)
+            viewModel.syncFromSession(liveActiveSession, activeCashierName: activeCashierDisplayName)
+        }
+        noteText = ""
+        itemToEditNote = nil
+        editingNoteForOrderedItem = nil
+        APHaptic.trigger()
+    }
+
+    private func deliveryBrandColor(for brand: String) -> Color {
+        switch brand {
+        case "GrabFood": return Color(hex: "00B14F")
+        case "LINE MAN": return Color(hex: "00C25B")
+        case "ShopeeFood": return Color(hex: "F04D23")
+        case "Foodpanda": return Color(hex: "D6125D")
+        case "Robinhood": return Color(hex: "7E22CE")
+        default: return POSReferencePalette.accent
+        }
+    }
+
+    private func handleQuickOrderPayment(for order: Order, method: String, cashTendered: Double?) {
+        guard !order.isSettled else { return }
+        let payment = Payment(paymentMethod: method, amount: order.outstandingAmount)
+        if let cashTendered { payment.transactionReference = Payment.cashTenderedReference(cashTendered) }
+        payment.order = order
+        order.payments.append(payment)
+        BusinessDayContext.stamp(payment: payment, order: order, in: modelContext)
+        modelContext.insert(payment)
+        AccountingLedgerService.recordCapturedPayment(payment, order: order, in: modelContext)
+        order.status = "completed"
+        order.isSynced = false
+        order.updatedAt = Date()
+        guard modelContext.saveWithLogging(label: "quickOrderPayment") else { return }
+        orderToPay = nil
+        if selectedQuickOrder?.id == order.id { selectedQuickOrderID = nil }
+        APHaptic.success()
+        // Quick Order bypasses completePayment/completeCheckout, so it must
+        // explicitly emit the same existing checkout-success sound here.
+        APSoundEffect.paymentSuccess()
+        Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+    }
+
+    private func resumePendingCheckout(_ session: CheckoutSession) {
+        guard session.order != nil else { return }
+        let deviceId = UIDevice.current.identifierForVendor?.uuidString ?? "local-device"
+        guard session.acquireLock(deviceId: deviceId) else {
+            showError("รายการนี้กำลังถูกใช้งานจากเครื่องอื่น")
+            return
+        }
+        viewModel.recallParkedCheckout(session)
+        session.lifecycleState = .open
+        modelContext.saveWithLogging(label: "resumeParkedCheckout")
+    }
+
+    private func handleOwnerPinSetupFinished(displayName: String) {
+        if !displayName.isEmpty {
+            UserDefaults.standard.set(displayName, forKey: "logged_in_name")
+        }
+        let mid = MerchantAuthManager.shared.merchantId
+            ?? UserDefaults.standard.string(forKey: "active_merchant_id")
+            ?? ""
+        if !mid.isEmpty {
+            MerchantOnboardingGate.markCompleted(.ownerPin, for: mid)
+        }
+        showOwnerPinSetup = false
+        showStartShiftSheet = true
+    }
+
+    private func handleActiveSessionChanged(_ newSession: TableSession?) {
+        if let newSession, newSession.isDeleted {
+            activeSession = nil
+            viewModel.syncFromSession(nil, activeCashierName: activeCashierDisplayName)
+        } else {
+            viewModel.syncFromSession(newSession, activeCashierName: activeCashierDisplayName)
+            if let session = newSession, session.isActive {
+                Task {
+                    await SyncEngine.shared.pullCustomerOrders(modelContext)
                 }
             }
         }
-        .onChange(of: quickServiceCartFingerprint) { _, _ in
-            // Any edit after confirmation requires the cashier to review the
-            // final ticket again before tendering. Clearing after checkout also
-            // prepares the control for the next customer.
-            isQuickServiceCheckoutConfirmed = false
-        }
-        .onChange(of: localUseLoyaltyPoints) { _, newValue in
-            if viewModel.useLoyaltyPoints != newValue {
-                viewModel.useLoyaltyPoints = newValue
-            }
-        }
-        .onChange(of: localRedeemLoyaltyPoints) { _, newValue in
-            if viewModel.redeemLoyaltyPoints != newValue {
-                viewModel.redeemLoyaltyPoints = newValue
-            }
-        }
-        .onChange(of: viewModel.useLoyaltyPoints) { _, newValue in
-            if localUseLoyaltyPoints != newValue {
-                localUseLoyaltyPoints = newValue
-            }
-        }
-        .onChange(of: viewModel.redeemLoyaltyPoints) { _, newValue in
-            if localRedeemLoyaltyPoints != newValue {
-                localRedeemLoyaltyPoints = newValue
+        // Reset send-to-kitchen counter so the empty-state guard is lifted for the new session
+        sentToKitchenVersion = 0
+        animateItems = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.75, blendDuration: 0)) {
+                animateItems = true
             }
         }
     }
+
 
     // MARK: - Empty State
 
@@ -1538,8 +1771,50 @@ struct POSView: View {
         AnyView(menuPanel)
     }
 
+    private var erasedQuickOrderLockedPanel: AnyView {
+        AnyView(
+            POSMenuPanel {
+                VStack(spacing: 16) {
+                    Image(systemName: "checkmark.shield.fill")
+                        .font(.system(size: 42, weight: .semibold))
+                        .foregroundStyle(APGradient.accent)
+                    Text(lm.currentLanguage == .thai
+                         ? "ออเดอร์จากพนักงาน"
+                         : "Staff Quick Order")
+                        .font(.title3.weight(.bold))
+                        .foregroundColor(.textPrimary)
+                    Text(lm.currentLanguage == .thai
+                         ? "ออเดอร์นี้มาจาก iPhone พนักงาน\nตรวจสอบรายการและรับชำระเท่านั้น"
+                         : "Received from the staff iPhone\nReview the order and accept payment only")
+                        .font(.subheadline)
+                        .foregroundColor(.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 260)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(24)
+            }
+        )
+    }
+
     private var erasedCartPanel: AnyView {
         AnyView(cartPanel)
+    }
+
+    private var erasedEmptyState: AnyView {
+        AnyView(emptyState)
+    }
+
+    private var erasedTableRequiredState: AnyView {
+        AnyView(tableRequiredState)
+    }
+
+    private var erasedWorkspaceHeader: AnyView {
+        guard let activeShift = activeRegisterSessions.first,
+              isShiftStale(activeShift) else {
+            return AnyView(EmptyView())
+        }
+        return AnyView(staleShiftWarningBanner(activeShift))
     }
 
     private var menuSearchBar: some View {
@@ -1703,7 +1978,7 @@ struct POSView: View {
                     .background(Color.appSurface)
                     .clipShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(APNativeOrderButtonStyle())
                 .fixedSize()
                 .layoutPriority(2)
             }
@@ -1728,7 +2003,7 @@ struct POSView: View {
                 .background(Color.appSurface)
                 .clipShape(Capsule())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(APNativeOrderButtonStyle())
             .disabled(!sessionManager.can(.refundCreate))
             .opacity(sessionManager.can(.refundCreate) ? 1 : 0.45)
             .accessibilityLabel(lm.currentLanguage == .thai ? "คืนเงิน" : "Refund")
@@ -1739,35 +2014,38 @@ struct POSView: View {
     }
 
     private var posTrailingToolbarItems: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
             Button {
                 showQuickOrderQueue = true
                 APHaptic.trigger()
             } label: {
-                HStack(spacing: 5) {
+                ZStack(alignment: .topTrailing) {
                     Image(systemName: "takeoutbag.and.cup.and.straw.fill")
-                    Text(lm.currentLanguage == .thai ? "คิวด่วน" : "Quick")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(POSReferencePalette.accent)
+                        .frame(width: 34, height: 34)
+                        .background(Color.appSurface)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(Color.appDivider.opacity(0.8), lineWidth: 1))
+
                     if !quickOrderQueue.isEmpty {
                         Text("\(quickOrderQueue.count)")
-                            .font(.caption2.weight(.bold))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.appAmber.opacity(0.2))
-                            .clipShape(Capsule())
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(minWidth: 16, minHeight: 16)
+                            .background(Color.appAmber)
+                            .clipShape(Circle())
+                            .offset(x: 4, y: -4)
                     }
                 }
-                .font(.system(size: 12.5, weight: .semibold))
-                .foregroundColor(POSReferencePalette.accent)
-                .padding(.horizontal, 10)
-                .frame(height: 32)
-                .background(Color.appSurface)
-                .clipShape(Capsule())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(APNativeOrderButtonStyle())
+            .disabled(offlineSyncMode)
+            .opacity(offlineSyncMode ? 0.4 : 1)
             .accessibilityLabel(lm.currentLanguage == .thai ? "คิวออเดอร์ด่วน" : "Quick Order Queue")
-
-            RecentOrdersReviewControl()
-                .frame(width: 135)
+            .accessibilityHint(offlineSyncMode
+                               ? (lm.currentLanguage == .thai ? "ใช้งานไม่ได้ขณะออฟไลน์" : "Unavailable while offline")
+                               : "")
 
             printerControlMenu
 
@@ -1838,9 +2116,11 @@ struct POSView: View {
         .contentShape(Circle())
         .onTapGesture {
             guard !didTriggerPrinterLongPress else { return }
+            let willEnable = printService.isAutomaticPrintingTemporarilyPaused
             withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
                 printService.isAutomaticPrintingTemporarilyPaused.toggle()
             }
+            APNativeOrderSound.printer(isEnabled: willEnable)
             APHaptic.trigger()
         }
         .onLongPressGesture(minimumDuration: 0.45, maximumDistance: 20, pressing: { isPressing in
@@ -1858,6 +2138,7 @@ struct POSView: View {
                 isPrinterButtonPressed = false
             }
             APHaptic.trigger()
+            APNativeOrderSound.buttonTap()
             showPrinterControls = true
         })
         .accessibilityLabel(
@@ -1917,7 +2198,7 @@ struct POSView: View {
                 .clipShape(Circle())
                 .overlay(Circle().stroke(Color.appDivider.opacity(0.8), lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(APNativeOrderButtonStyle())
     }
 
     private func headerTimeString(at date: Date) -> String {
@@ -1969,7 +2250,7 @@ struct POSView: View {
                 .clipShape(Capsule())
                 .shadow(color: viewModel.selectedOrderType == type ? Color.black.opacity(0.06) : .clear, radius: 3, y: 1)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(APNativeOrderButtonStyle())
     }
 
     private var platformOrderPlaceholder: String {
@@ -1977,6 +2258,36 @@ struct POSView: View {
             return "\(prefix)xxx"
         }
         return "platform_order_number_placeholder".t
+    }
+
+    private var hasDeliveryOrderNumber: Bool {
+        guard viewModel.selectedOrderType == "delivery" else { return true }
+        let body = PlatformOrderNumber.stripKnownPrefix(viewModel.platformOrderNumber)
+        return body.contains(where: { $0.isNumber })
+    }
+
+    private func selectDeliveryBrand(_ brand: String) {
+        guard viewModel.deliveryBrand != brand else {
+            if !hasDeliveryOrderNumber { showDeliveryNumberModal = true }
+            return
+        }
+
+        if hasDeliveryOrderNumber {
+            pendingDeliveryBrand = brand
+            return
+        }
+
+        viewModel.setDeliveryBrand(brand)
+        showDeliveryNumberModal = true
+        APHaptic.trigger()
+    }
+
+    private func confirmPendingDeliveryBrandChange() {
+        guard let brand = pendingDeliveryBrand else { return }
+        pendingDeliveryBrand = nil
+        viewModel.setDeliveryBrand(brand)
+        showDeliveryNumberModal = true
+        APHaptic.trigger()
     }
 
     private func liquidGlassScrollButton(systemName: String, action: @escaping () -> Void) -> some View {
@@ -2020,7 +2331,7 @@ struct POSView: View {
             .frame(width: 26, height: 26)
             .shadow(color: Color.black.opacity(0.15), radius: 4, x: 0, y: 1.5)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(APNativeOrderButtonStyle())
     }
 
     @ViewBuilder
@@ -2045,11 +2356,7 @@ struct POSView: View {
 
                                 Button(action: {
                                     withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) {
-                                        viewModel.setDeliveryBrand(brand)
-                                    }
-                                    APHaptic.trigger()
-                                    if viewModel.platformOrderNumber.isEmpty {
-                                        showDeliveryNumberModal = true
+                                        selectDeliveryBrand(brand)
                                     }
                                 }) {
                                     deliveryBrandLabel(brand)
@@ -2067,7 +2374,7 @@ struct POSView: View {
                                         .shadow(color: isSelected ? brandColor.opacity(0.25) : Color.clear, radius: 4, y: 1.5)
                                         .scaleEffect(isSelected ? 1.03 : 0.98)
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(APNativeOrderButtonStyle())
                                 .id(brand)
                                 .compositingGroup()
                                 .animation(.spring(response: 0.28, dampingFraction: 0.75), value: isSelected)
@@ -2161,32 +2468,85 @@ struct POSView: View {
                 showDeliveryNumberModal = true
                 APHaptic.trigger()
             } label: {
-                HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Text(lm.currentLanguage == .thai ? "เลขออเดอร์เดลิเวอรี่" : "Delivery order number")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.textSecondary)
+                        Spacer()
+                        Text(hasDeliveryOrderNumber
+                             ? (lm.currentLanguage == .thai ? "แก้ไข" : "Edit")
+                             : (lm.currentLanguage == .thai ? "กรอกเลข" : "Enter number"))
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(deliveryBrandColor(for: viewModel.deliveryBrand ?? ""))
+                    }
+
+                    HStack(spacing: 8) {
                     Image(systemName: "number.square")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.textTertiary)
+                        .foregroundColor(deliveryBrandColor(for: viewModel.deliveryBrand ?? ""))
 
-                    if viewModel.platformOrderNumber.isEmpty {
-                        Text(lm.currentLanguage == .thai ? "กดเพื่อระบุเลขออเดอร์แพลตฟอร์ม" : "Tap to enter platform order #")
+                    if hasDeliveryOrderNumber {
+                        Text(viewModel.platformOrderNumber)
+                            .font(.system(size: 15, weight: .bold, design: .monospaced))
+                            .foregroundColor(.textPrimary)
+                    } else {
+                        Text(PlatformOrderNumber.prefix(for: viewModel.deliveryBrand) ?? "#")
+                            .font(.system(size: 15, weight: .bold, design: .monospaced))
+                            .foregroundColor(deliveryBrandColor(for: viewModel.deliveryBrand ?? ""))
+                        Text(lm.currentLanguage == .thai ? "กรอกหมายเลขออเดอร์" : "Enter order number")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.textTertiary)
-                    } else {
-                        Text(viewModel.platformOrderNumber)
-                            .font(.system(size: 13, weight: .bold, design: .monospaced))
-                            .foregroundColor(.textPrimary)
                     }
 
                     Spacer()
 
-                    Image(systemName: "chevron.right")
+                    Image(systemName: hasDeliveryOrderNumber ? "pencil" : "keyboard")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.textTertiary)
+                        .foregroundColor(deliveryBrandColor(for: viewModel.deliveryBrand ?? ""))
+                    }
+
+                    if !hasDeliveryOrderNumber {
+                        Text(lm.currentLanguage == .thai
+                             ? "จำเป็นต้องระบุก่อนยืนยันออเดอร์"
+                             : "Required before confirming this order")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.appAmber)
+                    }
                 }
                 .padding(.horizontal, APSpacing.md)
-                .padding(.vertical, 10)
-                .background(Color.appSurfaceHigh.opacity(0.55))
+                .padding(.vertical, 11)
+                .background(Color.appSurfaceHigh)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(hasDeliveryOrderNumber
+                                ? Color.appBorderSubtle
+                                : Color.appAmber.opacity(0.65), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(APNativeOrderButtonStyle())
+            .accessibilityLabel(lm.currentLanguage == .thai
+                                ? "กรอกเลขออเดอร์ \(viewModel.deliveryBrand ?? "เดลิเวอรี่")"
+                                : "Enter \(viewModel.deliveryBrand ?? "delivery") order number")
+            .alert(
+                lm.currentLanguage == .thai ? "เปลี่ยนค่ายเดลิเวอรี่" : "Change delivery platform",
+                isPresented: Binding(
+                    get: { pendingDeliveryBrand != nil },
+                    set: { if !$0 { pendingDeliveryBrand = nil } }
+                )
+            ) {
+                Button(lm.currentLanguage == .thai ? "เปลี่ยนค่ายและกรอกเลขใหม่" : "Change and enter new number") {
+                    confirmPendingDeliveryBrandChange()
+                }
+                Button(lm.currentLanguage == .thai ? "ยกเลิก" : "Cancel", role: .cancel) {
+                    pendingDeliveryBrand = nil
+                }
+            } message: {
+                Text(lm.currentLanguage == .thai
+                     ? "เลขเดิมอาจเป็นของค่ายเดิมและ prefix อาจไม่ตรงกัน ระบบจะเปิดช่องให้ตรวจสอบและกรอกเลขใหม่"
+                     : "The current number belongs to the previous platform. Its prefix may not match the new platform.")
+            }
 
             Divider().background(Color.appDivider)
         }
@@ -2194,62 +2554,57 @@ struct POSView: View {
 
     @ViewBuilder
     private var cartPanelMetadataCard: some View {
+        let displayedOrderNumber = selectedQuickOrder?.orderNumber ?? viewModel.currentBillNumber
         VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .center, spacing: 10) {
-                Text(viewModel.currentBillNumber)
-                    .font(.system(size: 18, weight: .bold))
+            HStack(alignment: .center, spacing: 6) {
+                Text(displayedOrderNumber)
+                    .font(.system(size: 13, weight: .heavy, design: .monospaced))
                     .foregroundColor(.textPrimary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.78)
+                    .minimumScaleFactor(0.72)
+                    .allowsTightening(true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(3)
+                    .posRollingNumber(value: numericTransitionValue(from: displayedOrderNumber))
+
+                RecentOrdersReviewControl()
+                    .frame(width: 112)
                     .layoutPriority(1)
-                    .posRollingNumber(value: numericTransitionValue(from: viewModel.currentBillNumber))
 
-                if !viewModel.currentQueueNumber.isEmpty {
-                    HStack(spacing: 4) {
-                        Text(lm.currentLanguage == .thai ? "คิวที่" : "Queue")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(Color(hex: "4B5563"))
-
-                        Text(viewModel.currentQueueNumber.replacingOccurrences(of: "#", with: ""))
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(.textPrimary)
-                            .posRollingNumber(value: numericTransitionValue(from: viewModel.currentQueueNumber))
-                    }
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                }
-
-                Spacer()
-
-                Button {
-                    showPromotionPicker = true
-                    APHaptic.trigger()
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "tag.fill")
-                            .font(.system(size: 11, weight: .bold))
-                        Text(promotionHeaderLabel)
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .lineLimit(1)
-                    }
-                    .foregroundColor(viewModel.activePromotion == nil ? .textSecondary : Color(hex: "0F766E"))
-                    .padding(.horizontal, 11)
-                    .frame(height: 32)
-                    .background(
-                        (viewModel.activePromotion == nil ? Color.appSurfaceHigh : Color(hex: "0F766E").opacity(0.09))
-                    )
-                    .clipShape(Capsule())
-                    .overlay(
-                        Capsule().stroke(
-                            viewModel.activePromotion == nil ? Color.appBorderSubtle : Color(hex: "0F766E").opacity(0.45),
-                            lineWidth: 1
+                if selectedQuickOrder == nil {
+                    Button {
+                        showPromotionPicker = true
+                        APHaptic.trigger()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "tag.fill")
+                                .font(.system(size: 10, weight: .bold))
+                            Text(promotionHeaderLabel)
+                                .font(.system(size: 10.5, weight: .bold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
+                        .foregroundColor(viewModel.activePromotion == nil ? .textSecondary : Color(hex: "0F766E"))
+                        .padding(.horizontal, 8)
+                        .frame(height: 32)
+                        .background(
+                            (viewModel.activePromotion == nil ? Color.appSurfaceHigh : Color(hex: "0F766E").opacity(0.09))
                         )
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(lm.currentLanguage == .thai ? "เลือกโปรโมชั่น" : "Select promotion")
-                .sheet(isPresented: $showPromotionPicker) {
-                    POSPromotionPickerSheet(viewModel: viewModel)
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule().stroke(
+                                viewModel.activePromotion == nil ? Color.appBorderSubtle : Color(hex: "0F766E").opacity(0.45),
+                                lineWidth: 1
+                            )
+                        )
+                    }
+                    .buttonStyle(APNativeOrderButtonStyle())
+                    .frame(minWidth: 72, maxWidth: 94)
+                    .layoutPriority(1)
+                    .accessibilityLabel(lm.currentLanguage == .thai ? "เลือกโปรโมชั่น" : "Select promotion")
+                    .sheet(isPresented: $showPromotionPicker) {
+                        POSPromotionPickerSheet(viewModel: viewModel)
+                    }
                 }
             }
 
@@ -2269,69 +2624,105 @@ struct POSView: View {
             .foregroundColor(.textSecondary)
             .labelStyle(.titleAndIcon)
 
-            cartOrderTypePicker
-
-            HStack(spacing: 10) {
-                if isTableServiceMode, let session = liveActiveSession {
-                    Button {
-                        activeSession = nil
-                        selectedTab = .tables
-                    } label: {
-                        Label(
-                            LocalizationManager.shared.t("table_number_template", session.table?.tableNumber ?? "N/A"),
-                            systemImage: "tablecells"
-                        )
-                    }
-                    .buttonStyle(.plain)
+            if quickOrderMode && selectedQuickOrder == nil {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "ipad.and.iphone")
+                        .foregroundColor(POSReferencePalette.accent)
+                    Text(lm.currentLanguage == .thai
+                         ? "คีย์ออเดอร์ใหม่บน iPad ได้เต็มรูปแบบ: เพิ่ม/แก้ไขรายการ ใช้โปรโมชั่น และรับชำระได้ตามปกติ"
+                         : "Orders keyed on this iPad support the full flow: edit items, apply promotions, and accept payment normally.")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundColor(.textSecondary)
+                        .lineLimit(3)
+                    Spacer(minLength: 0)
                 }
-
-                HStack(spacing: 4) {
-                    Button {
-                        if viewModel.guestCount > 1 {
-                            viewModel.updateGuestCount(viewModel.guestCount - 1, session: liveActiveSession)
-                        }
-                    } label: {
-                        Image(systemName: "minus.circle")
-                    }
-
-                    Text(LocalizationManager.shared.t("pax_count_template", viewModel.guestCount))
-                        .posRollingNumber(value: Double(viewModel.guestCount))
-
-                    Button {
-                        viewModel.updateGuestCount(viewModel.guestCount + 1, session: liveActiveSession)
-                    } label: {
-                        Image(systemName: "plus.circle")
-                    }
-                }
-
-                Spacer(minLength: 4)
-                cartPanelCustomerRow
-            }
-            .font(.system(size: 9.5, weight: .medium))
-            .foregroundColor(.textSecondary)
-
-            if let customer = viewModel.selectedCustomer, customer.loyaltyPoints > 0 {
-                VStack(alignment: .leading, spacing: 5) {
-                    Toggle(isOn: $localUseLoyaltyPoints) {
-                        Label("ใช้คะแนนสะสม", systemImage: "star.fill")
-                            .font(.system(size: 9.5, weight: .semibold))
-                    }
-                    .toggleStyle(SwitchToggleStyle(tint: .orange))
-
-                    if localUseLoyaltyPoints {
-                        Stepper(value: $localRedeemLoyaltyPoints, in: 10...customer.loyaltyPoints, step: 10) {
-                            Text("\(localRedeemLoyaltyPoints) คะแนน (-฿\(String(format: "%.2f", viewModel.loyaltyPointsDiscount)))")
-                                .font(.system(size: 9.5, weight: .semibold))
-                                .foregroundColor(.orange)
-                        }
-                    }
-                }
-                .padding(7)
-                .background(Color.orange.opacity(0.06))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color.appSurfaceHigh.opacity(0.75))
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
+
+            if selectedQuickOrder != nil {
+                HStack(spacing: 8) {
+                    Image(systemName: "pencil.and.list.clipboard")
+                        .foregroundColor(.appTeal)
+                    Text(lm.currentLanguage == .thai
+                         ? "ออเดอร์จาก iPhone พนักงาน — iPad แก้ไข/ยกเลิกรายการได้ก่อนชำระ"
+                         : "Staff iPhone order — review, edit or void items before payment")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundColor(.textSecondary)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color.appTeal.opacity(0.10))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else {
+                cartOrderTypePicker
+
+                HStack(spacing: 10) {
+                    if isTableServiceMode, let session = liveActiveSession {
+                        Button {
+                            activeSession = nil
+                            selectedTab = .tables
+                        } label: {
+                            Label(
+                                LocalizationManager.shared.t("table_number_template", session.table?.tableNumber ?? "N/A"),
+                                systemImage: "tablecells"
+                            )
+                        }
+                        .buttonStyle(APNativeOrderButtonStyle())
+                    }
+
+                    HStack(spacing: 4) {
+                        Button {
+                            if viewModel.guestCount > 1 {
+                                viewModel.updateGuestCount(viewModel.guestCount - 1, session: liveActiveSession)
+                            }
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+
+                        Text(LocalizationManager.shared.t("pax_count_template", viewModel.guestCount))
+                            .posRollingNumber(value: Double(viewModel.guestCount))
+
+                        Button {
+                            viewModel.updateGuestCount(viewModel.guestCount + 1, session: liveActiveSession)
+                        } label: {
+                            Image(systemName: "plus.circle")
+                        }
+                    }
+
+                    Spacer(minLength: 4)
+                    cartPanelCustomerRow
+                }
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundColor(.textSecondary)
+
+                if let customer = viewModel.selectedCustomer, customer.loyaltyPoints > 0 {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Toggle(isOn: $localUseLoyaltyPoints) {
+                            Label("ใช้คะแนนสะสม", systemImage: "star.fill")
+                                .font(.system(size: 9.5, weight: .semibold))
+                        }
+                        .toggleStyle(SwitchToggleStyle(tint: .orange))
+
+                        if localUseLoyaltyPoints {
+                            Stepper(value: $localRedeemLoyaltyPoints, in: 10...customer.loyaltyPoints, step: 10) {
+                                Text("\(localRedeemLoyaltyPoints) คะแนน (-฿\(String(format: "%.2f", viewModel.loyaltyPointsDiscount)))")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                    }
+                    .padding(7)
+                    .background(Color.orange.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
         }
-        .padding(.horizontal, APSpacing.md)
+        .padding(.horizontal, 12)
         .padding(.bottom, 10)
         .background(Color.appSurface)
     }
@@ -2427,6 +2818,7 @@ struct POSView: View {
                     if hasPendingSelfOrders {
                         Section {
                             Button {
+                                APNativeOrderSound.buttonTap()
                                 approvePendingSelfOrders()
                             } label: {
                                 HStack {
@@ -2458,7 +2850,7 @@ struct POSView: View {
                                 )
                                 .cornerRadius(APRadius.md)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(APNativeOrderButtonStyle())
                         }
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
@@ -2477,6 +2869,7 @@ struct POSView: View {
                                 .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 16))
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
+                                        APNativeOrderSound.buttonTap()
                                         beginVoid(orderedItem)
                                     } label: {
                                         Label("delete_btn_label".t, systemImage: "trash")
@@ -2484,6 +2877,7 @@ struct POSView: View {
                                     .tint(.red)
 
                                     Button {
+                                        APNativeOrderSound.buttonTap()
                                         editNoteForOrderedItemAction(orderedItem)
                                     } label: {
                                         Label("note_btn_label".t, systemImage: "square.and.pencil")
@@ -2506,6 +2900,7 @@ struct POSView: View {
                                 ))
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
+                                        APNativeOrderSound.buttonTap()
                                         deleteCartItem(cartItem)
                                     } label: {
                                         Label("delete_btn_label".t, systemImage: "trash")
@@ -2513,6 +2908,7 @@ struct POSView: View {
                                     .tint(.red)
 
                                     Button {
+                                        APNativeOrderSound.buttonTap()
                                         editCartItem(cartItem)
                                     } label: {
                                         Label("edit_btn_label".t, systemImage: "pencil")
@@ -2520,6 +2916,7 @@ struct POSView: View {
                                     .tint(.blue)
 
                                     Button {
+                                        APNativeOrderSound.buttonTap()
                                         editNoteForCartItemAction(cartItem)
                                     } label: {
                                         Label("note_btn_label".t, systemImage: "square.and.pencil")
@@ -2530,6 +2927,10 @@ struct POSView: View {
                     }
                 }
                 .listStyle(.plain)
+                // Native style is required for SwiftUI to host trailing
+                // swipe actions. Other Order Detail buttons keep the custom
+                // style for sound feedback.
+                .buttonStyle(.automatic)
                 .scrollContentBackground(.hidden)
                 .background(Color.appSurface)
                 .onChange(of: viewModel.lastAddedItem) { _, target in
@@ -2705,7 +3106,65 @@ struct POSView: View {
 
     @ViewBuilder
     private var cartPanelCheckoutActions: some View {
-        if shouldShowPaymentActions {
+        if let quickOrder = selectedQuickOrder, !quickOrder.isSettled {
+            POSCheckoutBar {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(lm.currentLanguage == .thai
+                                 ? "ยืนยันออเดอร์แล้ว"
+                                 : "Order confirmed")
+                                .font(.system(size: 11.5, weight: .semibold))
+                            Text(lm.currentLanguage == .thai
+                                 ? "เลือกวิธีชำระเพื่อปิดคิวนี้"
+                                 : "Select a payment method to close this order")
+                                .font(.system(size: 9.5))
+                                .foregroundColor(.textSecondary)
+                        }
+                        Spacer()
+                        Button(lm.currentLanguage == .thai ? "ปิดคิว" : "Close order") {
+                            selectedQuickOrderID = nil
+                        }
+                    }
+                    Text(lm.currentLanguage == .thai ? "เลือกช่องทางชำระเงิน" : "Select Payment Method")
+                        .font(.system(.footnote, design: .default, weight: .semibold))
+                        .foregroundColor(.textSecondary)
+
+                    LazyVGrid(
+                        columns: Array(
+                            repeating: GridItem(.flexible(minimum: 0), spacing: 6),
+                            count: paymentGridColumnCount
+                        ),
+                        spacing: 6
+                    ) {
+                        if cashEnabled {
+                            paymentTile(
+                                title: "pos_cash".t,
+                                icon: "banknote",
+                                tint: POSReferencePalette.accent,
+                                shortcut: "1"
+                            ) { verifyShiftAndExecute { activePayment = .cash } }
+                        }
+                        if cardEnabled {
+                            paymentTile(
+                                title: "pos_card".t,
+                                icon: "creditcard",
+                                tint: POSReferencePalette.accent,
+                                shortcut: "3"
+                            ) { verifyShiftAndExecute { activePayment = .creditCard } }
+                        }
+                        if qrEnabled {
+                            paymentTile(
+                                title: lm.currentLanguage == .thai ? "สแกน" : "Scan",
+                                icon: "qrcode",
+                                tint: POSReferencePalette.accent,
+                                shortcut: "2"
+                            ) { verifyShiftAndExecute { activePayment = .qrCode } }
+                        }
+                    }
+                }
+            }
+        } else if shouldShowPaymentActions {
             POSCheckoutBar {
                 VStack(alignment: .leading, spacing: 6) {
                     if viewModel.selectedOrderType == "delivery" {
@@ -2731,7 +3190,7 @@ struct POSView: View {
                                     isQuickServiceCheckoutConfirmed = false
                                 }
                                 .font(.system(size: 10, weight: .semibold))
-                                .buttonStyle(.plain)
+                                .buttonStyle(APNativeOrderButtonStyle())
                                 .foregroundColor(POSReferencePalette.accent)
                             }
                             .padding(9)
@@ -2839,11 +3298,57 @@ struct POSView: View {
                         )
                 }
             }
+        } else if isTableServiceMode,
+                  kitchenWorkflowRequired,
+                  hasSessionOrderedItems,
+                  !isAllServed {
+            POSCheckoutBar {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "clock.badge.exclamationmark")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(.appAmber)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(lm.currentLanguage == .thai
+                             ? "รอเสิร์ฟให้ครบทุกรายการ"
+                             : "Waiting for all items to be served")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.textPrimary)
+
+                        Text(lm.currentLanguage == .thai
+                             ? "ร้านเปิดใช้งานการตรวจสอบการเสิร์ฟ ปุ่มชำระเงินจะแสดงเมื่อครัวหรือบาร์กดเสิร์ฟครบทุกรายการแล้ว"
+                             : "Serving verification is enabled. Payment buttons will appear after the kitchen or bar marks every item as served.")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color.appAmber.opacity(0.09))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.appAmber.opacity(0.3), lineWidth: 1)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.appSurface)
+                .accessibilityElement(children: .combine)
+            }
         }
     }
 
     private var deliveryPlatformPaymentButton: some View {
         Button {
+            guard hasDeliveryOrderNumber else {
+                showDeliveryNumberModal = true
+                APHaptic.trigger()
+                return
+            }
             verifyShiftAndExecute {
                 // Delivery platforms collect from the customer externally.
                 // Record one dedicated captured tender so cash/card/QR and the
@@ -2866,7 +3371,7 @@ struct POSView: View {
             .frame(maxWidth: .infinity)
             .apGradientButton(gradient: APGradient.accent, shadow: APShadow.glow, disabled: isProcessingCheckout)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(APNativeOrderButtonStyle())
         .disabled(isProcessingCheckout || viewModel.deliveryBrand == nil)
         .accessibilityHint(lm.currentLanguage == .thai
                            ? "ยืนยันว่ารับชำระผ่านแพลตฟอร์มและส่งออร์เดอร์"
@@ -2895,7 +3400,7 @@ struct POSView: View {
             .frame(maxWidth: .infinity)
             .apGradientButton(gradient: APGradient.accent, shadow: APShadow.glow, disabled: false)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(APNativeOrderButtonStyle())
         .accessibilityHint(lm.currentLanguage == .thai
                            ? "เปิดขั้นตอนรับชำระเงิน เลขคิวจะถูกบันทึกเมื่อชำระสำเร็จ"
                            : "Opens payment. The queue is saved after successful payment.")
@@ -2939,7 +3444,7 @@ struct POSView: View {
                             .font(.system(size: 14))
                             .foregroundColor(.textTertiary)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(APNativeOrderButtonStyle())
                 }
             } else {
                 HStack(spacing: 8) {
@@ -2965,7 +3470,7 @@ struct POSView: View {
                             )
                             .cornerRadius(6)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(APNativeOrderButtonStyle())
                     .disabled(couponInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -3038,6 +3543,12 @@ struct POSView: View {
             animateItems = true
         }
 
+        if liveActiveSession != nil {
+            Task {
+                await SyncEngine.shared.pullCustomerOrders(modelContext)
+            }
+        }
+
         // Prompt to start a new shift only if no active shift exists.
         if activeRegisterSessions.isEmpty {
             DispatchQueue.main.async {
@@ -3087,7 +3598,7 @@ struct POSView: View {
                     .cornerRadius(APRadius.sm)
                     .shadow(color: Color.appAmber.opacity(0.2), radius: 4, y: 2)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(APNativeOrderButtonStyle())
         }
         .padding(.horizontal, APSpacing.md)
         .padding(.vertical, 10)
@@ -3128,6 +3639,7 @@ struct POSView: View {
         }
         .controlSize(.small)
         .apGlassButton(prominent: isActive, tint: isActive ? tint : nil)
+        .apNativeOrderTapSound()
         .frame(minHeight: 44)
         .accessibilityLabel(title)
 
@@ -3150,10 +3662,55 @@ struct POSView: View {
     }
 
     private func quickOrderQueueSelection(_ order: Order) {
-        // Selecting a queue item opens its detail without replacing the
-        // current table cart/session. The existing cart remains untouched.
-        focusedOrderNumber = order.orderNumber
+        // Display the existing server order in the main cart surface. Do not
+        // turn its items into draft CartItems: that would create a second order
+        // and risk charging or deducting stock twice.
+        guard viewModel.cart.isEmpty else {
+            showError(lm.currentLanguage == .thai
+                      ? "กรุณาจัดการสินค้าที่อยู่ในตะกร้าปัจจุบันก่อนเปิดคิวด่วน"
+                      : "Finish the current cart before opening a Quick Order")
+            return
+        }
+        // Establish the selected order before changing the POS mode. The mode
+        // change rebuilds the workspace branch; keeping this order state first
+        // prevents the rebuilt cart from falling back to AP-NEW.
+        selectedQuickOrderID = order.id
+        activeSession = nil
+        quickOrderMode = true
         showQuickOrderQueue = false
+        refreshSelectedQuickOrder(order.id)
+    }
+
+    private func activatePendingQuickOrderIfNeeded() {
+        guard !isTableServiceMode,
+              quickOrderMode,
+              activeSession == nil,
+              viewModel.cart.isEmpty,
+              selectedQuickOrderID == nil,
+              let pendingOrder = quickOrderQueue.first(where: { !$0.isSettled }) else {
+            return
+        }
+        quickOrderQueueSelection(pendingOrder)
+    }
+
+    private func refreshSelectedQuickOrder(_ orderID: UUID) {
+        // A Realtime order event can precede its item rows. Pull the authoritative
+        // joined payload when staff opens a queue, rather than showing a valid
+        // order header with an empty cart until the next background sync.
+        Task {
+            await SyncEngine.shared.pullCustomerOrders(modelContext)
+            guard selectedQuickOrderID == orderID else { return }
+        }
+    }
+
+    private func reloadCatalog() async {
+        catalog.configure(modelContext)
+        let categoryID = viewModel.selectedCategory?.id
+        await catalog.reload(
+            favoritesOnly: showFavoritesOnly,
+            categoryID: categoryID,
+            searchQuery: searchQuery
+        )
     }
 
     private func approveFocusedNotificationOrder(_ order: Order) {
@@ -3308,7 +3865,7 @@ private struct POSPromotionPickerSheet: View {
                                 !viewModel.suppressAutomaticPromotion
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(APNativeOrderButtonStyle())
 
                     Button(role: .destructive) {
                         viewModel.clearSelectedPromotion()
@@ -3342,7 +3899,7 @@ private struct POSPromotionPickerSheet: View {
                             } label: {
                                 promotionRow(promotion, isAvailable: true)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(APNativeOrderButtonStyle())
                         }
                     }
                 }
@@ -3499,7 +4056,7 @@ private struct DeliveryOrderNumberSheet: View {
 
     private func cleanBody(_ value: String) -> String {
         PlatformOrderNumber.stripKnownPrefix(value)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-_/ "))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#-_/ "))
     }
 
     private var isValid: Bool {
@@ -3564,7 +4121,7 @@ private struct DeliveryOrderNumberSheet: View {
                     }
                     .foregroundColor(POSReferencePalette.accent)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(APNativeOrderButtonStyle())
                 .offset(y: contentAppeared ? 0 : 12)
                 .opacity(contentAppeared ? 1 : 0)
                 .animation(.easeOut(duration: 0.35).delay(0.4), value: contentAppeared)
@@ -3670,7 +4227,7 @@ private struct DeliveryOrderNumberSheet: View {
                         .font(.system(size: 18))
                         .foregroundColor(.textTertiary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(APNativeOrderButtonStyle())
             }
         }
         .padding(.horizontal, 16)
@@ -3777,7 +4334,6 @@ private struct POSReceiptCopyPicker: View {
     @AppStorage(BranchContext.storageKey) private var activeBranchId = ""
     @Query(filter: #Predicate<Order> { !$0.isDeleted }, sort: \Order.createdAt, order: .reverse)
     private var allOrders: [Order]
-
     @State private var searchText = ""
     @State private var printingOrderID: UUID?
     @State private var resultMessage: String?
@@ -3852,7 +4408,7 @@ private struct POSReceiptCopyPicker: View {
                                 }
                                 .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(APNativeOrderButtonStyle())
                             .disabled(printingOrderID != nil)
                         }
                     }
@@ -3912,7 +4468,6 @@ private struct RecentOrdersReviewControl: View {
         sort: \Order.createdAt,
         order: .reverse
     ) private var allOrders: [Order]
-    @State private var showingRecentOrders = false
 
     private var branchOrders: [Order] {
         guard let branchId = UUID(uuidString: activeBranchId) else {
@@ -3921,12 +4476,14 @@ private struct RecentOrdersReviewControl: View {
         return Array(allOrders.lazy.filter { $0.branch.id == branchId }.prefix(50))
     }
 
+    @State private var showingReviewSheet = false
+
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { context in
-            Button {
-                showingRecentOrders = true
-                APHaptic.trigger()
-            } label: {
+        Button {
+            showingReviewSheet = true
+            APHaptic.trigger()
+        } label: {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
                 HStack(spacing: 5) {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.system(size: 11, weight: .semibold))
@@ -3938,8 +4495,8 @@ private struct RecentOrdersReviewControl: View {
                                     (lm.currentLanguage == .thai ? "คิว #" : "Queue #") + $0
                                 } ?? (lm.currentLanguage == .thai ? "ออเดอร์ล่าสุด" : "Latest order")
                             )
-                                .font(.system(size: 8.5, weight: .semibold))
-                                .lineLimit(1)
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .lineLimit(1)
                             Text("\(latest.createdAt.formatted(date: .omitted, time: .shortened)) · \(shortAge(from: latest.createdAt, to: context.date))")
                                 .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                                 .lineLimit(1)
@@ -3955,25 +4512,16 @@ private struct RecentOrdersReviewControl: View {
                             .minimumScaleFactor(0.85)
                     }
                 }
-                .foregroundColor(branchOrders.first.map { needsPayment($0) } == true ? .appRose : POSReferencePalette.accent)
-                .padding(.horizontal, 8)
+                .foregroundColor(POSReferencePalette.accent)
+                .padding(.horizontal, 9)
                 .frame(height: 32)
-                .background(Color.appSurfaceHigh)
+                .background(Color.appSurfaceHigh.opacity(0.7))
                 .clipShape(Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(
-                            branchOrders.first.map { needsPayment($0) } == true
-                                ? Color.appRose.opacity(0.45)
-                                : Color.appBorderSubtle,
-                            lineWidth: 1
-                        )
-                )
+                .overlay(Capsule().stroke(Color.appBorderSubtle, lineWidth: 1))
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(lm.currentLanguage == .thai ? "เปิดรายการออเดอร์ล่าสุด" : "Open recent orders")
         }
-        .sheet(isPresented: $showingRecentOrders) {
+        .buttonStyle(APNativeOrderButtonStyle())
+        .sheet(isPresented: $showingReviewSheet) {
             RecentOrdersReviewSheet(orders: branchOrders)
         }
     }
@@ -4195,6 +4743,142 @@ private struct RecentOrderReviewRow: View {
     }
 }
 
+/// Dedicated entry point for post-payment corrections. Keeping this outside
+/// the recent-order queue makes the financial action discoverable and avoids
+/// mixing an audit workflow with operational queue browsing.
+struct PaymentCorrectionOrdersSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var lm: LocalizationManager
+    @AppStorage(BranchContext.storageKey) private var activeBranchId = ""
+    @Query(filter: #Predicate<Order> { !$0.isDeleted }, sort: \Order.createdAt, order: .reverse)
+    private var allOrders: [Order]
+    @Query(filter: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted }, sort: \RegisterSession.openedAt, order: .reverse)
+    private var openRegisterSessions: [RegisterSession]
+    @State private var searchText = ""
+
+    private var isThai: Bool { lm.currentLanguage == .thai }
+    private var currentRegisterSession: RegisterSession? {
+        guard let branchID = UUID(uuidString: activeBranchId) else { return nil }
+        return openRegisterSessions.first { $0.branch.id == branchID }
+    }
+    private var paidOrders: [Order] {
+        guard let session = currentRegisterSession else { return [] }
+        let normalizedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return allOrders.filter { order in
+            guard order.branch.id == session.branch.id,
+                  order.isSettled,
+                  order.status != "cancelled",
+                  let payment = paymentForCurrentShift(order, session: session) else { return false }
+            guard !normalizedSearch.isEmpty else { return true }
+            let searchable = [
+                order.orderNumber,
+                order.queueNumber ?? "",
+                paymentMethodName(payment.paymentMethod),
+                payment.paidAt.formatted(date: .numeric, time: .shortened)
+            ].joined(separator: " ").lowercased()
+            return searchable.contains(normalizedSearch)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Label(isThai
+                          ? "เลือกบิลที่ชำระแล้วเพื่อเปลี่ยนช่องทางชำระ ระบบจะบันทึกการอนุมัติทุกครั้ง"
+                          : "Select a paid bill to change its payment method. Every correction is approval-audited.",
+                          systemImage: "info.circle.fill")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                if currentRegisterSession == nil {
+                    ContentUnavailableView(
+                        isThai ? "ยังไม่ได้เปิดกะ" : "No open shift",
+                        systemImage: "lock.circle",
+                        description: Text(isThai ? "ต้องเปิดกะปัจจุบันก่อนจึงจะแก้ไขช่องทางชำระเงินได้" : "Open the current shift before correcting a payment method.")
+                    )
+                } else if paidOrders.isEmpty {
+                    ContentUnavailableView(
+                        isThai ? "ยังไม่มีบิลที่ชำระแล้ว" : "No paid bills",
+                        systemImage: "creditcard",
+                        description: Text(isThai ? "บิลที่ชำระแล้วจะแสดงที่นี่" : "Paid bills will appear here.")
+                    )
+                } else {
+                    Section(isThai ? "บิลที่ชำระแล้ว" : "Paid bills") {
+                        ForEach(paidOrders) { order in
+                            let payment = paymentForCurrentShift(order, session: currentRegisterSession!)
+                            NavigationLink {
+                                RecentOrderReviewDetailView(order: order)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(order.orderNumber)
+                                            .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                                        HStack(spacing: 8) {
+                                            if let queue = order.queueNumber {
+                                                Label((isThai ? "คิว " : "Queue ") + queue, systemImage: "number")
+                                            }
+                                            if let payment {
+                                                Label(payment.paidAt.formatted(date: .numeric, time: .shortened), systemImage: "calendar")
+                                                Label(paymentMethodName(payment.paymentMethod), systemImage: paymentMethodIcon(payment.paymentMethod))
+                                            }
+                                        }
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(String(format: "฿%.2f", order.total))
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundColor(.appTeal)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(isThai ? "แก้ไขช่องทางชำระเงิน" : "Correct payment method")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: isThai ? "ค้นหาเลขใบเสร็จ" : "Search receipt number")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isThai ? "ปิด" : "Close") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.large])
+        .apColorScheme()
+    }
+
+    private func paymentForCurrentShift(_ order: Order, session: RegisterSession) -> Payment? {
+        order.payments
+            .filter { payment in
+                !payment.isDeleted && payment.isCaptured &&
+                (payment.registerSessionId == session.id ||
+                 (payment.registerSessionId == nil && payment.paidAt >= session.openedAt))
+            }
+            .max { $0.paidAt < $1.paidAt }
+    }
+
+    private func paymentMethodName(_ raw: String) -> String {
+        switch raw.lowercased().replacingOccurrences(of: " ", with: "_") {
+        case "cash": return isThai ? "เงินสด" : "Cash"
+        case "qr", "qr_promptpay", "promptpay": return "QR PromptPay"
+        case "credit_card", "card": return isThai ? "บัตรเครดิต" : "Credit Card"
+        case "delivery_platform": return isThai ? "เดลิเวอรี่แพลตฟอร์ม" : "Delivery Platform"
+        default: return raw.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private func paymentMethodIcon(_ raw: String) -> String {
+        let method = raw.lowercased()
+        if method.contains("cash") { return "banknote" }
+        if method.contains("qr") || method.contains("promptpay") { return "qrcode" }
+        if method.contains("card") { return "creditcard" }
+        return "wallet.bifold"
+    }
+}
+
 private struct PaymentCorrectionRequest {
     let payment: Payment
     let newMethod: String
@@ -4312,6 +4996,8 @@ private struct PaymentCorrectionSheet: View {
 private struct RecentOrderReviewDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var lm: LocalizationManager
+    @Query(filter: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted }, sort: \RegisterSession.openedAt, order: .reverse)
+    private var openRegisterSessions: [RegisterSession]
     let order: Order
 
     @State private var showingPaymentCorrection = false
@@ -4322,6 +5008,15 @@ private struct RecentOrderReviewDetailView: View {
     private var isThai: Bool { lm.currentLanguage == .thai }
     private var capturedPayments: [Payment] {
         order.payments.filter { !$0.isDeleted && $0.isCaptured }.sorted { $0.paidAt < $1.paidAt }
+    }
+    private var currentRegisterSession: RegisterSession? {
+        openRegisterSessions.first { $0.branch.id == order.branch.id }
+    }
+    private var editablePayments: [Payment] {
+        guard let session = currentRegisterSession else { return [] }
+        return capturedPayments.filter {
+            $0.registerSessionId == session.id || ($0.registerSessionId == nil && $0.paidAt >= session.openedAt)
+        }
     }
 
     var body: some View {
@@ -4381,6 +5076,7 @@ private struct RecentOrderReviewDetailView: View {
                             )
                         }
                         .foregroundColor(.appAmber)
+                        .disabled(editablePayments.isEmpty)
                     }
                 }
             }
@@ -4395,8 +5091,20 @@ private struct RecentOrderReviewDetailView: View {
         }
         .navigationTitle(order.queueNumber.map { "#\($0)" } ?? "#\(order.orderNumber.suffix(8))")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingPaymentCorrection = true
+                    APHaptic.trigger()
+                } label: {
+                    Label(isThai ? "แก้ไขการชำระ" : "Correct payment", systemImage: "arrow.triangle.2.circlepath.circle")
+                }
+                .disabled(editablePayments.isEmpty || order.status == "cancelled")
+                .accessibilityHint(isThai ? "เปลี่ยนช่องทางชำระของบิลที่ชำระแล้ว โดยต้องมีการอนุมัติ" : "Change the method on a paid bill with manager approval")
+            }
+        }
         .sheet(isPresented: $showingPaymentCorrection) {
-            PaymentCorrectionSheet(payments: capturedPayments) { request in
+            PaymentCorrectionSheet(payments: editablePayments) { request in
                 pendingCorrection = request
                 showingPaymentCorrection = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -4435,6 +5143,7 @@ private struct RecentOrderReviewDetailView: View {
 
     private func applyPendingPaymentCorrection(approvedBy employeeId: UUID?) {
         guard let request = pendingCorrection,
+              editablePayments.contains(where: { $0.id == request.payment.id }),
               request.payment.isCaptured,
               !request.payment.isDeleted,
               request.payment.order?.id == order.id else {
@@ -4522,8 +5231,66 @@ private struct RecentOrderReviewDetailView: View {
     }
 }
 
+private struct QuickOrderPaymentSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var lm: LocalizationManager
+    let order: Order
+    let onPay: (String, Double?) -> Void
+    @State private var activePayment: POSActivePaymentMethod?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section(lm.currentLanguage == .thai ? "ยืนยันการรับชำระ" : "Confirm payment") {
+                    LabeledContent(lm.currentLanguage == .thai ? "ออร์เดอร์" : "Order", value: order.orderNumber)
+                    LabeledContent(lm.currentLanguage == .thai ? "ยอดค้างชำระ" : "Amount due", value: String(format: "฿%.2f", order.outstandingAmount))
+                }
+                Section(lm.currentLanguage == .thai ? "เลือกช่องทางชำระ" : "Payment method") {
+                    paymentButton(.cash, thai: "เงินสด", icon: "banknote")
+                    paymentButton(.qrCode, thai: "QR PromptPay", icon: "qrcode")
+                    paymentButton(.creditCard, thai: "บัตรเครดิต", icon: "creditcard")
+                }
+            }
+            .navigationTitle(lm.currentLanguage == .thai ? "รับชำระออร์เดอร์ด่วน" : "Pay Quick Order")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button(lm.currentLanguage == .thai ? "ยกเลิก" : "Cancel") { dismiss() } } }
+        }
+        .presentationDetents([.medium])
+        .modifier(POSPaymentSheets(
+            activePayment: $activePayment,
+            totalAmount: order.outstandingAmount,
+            onPark: { _ in },
+            onCash: { amount in
+                onPay("Cash", amount)
+                return true
+            },
+            onQRCode: { onPay("QR PromptPay", nil) },
+            onCard: { onPay("Credit Card", nil) },
+            onThaiChuaThaiPlus: { _ in }
+        ))
+    }
+
+    @ViewBuilder
+    private func paymentButton(_ method: POSActivePaymentMethod, thai: String, icon: String) -> some View {
+        Button {
+            activePayment = method
+        } label: {
+            Label(lm.currentLanguage == .thai ? thai : paymentMethodTitle(method), systemImage: icon)
+        }
+    }
+
+    private func paymentMethodTitle(_ method: POSActivePaymentMethod) -> String {
+        switch method {
+        case .cash: return "Cash"
+        case .qrCode: return "QR PromptPay"
+        case .creditCard: return "Credit Card"
+        case .thaiChuaThaiPlus: return "Thai Chua Thai Plus"
+        }
+    }
+}
+
 private struct POSNotificationOrderDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var lm: LocalizationManager
     @AppStorage("enable_table_system") private var tableSystemEnabled = true
     @Query(
         filter: #Predicate<RestaurantTable> { !$0.isDeleted },
@@ -4531,6 +5298,8 @@ private struct POSNotificationOrderDetailSheet: View {
     )
     private var restaurantTables: [RestaurantTable]
     let order: Order
+    let onOpenInCart: () -> Void
+    let onPay: () -> Void
     let onApprove: () -> Void
     let onRecoverOriginalTable: () -> String?
     let onAssignTable: (String) -> String?
@@ -4618,12 +5387,17 @@ private struct POSNotificationOrderDetailSheet: View {
                     }
                 }
 
-                Section("notif_order_items".t) {
-                    ForEach(order.items.filter { !$0.isDeleted }) { item in
-                        POSNotificationOrderItemRow(
-                            item: item,
-                            currencySymbol: currencySymbol
-                        )
+                if !order.isSettled && identity.isQuickService {
+                    Section {
+                        Button {
+                            onOpenInCart()
+                            dismiss()
+                        } label: {
+                            Label(
+                                lm.currentLanguage == .thai ? "เปิดรายการในตะกร้าหลัก" : "Open in main cart",
+                                systemImage: "cart.fill"
+                            )
+                        }
                     }
                 }
 
@@ -4639,6 +5413,20 @@ private struct POSNotificationOrderDetailSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("close_btn_label".t) { dismiss() }
+                }
+                if !order.isSettled && identity.isQuickService {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            onPay()
+                            dismiss()
+                        } label: {
+                            Label(
+                                lm.currentLanguage == .thai ? "ชำระเงิน" : "Pay",
+                                systemImage: "creditcard.fill"
+                            )
+                        }
+                        .fontWeight(.semibold)
+                    }
                 }
                 if order.isAwaitingStaffApproval && !order.requiresTableSessionRecovery {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -4898,7 +5686,7 @@ private struct POSMenuSearchBar: View {
                         .font(.system(size: 13))
                         .foregroundColor(.textSecondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(APNativeOrderButtonStyle())
             }
         }
         .padding(.horizontal, 10)
@@ -4997,43 +5785,44 @@ struct CashPaymentModalView: View {
     private func handleQuickCashTap(_ option: QuickCashOption) {
         errorMessage = nil
         hasEnteredCustomAmount = true
-        withAnimation(.spring(response: 0.2, dampingFraction: 0.65)) {
-            banknoteAccumulated += option.amount
-        }
+        // CASH_KEYPAD_IMMEDIATE_RENDER: keep the high-frequency input mutation
+        // outside an implicit transaction. ButtonStyle owns the press animation,
+        // so SwiftUI does not animate every dependent amount/status view.
+        banknoteAccumulated += option.amount
         APNativeKeypadFeedback.tap()
     }
 
     private func handleKeypadInput(_ input: String) {
-        withAnimation(.spring(response: 0.2, dampingFraction: 0.65)) {
-            errorMessage = nil
-            hasEnteredCustomAmount = true
-            if input == "⌫" {
-                if !keypadSuffix.isEmpty {
-                    keypadSuffix.removeLast()
-                } else if banknoteAccumulated > 0 {
-                    banknoteAccumulated = 0
-                }
-            } else if input == "." {
-                if !keypadSuffix.contains(".") {
-                    if keypadSuffix.isEmpty {
-                        keypadSuffix = "0."
-                    } else {
-                        keypadSuffix += "."
-                    }
-                }
-            } else if input == "00" {
-                if !keypadSuffix.isEmpty && keypadSuffix != "0" && keypadSuffix.count <= 6 {
-                    keypadSuffix += "00"
-                }
-            } else {
-                if keypadSuffix == "0" {
-                    keypadSuffix = input
-                } else if keypadSuffix.count < 8 {
-                    keypadSuffix += input
+        // CASH_KEYPAD_IMMEDIATE_RENDER: one synchronous state transaction per
+        // tap. In particular, do not create a parent animation transaction here.
+        errorMessage = nil
+        hasEnteredCustomAmount = true
+        if input == "⌫" {
+            if !keypadSuffix.isEmpty {
+                keypadSuffix.removeLast()
+            } else if banknoteAccumulated > 0 {
+                banknoteAccumulated = 0
+            }
+        } else if input == "." {
+            if !keypadSuffix.contains(".") {
+                if keypadSuffix.isEmpty {
+                    keypadSuffix = "0."
+                } else {
+                    keypadSuffix += "."
                 }
             }
-            keypadValue = Double(keypadSuffix) ?? 0
+        } else if input == "00" {
+            if !keypadSuffix.isEmpty && keypadSuffix != "0" && keypadSuffix.count <= 6 {
+                keypadSuffix += "00"
+            }
+        } else {
+            if keypadSuffix == "0" {
+                keypadSuffix = input
+            } else if keypadSuffix.count < 8 {
+                keypadSuffix += input
+            }
         }
+        keypadValue = Double(keypadSuffix) ?? 0
         APNativeKeypadFeedback.tap()
     }
 
@@ -5262,11 +6051,12 @@ struct CashPaymentModalView: View {
                                         .font(.system(size: 11, weight: .bold))
                                 }
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(APNativeOrderButtonStyle())
                             .foregroundColor(.textSecondary)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
                             .apGlassButton(tint: .textSecondary)
+                            .apNativeOrderTapSound()
                             .opacity(cashReceived > 0 || !keypadSuffix.isEmpty ? 1 : 0)
                             .allowsHitTesting(cashReceived > 0 || !keypadSuffix.isEmpty)
                         }
@@ -5348,6 +6138,7 @@ struct CashPaymentModalView: View {
             .disabled(!isPrimaryActionEnabled || isProcessing)
             .controlSize(.large)
             .apGlassButton(prominent: true, tint: .blue)
+            .apNativeOrderTapSound()
             .frame(maxWidth: 520)
         }
         .padding(.horizontal, 16)
@@ -5376,6 +6167,7 @@ struct CashPaymentModalView: View {
         // Glass treatment without entering the high-frequency keypad render
         // path. The keypad itself intentionally keeps Calculator-style chrome.
         .apGlassButton(prominent: isSelected, tint: isSelected ? .blue : nil)
+        .apNativeOrderTapSound()
     }
 
     // MARK: - Dynamic Live Status Hero Card
@@ -5492,7 +6284,21 @@ private struct CashKeypadGrid: View {
         [".", "0", "⌫"]
     ]
 
+    @ViewBuilder
     var body: some View {
+        if #available(iOS 26.0, *) {
+            // Let the system coalesce the native Liquid Glass rendering for
+            // this group of adjacent controls.
+            GlassEffectContainer(spacing: 7) {
+                keypadRows
+            }
+        } else {
+            keypadRows
+        }
+    }
+
+    @ViewBuilder
+    private var keypadRows: some View {
         VStack(spacing: 7) {
             ForEach(Self.keys, id: \.self) { row in
                 HStack(spacing: 7) {
@@ -5516,11 +6322,11 @@ private struct CashKeypadGrid: View {
                         }
                         .controlSize(.large)
                         .apGlassButton()
+                        .apNativeOrderTapSound()
                     }
                 }
             }
         }
-        .transaction { $0.animation = nil }
     }
 }
 
@@ -5605,6 +6411,7 @@ extension CashPaymentModalView {
             }
             .controlSize(.large)
             .apGlassButton(prominent: true, tint: .blue)
+            .apNativeOrderTapSound()
             .padding(.horizontal, 28)
             .frame(maxWidth: 480)
 
@@ -5638,9 +6445,10 @@ private struct CashReceivedNumberView: View {
             .lineLimit(1)
             .minimumScaleFactor(0.4)
             .frame(height: 42, alignment: .trailing)
-            // CASH_KEYPAD_IMMEDIATE_RENDER: never leave tendered digits between
-            // animation frames while the cashier is typing rapidly.
-            .transaction { $0.animation = nil }
+            // Match AlphaPosStaff's native numeric transition, scoped to this
+            // text only instead of animating the cash modal's entire state tree.
+            .contentTransition(.numericText(value: value))
+            .animation(.snappy(duration: 0.18), value: value)
     }
 }
 
@@ -5883,6 +6691,7 @@ struct ThaiChuaThaiPlusPaymentModal: View {
                     .disabled(!canConfirm)
                     .controlSize(.large)
                     .apGlassButton(prominent: true, tint: .appAccent)
+                    .apNativeOrderTapSound()
                     .frame(maxWidth: 520)
                     .accessibilityHint(confirmRequirementMessage)
                 }
@@ -6053,6 +6862,7 @@ struct QRPaymentModalView: View {
                         .disabled(!isConfigured)
                         .controlSize(.large)
                         .apGlassButton(prominent: true, tint: .appAccent)
+                        .apNativeOrderTapSound()
                         .frame(maxWidth: 520)
                         .frame(maxWidth: .infinity)
                         .padding(APSpacing.md)
@@ -6149,6 +6959,7 @@ struct CreditCardPaymentModalView: View {
                     }
                     .controlSize(.large)
                     .apGlassButton(prominent: true, tint: .appAccent)
+                    .apNativeOrderTapSound()
                     .frame(maxWidth: 520)
                 }
                 .padding(APSpacing.md)
@@ -6243,7 +7054,7 @@ struct GiftCardPickerSheet: View {
                                                 ? Color.appTeal : Color.appBorderSubtle, lineWidth: 1.5)
                                     )
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(APNativeOrderButtonStyle())
                             }
                         }
                         .padding(.horizontal)

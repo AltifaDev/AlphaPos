@@ -127,7 +127,8 @@ struct ESCPosRenderer: PrinterRenderer {
                 template: job.template,
                 logoBitmap: job.logoBitmap,
                 emulation: emulation,
-                paperWidth: job.hardwarePaperWidth
+                paperWidth: job.hardwarePaperWidth,
+                typography: job.typography
             )
         case "kitchen", "bar":
             let stationLabel = job.role == "bar" ? "BAR TICKET" : "KITCHEN TICKET"
@@ -136,9 +137,11 @@ struct ESCPosRenderer: PrinterRenderer {
                 order: job.order,
                 items: activeItems,
                 stationLabel: stationLabel,
+                categoryLabel: job.categoryLabel,
                 template: job.template,
                 emulation: emulation,
-                paperWidth: job.hardwarePaperWidth
+                paperWidth: job.hardwarePaperWidth,
+                typography: job.typography
             )
         default:
             return ESCPOSBuilder.buildReceipt(
@@ -217,11 +220,13 @@ enum ESCPOSBuilder {
         template: ReceiptTemplate?,
         logoBitmap: ESCPOSBuilder.LogoBitmap? = nil,
         emulation: String = "escpos",
-        paperWidth: String? = nil
+        paperWidth: String? = nil,
+        typography: PrintTypographyProfile? = nil
     ) -> Data {
         var b = buf(emulation: emulation)
         let paperWidthStr = paperWidth ?? template?.paperWidth ?? "80mm"
         let width = (paperWidthStr == "58mm") ? 32 : 42
+        let type = typography ?? .recommended(for: "receipt", paperWidth: paperWidthStr)
 
         let showLogo = (template?.showLogo ?? true) && (UserDefaults.standard.object(forKey: "show_logo_on_receipt") as? Bool ?? true)
         let showTaxId = template?.showTaxId ?? true
@@ -260,6 +265,7 @@ enum ESCPOSBuilder {
 
         // ── Store Header (Centered) ──────────────────────────────────
         b += ALIGN_CENTER
+        b += style(type.header)
         if let header = resolvedHeader(template) {
             b += text("\(header)\n")
         }
@@ -269,11 +275,11 @@ enum ESCPOSBuilder {
                 b += rasterImage(logo)
             }
         }
-        b += BOLD_ON + text("\(storeName)\n") + BOLD_OFF
+        b += style(type.header) + text("\(storeName)\n") + style(.compact)
         for addressLine in receiptLines(storeAddress, width: width, maxLines: 2) {
-            b += text("\(addressLine)\n")
+            b += style(type.metadata) + text("\(addressLine)\n") + style(.compact)
         }
-        b += text("TEL: \(storePhone)\n")
+        b += style(type.metadata) + text("TEL: \(storePhone)\n") + style(.compact)
         if showTaxId && !storeTaxId.isEmpty {
             b += text("TAX ID: \(storeTaxId)  BRANCH: \(storeBranchCode)\n")
         }
@@ -343,7 +349,7 @@ enum ESCPOSBuilder {
 
         // ── Line Items ───────────────────────────────────────────────
         b += ALIGN_LEFT
-        b += text(lineItemHeader(width: width))
+        b += style(type.body) + text(lineItemHeader(width: width)) + style(.compact)
         b += text(divider("-", width: width))
 
         for item in order.items.filter({
@@ -378,7 +384,7 @@ enum ESCPOSBuilder {
         b += text(divider("-", width: width))
 
         // GRAND TOTAL
-        b += BOLD_ON + text(lineTotal("ยอดรวมสุทธิ (TOTAL)", value: order.total, width: width)) + BOLD_OFF
+        b += style(type.emphasis) + text(lineTotal("ยอดรวมสุทธิ (TOTAL)", value: order.total, width: width)) + style(.compact)
         b += text(divider("-", width: width))
 
         // ── Payment & Change Breakdown ───────────────────────────────
@@ -525,7 +531,8 @@ enum ESCPOSBuilder {
         if showQRCode && !promptPayNumber.isEmpty {
             b += text("\nSCAN TO PAY - PROMPTPAY\n")
             let payload = buildPromptPayPayload(target: promptPayNumber, amount: total)
-            b += qrCode(payload, moduleSize: 8) + text("\nPromptPay: \(promptPayNumber)\n")
+            b += qrCode(payload, moduleSize: 10)
+            b += text("\n\(storeName)\nPromptPay: \(promptPayNumber)\n")
         }
 
         if let footer = resolvedFooter(template) {
@@ -601,7 +608,8 @@ enum ESCPOSBuilder {
         if showQRCode && !promptPayNumber.isEmpty {
             b += text("\nSCAN TO PAY - PROMPTPAY\n")
             let payload = buildPromptPayPayload(target: promptPayNumber, amount: draft.total)
-            b += qrCode(payload, moduleSize: 8) + text("\nPromptPay: \(promptPayNumber)\n")
+            b += qrCode(payload, moduleSize: 10)
+            b += text("\n\(storeName)\nPromptPay: \(promptPayNumber)\n")
         }
         if let footer = resolvedFooter(template) {
             b += text(divider("-", width: width)) + text("\(footer)\n")
@@ -614,26 +622,33 @@ enum ESCPOSBuilder {
         order: Order,
         items: [OrderItem],
         stationLabel: String = "KITCHEN",
+        categoryLabel: String? = nil,
         template: ReceiptTemplate? = nil,
         emulation: String = "escpos",
-        paperWidth: String? = nil
+        paperWidth: String? = nil,
+        typography: PrintTypographyProfile? = nil
     ) -> Data {
         // XPrinter firmware variants do not share the same ESC/POS code-page
         // table. Render kitchen tickets as a bitmap so Thai text is shaped by
         // iOS and does not depend on the printer ROM.
         if emulation.lowercased() == "xprinter" {
             return buildKitchenTicketRaster(order: order, items: items, stationLabel: stationLabel,
+                                            categoryLabel: categoryLabel,
                                             template: template, paperWidth: paperWidth)
         }
         var b = buf(emulation: emulation)
         let paperWidthStr = paperWidth ?? template?.paperWidth ?? "80mm"
         let width = (paperWidthStr == "58mm") ? 32 : 42
+        let type = typography ?? .recommended(for: stationLabel.contains("BAR") ? "bar" : "kitchen", paperWidth: paperWidthStr)
 
         let showTableInfo = template?.showTableInfo ?? true
         let showOrderType = template?.showOrderType ?? true
         let showItemModifiers = template?.showItemModifiers ?? true
 
-        b += ALIGN_CENTER + BOLD_ON + DOUBLE_SIZE_ON + text("[ \(stationLabel) ]\n") + DOUBLE_SIZE_OFF + BOLD_OFF + ALIGN_LEFT
+        b += ALIGN_CENTER + style(type.header) + text("[ \(stationLabel) ]\n") + style(.compact) + ALIGN_LEFT
+        if let categoryLabel = categoryLabel?.trimmingCharacters(in: .whitespacesAndNewlines), !categoryLabel.isEmpty {
+            b += ALIGN_CENTER + style(type.header) + text("[ \(categoryLabel) ]\n") + style(.compact) + ALIGN_LEFT
+        }
 
         let df = timeFormatter()
         b += text("Time : \(df.string(from: order.createdAt))\nORDER: \(order.orderNumber)\n")
@@ -655,7 +670,7 @@ enum ESCPOSBuilder {
 
         for item in items {
             let name = item.menuItem?.name ?? "Item"
-            b += BOLD_ON + text(wrappedPrepLine(quantity: item.quantity, name: name, width: width)) + BOLD_OFF
+            b += style(type.body) + text(wrappedPrepLine(quantity: item.quantity, name: name, width: width)) + style(.compact)
 
             if showItemModifiers {
                 for mod in item.modifiers.filter({ !$0.isDeleted }) {
@@ -677,6 +692,7 @@ enum ESCPOSBuilder {
 
     private static func buildKitchenTicketRaster(
         order: Order, items: [OrderItem], stationLabel: String,
+        categoryLabel: String?,
         template: ReceiptTemplate?, paperWidth: String?
     ) -> Data {
         let paperWidthStr = paperWidth ?? template?.paperWidth ?? "80mm"
@@ -685,7 +701,11 @@ enum ESCPOSBuilder {
         let showTableInfo = template?.showTableInfo ?? true
         let showOrderType = template?.showOrderType ?? true
         let showItemModifiers = template?.showItemModifiers ?? true
-        var lines = ["[ \(stationLabel) ]", ""]
+        var lines = ["[ \(stationLabel) ]"]
+        if let categoryLabel = categoryLabel?.trimmingCharacters(in: .whitespacesAndNewlines), !categoryLabel.isEmpty {
+            lines.append("[ \(categoryLabel) ]")
+        }
+        lines.append("")
         let df = timeFormatter()
         lines += ["Time : \(df.string(from: order.createdAt))", "ORDER: \(order.orderNumber)"]
         if showTableInfo {
@@ -707,6 +727,16 @@ enum ESCPOSBuilder {
         return Data(INIT + rasterImage(bitmap) + FEED_3 + CUT)
     }
 
+    private static func style(_ style: PrintTextStyle) -> [UInt8] {
+        var result: [UInt8] = style.bold ? BOLD_ON : BOLD_OFF
+        if style.scale >= 2 {
+            result += DOUBLE_SIZE_ON
+        } else {
+            result += DOUBLE_SIZE_OFF
+        }
+        return result
+    }
+
     static func buildItemLabel(
         item: OrderItem,
         tableLabel: String,
@@ -714,11 +744,13 @@ enum ESCPOSBuilder {
         cupIndex: Int,
         totalCups: Int,
         template: ReceiptTemplate?,
-        emulation: String
+        emulation: String,
+        typography: PrintTypographyProfile? = nil
     ) -> Data {
         var b = buf(emulation: emulation)
         let paperWidthStr = template?.paperWidth ?? "80mm"
         let width = (paperWidthStr == "58mm") ? 32 : 42
+        let type = typography ?? .recommended(for: "label", paperWidth: paperWidthStr)
 
         let showTable = template?.showTableInfo ?? true
         let showMods = template?.showItemModifiers ?? true
@@ -727,14 +759,14 @@ enum ESCPOSBuilder {
         b += INIT
 
         // Header
-        b += ALIGN_CENTER + BOLD_ON + text("[ LABEL TICKET ]\n") + BOLD_OFF
+        b += ALIGN_CENTER + style(type.header) + text("[ LABEL TICKET ]\n") + style(.compact)
 
         var headerInfo = ""
         if showTable {
             headerInfo += "Table: \(tableLabel)  "
         }
         headerInfo += "Item: \(cupIndex)/\(totalCups)\n"
-        b += text(headerInfo)
+        b += style(type.metadata) + text(headerInfo) + style(.compact)
 
         if showQueue && !queueNumber.isEmpty {
             b += text("Queue: #\(queueNumber)\n")
@@ -750,7 +782,7 @@ enum ESCPOSBuilder {
 
         // Item Name
         let name = item.menuItem?.name ?? "Item"
-        b += ALIGN_LEFT + BOLD_ON + DOUBLE_HEIGHT_ON + text("x\(item.quantity) \(name)\n") + DOUBLE_HEIGHT_OFF + BOLD_OFF
+        b += ALIGN_LEFT + style(type.body) + text("x\(item.quantity) \(name)\n") + style(.compact)
 
         // Modifiers & Notes
         if showMods {
@@ -1255,7 +1287,7 @@ enum ESCPOSBuilder {
     /// - Parameters:
     ///   - bitmapData: packed 1-bit rows (MSB first), bytesPerRow = ceil(width/8)
     ///   - maxWidthDots: the width in dots used when generating the bitmap
-    private static func rasterImage(_ logo: LogoBitmap) -> [UInt8] {
+    static func rasterImageCommand(_ logo: LogoBitmap) -> [UInt8] {
         guard logo.heightPx > 0, logo.bytesPerRow > 0 else { return [] }
         // GS v 0  mode=0 (normal) xL xH yL yH [data]
         // xL/xH = bytesPerRow (actual width), yL/yH = actual height in rows
@@ -1266,6 +1298,11 @@ enum ESCPOSBuilder {
         var cmd: [UInt8] = [0x1D, 0x76, 0x30, 0x00, xL, xH, yL, yH]
         cmd += Array(logo.data)
         return cmd
+    }
+
+    // Keep the existing internal name available to the renderer in this file.
+    private static func rasterImage(_ logo: LogoBitmap) -> [UInt8] {
+        rasterImageCommand(logo)
     }
 
     private static func text(_ s: String) -> [UInt8] {

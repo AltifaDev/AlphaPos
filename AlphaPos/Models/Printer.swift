@@ -1,6 +1,53 @@
 import Foundation
 import SwiftData
 
+struct PrintTextStyle: Codable, Sendable {
+    var scale: Int
+    var bold: Bool
+
+    static let compact = PrintTextStyle(scale: 1, bold: false)
+    static let body = PrintTextStyle(scale: 1, bold: false)
+    static let emphasis = PrintTextStyle(scale: 2, bold: true)
+}
+
+struct PrintTypographyProfile: Codable, Sendable {
+    var header: PrintTextStyle
+    var metadata: PrintTextStyle
+    var body: PrintTextStyle
+    var emphasis: PrintTextStyle
+    var footer: PrintTextStyle
+
+    static func recommended(for role: String, paperWidth: String) -> Self {
+        switch role {
+        case "kitchen", "bar":
+            return Self(
+                header: .init(scale: 2, bold: true),
+                metadata: .init(scale: 1, bold: true),
+                body: .init(scale: 2, bold: true),
+                emphasis: .init(scale: 2, bold: true),
+                footer: .compact
+            )
+        case "label", "sticker":
+            return Self(
+                header: .init(scale: 1, bold: true),
+                metadata: .compact,
+                body: .init(scale: 2, bold: true),
+                emphasis: .init(scale: 2, bold: true),
+                footer: .compact
+            )
+        default:
+            let compact = paperWidth == "58mm"
+            return Self(
+                header: .init(scale: 1, bold: true),
+                metadata: .compact,
+                body: .init(scale: 1, bold: false),
+                emphasis: .init(scale: compact ? 1 : 2, bold: true),
+                footer: .compact
+            )
+        }
+    }
+}
+
 @Model
 final class Printer {
     @Attribute(.unique) var id: UUID
@@ -21,9 +68,27 @@ final class Printer {
     var qrModuleSize: Int = 7
     var calibrationStatus: String = "not_tested" // not_tested | pending_confirmation | verified
     var calibratedAt: Date?
+    /// JSON-encoded per-printer typography profile. Empty means legacy/default.
+    var typographyProfileJSON: String = ""
 
     @Relationship(deleteRule: .cascade, inverse: \PrintRoutingRule.printer)
     var routingRules: [PrintRoutingRule] = []
+
+    var typographyProfile: PrintTypographyProfile {
+        get {
+            guard let data = typographyProfileJSON.data(using: .utf8),
+                  let profile = try? JSONDecoder().decode(PrintTypographyProfile.self, from: data) else {
+                return .recommended(for: role, paperWidth: paperWidth)
+            }
+            return profile
+        }
+        set {
+            guard let data = try? JSONEncoder().encode(newValue),
+                  let value = String(data: data, encoding: .utf8) else { return }
+            typographyProfileJSON = value
+            updatedAt = Date()
+        }
+    }
 
     // Offline-First Sync Metadata
     var isSynced: Bool

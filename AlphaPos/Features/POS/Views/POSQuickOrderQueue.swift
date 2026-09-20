@@ -14,8 +14,8 @@ struct POSQuickOrderQueue: View {
         NavigationStack {
             List(orders) { order in
                 Button {
+                    APNativeOrderSound.buttonTap()
                     onSelect(order)
-                    dismiss()
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
@@ -29,9 +29,16 @@ struct POSQuickOrderQueue: View {
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
-                        Text(order.status.capitalized)
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(.appAmber)
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text(order.status.capitalized)
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.appAmber)
+                            Text(order.isSettled
+                                 ? (lm.currentLanguage == .thai ? "ชำระแล้ว" : "Paid")
+                                 : (lm.currentLanguage == .thai ? "ค้างชำระ" : "Unpaid"))
+                                .font(.caption2.weight(.semibold))
+                                .foregroundColor(order.isSettled ? .appTeal : .appRose)
+                        }
                     }
                 }
                 .buttonStyle(.plain)
@@ -48,7 +55,10 @@ struct POSQuickOrderQueue: View {
             .navigationTitle(lm.currentLanguage == .thai ? "คิวออเดอร์ด่วน" : "Quick Order Queue")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(lm.currentLanguage == .thai ? "ปิด" : "Done") { dismiss() }
+                    Button(lm.currentLanguage == .thai ? "ปิด" : "Done") {
+                        APNativeOrderSound.buttonTap()
+                        dismiss()
+                    }
                 }
             }
         }

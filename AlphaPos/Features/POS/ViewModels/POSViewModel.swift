@@ -1239,6 +1239,7 @@ final class POSViewModel {
             payment.transactionReference = Payment.thaiChuaThaiInternalReference(orderNumber: order.orderNumber)
         }
         payment.order = order
+        order.payments.append(payment)
         BusinessDayContext.stamp(payment: payment, order: order, in: modelContext)
 
         // C-1: Gift Card Redeem — deduct balance before saving payment
@@ -1324,13 +1325,18 @@ final class POSViewModel {
     }
     platformOrderNumber = ""
     if selectedOrderType == "delivery" {
-        selectedOrderType = (tableSession != nil) ? "dine_in" : postDeliveryOrderType
         deliveryBrand = nil
         deliveryGP = 0
         deliveryAdFee = 0
         deliveryAdFeeIsPct = false
         deliveryOtherFee = 0
         repriceCart()
+    }
+    if tableSession == nil {
+        // Quick Service is always ready for the next counter customer.
+        selectedOrderType = "take_out"
+    } else if selectedOrderType == "delivery" {
+        selectedOrderType = "dine_in"
     }
 
     // C-2: Loyalty Points Accrue — only on actual payment (not send-to-kitchen)
@@ -1747,9 +1753,7 @@ final class POSViewModel {
         deliveryAdFeeIsPct = false
         deliveryOtherFee = 0
         platformOrderNumber = ""
-        if selectedOrderType == "delivery" {
-            selectedOrderType = postDeliveryOrderType
-        }
+        selectedOrderType = "take_out"
         clearAppliedCoupon()
         resetPromotionSelection()
     }

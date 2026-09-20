@@ -14,8 +14,12 @@ struct PrintJob: Sendable {
     let order: Order
     let role: String // receipt, kitchen, bar, label
     let template: ReceiptTemplate?
+    /// Optional heading for a category-split prep ticket (for example, "เมนูผัด").
+    /// The order number and queue remain sourced from the same `order` on every ticket.
+    var categoryLabel: String? = nil
     var hardwarePaperWidth: String? = nil
     var logoBitmap: ESCPOSBuilder.LogoBitmap? = nil  // actual-dimension logo for GS v 0
+    var typography: PrintTypographyProfile? = nil
 }
 
 struct PrintResult: Sendable {

@@ -27,16 +27,28 @@ struct TimelineStep: Identifiable {
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct OrderTimelineView: View {
-    let order: Order
+    let initialOrder: Order
+    @State private var order: Order
     @AppStorage("app_language") private var appLanguage = "en"
     @Environment(\.dismiss) private var dismiss
     
     @State private var pulseAnimation = false
     @State private var elapsedTimer: Timer? = nil
+    @State private var pollTimer: Timer? = nil
+    @State private var isRefreshing = false
     @State private var now = Date()
+
+    /// Realtime is the primary update path. Polling is only a low-frequency
+    /// recovery path for a dropped websocket event or temporary reconnect.
+    private let fallbackPollingInterval: TimeInterval = 12
     
     // Average estimated prep time (in minutes) — can be adjusted per-restaurant
     private let estimatedPrepMinutes: Double = 15
+    
+    init(order: Order) {
+        self.initialOrder = order
+        _order = State(initialValue: order)
+    }
     
     private var orderCreatedDate: Date? {
         parseISO8601(order.createdAt)
@@ -63,6 +75,10 @@ struct OrderTimelineView: View {
                             estimatedTimeCard
                                 .padding(.horizontal, 16)
                                 .padding(.top, 12)
+                        } else if order.isPaid {
+                            paymentCompletedCard
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
                         }
                         
                         // Timeline
@@ -77,10 +93,28 @@ struct OrderTimelineView: View {
                             .padding(.bottom, 40)
                     }
                 }
+                .refreshable {
+                    await refreshOrder()
+                }
             }
             .navigationTitle("order_timeline".localized(for: appLanguage))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Task { await refreshOrder() }
+                    } label: {
+                        if isRefreshing {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(.appAccent)
+                        }
+                    }
+                    .disabled(isRefreshing)
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -97,11 +131,69 @@ struct OrderTimelineView: View {
                 elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
                     now = Date()
                 }
+                startFallbackPollingIfNeeded()
+                Task { await refreshOrder() }
             }
             .onDisappear {
                 elapsedTimer?.invalidate()
                 elapsedTimer = nil
+                pollTimer?.invalidate()
+                pollTimer = nil
             }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StaffOrderUpdated"))) { note in
+                if let updated = note.object as? Order, updated.id == order.id {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        self.order = updated
+                    }
+                    reconcileFallbackPolling()
+                }
+            }
+        }
+    }
+    
+    private func refreshOrder() async {
+        guard !order.id.isEmpty else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        do {
+            if let updated = try await NetworkService.shared.fetchOrderById(order.id) {
+                await MainActor.run {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        self.order = updated
+                    }
+                    reconcileFallbackPolling()
+                }
+            }
+        } catch {
+            #if DEBUG
+            print("OrderTimelineView refresh failed: \(error)")
+            #endif
+        }
+    }
+
+    /// Keep the fallback alive only while kitchen fulfilment can still change.
+    /// A paid order may remain active, so payment/order `completed` alone must
+    /// not stop polling; item fulfilment is the source of truth.
+    private var needsFallbackPolling: Bool {
+        if order.status.lowercased() == "cancelled" { return false }
+        let activeItems = order.items.filter { $0.status.lowercased() != "cancelled" }
+        guard !activeItems.isEmpty else { return true }
+        return !activeItems.allSatisfy { $0.status.lowercased() == "served" }
+    }
+
+    private func startFallbackPollingIfNeeded() {
+        guard needsFallbackPolling, pollTimer == nil else { return }
+        pollTimer = Timer.scheduledTimer(withTimeInterval: fallbackPollingInterval, repeats: true) { _ in
+            Task { await refreshOrder() }
+        }
+    }
+
+    private func reconcileFallbackPolling() {
+        if needsFallbackPolling {
+            startFallbackPollingIfNeeded()
+        } else {
+            pollTimer?.invalidate()
+            pollTimer = nil
         }
     }
     
@@ -147,8 +239,39 @@ struct OrderTimelineView: View {
                 
                 Spacer()
                 
-                // Status badge
-                OrderStatusBadge(status: order.status, size: .large)
+                // Status badge & Payment badge
+                VStack(alignment: .trailing, spacing: 6) {
+                    // The order-level `completed` value is financial for paid
+                    // Staff Quick Orders. Show kitchen fulfilment separately so
+                    // a paid ticket with cooking items is not labelled finished.
+                    OrderStatusBadge(status: fulfillmentStatus, size: .large)
+                    
+                    if order.isPaid {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.system(size: 11, weight: .bold))
+                            Text("filter_paid".localized(for: appLanguage))
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.appGreen.opacity(0.15))
+                        .foregroundColor(.appGreen)
+                        .cornerRadius(6)
+                    } else {
+                        HStack(spacing: 4) {
+                            Image(systemName: "clock.badge.exclamationmark")
+                                .font(.system(size: 11, weight: .bold))
+                            Text("filter_unpaid".localized(for: appLanguage))
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.appAmber.opacity(0.15))
+                        .foregroundColor(.appAmber)
+                        .cornerRadius(6)
+                    }
+                }
             }
             
             Divider().background(Color.appDivider)
@@ -221,6 +344,46 @@ struct OrderTimelineView: View {
         )
     }
     
+    // MARK: - Payment Completed Card
+    
+    private var paymentCompletedCard: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.appGreen.opacity(0.15))
+                    .frame(width: 44, height: 44)
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.appGreen)
+            }
+            
+            VStack(alignment: .leading, spacing: 3) {
+                Text("payment_completed_banner".localized(for: appLanguage))
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(.appGreen)
+                if let payment = order.payments.first(where: { $0.status.lowercased() == "completed" }) {
+                    Text("\(payment.method) · ฿\(String(format: "%.2f", payment.amount))")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.textSecondary)
+                } else {
+                    Text("฿\(String(format: "%.2f", order.total))")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.textSecondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                .fill(Color.appGreen.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: APRadius.md, style: .continuous)
+                        .stroke(Color.appGreen.opacity(0.25), lineWidth: 1)
+                )
+        )
+    }
+    
     // MARK: - Timeline Section
     
     private var timelineSection: some View {
@@ -230,6 +393,8 @@ struct OrderTimelineView: View {
             }
         }
     }
+    
+
     
     private func timelineRow(step: TimelineStep, isLast: Bool, index: Int) -> some View {
         HStack(alignment: .top, spacing: 16) {
@@ -362,8 +527,7 @@ struct OrderTimelineView: View {
     // MARK: - Helpers
     
     private var isInProgress: Bool {
-        let s = order.status.lowercased()
-        return s == "preparing" || s == "confirmed" || s == "pending"
+        fulfillmentStatus == "preparing" || fulfillmentStatus == "ready"
     }
     
     private var elapsedText: String {
@@ -391,17 +555,32 @@ struct OrderTimelineView: View {
     private func buildSteps(for order: Order) -> [TimelineStep] {
         let status = order.status.lowercased()
         let created = orderCreatedDate
-        
-        // Determine which step we're at
-        let statusOrder = ["placed", "confirmed", "preparing", "ready", "served"]
+
+        // Kitchen fulfilment is intentionally derived from item states. A paid
+        // Staff Quick Order has order.status == completed while its food remains
+        // cooking, so payment must never advance the kitchen timeline.
+        let liveItems = order.items.filter { $0.status.lowercased() != "cancelled" }
+        let itemStatuses = liveItems.map { $0.status.lowercased() }
+        let hasPreparingItems = itemStatuses.contains {
+            ["pending", "preparing", "cooking", "alert"].contains($0)
+        }
+        let hasReadyItems = itemStatuses.contains("ready")
+        let allServed = !liveItems.isEmpty && itemStatuses.allSatisfy { $0 == "served" }
+
         let currentIndex: Int = {
+            if status == "cancelled" { return -1 }
+            if allServed { return 4 }
+            if hasPreparingItems { return 2 }
+            if hasReadyItems { return 3 }
             switch status {
             case "pending", "placed":       return 0
             case "confirmed":               return 1
             case "preparing", "cooking":    return 2
             case "ready":                   return 3
-            case "served", "completed":     return 4
-            case "cancelled":               return -1
+            case "served":                  return 4
+            // A payment-only completed status with no terminal item evidence
+            // stays at preparing instead of fabricating kitchen completion.
+            case "completed":               return liveItems.isEmpty ? 1 : 2
             default:                        return 0
             }
         }()
@@ -418,6 +597,10 @@ struct OrderTimelineView: View {
             let stepStatus: TimelineStepStatus
             if status == "cancelled" {
                 stepStatus = idx == 0 ? .completed : .pending
+            } else if allServed {
+                // The kitchen has terminalized every non-cancelled item. Close
+                // the final fulfilment step instead of leaving "Served" spinning.
+                stepStatus = .completed
             } else if idx < currentIndex {
                 stepStatus = .completed
             } else if idx == currentIndex {
@@ -426,16 +609,10 @@ struct OrderTimelineView: View {
                 stepStatus = .pending
             }
             
-            // Estimate timestamps (only createdAt is real, rest are simulated)
+            // Only createdAt is a real timestamp in this payload. Never invent
+            // future +3 minute timestamps for kitchen events that have not occurred.
             let timestamp: Date? = {
-                if stepStatus == .completed || stepStatus == .current {
-                    if idx == 0 { return created }
-                    // Simulate: each step takes ~3 min
-                    if let base = created {
-                        return base.addingTimeInterval(Double(idx) * 180)
-                    }
-                }
-                return nil
+                idx == 0 ? created : nil
             }()
             
             return TimelineStep(
@@ -445,6 +622,22 @@ struct OrderTimelineView: View {
                 status: stepStatus
             )
         }
+    }
+
+    /// Operational food status displayed independently from payment state.
+    private var fulfillmentStatus: String {
+        let statuses = order.items
+            .filter { $0.status.lowercased() != "cancelled" }
+            .map { $0.status.lowercased() }
+        guard !statuses.isEmpty else {
+            return order.status.lowercased() == "completed" ? "confirmed" : order.status
+        }
+        if statuses.allSatisfy({ $0 == "served" }) { return "served" }
+        if statuses.contains(where: { ["pending", "preparing", "cooking", "alert"].contains($0) }) {
+            return "preparing"
+        }
+        if statuses.contains("ready") { return "ready" }
+        return order.status
     }
     
     private func formatTime(_ date: Date) -> String {

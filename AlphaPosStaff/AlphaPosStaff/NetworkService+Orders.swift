@@ -4,6 +4,19 @@
 import Foundation
 
 extension NetworkService {
+    /// Quick-order history for Staff: includes paid/completed orders so the
+    /// staff member can review the same orders that are visible on the iPad.
+    func fetchQuickOrderHistory() async throws -> [Order] {
+        let data = try await sendSupabaseRequest(method: "GET", endpoint: "orders", queryItems: [
+            URLQueryItem(name: "select", value: "*,order_items(*,order_item_modifiers(id,price,modifiers(name))),payments(id,amount,payment_method,status,created_at)"),
+            URLQueryItem(name: "table_number", value: "eq.QUICK"),
+            URLQueryItem(name: "order", value: "created_at.desc"),
+            URLQueryItem(name: "limit", value: "100")
+        ])
+        let rows = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+        return try await parseOrders(rows)
+    }
+
     func fetchRequests() async throws -> [ServiceRequest] {
         let data = try await sendSupabaseRequest(method: "GET", endpoint: "service_requests", queryItems: [
             URLQueryItem(name: "select", value: "*"),
@@ -144,21 +157,20 @@ extension NetworkService {
         payload: [String: Any],
         expectedRowVersion: Int?
     ) async throws {
-        var queryItems = [URLQueryItem(name: "id", value: "eq.\(id)")]
-        if let version = expectedRowVersion {
-            queryItems.append(URLQueryItem(name: "row_version", value: "eq.\(version)"))
+        guard let expectedRowVersion, expectedRowVersion > 0 else {
+            throw NetworkError.conflict("\(endpoint) id=\(id) has no server version; refresh before editing")
         }
+        var queryItems = [URLQueryItem(name: "id", value: "eq.\(id)")]
+        queryItems.append(URLQueryItem(name: "row_version", value: "eq.\(expectedRowVersion)"))
         let data = try await sendSupabaseRequest(
             method: "PATCH",
             endpoint: endpoint,
             queryItems: queryItems,
             payload: payload
         )
-        if expectedRowVersion != nil {
-            let rows = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
-            if rows.isEmpty {
-                throw NetworkError.conflict("\(endpoint) id=\(id) was modified by another device")
-            }
+        let rows = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+        if rows.isEmpty {
+            throw NetworkError.conflict("\(endpoint) id=\(id) was modified by another device")
         }
     }
 
@@ -410,18 +422,15 @@ extension NetworkService {
 
     func serveOrder(orderId: String) async throws -> Bool {
         let order = try await fetchOrderById(orderId)
-        try await patchWithVersion(
-            endpoint: "orders",
-            id: orderId,
-            payload: ["status": "served"],
-            expectedRowVersion: order?.rowVersion
-        )
-        _ = try await sendSupabaseRequest(
-            method: "PATCH",
-            endpoint: "order_items",
-            queryItems: [URLQueryItem(name: "order_id", value: "eq.\(orderId)")],
-            payload: ["status": "served"]
-        )
+        guard let version = order?.rowVersion, version > 0 else {
+            throw NetworkError.conflict("Order \(orderId) has no server version; refresh before serving")
+        }
+        _ = try await sendSupabaseRequest(method: "POST", endpoint: "rpc/transition_order_with_items", payload: [
+            "p_order_id": orderId,
+            "p_branch_id": StaffSessionContext.branchId,
+            "p_expected_row_version": version,
+            "p_status": "served"
+        ])
         await refreshAll()
         return true
     }
@@ -431,22 +440,16 @@ extension NetworkService {
     /// so the order does not linger in "preparing"/"served" as if still open.
     func markOrderCompleted(orderId: String, receiptNumber: String? = nil) async throws -> Bool {
         let order = try await fetchOrderById(orderId)
-        var payload: [String: Any] = ["status": "completed"]
-        if let receiptNumber, !receiptNumber.isEmpty {
-            payload["receipt_number"] = receiptNumber
+        guard let version = order?.rowVersion, version > 0 else {
+            throw NetworkError.conflict("Order \(orderId) has no server version; refresh before closing")
         }
-        try await patchWithVersion(
-            endpoint: "orders",
-            id: orderId,
-            payload: payload,
-            expectedRowVersion: order?.rowVersion
-        )
-        _ = try await sendSupabaseRequest(
-            method: "PATCH",
-            endpoint: "order_items",
-            queryItems: [URLQueryItem(name: "order_id", value: "eq.\(orderId)")],
-            payload: ["status": "served"]
-        )
+        _ = try await sendSupabaseRequest(method: "POST", endpoint: "rpc/transition_order_with_items", payload: [
+            "p_order_id": orderId,
+            "p_branch_id": StaffSessionContext.branchId,
+            "p_expected_row_version": version,
+            "p_status": "completed",
+            "p_receipt_number": receiptNumber as Any? ?? NSNull()
+        ])
         return true
     }
 
@@ -527,37 +530,58 @@ extension NetworkService {
     }
 
     func serveOrderItem(itemId: String, orderId: String, servedBy: String? = nil) async throws -> Bool {
-        if let order = try await fetchOrderById(orderId), order.isAwaitingStaffApproval {
-            throw NetworkError.serverError("Approve this customer order before serving it")
-        }
-        var payload: [String: Any] = ["status": "served"]
-        if let servedBy = servedBy {
-            payload["served_by"] = servedBy
-        }
-        let prior = try await fetchOrderById(orderId)
-        let itemVersion = prior?.items.first(where: { $0.id == itemId })?.rowVersion
-        try await patchWithVersion(
-            endpoint: "order_items",
-            id: itemId,
-            payload: payload,
-            expectedRowVersion: itemVersion
-        )
+        var lastError: Error?
+        // Serving is deliberately retryable: realtime updates from POS/KDS can
+        // advance row_version between the item PATCH and the order PATCH. The
+        // first attempt may already have committed the item, so every retry
+        // re-reads state and skips work that is already terminal.
+        for attempt in 0..<3 {
+            do {
+                guard let prior = try await fetchOrderById(orderId) else { return false }
+                if prior.isAwaitingStaffApproval {
+                    throw NetworkError.serverError("Approve this customer order before serving it")
+                }
 
-        if let order = try await fetchOrderById(orderId) {
-            let isOrderServed = !order.items.isEmpty &&
-                order.items.allSatisfy { $0.status == "served" || $0.status == "cancelled" }
-            if isOrderServed && order.status != "served" {
-                try await patchWithVersion(
-                    endpoint: "orders",
-                    id: orderId,
-                    payload: ["status": "served"],
-                    expectedRowVersion: order.rowVersion
-                )
+                if let item = prior.items.first(where: { $0.id == itemId }),
+                   item.status != "served", item.status != "cancelled" {
+                    var payload: [String: Any] = ["status": "served"]
+                    if let servedBy { payload["served_by"] = servedBy }
+                    try await patchWithVersion(
+                        endpoint: "order_items",
+                        id: itemId,
+                        payload: payload,
+                        expectedRowVersion: item.rowVersion
+                    )
+                }
+
+                // Re-read after the item update; never reuse a stale order
+                // version when deciding whether the whole ticket is served.
+                if let current = try await fetchOrderById(orderId) {
+                    let isOrderServed = !current.items.isEmpty &&
+                        current.items.allSatisfy { $0.status == "served" || $0.status == "cancelled" }
+                    if isOrderServed && current.status != "served" && current.status != "completed" {
+                        try await patchWithVersion(
+                            endpoint: "orders",
+                            id: orderId,
+                            payload: ["status": "served"],
+                            expectedRowVersion: current.rowVersion
+                        )
+                    }
+                }
+                await refreshAll()
+                return true
+            } catch {
+                lastError = error
+                guard attempt < 2, isVersionConflict(error) else { throw error }
+                try await Task.sleep(nanoseconds: UInt64(150_000_000 * (attempt + 1)))
             }
         }
+        throw lastError ?? NetworkError.serverError("Unable to serve item")
+    }
 
-        await refreshAll()
-        return true
+    private func isVersionConflict(_ error: Error) -> Bool {
+        let text = String(describing: error).lowercased()
+        return text.contains("conflict") || text.contains("row_version") || text.contains("412")
     }
 
     func recallOrderItem(itemId: String, orderId: String) async throws -> Bool {
@@ -600,8 +624,12 @@ extension NetworkService {
     }
 
     func deleteOrderItem(itemId: String) async throws -> Bool {
-        let currentVersion = (try? await fetchAllActiveOrders())?
+        var currentVersion = (try? await fetchAllActiveOrders())?
             .flatMap(\.items).first(where: { $0.id == itemId })?.rowVersion
+        if currentVersion == nil {
+            currentVersion = (try? await fetchQuickOrderHistory())?
+                .flatMap(\.items).first(where: { $0.id == itemId })?.rowVersion
+        }
         try await patchWithVersion(
             endpoint: "order_items", id: itemId,
             payload: ["status": "cancelled", "is_deleted": true],
@@ -619,10 +647,12 @@ extension NetworkService {
         // Look up current version across active tables (best-effort).
         var expectedVersion: Int?
         if let orders = try? await fetchAllActiveOrders() {
-            expectedVersion = orders
-                .flatMap(\.items)
-                .first(where: { $0.id == itemId })?
-                .rowVersion
+            expectedVersion = orders.flatMap(\.items).first(where: { $0.id == itemId })?.rowVersion
+        }
+        // Quick orders are not part of the table-active query. Resolve their
+        // version as well so staff can correct a pay-later order safely.
+        if expectedVersion == nil, let orders = try? await fetchQuickOrderHistory() {
+            expectedVersion = orders.flatMap(\.items).first(where: { $0.id == itemId })?.rowVersion
         }
         try await patchWithVersion(
             endpoint: "order_items",
@@ -689,7 +719,8 @@ extension NetworkService {
             "created_at": ISO8601DateFormatter().string(from: Date()),
             "merchant_id": merchantId,
             "branch_id": branchId,
-            "idempotency_key": orderId.lowercased()
+            "idempotency_key": orderId.lowercased(),
+            "operation_id": "staff:create:\(orderId.lowercased())"
         ]
         if let token = sessionToken, !token.isEmpty {
             orderPayload["session_token"] = token
@@ -741,15 +772,30 @@ extension NetworkService {
             ]
         }
 
-        let response = try await sendSupabaseRequest(
-            method: "POST",
-            endpoint: "rpc/create_order_atomic_cas",
-            payload: [
-                "p_order": orderPayload,
-                "p_items": orderItems,
-                "p_modifiers": orderItemModifiers
-            ]
-        )
+        let rpcPayload: [String: Any] = [
+            "p_order": orderPayload,
+            "p_items": orderItems,
+            "p_modifiers": orderItemModifiers
+        ]
+        var response = Data()
+        for attempt in 0..<3 {
+            do {
+                response = try await sendSupabaseRequest(
+                    method: "POST",
+                    endpoint: "rpc/create_order_atomic_cas",
+                    payload: rpcPayload
+                )
+                break
+            } catch {
+                let transientHTTP = (error as? StaffHTTPError).map {
+                    $0.isRetryable || $0.serverMessage.contains("55P03")
+                } ?? false
+                let transientTransport = error is URLError
+                guard attempt < 2, transientHTTP || transientTransport else { throw error }
+                let delay = UInt64(250 * (1 << attempt) + Int.random(in: 0...250))
+                try await Task.sleep(nanoseconds: delay * 1_000_000)
+            }
+        }
         if let object = try? JSONSerialization.jsonObject(with: response) as? [String: Any],
            let status = object["status"] as? String,
            status != "ok" {

@@ -393,6 +393,31 @@ struct StarUSBTransport: PrinterTransport {
 #endif
     }
 
+#if canImport(UIKit)
+    /// Converts an already-rendered ESC/POS payload into one printer-independent
+    /// raster image. This shares the same parser used by the Star image path,
+    /// while allowing Xprinter to bypass its firmware character table.
+    @MainActor
+    func rasterizedPayloadForXprinter(_ data: Data, printer: Printer) -> Data? {
+        let width = printer.printableWidthDots > 0
+            ? printer.printableWidthDots
+            : (printer.paperWidth == "58mm" ? 384 : 576)
+        let image = receiptImage(from: data, width: width)
+        guard let bitmap = ESCPOSBuilder.imageTo1BitBitmap(image, maxWidthDots: width),
+              bitmap.heightPx > 0,
+              bitmap.bytesPerRow > 0 else {
+            return nil
+        }
+
+        var payload = [UInt8]()
+        payload += [0x1B, 0x40] // initialize
+        payload += ESCPOSBuilder.rasterImageCommand(bitmap)
+        payload += [0x1B, 0x64, 0x03] // feed before cut
+        payload += [0x1D, 0x56, 0x42, 0x00] // partial cut
+        return Data(payload)
+    }
+#endif
+
     private func bestEffortText(from data: Data) -> String {
         let decoded = String(data: stripEscPosCommands(from: data), encoding: .windowsCP874)
             ?? String(data: data, encoding: .utf8)

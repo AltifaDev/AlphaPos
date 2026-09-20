@@ -25,6 +25,7 @@ struct QuickOrderView: View {
     @State private var submittedOrderNumber = ""
     @State private var submittedReceiptNumber = ""
     @State private var submittedOrderId = ""
+    @State private var submittedOrder: Order? = nil
     @State private var showOrderTimeline = false
     @State private var showPaymentSheet = false
     @State private var searchText = ""
@@ -32,6 +33,8 @@ struct QuickOrderView: View {
     @State private var showSplitBill = false
     @State private var showSubmitConfirm = false
     @State private var showShiftGuard = false
+    @State private var showQuickOrderHistory = false
+    @State private var quickOrderHistory: [Order] = []
     
     // Filter & Sorting State
     @State private var showFilterSheet = false
@@ -197,6 +200,26 @@ struct QuickOrderView: View {
             }
             .navigationTitle("quick_order".localized(for: appLanguage))
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showQuickOrderHistory = true
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.system(size: 13, weight: .bold))
+                            Text("recent_order_check".localized(for: appLanguage))
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.appAccent.opacity(0.12))
+                        .foregroundColor(.appAccent)
+                        .clipShape(Capsule())
+                    }
+                    .accessibilityLabel("recent_order_check".localized(for: appLanguage))
+                }
+            }
             .task {
                 await loadMenu()
             }
@@ -204,7 +227,11 @@ struct QuickOrderView: View {
                 PaymentMethodSheet(
                     total: cartTotal,
                     orderType: selectedOrderType,
-                    onPay: { method in
+                    onPayCash: { cashReceived in
+                        showPaymentSheet = false
+                        submitOrder(paymentMethod: "Cash", cashTendered: cashReceived)
+                    },
+                    onPayMethod: { method in
                         showPaymentSheet = false
                         submitOrder(paymentMethod: method)
                     },
@@ -217,7 +244,7 @@ struct QuickOrderView: View {
             }
             .sheet(isPresented: $showOrderTimeline) {
                 OrderTimelineView(
-                    order: Order(
+                    order: submittedOrder ?? Order(
                         id: submittedOrderId,
                         orderNumber: submittedOrderNumber.isEmpty ? "QO-0000" : submittedOrderNumber,
                         tableNumber: "QUICK",
@@ -238,6 +265,9 @@ struct QuickOrderView: View {
                             : nil
                     )
                 )
+            }
+            .sheet(isPresented: $showQuickOrderHistory) {
+                RecentOrdersSheetView()
             }
             .sheet(isPresented: $showSplitBill) {
                 SplitBillView(
@@ -289,8 +319,19 @@ struct QuickOrderView: View {
             }
             .sheet(isPresented: $showCartDetail) {
                 CartDetailSheet(
+                    items: cartItems,
                     lines: modifierLines,
                     appLanguage: appLanguage,
+                    onItemQuantityChange: { item, newQty in
+                        if newQty <= 0 { cartItems.removeValue(forKey: item) }
+                        else { cartItems[item] = newQty }
+                        StaffSoundFeedback.play()
+                        APHaptic.trigger()
+                    },
+                    onItemRemove: { item in
+                        cartItems.removeValue(forKey: item)
+                        APHaptic.trigger()
+                    },
                     onEdit: { line in
                         showCartDetail = false
                         editLine(line)
@@ -302,6 +343,7 @@ struct QuickOrderView: View {
                     onQuantityChange: { line, newQty in
                         if let idx = modifierLines.firstIndex(where: { $0.id == line.id }) {
                             modifierLines[idx].quantity = newQty
+                            StaffSoundFeedback.play()
                             APHaptic.trigger()
                         }
                     }
@@ -829,6 +871,7 @@ struct QuickOrderView: View {
                         Button {
                             if qty == 1 { cartItems.removeValue(forKey: item) }
                             else { cartItems[item] = qty - 1 }
+                            StaffSoundFeedback.play()
                             APHaptic.trigger()
                         } label: {
                             Image(systemName: "minus")
@@ -883,6 +926,13 @@ struct QuickOrderView: View {
             RoundedRectangle(cornerRadius: 18)
                 .stroke(Color.appDivider.opacity(0.5), lineWidth: 1)
         )
+        .contentShape(RoundedRectangle(cornerRadius: 18))
+        .onTapGesture {
+            // The whole card is an add target; the embedded quantity buttons
+            // remain available for increment/decrement without requiring the
+            // user to hit the small plus control.
+            handleAddTap(item)
+        }
     }
     
     // MARK: - Cart Bar
@@ -891,7 +941,7 @@ struct QuickOrderView: View {
         HStack(spacing: 14) {
             // Cart info
             Button {
-                if !modifierLines.isEmpty { showCartDetail = true }
+                showCartDetail = true
             } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("your_cart".localized(for: appLanguage))
@@ -906,11 +956,9 @@ struct QuickOrderView: View {
                         Text("฿\(String(format: "%.0f", cartTotal))")
                             .font(.system(size: 15, weight: .bold))
                             .foregroundColor(.appAccent)
-                        if !modifierLines.isEmpty {
-                            Image(systemName: "chevron.up.circle.fill")
-                                .font(.system(size: 13))
-                                .foregroundColor(.textTertiary)
-                        }
+                        Image(systemName: "chevron.up.circle")
+                            .font(.system(size: 13))
+                            .foregroundColor(.textTertiary)
                     }
                 }
             }
@@ -964,7 +1012,7 @@ struct QuickOrderView: View {
                     .fontWeight(.black)
                     .foregroundColor(.textPrimary)
                 
-                Text("Your order has been placed successfully")
+                Text("order_placed_success_sub".localized(for: appLanguage))
                     .font(.system(.subheadline, design: .rounded))
                     .foregroundColor(.textSecondary)
                     .multilineTextAlignment(.center)
@@ -973,7 +1021,7 @@ struct QuickOrderView: View {
             
             // Queue number (primary customer-facing ID for counter service)
             VStack(spacing: 6) {
-                Text(appLanguage == "th" ? "คิวที่" : "queue_number".localized(for: appLanguage).uppercased())
+                Text(appLanguage == "th" ? "คิวที่" : "queue_label".localized(for: appLanguage).uppercased())
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundColor(Color(hex: "4B5563"))
                     .tracking(1.5)
@@ -1112,6 +1160,7 @@ struct QuickOrderView: View {
     /// Tapped "+" on a menu item: fetch its options. If it has modifier groups,
     /// open the picker; otherwise add straight to the plain cart (fast path).
     private func handleAddTap(_ item: MenuItem) {
+        StaffSoundFeedback.play()
         APHaptic.trigger()
         guard !isLoadingOptions else { return }
         isLoadingOptions = true
@@ -1153,7 +1202,7 @@ struct QuickOrderView: View {
         APHaptic.trigger()
     }
 
-    private func submitOrder(paymentMethod: String?) {
+    private func submitOrder(paymentMethod: String?, cashTendered: Double? = nil) {
         guard cartCount > 0 else { return }
         isSubmitting = true
         
@@ -1225,13 +1274,26 @@ struct QuickOrderView: View {
                 
                 // Upload payment if method provided
                 if let method = paymentMethod {
-                    _ = try await NetworkService.shared.completeCheckout(
-                        paymentId: UUID(),
+                    var paymentObj: [String: Any] = [
+                        "id": UUID().uuidString.lowercased(),
+                        "amount": total,
+                        "payment_method": method
+                    ]
+                    if let cash = cashTendered {
+                        paymentObj["cash_tendered"] = cash
+                        paymentObj["change_due"] = max(0, cash - total)
+                    }
+                    _ = try await NetworkService.shared.completeCheckoutAtomic(
                         orderId: orderId,
-                        amount: total,
-                        method: method,
+                        payments: [paymentObj],
                         tableNumber: "QUICK",
-                        subtotal: total
+                        breakdown: [
+                            "grand_total": total,
+                            "subtotal": total,
+                            "tax": 0.0,
+                            "service_charge": 0.0
+                        ],
+                        idempotencyKey: "quick:\(UUID().uuidString.lowercased())"
                     )
                 }
                 
@@ -1250,6 +1312,11 @@ struct QuickOrderView: View {
                     }
                     APHaptic.success()
                 }
+                // Load the canonical server record so the status timeline
+                // reflects iPad/KDS updates instead of a locally fabricated
+                // "preparing" snapshot.
+                let serverOrder = try? await NetworkService.shared.fetchOrderById(orderId)
+                await MainActor.run { submittedOrder = serverOrder }
             } catch {
                 await MainActor.run {
                     isSubmitting = false
@@ -1291,8 +1358,11 @@ private extension DateFormatter {
 // MARK: - Cart Detail Sheet (customized option lines)
 
 private struct CartDetailSheet: View {
+    let items: [MenuItem: Int]
     let lines: [CartLine]
     let appLanguage: String
+    let onItemQuantityChange: (MenuItem, Int) -> Void
+    let onItemRemove: (MenuItem) -> Void
     let onEdit: (CartLine) -> Void
     let onRemove: (CartLine) -> Void
     let onQuantityChange: (CartLine, Int) -> Void
@@ -1304,10 +1374,13 @@ private struct CartDetailSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 10) {
+                    ForEach(items.keys.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }, id: \.id) { item in
+                        plainLineCard(item, quantity: items[item] ?? 0)
+                    }
                     ForEach(lines) { line in
                         lineCard(line)
                     }
-                    if lines.isEmpty {
+                    if items.isEmpty && lines.isEmpty {
                         Text("—")
                             .foregroundColor(.textTertiary)
                             .padding(.top, 40)
@@ -1316,7 +1389,7 @@ private struct CartDetailSheet: View {
                 .padding(16)
             }
             .background(Color.appBackground)
-            .navigationTitle("customize_options".localized(for: appLanguage))
+            .navigationTitle("your_cart".localized(for: appLanguage))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -1324,6 +1397,40 @@ private struct CartDetailSheet: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func plainLineCard(_ item: MenuItem, quantity: Int) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.name)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.textPrimary)
+                Text("฿\(Int(item.price)) × \(quantity) = ฿\(Int(item.price * Double(quantity)))")
+                    .font(.system(size: 12))
+                    .foregroundColor(.textSecondary)
+            }
+            Spacer()
+            HStack(spacing: 8) {
+                Button { onItemQuantityChange(item, quantity - 1) } label: {
+                    Image(systemName: "minus").frame(width: 28, height: 28)
+                }
+                .disabled(quantity <= 1)
+                Text("\(quantity)").font(.system(size: 15, weight: .bold)).frame(minWidth: 18)
+                Button { onItemQuantityChange(item, quantity + 1) } label: {
+                    Image(systemName: "plus").frame(width: 28, height: 28)
+                }
+            }
+            .foregroundColor(royalBlue)
+            .buttonStyle(PressableButtonStyle())
+            Button { onItemRemove(item) } label: {
+                Image(systemName: "trash").foregroundColor(.appRose)
+            }
+            .buttonStyle(PressableButtonStyle())
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .apLiquidGlass(tint: royalBlue.opacity(0.05), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     @ViewBuilder
@@ -1422,11 +1529,14 @@ private struct CartDetailSheet: View {
 private struct PaymentMethodSheet: View {
     let total: Double
     let orderType: QuickOrderView.OrderType
-    let onPay: (String) -> Void
+    let onPayCash: (Double) -> Void
+    let onPayMethod: (String) -> Void
     let onPayLater: () -> Void
     let appLanguage: String
     
     @Environment(\.dismiss) private var dismiss
+    @State private var activeStaffPaymentModal: ActiveStaffPaymentModal? = nil
+    @State private var didInitiatePayment = false
     
     var body: some View {
         NavigationStack {
@@ -1451,15 +1561,25 @@ private struct PaymentMethodSheet: View {
                         .foregroundColor(.textSecondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     
-                    paymentButton(icon: "banknote.fill", label: "Cash", color: Color(hex: "10B981"), method: "cash")
-                    paymentButton(icon: "creditcard.fill", label: "Card", color: Color(hex: "3B82F6"), method: "credit_card")
-                    paymentButton(icon: "qrcode", label: "PromptPay QR", color: Color(hex: "003B71"), method: "qr_promptpay")
+                    paymentButton(icon: "banknote.fill", label: "cash".localized(for: appLanguage), color: Color(hex: "10B981")) {
+                        activeStaffPaymentModal = .cash
+                    }
+                    paymentButton(icon: "creditcard.fill", label: "card".localized(for: appLanguage), color: Color(hex: "3B82F6")) {
+                        activeStaffPaymentModal = .creditCard
+                    }
+                    paymentButton(icon: "qrcode", label: "promptpay_qr".localized(for: appLanguage), color: Color(hex: "003B71")) {
+                        activeStaffPaymentModal = .qrCode
+                    }
+                    paymentButton(icon: "qrcode.viewfinder", label: "thai_chua_thai_plus".localized(for: appLanguage), color: Color(hex: "1D4ED8")) {
+                        activeStaffPaymentModal = .thaiChuaThaiPlus
+                    }
                 }
                 
                 Divider().background(Color.appDivider)
                 
                 // Pay later
                 Button {
+                    dismiss()
                     onPayLater()
                 } label: {
                     HStack(spacing: 8) {
@@ -1493,13 +1613,44 @@ private struct PaymentMethodSheet: View {
                     }
                 }
             }
+            .sheet(item: $activeStaffPaymentModal, onDismiss: {
+                if didInitiatePayment {
+                    dismiss()
+                }
+            }) { modal in
+                switch modal {
+                case .cash:
+                    StaffCashPaymentModalView(totalAmount: total) { cashReceived in
+                        didInitiatePayment = true
+                        onPayCash(cashReceived)
+                    }
+                case .qrCode:
+                    StaffQRPaymentModalView(totalAmount: total) {
+                        didInitiatePayment = true
+                        onPayMethod("QR PromptPay")
+                    }
+                case .creditCard:
+                    StaffCreditCardPaymentModalView(totalAmount: total) {
+                        didInitiatePayment = true
+                        onPayMethod("Credit Card")
+                    }
+                case .thaiChuaThaiPlus:
+                    StaffThaiChuaThaiPlusPaymentModal(totalAmount: total) { reference in
+                        didInitiatePayment = true
+                        onPayMethod("ThaiChuaThaiPlus:\(reference)")
+                    }
+                case .splitPayment:
+                    StaffSplitPaymentView(totalAmount: total) { _ in
+                        didInitiatePayment = true
+                        onPayMethod("Split")
+                    }
+                }
+            }
         }
     }
     
-    private func paymentButton(icon: String, label: String, color: Color, method: String) -> some View {
-        Button {
-            onPay(method)
-        } label: {
+    private func paymentButton(icon: String, label: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: icon)
                     .font(.system(size: 16, weight: .semibold))

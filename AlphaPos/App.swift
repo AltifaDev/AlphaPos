@@ -80,19 +80,27 @@ enum PersistentStoreMigrationRepair {
             var branches = try context.fetch(FetchDescriptor<Branch>())
                 .filter { !$0.isDeleted }
 
-            if branches.isEmpty {
+            // Online workspaces must pull their canonical branch from Supabase.
+            // Creating a random local UUID here (before authentication and the
+            // initial pull) used to produce duplicate "Main Branch" rows.
+            if branches.isEmpty && OfflineSyncModeController.isOfflineSubscriptionPlan {
                 let main = Branch(name: "Main Branch", location: "Headquarters")
                 context.insert(main)
                 try context.save()
                 branches = [main]
             }
 
+            guard !branches.isEmpty else { return }
+
             // BranchContext repairs a single-branch workspace automatically, but
             // deliberately requires an explicit choice when multiple branches make
             // ownership ambiguous.
             let selected: Branch
             do {
-                guard let resolved = try BranchContext.shared.bootstrap(in: context) else { return }
+                guard let resolved = try BranchContext.shared.bootstrap(
+                    in: context,
+                    createDefaultIfEmpty: OfflineSyncModeController.isOfflineSubscriptionPlan
+                ) else { return }
                 selected = resolved
             } catch BranchContextError.selectionRequired {
                 return

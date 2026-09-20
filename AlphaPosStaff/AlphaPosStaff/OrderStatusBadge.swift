@@ -11,7 +11,12 @@ import SwiftUI
 struct OrderStatusBadge: View {
     let status: String
     var size: BadgeSize = .medium
-    var lang: String = "en"
+    var lang: String? = nil
+    @AppStorage("app_language") private var appLanguage = "en"
+    
+    private var effectiveLang: String {
+        lang ?? appLanguage
+    }
     
     enum BadgeSize {
         case small   // for item-level (10pt font)
@@ -55,24 +60,24 @@ struct OrderStatusBadge: View {
         switch status.lowercased() {
         // Order-level statuses
         case "pending", "placed":
-            return ("status_pending".localized(for: lang), "clock.fill", Color.appAmber, Color.appAmber.opacity(0.12))
+            return ("status_pending".localized(for: effectiveLang), "clock.fill", Color.appAmber, Color.appAmber.opacity(0.12))
         case "confirmed":
-            return ("status_confirmed".localized(for: lang), "checkmark.circle.fill", Color.appIndigo, Color.appIndigo.opacity(0.12))
+            return ("status_confirmed".localized(for: effectiveLang), "checkmark.circle.fill", Color.appIndigo, Color.appIndigo.opacity(0.12))
         case "preparing", "cooking":
-            return ("status_preparing".localized(for: lang), "flame.fill", Color.appAccent, Color.appAccent.opacity(0.12))
+            return ("status_preparing".localized(for: effectiveLang), "flame.fill", Color.appAccent, Color.appAccent.opacity(0.12))
         case "ready":
-            return ("status_ready".localized(for: lang), "bell.fill", Color.appGreen, Color.appGreen.opacity(0.12))
+            return ("status_ready".localized(for: effectiveLang), "bell.fill", Color.appGreen, Color.appGreen.opacity(0.12))
         case "served":
-            return ("status_served".localized(for: lang), "checkmark.seal.fill", Color.textSecondary, Color.appSurfaceHigh)
+            return ("status_served".localized(for: effectiveLang), "checkmark.seal.fill", Color.textSecondary, Color.appSurfaceHigh)
         case "completed":
-            return ("status_completed".localized(for: lang), "creditcard.fill", Color.appGreen, Color.appGreen.opacity(0.10))
+            return ("status_completed".localized(for: effectiveLang), "creditcard.fill", Color.appGreen, Color.appGreen.opacity(0.10))
         case "cancelled":
-            return ("status_cancelled".localized(for: lang), "xmark.circle.fill", Color.appRose, Color.appRose.opacity(0.12))
+            return ("status_cancelled".localized(for: effectiveLang), "xmark.circle.fill", Color.appRose, Color.appRose.opacity(0.12))
         // Item-level statuses
         case "cooking_item", "in_progress":
-            return ("status_cooking".localized(for: lang), "flame.fill", Color.appAccent, Color.appAccent.opacity(0.12))
+            return ("status_cooking".localized(for: effectiveLang), "flame.fill", Color.appAccent, Color.appAccent.opacity(0.12))
         case "queued":
-            return ("status_queued".localized(for: lang), "tray.fill", Color.appAmber, Color.appAmber.opacity(0.12))
+            return ("status_queued".localized(for: effectiveLang), "tray.fill", Color.appAmber, Color.appAmber.opacity(0.12))
         default:
             return (status.capitalized, "circle.fill", Color.textSecondary, Color.appSurfaceHigh)
         }
