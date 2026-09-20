@@ -122,6 +122,14 @@ enum KitchenLifecycleLogic {
             && ageSeconds >= threshold
     }
 
+    static func isVisibleInLiveQueue(
+        isSettled: Bool,
+        ageSeconds: TimeInterval,
+        staleThreshold: TimeInterval = 60 * 60
+    ) -> Bool {
+        !isSettled && ageSeconds < staleThreshold
+    }
+
     // Mirror of the KitchenOrderDetailView list rendering decision (the ForEach
     // bug): items must render when the displayed list is non-empty.
     static func detailShowsItems(displayedCount: Int) -> Bool {
@@ -211,6 +219,9 @@ enum KitchenLifecycleTests {
             test_doesNotReconcileFreshQuickService(),
             test_doesNotReconcileUnpaidQuickService(),
             test_doesNotReconcileTableService(),
+            test_paidOrderLeavesLiveQueueImmediately(),
+            test_unpaidStaleOrderLeavesLiveQueueWithoutDeletion(),
+            test_freshUnpaidOrderRemainsLive(),
             test_deliveryAlertRequiresActiveTable(),
             test_deliveryAlertUsesReadyTime(),
             test_detailRendersWhenItemsPresent(),
@@ -422,6 +433,27 @@ enum KitchenLifecycleTests {
             hasActiveItems: true,
             ageSeconds: 24 * 60 * 60
         ) ? .success(name) : .failure(name, "Table Service requires explicit delivery confirmation.")
+    }
+
+    private static func test_paidOrderLeavesLiveQueueImmediately() -> TestResult {
+        let name = #function
+        return !KitchenLifecycleLogic.isVisibleInLiveQueue(isSettled: true, ageSeconds: 30)
+            ? .success(name)
+            : .failure(name, "A fully paid order must leave the live KDS queue immediately.")
+    }
+
+    private static func test_unpaidStaleOrderLeavesLiveQueueWithoutDeletion() -> TestResult {
+        let name = #function
+        return !KitchenLifecycleLogic.isVisibleInLiveQueue(isSettled: false, ageSeconds: 61 * 60)
+            ? .success(name)
+            : .failure(name, "A stale unpaid ticket must move out of the live queue.")
+    }
+
+    private static func test_freshUnpaidOrderRemainsLive() -> TestResult {
+        let name = #function
+        return KitchenLifecycleLogic.isVisibleInLiveQueue(isSettled: false, ageSeconds: 20 * 60)
+            ? .success(name)
+            : .failure(name, "A fresh unpaid ticket must remain in the live queue.")
     }
 
     private static func test_deliveryAlertRequiresActiveTable() -> TestResult {

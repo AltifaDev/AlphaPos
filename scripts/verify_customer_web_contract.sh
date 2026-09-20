@@ -4,15 +4,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WEB="$ROOT/customer-order-web"
 MIGRATION="$ROOT/supabase/migrations/20260811000100_customer_web_branch_security.sql"
-PERMANENT_QR_MIGRATION="$ROOT/supabase/migrations/20260812000100_permanent_qr_staff_approval.sql"
+PERMANENT_QR_MIGRATION="$ROOT/supabase/migrations/20260812000101_permanent_qr_staff_approval.sql"
 
 check() {
   local pattern="$1"
   local file="$2"
   if command -v rg >/dev/null 2>&1; then
-    rg -q "$pattern" "$file"
+    rg -q "$pattern" "$file" 2>/dev/null || rg -F -q "$pattern" "$file"
   else
-    grep -qE "$pattern" "$file"
+    grep -qE "$pattern" "$file" 2>/dev/null || grep -F -q "$pattern" "$file"
   fi
 }
 

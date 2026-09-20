@@ -16,6 +16,7 @@ enum TestRunner {
 
         let suites: [(name: String, results: [TestResult])] = [
             ("Security",  SecurityTests.runAll()),
+            // ("Branch Sync Policy", BranchSyncPolicyTests.runAll()),
             ("Platform Order Number", PlatformOrderNumberTests.runAll()),
             ("POS",       POSTests.runAll()),
             ("Decimal Currency", DecimalCurrencyTests.runAll()),
@@ -34,6 +35,7 @@ enum TestRunner {
             ("Remote Receipt Print", RemoteReceiptPrintTests.runAll()),
             ("Order Settlement", OrderSettlementTests.runAll()),
             ("Checkout Lifecycle", CheckoutLifecycleTests.runAll()),
+            ("Table Session Consistency", TableSessionConsistencyTests.runAll()),
             ("Print Routing", PrintRoutingTests.runAll()),
             ("Receipt Compliance", ReceiptComplianceTests.runAll()),
             ("Receipt Calculation Engine", ReceiptCalculationEngineTests.runAll()),

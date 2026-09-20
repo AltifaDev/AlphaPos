@@ -8,6 +8,7 @@ enum PlatformOrderNumberTests {
             test_normalize_orderLabelPattern(),
             test_normalize_emptyStaysEmpty(),
             test_prefix_grabFood(),
+            test_prefix_otherDeliveryPlatforms(),
             test_applyPrefix_bareNumber(),
             test_applyPrefix_alreadyPrefixed(),
             test_rebrand_switchesPrefix(),
@@ -22,7 +23,7 @@ enum PlatformOrderNumberTests {
     private static func test_grabRequestedNumber() -> TestResult {
         let name = #function
         for raw in ["777", "GP-777", "gp-777", "GF-777"] {
-            guard PlatformOrderNumber.applyBrandPrefix(raw, brand: "GrabFood") == "GP-777" else {
+            guard PlatformOrderNumber.applyBrandPrefix(raw, brand: "GrabFood") == "GF-777" else {
                 return .failure(name, "Grab number failed: " + raw)
             }
         }
@@ -63,15 +64,25 @@ enum PlatformOrderNumberTests {
 
     private static func test_prefix_grabFood() -> TestResult {
         let name = #function
-        return PlatformOrderNumber.prefix(for: "GrabFood") == "GP-"
+        return PlatformOrderNumber.prefix(for: "GrabFood") == "GF-"
             ? .success(name)
-            : .failure(name, "expected GP-")
+            : .failure(name, "expected GF-")
+    }
+
+    private static func test_prefix_otherDeliveryPlatforms() -> TestResult {
+        let name = #function
+        for brand in ["LINE MAN", "ShopeeFood", "Foodpanda", "Robinhood"] {
+            guard PlatformOrderNumber.prefix(for: brand) == "#" else {
+                return .failure(name, "expected # for \(brand)")
+            }
+        }
+        return .success(name)
     }
 
     private static func test_applyPrefix_bareNumber() -> TestResult {
         let name = #function
         let value = PlatformOrderNumber.applyBrandPrefix("12345", brand: "GrabFood")
-        return value == "GP-12345"
+        return value == "GF-12345"
             ? .success(name)
             : .failure(name, "got \(value)")
     }
@@ -79,7 +90,7 @@ enum PlatformOrderNumberTests {
     private static func test_applyPrefix_alreadyPrefixed() -> TestResult {
         let name = #function
         let value = PlatformOrderNumber.applyBrandPrefix("GF-999", brand: "GrabFood")
-        return value == "GP-999"
+        return value == "GF-999"
             ? .success(name)
             : .failure(name, "got \(value)")
     }
@@ -87,7 +98,7 @@ enum PlatformOrderNumberTests {
     private static func test_rebrand_switchesPrefix() -> TestResult {
         let name = #function
         let value = PlatformOrderNumber.rebrand("GF-888", to: "LINE MAN")
-        return value == "LM-888"
+        return value == "#888"
             ? .success(name)
             : .failure(name, "got \(value)")
     }
