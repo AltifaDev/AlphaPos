@@ -117,63 +117,24 @@ extension NetworkManager {
         // ใช้ create_order_atomic RPC ที่ Postgres รัน BEGIN…COMMIT เดียว
         // → ถ้า items fail → order ก็ rollback อัตโนมัติ (ไม่มี orphan order)
         // → idempotent: ON CONFLICT DO UPDATE → retry ปลอดภัย
+        let operationRequest: [String: Any] = [
+            "p_order": orderPayload,
+            "p_items": itemsPayload,
+            "p_modifiers": modifiersPayload
+        ]
+        // One stable operation ID per exact snapshot. A lost response can be
+        // replayed after app restart; a later local edit produces a new ID.
+        let operationData = try JSONSerialization.data(withJSONObject: operationRequest, options: [.sortedKeys])
+        let operationHash = SHA256.hash(data: operationData)
+            .map { String(format: "%02x", $0) }.joined()
+        orderPayload["operation_id"] = "pos:\(order.id.uuidString.lowercased()):\(operationHash)"
         let rpcPayload: [String: Any] = [
             "p_order": orderPayload,
             "p_items": itemsPayload,
             "p_modifiers": modifiersPayload
         ]
 
-        let data = try await sendSupabaseRequest(
-            method:          "POST",
-            endpoint:        "rpc/create_order_atomic_cas",
-            payload:         rpcPayload,
-            timeoutOverride: 15.0
-        )
-
-        // Subsidy fields are patched separately for backward compatibility with
-        // existing create_order_atomic deployments. The DB migration adds these
-        // columns without coupling rollout to a wholesale RPC replacement.
-        var accountingPatch: [String: Any] = [
-            "support_program_name": order.supportProgramName as Any? ?? NSNull(),
-            "support_government_rate": order.supportGovernmentRate,
-            "support_citizen_amount": order.supportCitizenAmount,
-            "support_government_amount": order.supportGovernmentAmount,
-            "support_settlement_status": order.supportSettlementStatus,
-            "business_date": order.businessDateKey.isEmpty ? NSNull() : order.businessDateKey,
-            "register_session_id": order.registerSessionId?.uuidString.lowercased() ?? NSNull()
-        ]
-        let patchQuery = [
-            URLQueryItem(name: "id", value: "eq.\(order.id.uuidString.lowercased())"),
-            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)")
-        ]
-        // Rolling-upgrade safety: an older self-hosted database may briefly
-        // lack the accounting columns. Do not block the whole order after the
-        // atomic RPC succeeded; retry only the compatible fields. The repair
-        // migration remains the authoritative fix and will backfill the data.
-        for attempt in 0..<3 {
-            do {
-                _ = try await sendSupabaseRequest(
-                    method: "PATCH",
-                    endpoint: "orders",
-                    queryItems: patchQuery,
-                    payload: accountingPatch
-                )
-                break
-            } catch {
-                let message = error.localizedDescription
-                guard message.contains("PGRST204") else { throw error }
-                let missingKey: String?
-                if message.contains("business_date") && accountingPatch["business_date"] != nil {
-                    missingKey = "business_date"
-                } else if message.contains("register_session_id") && accountingPatch["register_session_id"] != nil {
-                    missingKey = "register_session_id"
-                } else {
-                    missingKey = nil
-                }
-                guard let missingKey, attempt < 2 else { throw error }
-                accountingPatch.removeValue(forKey: missingKey)
-            }
-        }
+        let data = try await sendOrderMutation(payload: rpcPayload)
 
         // Modifiers were included in the atomic RPC — mark them synced locally.
         for item in activeItems {
@@ -201,6 +162,58 @@ extension NetworkManager {
         }
         // RPC return ค่าอื่น — ถือว่าสำเร็จถ้าไม่มี HTTP error (sendSupabaseRequest throw แล้ว)
         return true
+    }
+
+    /// The server records each operation ID with its result in one transaction.
+    /// Retry only transient contention/availability failures; never
+    /// retry validation, authentication, or optimistic-concurrency conflicts.
+    private func sendOrderMutation(payload: [String: Any]) async throws -> Data {
+        var lastError: Error?
+
+        for attempt in 0..<3 {
+            do {
+                return try await sendSupabaseRequest(
+                    method: "POST",
+                    endpoint: "rpc/create_order_atomic_cas",
+                    payload: payload,
+                    timeoutOverride: 15.0
+                )
+            } catch {
+                lastError = error
+                guard attempt < 2, isRetryableOrderMutationError(error) else { throw error }
+
+                let baseDelay = 250_000_000 * UInt64(1 << attempt)
+                let jitter = UInt64(Int.random(in: 0...250) * 1_000_000)
+                try await Task.sleep(nanoseconds: baseDelay + jitter)
+            }
+        }
+
+        throw lastError ?? NetworkError.serverError("Order upload failed")
+    }
+
+    private func isRetryableOrderMutationError(_ error: Error) -> Bool {
+        let message = error.localizedDescription.uppercased()
+        if message.contains("PGRST002") || message.contains("PGRST003") {
+            return true
+        }
+        if message.contains("55P03") || message.contains("ORDER_BUSY") || message.contains("ORDER_ITEM_BUSY") {
+            return true
+        }
+        if message.contains("DEADLOCK DETECTED") || message.contains("COULD NOT SERIALIZE") {
+            return true
+        }
+        if message.contains("HTTP 502") || message.contains("HTTP 503") || message.contains("HTTP 504") {
+            return true
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .networkConnectionLost, .cannotConnectToHost, .notConnectedToInternet:
+                return true
+            default:
+                return false
+            }
+        }
+        return false
     }
 
     func fetchServiceRequests() async throws -> [[String: Any]] {
@@ -281,7 +294,8 @@ extension NetworkManager {
             URLQueryItem(name: "select", value: "*"),
             URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
             URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
-            URLQueryItem(name: "is_active", value: "eq.1")
+            URLQueryItem(name: "is_active", value: "eq.1"),
+            URLQueryItem(name: "is_deleted", value: "eq.false")
         ])
 
         guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
@@ -292,6 +306,7 @@ extension NetworkManager {
             var mapped = dict
             mapped["tableNumber"] = dict["table_number"]
             mapped["sessionToken"] = dict["session_token"]
+            mapped["tableId"] = dict["table_id"]
             return mapped
         }
     }
@@ -328,18 +343,45 @@ extension NetworkManager {
 
     /// Soft-deletes an order on Supabase by marking is_deleted = true and status = "cancelled".
     /// Physical DELETE is avoided to preserve audit trail and allow rollback.
-    func deleteOrderOnServer(id: UUID) async throws -> Bool {
+    func deleteOrderOnServer(id: UUID, expectedRowVersion: Int) async throws -> Bool {
+        let orderId = id.uuidString.lowercased()
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
+        let scope = [
+            URLQueryItem(name: "id", value: "eq.\(orderId)"),
+            URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+            URLQueryItem(name: "branch_id", value: "eq.\(branchId)")
+        ]
+        if expectedRowVersion < 1 {
+            // A never-acknowledged create may still have committed remotely.
+            // Only discard the local tombstone if the server confirms no row.
+            let data = try await sendSupabaseRequest(
+                method: "GET", endpoint: "orders",
+                queryItems: scope + [URLQueryItem(name: "select", value: "id")]
+            )
+            guard let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                throw NetworkError.invalidResponse
+            }
+            if rows.isEmpty { return true }
+            throw NetworkError.conflict("Order \(orderId) exists remotely without a known local version")
+        }
         let payload: [String: Any] = [
             "is_deleted": true,
             "status": "cancelled",
             "updated_at": NetworkManager.iso8601.string(from: Date())
         ]
-        _ = try await sendSupabaseRequest(
+        let data = try await sendSupabaseRequest(
             method: "PATCH",
             endpoint: "orders",
-            queryItems: [URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())")],
+            queryItems: scope + [URLQueryItem(name: "row_version", value: "eq.\(expectedRowVersion)")],
             payload: payload
         )
+        guard let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw NetworkError.invalidResponse
+        }
+        guard !rows.isEmpty else {
+            throw NetworkError.conflict("Order \(orderId) changed before cancellation")
+        }
         return true
     }
 
@@ -388,6 +430,15 @@ extension NetworkManager {
             }
             return value
         }
+        // Prefer the status captured on the table at payment time. Falling back
+        // to the setting keeps direct/legacy checkout callers compatible.
+        let capturedTableStatus = order.tableSession?.table?.status.lowercased()
+        let configuredTableStatus = UserDefaults.standard.object(forKey: "enable_table_cleaning_after_checkout") as? Bool ?? true
+            ? "cleaning"
+            : "vacant"
+        let postCheckoutTableStatus = capturedTableStatus.flatMap {
+            ["cleaning", "vacant"].contains($0) ? $0 : nil
+        } ?? configuredTableStatus
         let payload: [String: Any] = [
             "p_order_id": order.id.uuidString.lowercased(),
             "p_idempotency_key": "checkout:\(order.id.uuidString.lowercased())",
@@ -398,7 +449,8 @@ extension NetworkManager {
                 "tax": order.tax,
                 "service_charge": order.serviceCharge,
                 "discount": order.discount,
-                "grand_total": payments.reduce(0.0) { $0 + $1.amount }
+                "grand_total": payments.reduce(0.0) { $0 + $1.amount },
+                "table_status_after_checkout": postCheckoutTableStatus
             ]
         ]
         _ = try await sendSupabaseRequest(method: "POST", endpoint: "rpc/complete_checkout_atomic", payload: payload)
@@ -663,6 +715,8 @@ extension NetworkManager {
         )
     }
 
+    /// Fetch table rows for reconciliation. Display callers should use
+    /// fetchActiveRestaurantTables() so tombstones never enter the UI query.
     func fetchRestaurantTables() async throws -> [[String: Any]] {
         let storedMerchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
         let merchantId = storedMerchantId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -678,6 +732,27 @@ extension NetworkManager {
             method: "GET", endpoint: "restaurant_tables", queryItems: queryItems
         )
         return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+    }
+
+    func fetchActiveRestaurantTables() async throws -> [[String: Any]] {
+        let rows = try await fetchRestaurantTables()
+        return rows.filter { !($0["is_deleted"] as? Bool ?? false) }
+    }
+
+    func fetchRestaurantTable(id: UUID) async throws -> [String: Any]? {
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        let branchId = try activeOperationalBranchId()
+        let data = try await sendSupabaseRequest(
+            method: "GET", endpoint: "restaurant_tables",
+            queryItems: [
+                URLQueryItem(name: "select", value: "id,is_deleted,merchant_id,branch_id,table_number,dining_area_id"),
+                URLQueryItem(name: "id", value: "eq.\(id.uuidString.lowercased())"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "branch_id", value: "eq.\(branchId)"),
+                URLQueryItem(name: "limit", value: "1")
+            ]
+        )
+        return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]])?.first
     }
 
     func uploadRestaurantTable(table: RestaurantTable) async throws -> Bool {
@@ -726,12 +801,39 @@ extension NetworkManager {
             endpoint: "restaurant_tables",
             queryItems: [
                 URLQueryItem(name: "id", value: "eq.\(table.id.uuidString.lowercased())"),
-                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)")
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                // A stale device must never revive a server tombstone. Reusing
+                // a deleted table number is handled below only for a genuinely
+                // new local UUID created by Add Table.
+                URLQueryItem(name: "is_deleted", value: "eq.false")
             ],
             payload: patchPayload
         )
         let patchedCount = (try? JSONSerialization.jsonObject(with: patchData) as? [[String: Any]])?.count ?? 0
         if patchedCount > 0 { return true }
+
+        // PATCH returns no row both when an ID is unknown and when it is a
+        // tombstone. Distinguish them before the logical-key reuse fallback:
+        // the latter is a deletion observed from another device and must stay
+        // deleted, while the former may be an intentional re-creation.
+        let exactRowData = try await sendSupabaseRequest(
+            method: "GET",
+            endpoint: "restaurant_tables",
+            queryItems: [
+                URLQueryItem(name: "select", value: "id,is_deleted"),
+                URLQueryItem(name: "id", value: "eq.\(table.id.uuidString.lowercased())"),
+                URLQueryItem(name: "merchant_id", value: "eq.\(merchantId)"),
+                URLQueryItem(name: "limit", value: "1")
+            ]
+        )
+        if let exactRows = try? JSONSerialization.jsonObject(with: exactRowData) as? [[String: Any]],
+           let exactRow = exactRows.first,
+           exactRow["is_deleted"] as? Bool == true {
+            // pullRestaurantTables will apply the tombstone to the local model
+            // in this same sync cycle. Returning success prevents retries from
+            // reaching the resurrection/upsert path in the meantime.
+            return true
+        }
 
         // New local UUID with a reused table number: preserve the historical
         // server UUID so existing order/session foreign keys remain valid.
@@ -778,12 +880,19 @@ extension NetworkManager {
 
     func deleteRestaurantTablesOnServer(ids: [UUID]) async throws -> Int {
         guard !ids.isEmpty else { return 0 }
+        #if DEBUG
+        print("[TableDelete][Network] POST RPC bulk_soft_delete ids=\(ids.map(\.uuidString))")
+        #endif
         let data = try await sendSupabaseRequest(
             method: "POST",
             endpoint: "rpc/bulk_soft_delete_restaurant_tables",
             payload: ["p_table_ids": ids.map { $0.uuidString.lowercased() }]
         )
-        return try JSONDecoder().decode(Int.self, from: data)
+        let count = try JSONDecoder().decode(Int.self, from: data)
+        #if DEBUG
+        print("[TableDelete][Network] RPC decoded count=\(count)")
+        #endif
+        return count
     }
 
     func fetchRestaurantWalls() async throws -> [[String: Any]] {

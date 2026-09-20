@@ -813,19 +813,35 @@ extension SyncEngine {
 
         guard let tables = try? modelContext.fetch(descriptor), !tables.isEmpty else { return }
 
-        // A stale duplicate must never revive a tombstone with the same table
-        // number. Quarantine it into the same delete operation before upload.
-        let deletedNumbers = Set(tables.filter(\.isDeleted).map {
-            "\($0.branchId)|\($0.floorId?.uuidString ?? "")|\(canonicalTableNumber($0.tableNumber))"
-        })
-        for table in tables where !table.isDeleted
-            && deletedNumbers.contains("\(table.branchId)|\(table.floorId?.uuidString ?? "")|\(canonicalTableNumber(table.tableNumber))") {
-            table.isDeleted = true
-            table.updatedAt = Date()
+        // Resolve a local create-vs-tombstone collision with last-write-wins.
+        // Recreating a table number after deletion must resurrect that logical
+        // table; an old tombstone must never silently delete the newer row.
+        let tablesByLogicalKey = Dictionary(grouping: tables) {
+            "\($0.branchId.lowercased())|\($0.floorId?.uuidString.lowercased() ?? "")|\(canonicalTableNumber($0.tableNumber))"
+        }
+        var supersededTombstoneIds = Set<UUID>()
+        for candidates in tablesByLogicalKey.values {
+            guard let newestLive = candidates.filter({ !$0.isDeleted }).max(by: { $0.updatedAt < $1.updatedAt }),
+                  let newestTombstone = candidates.filter(\.isDeleted).max(by: { $0.updatedAt < $1.updatedAt }) else {
+                continue
+            }
+
+            if newestLive.updatedAt >= newestTombstone.updatedAt {
+                for tombstone in candidates where tombstone.isDeleted {
+                    supersededTombstoneIds.insert(tombstone.id)
+                    modelContext.delete(tombstone)
+                }
+            } else {
+                // A later explicit deletion still wins over an older pending create.
+                for live in candidates where !live.isDeleted {
+                    live.isDeleted = true
+                    live.updatedAt = newestTombstone.updatedAt
+                }
+            }
         }
 
         // Upload leaders / unjoined tables first so joined_parent_table_id FKs resolve.
-        let orderedTables = tables.sorted { a, b in
+        let orderedTables = tables.filter { !supersededTombstoneIds.contains($0.id) }.sorted { a, b in
             if a.isDeleted != b.isDeleted { return a.isDeleted && !b.isDeleted }
             let aIsChild = a.joinedParent != nil
             let bIsChild = b.joinedParent != nil
@@ -838,7 +854,13 @@ extension SyncEngine {
                 let success = try await NetworkManager.shared.uploadRestaurantTable(table: table)
                 if success {
                     if table.isDeleted {
-                        modelContext.delete(table)
+                        // Keep the local tombstone. Deleting the object here
+                        // allows a lagging replica/pull to recreate the table
+                        // immediately after a successful delete. The tombstone
+                        // is cheap and is the evidence needed to reject that
+                        // stale remote snapshot.
+                        table.isSynced = true
+                        table.updatedAt = Date()
                     } else {
                         // Keep clear/vacant dirty until inactive session uploads
                         // finish — otherwise pull resurrects remote occupied.

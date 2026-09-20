@@ -429,6 +429,12 @@ extension SyncEngine {
                         table.isSynced = true
                         table.updatedAt = Date()
                     } else {
+                        // A just-deleted local tombstone wins over a stale
+                        // remote row (eventual-consistency window). Only a
+                        // genuinely newer remote edit may resurrect it.
+                        if table.isDeleted && table.updatedAt >= updatedAt {
+                            continue
+                        }
                         // Only overwrite table properties from the server if local changes are already synced
                         if table.isSynced {
                             if table.tableNumber != tableNumber { table.tableNumber = tableNumber }
@@ -503,7 +509,8 @@ extension SyncEngine {
                 let localTablesDescriptor = FetchDescriptor<RestaurantTable>()
                 if let localTables = try? modelContext.fetch(localTablesDescriptor) {
                     for table in localTables {
-                        let isInPulledBranch = table.branchId == activeBranchId || (table.branchId.isEmpty && table.floorId != nil)
+                        let isInPulledBranch = table.branchId.caseInsensitiveCompare(activeBranchId) == .orderedSame
+                            || (table.branchId.isEmpty && table.floorId != nil)
                         if isInPulledBranch && table.isSynced && !remoteIds.contains(table.id) {
                             // Tombstone instead of hard-delete (keeps open sheets valid).
                             table.isDeleted = true
@@ -678,6 +685,14 @@ extension SyncEngine {
                 let effectiveDiscount = remoteDiscount
                 let remoteStatus = remoteOrder["status"] as? String ?? "preparing"
                 let createdAtStr = remoteOrder["createdAt"] as? String ?? ""
+                let remoteUpdatedAt = remoteDate(
+                    remoteOrder["updated_at"] ?? remoteOrder["updatedAt"],
+                    fallback: parseISO8601Date(createdAtStr)
+                )
+                let remoteRowVersion = remoteInt(
+                    remoteOrder["rowVersion"] ?? remoteOrder["row_version"],
+                    fallback: 0
+                )
                 let readyAt = parseISO8601DateOptional(remoteOrder["readyAt"])
                 let tableNumber = remoteOrder["tableNumber"] as? String ?? ""
                 let businessDateKey = remoteOrder["business_date"] as? String ?? remoteOrder["businessDate"] as? String ?? ""
@@ -702,16 +717,37 @@ extension SyncEngine {
                     : remoteStatus
 
                 let createdAt = parseISO8601Date(createdAtStr)
+                let orderType = (remoteOrder["order_type"] as? String) ?? (remoteOrder["orderType"] as? String) ?? "dine_in"
+                let queueNumber: String? = {
+                    if let s = remoteOrder["queue_number"] as? String, !s.isEmpty { return s }
+                    if let s = remoteOrder["queueNumber"] as? String, !s.isEmpty { return s }
+                    if let i = remoteOrder["queue_number"] as? Int { return NetworkManager.formatQueueNumber(i) }
+                    if let i = remoteOrder["queueNumber"] as? Int { return NetworkManager.formatQueueNumber(i) }
+                    return nil
+                }()
+                let receiptNumber = (remoteOrder["receipt_number"] as? String) ?? (remoteOrder["receiptNumber"] as? String)
+                let deliveryBrand = (remoteOrder["delivery_brand"] as? String) ?? (remoteOrder["deliveryBrand"] as? String)
+                let platformOrderNumber = (remoteOrder["platform_order_number"] as? String) ?? (remoteOrder["platformOrderNumber"] as? String)
+                let cashierName = (remoteOrder["cashier_name"] as? String) ?? (remoteOrder["cashierName"] as? String)
 
-                // Find or create Table Session for this tableNumber
-                let tableDescriptor = FetchDescriptor<RestaurantTable>(
-                    predicate: #Predicate<RestaurantTable> { $0.tableNumber == tableNumber }
-                )
-
+                // Find or match Table Session for this order
                 let sessionToken = remoteOrder["sessionToken"] as? String ?? remoteOrder["session_token"] as? String
+                let rawTableSessionId = (remoteOrder["table_session_id"] as? String)
+                    ?? (remoteOrder["tableSessionId"] as? String)
                 var targetTableSession: TableSession? = nil
 
-                if let token = sessionToken {
+                // 1. Direct match by table_session_id UUID (primary canonical contract)
+                if let rawTableSessionId, let sessionUUID = UUID(uuidString: rawTableSessionId) {
+                    let sessionDesc = FetchDescriptor<TableSession>(
+                        predicate: #Predicate<TableSession> { $0.id == sessionUUID }
+                    )
+                    if let sessions = try? modelContext.fetch(sessionDesc), let matchedSession = sessions.first {
+                        targetTableSession = matchedSession
+                    }
+                }
+
+                // 2. Match by session_token
+                if targetTableSession == nil, let token = sessionToken, !token.isEmpty {
                     let sessionDesc = FetchDescriptor<TableSession>(
                         predicate: #Predicate<TableSession> { $0.sessionToken == token }
                     )
@@ -720,18 +756,49 @@ extension SyncEngine {
                     }
                 }
 
-                if targetTableSession == nil,
-                   let tables = try? modelContext.fetch(tableDescriptor),
-                   let table = tables.first,
-                   let activeSession = table.sessions.first(where: {
-                       $0.isActive
-                           && Calendar.current.isDateInToday($0.startedAt)
-                           && createdAt >= $0.startedAt
-                   }) {
-                    targetTableSession = activeSession
+                // 3. Match by table number (canonical match, e.g. T02 == 02 == 2)
+                if targetTableSession == nil, !tableNumber.isEmpty, tableNumber != "QUICK" {
+                    let targetCanonical = canonicalTableNumber(tableNumber)
+                    let allTablesDesc = FetchDescriptor<RestaurantTable>(
+                        predicate: #Predicate<RestaurantTable> { !$0.isDeleted }
+                    )
+                    if let allTables = try? modelContext.fetch(allTablesDesc),
+                       let table = allTables.first(where: { canonicalTableNumber($0.tableNumber) == targetCanonical }),
+                       let activeSession = table.sessions
+                        .filter({ session in
+                            session.isOperationallyActive(for: table)
+                                // Never migrate a historical order into a newly
+                                // opened table session just because the table
+                                // number happens to match. Allow a small clock
+                                // tolerance for independently timestamped clients.
+                                && session.acceptsOrder(createdAt: createdAt)
+                        })
+                        .max(by: { $0.startedAt < $1.startedAt }) {
+                        targetTableSession = activeSession
+                    }
                 }
 
                 if let existingOrders = try? modelContext.fetch(descriptor), let existingOrder = existingOrders.first {
+                    // Reconcile before touching any fields. Pulls can arrive
+                    // after an offline edit; applying the remote snapshot
+                    // unconditionally would silently erase the local change.
+                    // A tombstone is also authoritative locally until its
+                    // delete operation is accepted by the server.
+                    if existingOrder.isDeleted { continue }
+                    let decision = shouldApplyRemoteOrderUpdate(
+                        localIsSynced: existingOrder.isSynced,
+                        localUpdatedAt: existingOrder.updatedAt,
+                        localRowVersion: existingOrder.rowVersion,
+                        remoteUpdatedAt: remoteUpdatedAt,
+                        remoteRowVersion: remoteRowVersion,
+                        source: "SyncEngine.pullCustomerOrders.order"
+                    )
+                    guard decision == .applyRemote else {
+                        // Keep local unsynced/newer data intact. The conflict
+                        // journal records the decision for later review.
+                        continue
+                    }
+
                     // Order already exists. Update its status, total, and ensure it links to the active session.
                     existingOrder.status = status
                     existingOrder.readyAt = status == OrderStatus.ready ? readyAt : nil
@@ -752,10 +819,26 @@ extension SyncEngine {
                     existingOrder.discount = effectiveDiscount
                     existingOrder.businessDateKey = businessDateKey
                     existingOrder.registerSessionId = registerSessionId
-                    existingOrder.rowVersion = remoteInt(remoteOrder["rowVersion"] ?? remoteOrder["row_version"], fallback: existingOrder.rowVersion)
+                    existingOrder.orderType = orderType
+                    if let queueNumber { existingOrder.queueNumber = queueNumber }
+                    if let receiptNumber, !receiptNumber.isEmpty { existingOrder.receiptNumber = receiptNumber }
+                    if let deliveryBrand, !deliveryBrand.isEmpty { existingOrder.deliveryBrand = deliveryBrand }
+                    if let platformOrderNumber, !platformOrderNumber.isEmpty { existingOrder.platformOrderNumber = platformOrderNumber }
+                    if let cashierName, !cashierName.isEmpty { existingOrder.cashierName = cashierName }
+                    existingOrder.rowVersion = remoteRowVersion > 0 ? remoteRowVersion : existingOrder.rowVersion
+                    existingOrder.updatedAt = remoteUpdatedAt
                     if let targetTableSession,
                        existingOrder.tableSession?.id != targetTableSession.id {
-                        existingOrder.tableSession = targetTableSession
+                        // Preserve historical ownership instead of contaminating
+                        // a live cart with an order outside this session window.
+                        if targetTableSession.acceptsOrder(createdAt: existingOrder.createdAt) {
+                            existingOrder.tableSession = targetTableSession
+                        } else {
+                            reportSyncFailure(
+                                "Rejected stale order/session relationship: \(existingOrder.orderNumber)",
+                                soft: true
+                            )
+                        }
                     }
                     if !tableNumber.isEmpty && tableNumber != "QUICK" {
                         existingOrder.floorTableNumber = tableNumber
@@ -769,8 +852,22 @@ extension SyncEngine {
                     // authoritative for an existing order with local items: Supabase
                     // realtime can deliver the orders event before the order_items batch
                     // is visible, and deleting here makes the iPad appear to lose the order.
-                    if let remoteItems = remoteOrder["items"] as? [[String: Any]],
-                       !(remoteItems.isEmpty && !existingOrder.items.isEmpty && total > 0) {
+                    // An order event can arrive before its order_items event.
+                    // If this order was already created locally with no items,
+                    // re-fetch the joined order before deciding that the cart
+                    // is genuinely empty. Without this recovery path, the
+                    // initial empty snapshot was retained forever and Quick
+                    // Order showed a zero balance until the app restarted.
+                    var remoteItems = remoteOrder["items"] as? [[String: Any]] ?? []
+                    if remoteItems.isEmpty && existingOrder.items.isEmpty && total > 0 {
+                        if let freshOrders = try? await NetworkManager.shared.fetchCustomerOrders(),
+                           let freshOrder = freshOrders.first(where: { ($0["id"] as? String) == idString }),
+                           let freshItems = freshOrder["items"] as? [[String: Any]],
+                           !freshItems.isEmpty {
+                            remoteItems = freshItems
+                        }
+                    }
+                    if !remoteItems.isEmpty || !(remoteItems.isEmpty && !existingOrder.items.isEmpty && total > 0) {
                         let remoteItemIds = Set(remoteItems.compactMap { remoteItem -> UUID? in
                             if let idStr = remoteItem["id"] as? String {
                                 return UUID(uuidString: idStr)
@@ -780,7 +877,10 @@ extension SyncEngine {
 
                         // 1. Delete local items that are no longer present on the server
                         for localItem in existingOrder.items {
-                            if !remoteItemIds.contains(localItem.id) {
+                            // A locally edited item may be temporarily absent
+                            // from a partial/realtime payload. Never delete an
+                            // unsynced local item from that incomplete snapshot.
+                            if localItem.isSynced && !remoteItemIds.contains(localItem.id) {
                                 modelContext.delete(localItem)
                             }
                         }
@@ -800,6 +900,23 @@ extension SyncEngine {
                                 let itemStatus = remoteItem["status"] as? String ?? "cooking"
 
                                 if let localItem = existingOrder.items.first(where: { $0.id == itemId }) {
+                                    let itemUpdatedAt = remoteDate(
+                                        remoteItem["updated_at"] ?? remoteItem["updatedAt"],
+                                        fallback: existingOrder.updatedAt
+                                    )
+                                    let itemRowVersion = remoteInt(
+                                        remoteItem["rowVersion"] ?? remoteItem["row_version"],
+                                        fallback: 0
+                                    )
+                                    let itemDecision = shouldApplyRemoteOrderUpdate(
+                                        localIsSynced: localItem.isSynced,
+                                        localUpdatedAt: localItem.updatedAt,
+                                        localRowVersion: localItem.rowVersion,
+                                        remoteUpdatedAt: itemUpdatedAt,
+                                        remoteRowVersion: itemRowVersion,
+                                        source: "SyncEngine.pullCustomerOrders.item"
+                                    )
+                                    guard itemDecision == .applyRemote else { continue }
                                     localItem.quantity = qty
                                     localItem.unitPrice = price
                                     localItem.subtotal = Double(qty) * price
@@ -810,6 +927,7 @@ extension SyncEngine {
                                     let servedBy = remoteItem["served_by"] as? String
                                     localItem.servedBy = servedBy
                                     localItem.rowVersion = remoteInt(remoteItem["rowVersion"] ?? remoteItem["row_version"], fallback: localItem.rowVersion)
+                                    localItem.updatedAt = itemUpdatedAt
                                     // Always update itemName from remote data
                                     if !name.isEmpty && name != "Unknown Item" {
                                         localItem.itemName = name
@@ -969,7 +1087,7 @@ extension SyncEngine {
                     id: orderId,
                     orderNumber: orderNumber,
                     tableSession: targetTableSession,
-                    orderType: "dine_in",
+                    orderType: orderType,
                     status: status,
                     subtotal: effectiveSubtotal,
                     tax: effectiveTax,
@@ -983,10 +1101,17 @@ extension SyncEngine {
                     registerSessionId: registerSessionId,
                     readyAt: readyAt,
                     branch: operationalBranch,
+                    receiptNumber: receiptNumber,
+                    cashierName: cashierName ?? "Staff",
+                    queueNumber: queueNumber,
+                    deliveryBrand: deliveryBrand,
                     floorTableNumber: resolvedFloorTable,
                     isSynced: true, // Already synced on server
                     rowVersion: remoteInt(remoteOrder["rowVersion"] ?? remoteOrder["row_version"])
                 )
+                if let platformOrderNumber, !platformOrderNumber.isEmpty {
+                    newOrder.platformOrderNumber = platformOrderNumber
+                }
 
                 modelContext.insert(newOrder)
 
@@ -1084,15 +1209,18 @@ extension SyncEngine {
                     createdAt: createdAt
                 ) {
                     // 1. In-app banner (foreground) — ทุก order รวม Quick
-                    self.triggerLocalNotification(orderNumber: orderNumber, tableNumber: tableNumber)
+                    self.triggerLocalNotification(
+                        orderNumber: orderNumber,
+                        tableNumber: tableNumber,
+                        queueNumber: queueNumber,
+                        orderType: orderType
+                    )
                     // 2. NotificationStore (Notification Center iPad) — ทุก order รวม Quick
-                    //    alertNewCustomerOrder ไม่เคยถูกเรียกที่นี่มาก่อน ทำให้
-                    //    iPad Notification Center แสดง "No alerts" สำหรับ Quick orders
-                    //    และออเดอร์จาก Staff iPhone ทั้งหมด
                     self.alertNewCustomerOrder(
                         orderNumber: orderNumber,
                         tableNumber: tableNumber,
-                        itemCount: (remoteOrder["items"] as? [[String: Any]])?.count ?? 0
+                        itemCount: (remoteOrder["items"] as? [[String: Any]])?.count ?? 0,
+                        queueNumber: queueNumber
                     )
                 }
 
@@ -1140,6 +1268,7 @@ extension SyncEngine {
         guard await NetworkManager.shared.isConnected() else { return }
         do {
             let remoteSessions = try await NetworkManager.shared.fetchActiveSessions()
+            let activeBranchId = BranchContext.shared.activeBranchIDString
 
             // ─────────────────────────────────────────────────────────────────
             // FIX: Merge deactivate + activate into a single pass per table.
@@ -1162,23 +1291,43 @@ extension SyncEngine {
                     return firstCreatedAt >= secondCreatedAt ? first : second
                 }
             )
+            let remoteSessionByTableID: [UUID: [String: Any]] = Dictionary(
+                remoteSessions.compactMap { session -> (UUID, [String: Any])? in
+                    guard let rawID = session["tableId"] as? String,
+                          let tableID = UUID(uuidString: rawID) else { return nil }
+                    return (tableID, session)
+                },
+                uniquingKeysWith: { first, second in
+                    let firstCreatedAt = first["created_at"] as? String ?? ""
+                    let secondCreatedAt = second["created_at"] as? String ?? ""
+                    return firstCreatedAt >= secondCreatedAt ? first : second
+                }
+            )
 
             // Single pass over all local tables
             let allTablesDescriptor = FetchDescriptor<RestaurantTable>()
             if let allTables = try? modelContext.fetch(allTablesDescriptor) {
                 for table in allTables {
+                    // A server tombstone is authoritative. Never let an old
+                    // local session turn a deleted table back to occupied.
+                    if table.isDeleted || (!table.branchId.isEmpty && table.branchId.caseInsensitiveCompare(activeBranchId) != .orderedSame) {
+                        for activeSession in table.sessions where activeSession.isActive {
+                            activeSession.isActive = false
+                            activeSession.endedAt = Date()
+                            activeSession.isSynced = true
+                        }
+                        continue
+                    }
                     let localTableNumber = table.tableNumber
                     let tableKey = canonicalTableNumber(localTableNumber)
-                    let remoteSession = remoteSessionByTable[tableKey]
+                    let remoteSession = remoteSessionByTableID[table.id] ?? remoteSessionByTable[tableKey]
                     let hasRemoteSession = remoteSession != nil
 
                     // --- Fetch local active sessions for this table ---
-                    let sessionDesc = FetchDescriptor<TableSession>(
-                        predicate: #Predicate<TableSession> {
-                            $0.table?.tableNumber == localTableNumber && $0.isActive
-                        }
-                    )
-                    let localActiveSessions = (try? modelContext.fetch(sessionDesc)) ?? []
+                    // Scope by relationship/UUID, not table number. Number-only
+                    // matching can attach a session to a duplicate table from
+                    // another area and produce a ghost occupied table.
+                    let localActiveSessions = table.sessions.filter { $0.isActive }
                     // A just-opened local session is authoritative while its
                     // insert propagates through PostgREST/realtime. Without a
                     // short grace window, an immediately-following pull can
@@ -1209,6 +1358,81 @@ extension SyncEngine {
                         let idStr           = rs["id"] as? String ?? ""
                         let sessionId       = UUID(uuidString: idStr) ?? UUID()
 
+                        // Reject orphaned active rows before they can repaint a
+                        // vacant table or reattach old orders. A valid session
+                        // needs a real timestamp, must be within the bounded
+                        // service window, and cannot predate a later clear.
+                        let sessionAge = Date().timeIntervalSince(startedAt)
+                        let timestampMissing = startedAtStr.isEmpty
+                        let invalidAge = sessionAge < -(5 * 60)
+                            || sessionAge > TableSession.maximumOperationalAge
+                        let tableWasClearedLater = table.status.lowercased() != "occupied"
+                            && table.updatedAt > startedAt
+                        let expiredVacantMismatch = table.status.lowercased() == "vacant"
+                            && sessionAge > (5 * 60)
+                        if timestampMissing || invalidAge || tableWasClearedLater || expiredVacantMismatch {
+                            for activeSession in localActiveSessions where activeSession.isActive {
+                                activeSession.isActive = false
+                                activeSession.endedAt = Date()
+                                activeSession.isSynced = false
+                                activeSession.updatedAt = Date()
+                            }
+                            table.status = table.status.lowercased() == "occupied" ? "vacant" : table.status
+                            table.isSynced = false
+                            table.updatedAt = Date()
+                            modelContext.saveWithLogging(label: "SyncEngine.rejectStaleTableSession")
+                            Task {
+                                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: localTableNumber)
+                            }
+                            #if DEBUG
+                            print("SyncEngine [Session Pull]: Rejected stale/inconsistent session for Table \(localTableNumber)")
+                            #endif
+                            continue
+                        }
+
+                        // A payment can commit locally/atomically while a
+                        // realtime snapshot still reports the previous active
+                        // table session. If every local order for this table is
+                        // already settled and the remote session predates the
+                        // latest settlement, this is an orphan session—not a
+                        // new guest. Recreating it makes the table appear
+                        // occupied with a badge while POS correctly shows no
+                        // products. Keep the local post-checkout state and ask
+                        // the server to close the stale row asynchronously.
+                        let latestSettledPaymentAt = table.sessions
+                            .flatMap(\.orders)
+                            .filter { !$0.isDeleted && $0.isSettled }
+                            .flatMap { $0.payments }
+                            .filter { !$0.isDeleted && $0.isCaptured }
+                            .map(\.paidAt)
+                            .max()
+                        let hasLocalUnpaidOrder = table.sessions
+                            .flatMap(\.orders)
+                            .contains { !$0.isDeleted && !$0.isSettled && $0.status != "cancelled" }
+                        if !hasLocalUnpaidOrder,
+                           let latestSettledPaymentAt,
+                           startedAt <= latestSettledPaymentAt {
+                            for activeSession in localActiveSessions where activeSession.isActive {
+                                activeSession.isActive = false
+                                activeSession.endedAt = Date()
+                                activeSession.isSynced = false
+                                activeSession.updatedAt = Date()
+                            }
+                            let postCheckoutStatus = UserDefaults.standard.object(forKey: "enable_table_cleaning_after_checkout") as? Bool ?? true
+                                ? "cleaning" : "vacant"
+                            table.status = postCheckoutStatus
+                            table.isSynced = false
+                            table.updatedAt = Date()
+                            modelContext.saveWithLogging(label: "SyncEngine.staleTableSessionReconcile")
+                            Task {
+                                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: localTableNumber)
+                            }
+                            #if DEBUG
+                            print("SyncEngine [Session Pull]: Ignored orphan remote session for Table \(localTableNumber); latest payment=\(latestSettledPaymentAt)")
+                            #endif
+                            continue
+                        }
+
                         // Realtime can briefly return the prior session for the
                         // same table after a new local open. Prefer the newer
                         // local token during the propagation grace period.
@@ -1226,30 +1450,12 @@ extension SyncEngine {
                             continue
                         }
 
-                        // Multi-day remote ghosts: close them instead of
-                        // resurrectsing huge elapsed timers on the floor plan.
-                        if !Calendar.current.isDateInToday(startedAt) {
-                            for activeSession in localActiveSessions where activeSession.isActive {
-                                activeSession.isActive = false
-                                activeSession.endedAt = Date()
-                                activeSession.isSynced = false
-                                activeSession.updatedAt = Date()
-                            }
-                            if table.status == "occupied" && table.isSynced {
-                                table.status = "vacant"
-                                table.isSynced = false
-                                table.updatedAt = Date()
-                            }
-                            #if DEBUG
-                            print("SyncEngine [Session Pull]: Ignored stale remote session for Table \(localTableNumber) (started \(startedAtStr))")
-                            #endif
-                            // Best-effort remote close so the next pull stays clean.
-                            let staleTableNumber = localTableNumber
-                            Task {
-                                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: staleTableNumber)
-                            }
-                            continue
-                        }
+                        // An active Cloud session is authoritative even when it
+                        // crosses midnight. Restaurants commonly operate past
+                        // midnight, so calendar-day age must never auto-close a
+                        // table or mutate the server from a read/reconcile pass.
+                        // Stale sessions are surfaced by operational checks and
+                        // require an explicit close/clear action.
 
                         var foundMatch = false
                         for activeSession in localActiveSessions {

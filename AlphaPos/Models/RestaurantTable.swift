@@ -94,16 +94,16 @@ final class RestaurantTable {
     
     // MARK: - Computed Properties
     
-    /// Get elapsed minutes since table was occupied (today's active session only).
+    /// Get elapsed minutes since table was occupied.
     var elapsedMinutes: Int {
         guard status.lowercased() == "occupied",
               let activeSession = sessions.last(where: {
-                  $0.isActive && Calendar.current.isDateInToday($0.startedAt)
+                  $0.isActive && !$0.isDeleted
               }) else {
             return 0
         }
         let elapsed = Date().timeIntervalSince(activeSession.startedAt)
-        return Int(elapsed / 60)
+        return max(0, Int(elapsed / 60))
     }
     
 }

@@ -19,8 +19,10 @@ enum TableShapeOption: String, CaseIterable, Identifiable {
 struct AddTableSheet: View {
     @Binding var isPresented: Bool
     @EnvironmentObject private var lm: LocalizationManager
+    @ObservedObject private var syncEngine = SyncEngine.shared
     let modelContext: ModelContext
     @Query(sort: \FloorData.sortOrder) private var allFloors: [FloorData]
+    @Query private var allTables: [RestaurantTable]
     
     @State private var tableNumber: String = ""
     @State private var createsMultipleTables = false
@@ -32,6 +34,9 @@ struct AddTableSheet: View {
     @State private var selectedShape: TableShapeOption = .rectangle
     @State private var showingError = false
     @State private var errorMessage = ""
+    @State private var isCreating = false
+    @State private var isLoadingTableContext = false
+    @State private var loadingPulse = false
     @State private var selectedFloor: Int
     @State private var selectedZone: String = "Indoor"
     let defaultFloor: Int
@@ -50,6 +55,15 @@ struct AddTableSheet: View {
             }
         var seenFloorNumbers = Set<Int>()
         return candidates.filter { seenFloorNumbers.insert($0.floorNumber).inserted }
+    }
+
+    private var isTableContextReady: Bool {
+        UUID(uuidString: BranchContext.shared.activeBranchIDString) != nil && !floors.isEmpty
+    }
+
+    private var isContextSyncRunning: Bool {
+        if case .syncing = syncEngine.syncStatus { return true }
+        return false
     }
     
     init(isPresented: Binding<Bool>, modelContext: ModelContext, defaultFloor: Int = 1) {
@@ -87,11 +101,17 @@ struct AddTableSheet: View {
                     // Form Content
                     ScrollView {
                         VStack(alignment: .leading, spacing: 24) {
+                            if !isTableContextReady {
+                                tableContextLoadingCard
+                                    .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
+
                             Picker("", selection: $createsMultipleTables) {
                                 Text(lm.languageCode == "th" ? "โต๊ะเดียว" : "Single table").tag(false)
                                 Text(lm.languageCode == "th" ? "หลายโต๊ะ" : "Multiple tables").tag(true)
                             }
                             .pickerStyle(.segmented)
+                            .disabled(!isTableContextReady)
 
                             // Table Number Section
                             VStack(alignment: .leading, spacing: 8) {
@@ -131,7 +151,7 @@ struct AddTableSheet: View {
                                         Stepper(
                                             (lm.languageCode == "th" ? "จำนวน \(tableCount) โต๊ะ" : "\(tableCount) tables"),
                                             value: $tableCount,
-                                            in: 2...80
+                                            in: 2...999
                                         )
                                         Stepper(
                                             (lm.languageCode == "th" ? "เริ่มที่ \(startingNumber)" : "Start at \(startingNumber)"),
@@ -360,11 +380,17 @@ struct AddTableSheet: View {
                     // Action Buttons
                     VStack(spacing: 12) {
                         Button(action: addTable) {
-                            Text(
-                                createsMultipleTables
-                                    ? (lm.languageCode == "th" ? "สร้าง \(tableCount) โต๊ะ" : "Create \(tableCount) tables")
-                                    : "table_create_btn".t
-                            )
+                            HStack(spacing: 10) {
+                                if isCreating {
+                                    ProgressView()
+                                        .tint(.white)
+                                }
+                                Text(
+                                    createsMultipleTables
+                                        ? (lm.languageCode == "th" ? "สร้าง \(tableCount) โต๊ะ" : "Create \(tableCount) tables")
+                                        : "table_create_btn".t
+                                )
+                            }
                                 .font(.headline)
                                 .foregroundColor(.white)
                                 .frame(maxWidth: .infinity)
@@ -372,6 +398,8 @@ struct AddTableSheet: View {
                                 .background(APGradient.positive)
                                 .cornerRadius(APRadius.md)
                         }
+                        .disabled(isCreating || !isTableContextReady)
+                        .opacity(isTableContextReady ? 1 : 0.55)
                         
                         Button(action: { isPresented = false }) {
                             Text("cancel".t)
@@ -399,9 +427,104 @@ struct AddTableSheet: View {
                 if !floors.contains(where: { $0.id == selectedFloor }) {
                     selectedFloor = floors.first?.id ?? defaultFloor
                 }
+                if !isTableContextReady {
+                    loadTableContext()
+                }
+            }
+            .onChange(of: floors.map(\.uuid)) { _, _ in
+                guard isTableContextReady else { return }
+                isLoadingTableContext = false
+                if !floors.contains(where: { $0.id == selectedFloor }) {
+                    selectedFloor = floors.first?.id ?? defaultFloor
+                }
             }
         }
         .apColorScheme()
+    }
+
+    private var tableContextLoadingCard: some View {
+        HStack(spacing: 16) {
+            ZStack {
+                Circle()
+                    .fill(Color.appAccent.opacity(0.14))
+                    .frame(width: 48, height: 48)
+                    .scaleEffect(loadingPulse ? 1.12 : 0.88)
+                    .opacity(loadingPulse ? 0.45 : 1)
+
+                if isLoadingTableContext || isContextSyncRunning {
+                    ProgressView()
+                        .controlSize(.regular)
+                        .tint(.appAccent)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.appAccent)
+                }
+            }
+            .animation(
+                isLoadingTableContext
+                    ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true)
+                    : .default,
+                value: loadingPulse
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(
+                    isLoadingTableContext || isContextSyncRunning
+                        ? (lm.languageCode == "th" ? "กำลังโหลดข้อมูลร้าน…" : "Loading store data…")
+                        : (lm.languageCode == "th" ? "ยังโหลดข้อมูลร้านไม่สำเร็จ" : "Store data is not ready")
+                )
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.textPrimary)
+
+                Text(
+                    lm.languageCode == "th"
+                        ? "กำลังตรวจสอบสาขาและพื้นที่จัดวางโต๊ะ เพื่อบันทึกโต๊ะไปยังตำแหน่งที่ถูกต้อง"
+                        : "Checking the branch and dining area so the table is saved in the correct location."
+                )
+                .font(.caption)
+                .foregroundColor(.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            if !isLoadingTableContext && !isContextSyncRunning {
+                Button(action: loadTableContext) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 15, weight: .bold))
+                        .padding(9)
+                        .background(Color.appAccent.opacity(0.12), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.appAccent)
+                .accessibilityLabel(lm.languageCode == "th" ? "ลองโหลดข้อมูลอีกครั้ง" : "Retry loading data")
+            }
+        }
+        .padding(16)
+        .background(Color.appSurfaceHigh)
+        .overlay(
+            RoundedRectangle(cornerRadius: APRadius.md)
+                .stroke(Color.appAccent.opacity(0.25), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: APRadius.md))
+        .onAppear {
+            loadingPulse = true
+        }
+    }
+
+    private func loadTableContext() {
+        guard !isLoadingTableContext else { return }
+        isLoadingTableContext = true
+        loadingPulse = false
+        withAnimation(.easeInOut(duration: 0.2)) {
+            loadingPulse = true
+        }
+
+        Task { @MainActor in
+            await syncEngine.syncAll(modelContext: modelContext)
+            isLoadingTableContext = false
+        }
     }
     
     @ViewBuilder
@@ -497,6 +620,7 @@ struct AddTableSheet: View {
     }
     
     private func addTable() {
+        guard !isCreating else { return }
         // Validation
         let trimmedNumber = tableNumber.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedNumber.isEmpty {
@@ -508,23 +632,38 @@ struct AddTableSheet: View {
         let existingDescriptor = FetchDescriptor<RestaurantTable>(
             predicate: #Predicate<RestaurantTable> { !$0.isDeleted }
         )
-        let existing = (try? modelContext.fetch(existingDescriptor)) ?? []
+        let allActiveTables = (try? modelContext.fetch(existingDescriptor)) ?? []
+        let activeBranchId = BranchContext.shared.activeBranchIDString
+        guard UUID(uuidString: activeBranchId) != nil else {
+            errorMessage = lm.languageCode == "th"
+                ? "ยังไม่พบสาขาที่ใช้งาน กรุณาซิงค์ข้อมูลสาขาแล้วลองอีกครั้ง"
+                : "No active branch is available. Sync branch data and try again."
+            showingError = true
+            return
+        }
+        // Resolve the selected floor before applying area-scoped uniqueness and
+        // capacity validation.
+        let floorId = floors.contains(where: { $0.id == selectedFloor })
+            ? selectedFloor
+            : (floors.first?.id ?? defaultFloor)
         let names = createsMultipleTables ? generatedTableNames : [trimmedNumber]
-        let existingNames = Set(existing.map {
+        let selectedDiningAreaId = floors.first(where: { $0.id == floorId })?.uuid
+        guard let selectedDiningAreaId else {
+            errorMessage = lm.languageCode == "th"
+                ? "ไม่พบพื้นที่รับประทานอาหารที่เลือก กรุณาซิงค์ข้อมูลแล้วลองอีกครั้ง"
+                : "The selected dining area is unavailable. Sync and try again."
+            showingError = true
+            return
+        }
+        let branchTables = allActiveTables.filter {
+            $0.branchId.caseInsensitiveCompare(activeBranchId) == .orderedSame
+        }
+        let areaTables = branchTables.filter { $0.floorId == selectedDiningAreaId }
+        let existingNames = Set(areaTables.map {
             $0.tableNumber.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         })
         if names.contains(where: { existingNames.contains($0.lowercased()) }) {
             errorMessage = "table_error_duplicate_number".t
-            showingError = true
-            return
-        }
-        
-        // Table limit check
-        if existing.count + names.count > 80 {
-            let remaining = max(0, 80 - existing.count)
-            errorMessage = lm.languageCode == "th"
-                ? "สร้างได้อีกไม่เกิน \(remaining) โต๊ะ เนื่องจากระบบจำกัดไว้ที่ 80 โต๊ะ"
-                : "Only \(remaining) more tables can be created because the limit is 80."
             showingError = true
             return
         }
@@ -535,25 +674,33 @@ struct AddTableSheet: View {
             return
         }
 
-        // Keep floor within the configured floor list
-        let floorId = floors.contains(where: { $0.id == selectedFloor })
-            ? selectedFloor
-            : (floors.first?.id ?? defaultFloor)
-        
-        for (index, name) in names.enumerated() {
-            modelContext.insert(RestaurantTable(
-                tableNumber: name,
-                capacity: capacity,
-                tableShape: selectedShape.rawValue,
-                status: selectedStatus,
-                qrCodeIdentifier: "table_\(UUID().uuidString)",
-                positionX: Double(100 + (index % 5) * 160),
-                positionY: Double(100 + (index / 5) * 160),
-                floor: floorId,
-                floorId: floors.first(where: { $0.id == floorId })?.uuid,
-                branchId: BranchContext.shared.activeBranchIDString,
-                zone: selectedZone
-            ))
+        isCreating = true
+        let diningAreaId = selectedDiningAreaId
+        let branchId = activeBranchId
+        let occupiedPositions = allTables.filter {
+            !$0.isDeleted
+                && ($0.floorId == diningAreaId || ($0.floorId == nil && ($0.floor ?? 1) == floorId))
+                && ($0.branchId.isEmpty || $0.branchId.caseInsensitiveCompare(branchId) == .orderedSame)
+        }.map { CGPoint(x: $0.positionX, y: $0.positionY) }
+        let positions = nextAvailablePositions(count: names.count, occupied: occupiedPositions)
+
+        withAnimation(.easeOut(duration: 0.2)) {
+            for (index, name) in names.enumerated() {
+                let position = positions[index]
+                modelContext.insert(RestaurantTable(
+                    tableNumber: name,
+                    capacity: capacity,
+                    tableShape: selectedShape.rawValue,
+                    status: selectedStatus,
+                    qrCodeIdentifier: "table_\(UUID().uuidString)",
+                    positionX: Double(position.x),
+                    positionY: Double(position.y),
+                    floor: floorId,
+                    floorId: diningAreaId,
+                    branchId: branchId,
+                    zone: selectedZone
+                ))
+            }
         }
         modelContext.saveWithLogging(label: #function)
         
@@ -562,6 +709,36 @@ struct AddTableSheet: View {
         }
         
         isPresented = false
+    }
+
+    /// Finds deterministic row-major slots while preserving the user's existing
+    /// layout. A newly-created table must never be hidden directly under another
+    /// table, including tables in a different zone on the same dining area.
+    private func nextAvailablePositions(count: Int, occupied: [CGPoint]) -> [CGPoint] {
+        let start = CGPoint(x: 100, y: 100)
+        let spacing: CGFloat = 160
+        let columns = 8
+        let minimumSeparation: CGFloat = 140
+        var reserved = occupied
+        var result: [CGPoint] = []
+        var slot = 0
+
+        while result.count < count {
+            let candidate = CGPoint(
+                x: start.x + CGFloat(slot % columns) * spacing,
+                y: start.y + CGFloat(slot / columns) * spacing
+            )
+            let overlaps = reserved.contains {
+                abs($0.x - candidate.x) < minimumSeparation
+                    && abs($0.y - candidate.y) < minimumSeparation
+            }
+            if !overlaps {
+                result.append(candidate)
+                reserved.append(candidate)
+            }
+            slot += 1
+        }
+        return result
     }
 }
 

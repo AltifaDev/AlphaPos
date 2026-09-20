@@ -13,7 +13,7 @@ struct DashboardIntegration: View {
     
     var body: some View {
         TabView(selection: $selectedTab) {
-            TableView(selectedTab: $selectedTab, activeSession: $activeSession, columnVisibility: $columnVisibility)
+            TableView(selectedTab: $selectedTab, activeSession: $activeSession, columnVisibility: $columnVisibility, quickOrderMode: .constant(false))
                 .tabItem {
                     Label("Tables", systemImage: "square.grid.2x2")
                 }

@@ -16,6 +16,7 @@ struct TableView: View {
     @Binding var selectedTab: MainDashboardView.DashboardTab
     @Binding var activeSession: TableSession?
     @Binding var columnVisibility: NavigationSplitViewVisibility
+    @Binding var quickOrderMode: Bool
 
     @State private var selectedTable: RestaurantTable?
     @State private var showingDetailSheet = false
@@ -61,6 +62,7 @@ struct TableView: View {
     /// concurrently while its SwiftData session is being created.
     @State private var openingTableIds: Set<UUID> = []
     @State private var tableOpenError: String?
+    @State private var isRecoveringTables = false
 
     @Query(sort: \FloorPlanImage.updatedAt) private var floorPlanImages: [FloorPlanImage]
     @Query(sort: \TableLayoutPreset.name) private var layoutPresets: [TableLayoutPreset]
@@ -131,6 +133,7 @@ struct TableView: View {
     @State private var showingDeleteTableConfirm = false
     @State private var pendingDeletionTableIds: Set<UUID> = []
     @State private var optimisticallyDeletedTableIds: Set<UUID> = []
+    @State private var isDeletingSelectedTables = false
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var cachedFloorPlanImage: UIImage? = nil
     @State private var floorPlanLoadTask: Task<Void, Never>?
@@ -147,6 +150,12 @@ struct TableView: View {
     @State private var pendingAuthAction: AuthAction? = nil
     // L-1: Waitlist
     @State private var showingWaitlist = false
+    @State private var quickPaymentSession: TableSession?
+    @State private var isProcessingQuickPayment = false
+    @State private var quickActionAlertTitle = ""
+    @State private var quickActionAlertMessage: String? = nil
+    @AppStorage("kitchen_workflow_required") private var kitchenWorkflowRequired = true
+    @AppStorage("enable_table_cleaning_after_checkout") private var enableTableCleaningAfterCheckout = true
 
     private var pendingVacantTableNumber: String {
         (pendingVacantClearTable?.joinedParent ?? pendingVacantClearTable)?.tableNumber ?? ""
@@ -157,6 +166,24 @@ struct TableView: View {
             get: { tableOpenError != nil },
             set: { if !$0 { tableOpenError = nil } }
         )
+    }
+
+    private var isQuickActionAlertPresented: Binding<Bool> {
+        Binding(
+            get: { quickActionAlertMessage != nil },
+            set: { if !$0 { quickActionAlertMessage = nil } }
+        )
+    }
+
+    /// Amount used by both the table QR shortcut and its validation. Keep the
+    /// calculation in TableView's scope so it is available before the sheet is
+    /// constructed, and fall back to the session total when outstandingAmount
+    /// has not yet been refreshed by SwiftData.
+    private func calculatePayableAmount(for session: TableSession) -> Double {
+        let unpaidTotal = session.orders
+            .filter { session.ownsCurrentOrder($0) && !$0.isDeleted && !$0.isSettled && $0.status != "cancelled" }
+            .reduce(0.0) { $0 + $1.outstandingAmount }
+        return unpaidTotal > 0.005 ? unpaidTotal : max(0, session.totalAmount)
     }
 
     private var isPresetOperationErrorPresented: Binding<Bool> {
@@ -252,7 +279,13 @@ struct TableView: View {
                     table: table,
                     selectedTab: $selectedTab,
                     posTableSession: $activeSession,
-                    allowsDeletion: isEditingLayout
+                    quickOrderMode: $quickOrderMode,
+                    allowsDeletion: isEditingLayout,
+                    onDeleted: { tableId in
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            optimisticallyDeletedTableIds.insert(tableId)
+                        }
+                    }
                 )
                     .presentationDetents([.height(500), .large])
                     .presentationDragIndicator(.visible)
@@ -270,7 +303,22 @@ struct TableView: View {
             } message: {
                 Text(tableOpenError ?? "")
             }
-            .alert("Template Error", isPresented: isPresetOperationErrorPresented) {
+            .sheet(item: $quickPaymentSession) { session in
+                QRPaymentModalView(
+                    // Use the sheet's item directly. Reading quickPaymentSession
+                    // here races SwiftUI's state update and can produce 0.00
+                    // even when the selected table has unpaid orders.
+                    totalAmount: calculatePayableAmount(for: session),
+                    onPark: {},
+                    onConfirm: { completeQuickQRPayment(session) }
+                )
+            }
+            .alert(quickActionAlertTitle, isPresented: isQuickActionAlertPresented) {
+                Button("ok_btn".t) { quickActionAlertMessage = nil }
+            } message: {
+                Text(quickActionAlertMessage ?? "")
+            }
+            .alert("ไม่สามารถลบโต๊ะ", isPresented: isPresetOperationErrorPresented) {
                 Button("ok_btn".t) { presetOperationError = nil }
             } message: {
                 Text(presetOperationError ?? "")
@@ -280,9 +328,12 @@ struct TableView: View {
             }) {
                 AddTableSheet(isPresented: $showingAddTableSheet, modelContext: modelContext, defaultFloor: selectedFloor)
             }
-            .confirmationDialog("table_delete_confirm".t, isPresented: $showingDeleteTableConfirm, titleVisibility: .visible) {
+            // Use a modal alert instead of confirmationDialog. On iPad the
+            // latter is rendered as a toolbar-anchored popover and its hit
+            // testing can be delayed/swallowed by the editable canvas gesture.
+            .alert("table_delete_confirm".t, isPresented: $showingDeleteTableConfirm) {
                 Button("table_delete_btn".t, role: .destructive) {
-                    checkManagerPermission(for: .deleteTable)
+                    confirmSelectedTableDeletion()
                 }
                 Button("cancel".t, role: .cancel) {
                     pendingDeletionTableIds.removeAll()
@@ -440,9 +491,11 @@ struct TableView: View {
                             )
                         }
                     }()
-                    // C-1 FIX: Wrap each card in .equatable() so SwiftUI skips body
-                    // evaluation when InteractiveTableCardWrapper's == returns true.
-                    // This means @Query re-renders only reach cards whose data changed.
+                    // Do not add `.equatable()` here. RestaurantTable and its
+                    // sessions are reference-backed SwiftData models; an old and
+                    // new wrapper can point at the same mutated instance, making
+                    // equality hide an active-session change and leave a card
+                    // visibly "vacant" until it is tapped.
                     ForEach(visibleFloorTables) { table in
                         InteractiveTableCardWrapper(
                             table: table,
@@ -481,12 +534,21 @@ struct TableView: View {
                                 }
                             },
                             onClear: { requestQuickClear(table) },
+                            onPrintPreBill: {
+                                if let session = quickActionSession(for: table) {
+                                    printQuickPreBill(session)
+                                }
+                            },
+                            onQuickQR: {
+                                if let session = quickActionSession(for: table) {
+                                    presentQuickQR(session)
+                                }
+                            },
                             onDragChanged: { val in handleDragChanged(value: val, for: table) },
                             onDragEnded: { val in handleDragEnded(value: val, for: table) },
                             onResizeChanged: { corner, val in handleResizeChanged(corner: corner, value: val, for: table) },
                             onResizeEnded: { corner, val in handleResizeEnded(corner: corner, value: val, for: table) }
                         )
-                        .equatable()
                     }
                 }
                 .frame(width: canvasSize.width, height: canvasSize.height)
@@ -531,7 +593,10 @@ struct TableView: View {
             }
             .gesture(
                 (!isMovementLocked && activeDraggingTableId == nil) ?
-                DragGesture(minimumDistance: 8) // Keep minimum distance threshold to allow taps to pass through
+                // iPad touch input commonly drifts by more than 8 pt during an
+                // otherwise intentional tap.  At 8 pt the canvas pan won the
+                // gesture arena and silently cancelled the table activation.
+                DragGesture(minimumDistance: 16)
                     .onChanged { value in
                         var txn = Transaction()
                         txn.animation = nil
@@ -632,7 +697,7 @@ struct TableView: View {
             .overlay(
                 Group {
                     if floorTables.isEmpty {
-                        EmptyCanvasOverlayView {
+                        EmptyCanvasOverlayView(isLoading: isRecoveringTables) {
                             checkManagerPermission(for: .addTable)
                         }
                     }
@@ -727,7 +792,7 @@ struct TableView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 if gridTables.isEmpty {
-                    EmptyCanvasOverlayView {
+                    EmptyCanvasOverlayView(isLoading: isRecoveringTables) {
                         checkManagerPermission(for: .addTable)
                     }
                     .frame(maxWidth: .infinity, minHeight: 480)
@@ -756,7 +821,7 @@ struct TableView: View {
                                 tableQuickActions(table)
                             }
                             .id(table.id)
-                            .accessibilityLabel("Table \(table.tableNumber), \(table.status), \(table.capacity) guests")
+                            .accessibilityLabel("Table \(table.tableNumber), \(operationalStatus(for: table)), \(table.capacity) guests")
                         }
                     }
                     .padding(20)
@@ -784,9 +849,12 @@ struct TableView: View {
 
     private func gridTableCard(_ table: RestaurantTable, isHighlighted: Bool) -> some View {
         let leader = table.joinedParent ?? table
-        let effectiveStatus = leader.status
+        let effectiveStatus = operationalStatus(for: table)
         let color = statusColor(effectiveStatus)
-        let activeSession = leader.sessions.last(where: { $0.isActive })
+        let activeSession = ([leader] + leader.joinedChildren)
+            .flatMap(\.sessions)
+            .filter { $0.isActive && !$0.isDeleted }
+            .max(by: { $0.startedAt < $1.startedAt })
         let zoneName = table.zone.flatMap { $0.isEmpty ? nil : $0 } ?? "table_zone_all".t
 
         return VStack(alignment: .leading, spacing: 14) {
@@ -846,10 +914,15 @@ struct TableView: View {
     private var tableListView: some View {
         let floorTables = visibleTablesForSelection
         let sortedTables = floorTables.sorted { $0.tableNumber < $1.tableNumber }
-        let availableCount  = floorTables.filter { $0.status.lowercased() == "vacant" }.count
-        let occupiedCount   = floorTables.filter { $0.status.lowercased() == "occupied" }.count
-        let reservedCount   = floorTables.filter { $0.status.lowercased() == "reserved" }.count
-        let withOrdersCount = floorTables.filter { !$0.sessions.filter({ $0.isActive }).isEmpty }.count
+        let availableCount  = floorTables.filter { operationalStatus(for: $0) == "vacant" }.count
+        let occupiedCount   = floorTables.filter { operationalStatus(for: $0) == "occupied" }.count
+        let reservedCount   = floorTables.filter { operationalStatus(for: $0) == "reserved" }.count
+        let withOrdersCount = floorTables.filter { table in
+            let leader = table.joinedParent ?? table
+            return ([leader] + leader.joinedChildren).contains { member in
+                member.sessions.contains { $0.isActive && !$0.isDeleted }
+            }
+        }.count
         let totalSeats      = floorTables.reduce(0) { $0 + $1.capacity }
 
         ZStack {
@@ -903,7 +976,7 @@ struct TableView: View {
 
                 if floorTables.isEmpty {
                     Spacer()
-                    EmptyCanvasOverlayView {
+                    EmptyCanvasOverlayView(isLoading: isRecoveringTables) {
                         checkManagerPermission(for: .addTable)
                     }
                     Spacer()
@@ -978,7 +1051,12 @@ struct TableView: View {
 
     @ViewBuilder
     private func listTableRow(_ table: RestaurantTable) -> some View {
-        let activeSession = (table.joinedParent ?? table).sessions.last(where: { $0.isActive })
+        let leader = table.joinedParent ?? table
+        let activeSession = ([leader] + leader.joinedChildren)
+            .flatMap(\.sessions)
+            .filter { $0.isActive && !$0.isDeleted }
+            .max(by: { $0.startedAt < $1.startedAt })
+        let effectiveStatus = operationalStatus(for: table)
         Button(action: {
             if isEditingLayout {
                 toggleLayoutSelection(table)
@@ -1038,7 +1116,7 @@ struct TableView: View {
                     .frame(width: 100, alignment: .center)
 
                 // Status badge
-                listStatusBadge(status: (table.joinedParent ?? table).status)
+                listStatusBadge(status: effectiveStatus)
                     .frame(width: 110, alignment: .center)
 
                 // QR actions
@@ -1096,9 +1174,8 @@ struct TableView: View {
         if let session = group
             .flatMap(\.sessions)
             .filter({
-                $0.isActive
-                    && !$0.isDeleted
-                    && Calendar.current.isDateInToday($0.startedAt)
+                guard let owner = $0.table else { return false }
+                return $0.isOperationallyActive(for: owner)
             })
             .sorted(by: { $0.startedAt > $1.startedAt })
             .first {
@@ -1113,9 +1190,13 @@ struct TableView: View {
                     return
                 }
             }
+            quickOrderMode = false
             activeSession = session
             selectedTab = .pos
             APHaptic.trigger()
+            Task {
+                await SyncEngine.shared.pullCustomerOrders(modelContext)
+            }
             return
         }
 
@@ -1131,15 +1212,18 @@ struct TableView: View {
             if let existingSession = group
                 .flatMap(\.sessions)
                 .filter({
-                    $0.isActive
-                        && !$0.isDeleted
-                        && Calendar.current.isDateInToday($0.startedAt)
+                    guard let owner = $0.table else { return false }
+                    return $0.isOperationallyActive(for: owner)
                 })
                 .sorted(by: { $0.startedAt > $1.startedAt })
                 .first {
+                quickOrderMode = false
                 activeSession = existingSession
                 selectedTab = .pos
                 APHaptic.trigger()
+                Task {
+                    await SyncEngine.shared.pullCustomerOrders(modelContext)
+                }
                 return
             }
 
@@ -1148,18 +1232,48 @@ struct TableView: View {
             // refuses both closing that session and creating a second active
             // one. Rehydrate and reuse the remote session before attempting a
             // new open.
-            if let remoteSessions = try? await NetworkManager.shared.fetchActiveSessions(),
+            let remoteSessionsSnapshot = try? await NetworkManager.shared.fetchActiveSessions()
+            if let remoteSessions = remoteSessionsSnapshot,
                let remoteSession = remoteSessions.first(where: { row in
                    guard let remoteNumber = row["tableNumber"] as? String else { return false }
                    return SyncEngine.shared.canonicalTableNumber(remoteNumber)
                        == SyncEngine.shared.canonicalTableNumber(leader.tableNumber)
                }) {
+                let remoteStartedAtString = remoteSession["started_at"] as? String
+                    ?? remoteSession["created_at"] as? String
+                let remoteStartedAt = remoteStartedAtString.flatMap {
+                    NetworkManager.iso8601.date(from: $0)
+                }
+                let remoteIsStale = remoteStartedAt.map { startedAt in
+                    let age = Date().timeIntervalSince(startedAt)
+                    let invalidAge = age < -(5 * 60) || age > TableSession.maximumOperationalAge
+                    let tableWasClearedLater = leader.status.lowercased() != "occupied"
+                        && leader.updatedAt > startedAt
+                    let expiredVacantMismatch = leader.status.lowercased() == "vacant"
+                        && age > (5 * 60)
+                    return invalidAge || tableWasClearedLater || expiredVacantMismatch
+                } ?? true
+
+                if remoteIsStale {
+                    for stale in group.flatMap(\.sessions).filter({ $0.isActive }) {
+                        stale.isActive = false
+                        stale.endedAt = Date()
+                        stale.isSynced = false
+                        stale.updatedAt = Date()
+                    }
+                    modelContext.saveWithLogging(label: "\(Self.self).openTableForOrdering.rejectStaleRemote")
+                    _ = try? await NetworkManager.shared.closeTableSession(tableNumber: leader.tableNumber)
+                } else {
                 await SyncEngine.shared.pullActiveSessions(modelContext)
                 if let restoredSession = group
                     .flatMap(\.sessions)
-                    .filter({ $0.isActive && !$0.isDeleted })
+                    .filter({ session in
+                        guard let owner = session.table else { return false }
+                        return session.isOperationallyActive(for: owner)
+                    })
                     .sorted(by: { $0.startedAt > $1.startedAt })
                     .first {
+                    quickOrderMode = false
                     activeSession = restoredSession
                     selectedTab = .pos
                     APHaptic.trigger()
@@ -1219,10 +1333,12 @@ struct TableView: View {
                 }
 
                 await SyncEngine.shared.pullCustomerOrders(modelContext)
+                quickOrderMode = false
                 activeSession = restoredSession
                 selectedTab = .pos
                 APHaptic.trigger()
                 return
+                }
             }
 
             let staleSessions = group
@@ -1240,13 +1356,13 @@ struct TableView: View {
                 return
             }
 
-            // The device can have no active local session while the server
-            // still retains one (for example after an interrupted close).
-            // Opening a table that is visibly vacant must close that remote
-            // ghost first, otherwise the server's one-active-session-per-table
-            // constraint rejects the new session and the KDS ticket vanishes.
+            // fetchActiveSessions above is authoritative when it succeeds. If
+            // it returned no match, issuing another close request for every
+            // normal vacant-table tap only adds a second network round trip
+            // before navigation. A close is still required when local stale
+            // state was actually found.
             let shouldResetRemoteSession = !staleSessions.isEmpty
-                || leader.status.lowercased() == "vacant"
+                || (remoteSessionsSnapshot == nil && leader.status.lowercased() == "vacant")
             if shouldResetRemoteSession, !leader.tableNumber.isEmpty {
                 _ = try? await NetworkManager.shared.closeTableSession(tableNumber: leader.tableNumber)
             }
@@ -1271,6 +1387,7 @@ struct TableView: View {
                 return
             }
 
+            quickOrderMode = false
             activeSession = newSession
             selectedTab = .pos
             APHaptic.trigger()
@@ -1300,6 +1417,25 @@ struct TableView: View {
     @ViewBuilder
     private func tableQuickActions(_ table: RestaurantTable) -> some View {
         let leader = table.joinedParent ?? table
+        let session = quickActionSession(for: table)
+        let isThai = LocalizationManager.shared.currentLanguage == .thai
+        if let session, session.orders.contains(where: {
+            session.ownsCurrentOrder($0) && !$0.isDeleted && !$0.isSettled && $0.status != "cancelled"
+        }) {
+            Button {
+                printQuickPreBill(session)
+            } label: {
+                Label(isThai ? "พิมพ์ใบเสร็จตรวจรายการ" : "Print Pre-Bill", systemImage: "doc.text.viewfinder")
+            }
+
+            Button {
+                presentQuickQR(session)
+            } label: {
+                Label(isThai ? "QR Code ชำระเงิน" : "Payment QR Code", systemImage: "qrcode")
+            }
+
+            Divider()
+        }
         if leader.status.lowercased() != "vacant"
             || leader.sessions.contains(where: { $0.isActive }) {
             Button {
@@ -1319,12 +1455,166 @@ struct TableView: View {
         }
     }
 
+    private func quickActionSession(for table: RestaurantTable) -> TableSession? {
+        let leader = table.joinedParent ?? table
+        return ([leader] + leader.joinedChildren)
+            .flatMap(\.sessions)
+            .filter { session in
+                guard let owner = session.table else { return false }
+                return session.isOperationallyActive(for: owner)
+            }
+            .sorted { $0.startedAt > $1.startedAt }
+            .first
+    }
+
+    private func printQuickPreBill(_ session: TableSession) {
+        let isThai = LocalizationManager.shared.currentLanguage == .thai
+        let orders = session.orders.filter {
+            session.ownsCurrentOrder($0)
+                && !$0.isDeleted && !$0.isSettled && $0.status != "cancelled"
+                && $0.items.contains { !$0.isDeleted && $0.status != "cancelled" }
+        }
+        guard !orders.isEmpty else {
+            quickActionAlertTitle = isThai ? "พิมพ์ใบเสร็จตรวจรายการ" : "Print Pre-Bill"
+            quickActionAlertMessage = isThai ? "ไม่มีรายการค้างชำระสำหรับพิมพ์ใบเสร็จตรวจรายการ" : "No unpaid items to print pre-bill"
+            return
+        }
+
+        Task {
+            let result = await PrintService.shared.dispatchPreBill(orders: orders)
+            await MainActor.run {
+                quickActionAlertTitle = isThai ? "พิมพ์ใบเสร็จตรวจรายการ" : "Print Pre-Bill"
+                quickActionAlertMessage = result.success
+                    ? (isThai ? "ส่งพิมพ์ใบเสร็จตรวจรายการแล้ว" : "Pre-bill sent to printer")
+                    : (isThai ? "พิมพ์ใบเสร็จตรวจรายการไม่สำเร็จ: \(result.message)" : "Print failed: \(result.message)")
+            }
+        }
+    }
+
+    private func presentQuickQR(_ session: TableSession) {
+        let isThai = LocalizationManager.shared.currentLanguage == .thai
+        let unpaid = session.orders.filter {
+            session.ownsCurrentOrder($0)
+                && !$0.isDeleted && !$0.isSettled && $0.status != "cancelled"
+        }
+        guard !unpaid.isEmpty else {
+            quickActionAlertTitle = isThai ? "QR Code ชำระเงิน" : "Payment QR Code"
+            quickActionAlertMessage = isThai ? "ไม่มีรายการค้างชำระสำหรับโต๊ะนี้" : "No unpaid orders for this table"
+            return
+        }
+        let allItemsServed = unpaid
+            .flatMap(\.items)
+            .filter { !$0.isDeleted && $0.status != "cancelled" && $0.status != "refunded" }
+            .allSatisfy { $0.status == "served" }
+        guard !kitchenWorkflowRequired || allItemsServed else {
+            quickActionAlertTitle = isThai ? "QR Code ชำระเงิน" : "Payment QR Code"
+            quickActionAlertMessage = isThai ? "ยังมีรายการที่รอเสิร์ฟ ไม่สามารถรับชำระเงินได้" : "Some items are still waiting to be served"
+            return
+        }
+        quickPaymentSession = session
+    }
+
+    private func completeQuickQRPayment(_ session: TableSession) {
+        // QR confirmation can be delivered more than once while the sheet is
+        // dismissing. Treat the whole table checkout as one local transaction.
+        guard !isProcessingQuickPayment else { return }
+        isProcessingQuickPayment = true
+        defer { isProcessingQuickPayment = false }
+
+        let unpaidOrders = session.orders.filter {
+            session.ownsCurrentOrder($0)
+                && !$0.isDeleted && !$0.isSettled && $0.status != "cancelled"
+        }
+        guard !unpaidOrders.isEmpty else { return }
+
+        let merchantId = UserDefaults.standard.string(forKey: "active_merchant_id") ?? ""
+        var capturedOrders: [Order] = []
+        for order in unpaidOrders {
+            if order.receiptNumber?.isEmpty != false {
+                order.receiptNumber = NetworkManager.localFallbackReceiptNumber(merchantId: merchantId)
+            }
+            if !kitchenWorkflowRequired {
+                order.markServed()
+                if order.status == "pending" {
+                    for item in order.items where !item.isDeleted && OrderItemStatus.active.contains(item.status) {
+                        item.status = OrderItemStatus.served
+                        item.isSynced = false
+                        item.updatedAt = Date()
+                    }
+                }
+            }
+            if ["pending", OrderStatus.preparing, OrderStatus.ready, OrderStatus.served].contains(order.status) {
+                order.status = OrderStatus.completed
+                order.isSynced = false
+                order.updatedAt = Date()
+            }
+            let outstanding = order.outstandingAmount
+            guard outstanding > 0.005 else { continue }
+            let payment = Payment(paymentMethod: "QR PromptPay", amount: outstanding)
+            payment.order = order
+            // Keep the inverse relationship current immediately. Checkout sync
+            // and receipt rendering both inspect order.payments in this same run
+            // loop; waiting for SwiftData to refresh the inverse can otherwise
+            // leave the order looking unpaid (and produce a ghost table/bill).
+            order.payments.append(payment)
+            BusinessDayContext.stamp(payment: payment, order: order, in: modelContext)
+            modelContext.insert(payment)
+            AccountingLedgerService.recordCapturedPayment(payment, order: order, in: modelContext)
+            capturedOrders.append(order)
+        }
+
+        guard !capturedOrders.isEmpty else { return }
+        session.isActive = false
+        session.endedAt = Date()
+        session.isSynced = false
+        session.updatedAt = Date()
+        let leader = session.table?.joinedParent ?? session.table
+        let affectedTables = leader.map { [$0] + $0.joinedChildren } ?? (session.table.map { [$0] } ?? [])
+        let postStatus = enableTableCleaningAfterCheckout ? "cleaning" : "vacant"
+        for table in affectedTables {
+            table.status = postStatus
+            table.isSynced = false
+            table.updatedAt = Date()
+        }
+        guard modelContext.saveWithLogging(label: "TableView.quickQRPayment") else {
+            tableOpenError = "ไม่สามารถบันทึกการชำระเงินได้ กรุณาลองใหม่"
+            return
+        }
+        quickPaymentSession = nil
+        activeSession = nil
+        selectedTab = .tables
+        APHaptic.trigger()
+        APSoundEffect.paymentSuccess()
+
+        // Use the exact same receipt dispatcher as POS. Printing depends only
+        // on the locally committed checkout and must not wait for network sync.
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                for order in capturedOrders {
+                    group.addTask { await PrintService.shared.dispatchReceipt(order) }
+                }
+            }
+        }
+
+        Task {
+            // complete_checkout_atomic uploads the tender, completes the order,
+            // closes its table session and updates table status together. Sync it
+            // before any best-effort close calls so realtime can never observe a
+            // closed local table with an unpaid remote order.
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+            for table in affectedTables where !table.tableNumber.isEmpty {
+                _ = try? await NetworkManager.shared.closeTableSession(tableNumber: table.tableNumber)
+            }
+        }
+    }
+
     private func requestQuickClear(_ table: RestaurantTable) {
         let leader = table.joinedParent ?? table
         let group = [leader] + leader.joinedChildren
         let hasPayment = group.contains { member in
             member.sessions.contains { session in
-                session.isActive && session.orders.contains { order in
+                session.isOperationallyActive(for: member) && session.orders.contains { order in
+                    session.ownsCurrentOrder(order) &&
                     !order.isDeleted && order.payments.contains {
                         !$0.isDeleted && $0.amount > 0.005
                     }
@@ -1339,7 +1629,8 @@ struct TableView: View {
 
         let hasTransaction = group.contains { member in
             member.sessions.contains { session in
-                session.isActive && session.orders.contains { order in
+                session.isOperationallyActive(for: member) && session.orders.contains { order in
+                    guard session.ownsCurrentOrder(order) else { return false }
                     guard !order.isDeleted else { return false }
                     let hasItems = order.items.contains {
                         !$0.isDeleted && $0.status != "cancelled"
@@ -1401,7 +1692,8 @@ struct TableView: View {
         // from another device while the confirmation UI was open.
         let hasPayment = group.contains { member in
             member.sessions.contains { session in
-                session.isActive && session.orders.contains { order in
+                session.isOperationallyActive(for: member) && session.orders.contains { order in
+                    session.ownsCurrentOrder(order) &&
                     !order.isDeleted && order.payments.contains {
                         !$0.isDeleted && $0.amount > 0.005
                     }
@@ -1653,9 +1945,27 @@ struct TableView: View {
         ensureDefaultFloorExists()
         normalizeTableSelection()
         loadCachedFloorPlanImage()
-        enforceTableLimit()
         searchTablesList = tables
         presentPendingAddFirstTableIfNeeded()
+        recoverTablesIfLocalStoreIsEmpty()
+    }
+
+    /// Clearing local cache removes the SwiftData rows that drive this view.
+    /// Rehydrate the table domain automatically so operators never need to
+    /// restart the app or press Force Sync themselves.
+    private func recoverTablesIfLocalStoreIsEmpty() {
+        guard tables.isEmpty,
+              !isRecoveringTables,
+              !OfflineSyncModeController.isOfflineSubscriptionPlan,
+              NetworkPolicy.shared.mode != .offlineOnly,
+              TenantWorkspaceGuard.isAuthenticatedWorkspaceReady,
+              MerchantAuthManager.shared.isAuthenticated else { return }
+
+        isRecoveringTables = true
+        Task { @MainActor in
+            await SyncEngine.shared.syncAll(modelContext: modelContext)
+            isRecoveringTables = false
+        }
     }
 
     /// A freshly onboarded merchant can already have a branch in SwiftData while
@@ -1663,7 +1973,10 @@ struct TableView: View {
     /// default dining area; otherwise newly created tables receive an empty branch
     /// and immediately disappear from the branch-scoped canvas.
     private func resolveActiveBranchIfNeeded() {
-        _ = try? BranchContext.shared.bootstrap(in: modelContext, createDefaultIfEmpty: true)
+        _ = try? BranchContext.shared.bootstrap(
+            in: modelContext,
+            createDefaultIfEmpty: OfflineSyncModeController.isOfflineSubscriptionPlan
+        )
     }
 
     private func ensureDefaultFloorExists() {
@@ -1681,6 +1994,7 @@ struct TableView: View {
         _ = oldTables
         updateSearchTablesList(with: newTables)
         normalizeTableSelection()
+        if !newTables.isEmpty { isRecoveringTables = false }
     }
 
     private func selectedFloorDidChange() {
@@ -1751,7 +2065,24 @@ struct TableView: View {
     }
 
     private func countTables(status: String) -> Int {
-        visibleTablesForSelection.filter { $0.status.lowercased() == status.lowercased() }.count
+        visibleTablesForSelection.filter {
+            operationalStatus(for: $0).caseInsensitiveCompare(status) == .orderedSame
+        }.count
+    }
+
+    /// A live table session is the operational source of truth. The table row
+    /// is synchronized independently and can briefly still say `vacant` while
+    /// its session and orders have already arrived, which previously rendered
+    /// a dangerously misleading empty-table badge.
+    private func operationalStatus(for table: RestaurantTable) -> String {
+        let leader = table.joinedParent ?? table
+        let group = [leader] + leader.joinedChildren
+        if group.contains(where: { member in
+            member.sessions.contains { $0.isOperationallyActive(for: member) }
+        }) {
+            return "occupied"
+        }
+        return leader.status
     }
 
     private func statusColor(_ status: String) -> Color {
@@ -1798,61 +2129,6 @@ struct TableView: View {
 
         return maxX >= 0 && minX <= viewportSize.width &&
                maxY >= 0 && minY <= viewportSize.height
-    }
-
-    private func enforceTableLimit() {
-        let descriptor = FetchDescriptor<RestaurantTable>(
-            predicate: #Predicate<RestaurantTable> { !$0.isDeleted }
-        )
-        guard let allTables = try? modelContext.fetch(descriptor) else { return }
-
-        if allTables.count > 80 {
-            // Sort tables: real tables first, then test tables
-            let sortedTables = allTables.sorted { t1, t2 in
-                let t1IsTest = t1.tableNumber.hasPrefix("LT-") || t1.tableNumber.hasPrefix("LoadTest-")
-                let t2IsTest = t2.tableNumber.hasPrefix("LT-") || t2.tableNumber.hasPrefix("LoadTest-")
-
-                if t1IsTest != t2IsTest {
-                    // Real tables first
-                    return !t1IsTest && t2IsTest
-                }
-
-                // If both are test or both are real, sort by table number
-                // Try numeric sort first, fallback to alphabetical
-                let cleanT1 = t1.tableNumber.replacingOccurrences(of: "LT-", with: "").replacingOccurrences(of: "LoadTest-", with: "")
-                let cleanT2 = t2.tableNumber.replacingOccurrences(of: "LT-", with: "").replacingOccurrences(of: "LoadTest-", with: "")
-                if let n1 = Int(cleanT1),
-                   let n2 = Int(cleanT2) {
-                    return n1 < n2
-                }
-                return t1.tableNumber.localizedCompare(t2.tableNumber) == .orderedAscending
-            }
-
-            // Keep the first 80 tables, mark the rest as deleted
-            let tablesToDelete = sortedTables.suffix(from: min(80, sortedTables.count))
-
-            var didChange = false
-            for table in tablesToDelete {
-                // If the table was never synced to remote (isSynced == false) and has no active session,
-                // we can delete it physically. Otherwise soft delete to sync deletion.
-                let hasActiveSession = table.sessions.contains(where: { $0.isActive })
-                if !table.isSynced && !hasActiveSession {
-                    modelContext.delete(table)
-                } else {
-                    table.isDeleted = true
-                    table.isSynced = false
-                    table.updatedAt = Date()
-                }
-                didChange = true
-            }
-
-            if didChange {
-                modelContext.saveWithLogging(label: #function)
-                Task {
-                    await SyncEngine.shared.syncAll(modelContext: modelContext)
-                }
-            }
-        }
     }
 
     private func updateTablePosition(_ table: RestaurantTable, newPosition: CGPoint) {
@@ -2107,37 +2383,89 @@ struct TableView: View {
     }
 
     private func requestSelectedTableDeletion() {
-        guard !layoutSelectedTableIds.isEmpty else { return }
+        guard !isDeletingSelectedTables, !layoutSelectedTableIds.isEmpty else { return }
         pendingDeletionTableIds = layoutSelectedTableIds
         showingDeleteTableConfirm = true
     }
 
+    /// Commit the confirmed action synchronously when edit mode is already
+    /// manager-authorized. Deferring every confirmation through another modal
+    /// transition could be silently dropped by SwiftUI on landscape iPad,
+    /// leaving the confirmation dismissed with no delete request started.
+    private func confirmSelectedTableDeletion() {
+        showingDeleteTableConfirm = false
+        guard !pendingDeletionTableIds.isEmpty else { return }
+
+        if isLayoutManagerAuthorized {
+            Task { @MainActor in
+                // Let SwiftUI remove the alert in this render pass, then start
+                // the request. The first tap therefore always has immediate
+                // visual feedback even if the network is slow.
+                await Task.yield()
+                guard !pendingDeletionTableIds.isEmpty else { return }
+                deleteSelectedLayoutTable()
+            }
+            return
+        }
+
+        pendingAuthAction = .deleteTable
+        Task { @MainActor in
+            // Yield one presentation transaction so the confirmation popover
+            // is fully gone before presenting the manager PIN sheet.
+            await Task.yield()
+            guard !pendingDeletionTableIds.isEmpty else { return }
+            showingManagerPinSheet = true
+        }
+    }
+
     /// Soft-delete all layout-selected tables in one guarded transaction.
     private func deleteSelectedLayoutTable() {
+        guard !isDeletingSelectedTables else { return }
         let idsToDelete = pendingDeletionTableIds.isEmpty
             ? layoutSelectedTableIds
             : pendingDeletionTableIds
-        let selectedTables = tables.filter {
+        let explicitlySelectedTables = tables.filter {
             idsToDelete.contains($0.id) && !$0.isDeleted
         }
-        guard !selectedTables.isEmpty else {
+        guard !explicitlySelectedTables.isEmpty else {
             pendingDeletionTableIds.removeAll()
             presetOperationError = "ไม่พบโต๊ะที่เลือก กรุณาเลือกโต๊ะแล้วลองอีกครั้ง"
             return
         }
 
+        // Old builds could leave more than one local object for the same
+        // branch/area/table number. If only the visible copy is tombstoned, the
+        // hidden duplicate becomes visible on the next query update and looks
+        // exactly like the deleted table came back. Delete the full logical set.
+        let selectedLogicalNumbers = Set(explicitlySelectedTables.map {
+            SyncEngine.shared.canonicalTableNumber($0.tableNumber)
+        })
+        let selectedTables = tables.filter { table in
+            !table.isDeleted
+                && tableBelongsToSelectedArea(table)
+                && selectedLogicalNumbers.contains(
+                    SyncEngine.shared.canonicalTableNumber(table.tableNumber)
+                )
+        }
+
         guard !selectedTables.contains(where: \.joinedGroupHasActiveSession) else {
             pendingDeletionTableIds.removeAll()
-            presetOperationError = "ไม่สามารถลบชุดโต๊ะได้ เนื่องจากมีโต๊ะที่กำลังใช้งาน กรุณาเคลียร์โต๊ะก่อน"
+            presetOperationError = "ไม่สามารถลบโต๊ะที่กำลังใช้งาน กรุณาเคลียร์โต๊ะก่อน"
             return
         }
 
         let tableIds = selectedTables.map(\.id)
+        #if DEBUG
+        print("[TableDelete] start selected=\(selectedTables.map { $0.tableNumber }) ids=\(tableIds.map(\.uuidString))")
+        #endif
+        isDeletingSelectedTables = true
+
+        // Hide the selected cards immediately. The server call is intentionally
+        // asynchronous, but leaving the cards visible until it completes makes
+        // a successful tap look like it did nothing on a slow connection.
+        // Keep the SwiftData objects intact until the server confirms so a
+        // rejected delete can be rolled back without losing relationships.
         optimisticallyDeletedTableIds.formUnion(tableIds)
-        for table in selectedTables {
-            table.prepareForDeletion()
-        }
-        modelContext.saveWithLogging(label: #function)
 
         layoutSelectedTableId = nil
         layoutSelectedTableIds.removeAll()
@@ -2148,20 +2476,69 @@ struct TableView: View {
 
         Task {
             do {
+                #if DEBUG
+                print("[TableDelete] RPC begin ids=\(tableIds.map(\.uuidString))")
+                #endif
                 let deletedCount = try await NetworkManager.shared.deleteRestaurantTablesOnServer(ids: tableIds)
-                guard deletedCount == tableIds.count else {
-                    throw NetworkError.invalidResponse
+                #if DEBUG
+                print("[TableDelete] RPC response deletedCount=\(deletedCount) expected=\(tableIds.count)")
+                #endif
+                // The RPC is authoritative. A zero/partial count can mean the
+                // rows were already tombstoned by another device; verify that
+                // state before reporting a failure.
+                var confirmedIDs = Set<UUID>()
+                if deletedCount == tableIds.count {
+                    confirmedIDs = Set(tableIds)
+                } else if let remoteTables = try? await NetworkManager.shared.fetchRestaurantTables() {
+                    confirmedIDs = Set(remoteTables.compactMap { remote in
+                        guard let rawID = remote["id"] as? String,
+                              let id = UUID(uuidString: rawID),
+                              (remote["is_deleted"] as? Bool ?? false) else { return nil }
+                        return id
+                    })
+                    // A zero count is idempotent when another device already
+                    // tombstoned the row. Verify each missing UUID directly so
+                    // a branch mismatch is never mistaken for success.
+                    for id in tableIds where !confirmedIDs.contains(id) {
+                        if let row = try? await NetworkManager.shared.fetchRestaurantTable(id: id),
+                           row["is_deleted"] as? Bool == true {
+                            confirmedIDs.insert(id)
+                            #if DEBUG
+                            print("[TableDelete] idempotent tombstone confirmed id=\(id.uuidString)")
+                            #endif
+                        }
+                    }
                 }
+                guard Set(tableIds).isSubset(of: confirmedIDs) else {
+                    throw NetworkError.serverError("มีโต๊ะที่ยังมีรายการใช้งานอยู่ กรุณาเคลียร์โต๊ะก่อน")
+                }
+
+                // Only mutate local models after the server has committed the
+                // deletion. This keeps joined relationships and active sessions
+                // intact when the server rejects the request.
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    for table in selectedTables { table.prepareForDeletion() }
+                }
+                #if DEBUG
+                print("[TableDelete] local tombstone applied ids=\(tableIds.map(\.uuidString))")
+                #endif
                 for table in selectedTables where table.isDeleted {
                     table.isSynced = true
                 }
+                optimisticallyDeletedTableIds.subtract(tableIds)
                 modelContext.saveWithLogging(label: #function)
             } catch {
+                #if DEBUG
+                print("[TableDelete] RPC/error: \(error.localizedDescription)")
+                #endif
                 var deletionConfirmed = false
                 // A timeout/decoding failure does not prove that the atomic RPC
                 // failed; the server may already have committed the deletion.
                 // Reconcile the selected rows before changing the optimistic UI.
                 if let remoteTables = try? await NetworkManager.shared.fetchRestaurantTables() {
+                    #if DEBUG
+                    print("[TableDelete] reconcile fetched rows=\(remoteTables.count)")
+                    #endif
                     let remoteDeletionById: [UUID: Bool] = Dictionary(
                         uniqueKeysWithValues: remoteTables.compactMap { remote in
                             guard
@@ -2181,16 +2558,25 @@ struct TableView: View {
                                 optimisticallyDeletedTableIds.remove(table.id)
                             }
                         } else {
-                            // No matching server row: keep the local tombstone so
-                            // a stale-only local table cannot reappear.
-                            table.isDeleted = true
-                            table.isSynced = true
+                            // No matching row is not proof of deletion (it may
+                            // be a branch/tenant mismatch). Leave the local
+                            // model untouched and require reconciliation.
                         }
                     }
                     deletionConfirmed = selectedTables.allSatisfy {
-                        remoteDeletionById[$0.id] != false
+                        remoteDeletionById[$0.id] == true
                     }
+                    #if DEBUG
+                    let states = selectedTables.map { table -> String in
+                        let state = remoteDeletionById[table.id].map { String($0) } ?? "missing"
+                        return "\(table.tableNumber):\(state)"
+                    }
+                    print("[TableDelete] reconcile confirmed=\(deletionConfirmed) states=\(states)")
+                    #endif
                 } else {
+                    #if DEBUG
+                    print("[TableDelete] reconcile fetch failed; retaining pending tombstones")
+                    #endif
                     // Preserve the pending tombstone for a later retry instead of
                     // resurrecting tables after an ambiguous network failure.
                     for table in selectedTables {
@@ -2200,9 +2586,17 @@ struct TableView: View {
                 }
                 modelContext.saveWithLogging(label: #function)
                 if !deletionConfirmed {
+                    // Rejected/unknown deletes must become visible again; the
+                    // local models were deliberately not tombstoned in this
+                    // branch.
+                    optimisticallyDeletedTableIds.subtract(tableIds)
                     presetOperationError = "ลบโต๊ะไม่สำเร็จ: \(error.localizedDescription)"
                 }
             }
+            #if DEBUG
+            print("[TableDelete] finished isDeletingSelectedTables=false")
+            #endif
+            isDeletingSelectedTables = false
         }
         APHaptic.trigger()
     }
@@ -2360,7 +2754,18 @@ struct TableView: View {
 
     @ViewBuilder
     private var deleteSelectedTablesButton: some View {
-        if !layoutSelectedTableIds.isEmpty {
+        if isDeletingSelectedTables {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(lm.languageCode == "th" ? "กำลังลบโต๊ะ…" : "Deleting tables…")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundColor(.appRose)
+            .frame(height: 34)
+            .padding(.horizontal, 12)
+            .accessibilityElement(children: .combine)
+        } else if !layoutSelectedTableIds.isEmpty {
             Button(action: requestSelectedTableDeletion) {
                 Label("ลบโต๊ะ (\(layoutSelectedTableIds.count))", systemImage: "trash")
                     .font(.system(size: 13, weight: .semibold))
@@ -2774,15 +3179,6 @@ struct TableView: View {
         guard let data = preset.tableLayoutJson.data(using: .utf8),
               let items = try? JSONDecoder().decode([TableLayoutItem].self, from: data) else {
             presetOperationError = "The template data is damaged or incomplete."
-            return
-        }
-
-        let otherFloorsTablesCount = tables.filter {
-            tableBelongsToActiveBranch($0) && !tableBelongsToSelectedArea($0) && !$0.isDeleted
-        }.count
-        let availableSlots = 80 - otherFloorsTablesCount
-        guard items.count <= availableSlots else {
-            presetOperationError = "This template needs \(items.count) tables, but only \(max(0, availableSlots)) slots are available."
             return
         }
 
@@ -3785,7 +4181,9 @@ struct TableDetailView: View {
 
     @Binding var selectedTab: MainDashboardView.DashboardTab
     @Binding var posTableSession: TableSession?
+    @Binding var quickOrderMode: Bool
     let allowsDeletion: Bool
+    let onDeleted: (UUID) -> Void
 
     @Query(sort: \RestaurantTable.tableNumber) private var allTables: [RestaurantTable]
     @Query(filter: #Predicate<RegisterSession> { $0.closedAt == nil && !$0.isDeleted })
@@ -3816,6 +4214,7 @@ struct TableDetailView: View {
     @State private var showingManagerPinSheet = false
     @State private var deletionErrorMessage = ""
     @State private var showingDeletionError = false
+    @State private var isDeletingTable = false
 
     // Guard rail: block clearing a table that still has live kitchen tickets.
     @State private var showPendingTicketDialog = false
@@ -3826,6 +4225,7 @@ struct TableDetailView: View {
     @State private var contentPresented = false
 
     private func deleteTableWithAuth() {
+        guard !isDeletingTable else { return }
         if sessionManager.can(.managerOverride) {
             performDelete()
         } else {
@@ -3834,19 +4234,35 @@ struct TableDetailView: View {
     }
 
     private func performDelete() {
+        guard !isDeletingTable else { return }
         guard !table.joinedGroupHasActiveSession else {
             deletionErrorMessage = "ไม่สามารถลบโต๊ะที่กำลังใช้งาน กรุณาเคลียร์โต๊ะก่อน"
             showingDeletionError = true
             return
         }
 
-        table.prepareForDeletion()
-        modelContext.saveWithLogging(label: #function)
+        isDeletingTable = true
+        let tableId = table.id
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+            table.prepareForDeletion()
+            onDeleted(tableId)
+        }
 
-        Task {
+        Task { @MainActor in
+            let saved = await modelContext.saveWithRetry(label: #function)
+            guard saved else {
+                isDeletingTable = false
+                deletionErrorMessage = "ไม่สามารถบันทึกการลบโต๊ะได้ กรุณาลองอีกครั้ง"
+                showingDeletionError = true
+                return
+            }
+
+            // Keep the progress state visible long enough to acknowledge the tap;
+            // remote deletion continues through the offline-first sync queue.
+            try? await Task.sleep(for: .milliseconds(250))
+            dismiss()
             await SyncEngine.shared.syncAll(modelContext: modelContext)
         }
-        dismiss()
     }
 
     private func updateTableZone(_ newZone: String) {
@@ -3861,12 +4277,13 @@ struct TableDetailView: View {
 
     var activeSession: TableSession? {
         let leader = table.joinedParent ?? table
-        if let session = leader.sessions.first(where: { $0.isActive }) {
-            if Calendar.current.isDateInToday(session.startedAt) {
-                return session
+        return ([leader] + leader.joinedChildren)
+            .flatMap(\.sessions)
+            .filter { session in
+                guard let owner = session.table else { return false }
+                return session.isOperationallyActive(for: owner)
             }
-        }
-        return nil
+            .max(by: { $0.startedAt < $1.startedAt })
     }
 
     private var canReserveTable: Bool {
@@ -4119,15 +4536,22 @@ struct TableDetailView: View {
 
     private var identityHeaderSection: some View {
         let leader = table.joinedParent ?? table
-        let previewSession = leader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
+        let previewSession = ([leader] + leader.joinedChildren)
+            .flatMap(\.sessions)
+            .filter { session in
+                guard let owner = session.table else { return false }
+                return session.isOperationallyActive(for: owner)
+            }
+            .max(by: { $0.startedAt < $1.startedAt })
         let itemCount = previewSession?.itemCount ?? 0
-        let status = statusColor(table.status)
+        let effectiveStatus = previewSession == nil ? leader.status : "occupied"
+        let status = statusColor(effectiveStatus)
 
         return HStack(alignment: .center, spacing: 14) {
             DynamicTableLayoutView(
                 tableNumber: table.tableNumber,
                 capacity: table.capacity,
-                status: table.status,
+                status: effectiveStatus,
                 isEditingLayout: false,
                 isDragging: false,
                 isSelected: false,
@@ -4148,7 +4572,7 @@ struct TableDetailView: View {
                         .foregroundColor(.textPrimary)
                         .lineLimit(1)
 
-                    Text("table_status_\(table.status.lowercased())".t)
+                    Text("table_status_\(effectiveStatus.lowercased())".t)
                         .font(.caption2)
                         .fontWeight(.bold)
                         .foregroundColor(status)
@@ -4540,13 +4964,25 @@ struct TableDetailView: View {
 
             if allowsDeletion {
                 Button(role: .destructive) { deleteTableWithAuth() } label: {
-                    Label("table_delete_btn".t, systemImage: "trash")
+                    HStack(spacing: 8) {
+                        if isDeletingTable {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.appRose)
+                        }
+                        if isDeletingTable {
+                            Text(lm.languageCode == "th" ? "กำลังลบโต๊ะ…" : "Deleting table…")
+                        } else {
+                            Label("table_delete_btn".t, systemImage: "trash")
+                        }
+                    }
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.appRose)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.plain)
+                .disabled(isDeletingTable)
             }
         }
     }
@@ -4557,6 +4993,7 @@ struct TableDetailView: View {
                 showNoActiveShiftAlert = true
                 return
             }
+            quickOrderMode = false
             posTableSession = session
             selectedTab = .pos
             dismiss()
@@ -4587,6 +5024,7 @@ struct TableDetailView: View {
         }
         modelContext.saveWithLogging(label: #function)
 
+        quickOrderMode = false
         posTableSession = newSession
         selectedTab = .pos
         dismiss()
@@ -4608,7 +5046,7 @@ struct TableDetailView: View {
 }
 
 #Preview {
-    TableView(selectedTab: .constant(.tables), activeSession: .constant(nil), columnVisibility: .constant(.all))
+    TableView(selectedTab: .constant(.tables), activeSession: .constant(nil), columnVisibility: .constant(.all), quickOrderMode: .constant(false))
         .modelContainer(for: [RestaurantTable.self, TableSession.self, FloorData.self], inMemory: true)
 }
 
@@ -4900,6 +5338,8 @@ struct InteractiveTableCard: View {
     let onTap: () -> Void
     let onLongPress: () -> Void
     let onClear: () -> Void
+    let onPrintPreBill: () -> Void
+    let onQuickQR: () -> Void
 
     private func statusColor(_ status: String) -> Color {
         switch status.lowercased() {
@@ -4913,10 +5353,20 @@ struct InteractiveTableCard: View {
 
     var body: some View {
         let leader = table.joinedParent ?? table
-        let effectiveStatus = leader.status
+        let activeSession = ([leader] + leader.joinedChildren)
+            .flatMap(\.sessions)
+            .filter { session in
+                guard let owner = session.table else { return false }
+                return session.isOperationallyActive(for: owner)
+            }
+            .max(by: { $0.startedAt < $1.startedAt })
+        let effectiveStatus = activeSession == nil ? leader.status : "occupied"
         let statusCol = statusColor(effectiveStatus)
-        let activeSession = leader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
         let itemCount = activeSession?.itemCount ?? 0
+        let hasPayableOrders = activeSession?.orders.contains(where: {
+            !$0.isDeleted && !$0.isSettled && $0.status != "cancelled"
+        }) ?? false
+        let isThai = LocalizationManager.shared.currentLanguage == .thai
 
         DynamicTableLayoutView(
             tableNumber: table.tableNumber,
@@ -4935,13 +5385,27 @@ struct InteractiveTableCard: View {
         // Pad the table by 16px to ensure chairs don't clip and remain fully visible and interactable
         .padding(16)
         .contentShape(Rectangle())
-        .onTapGesture {
-            onTap()
-        }
+        // Give table activation precedence over the ancestor canvas-pan
+        // gesture. Without explicit priority, small finger movement on iPad
+        // could make the canvas consume an otherwise valid table tap.
+        .highPriorityGesture(
+            TapGesture().onEnded(onTap)
+        )
         .contextMenu {
             if !isEditingLayout {
-                if leader.status.lowercased() != "vacant"
-                    || leader.sessions.contains(where: { $0.isActive }) {
+                if hasPayableOrders {
+                    Button(action: onPrintPreBill) {
+                        Label(isThai ? "พิมพ์ใบเสร็จตรวจรายการ" : "Print Pre-Bill", systemImage: "doc.text.viewfinder")
+                    }
+
+                    Button(action: onQuickQR) {
+                        Label(isThai ? "QR Code ชำระเงิน" : "Payment QR Code", systemImage: "qrcode")
+                    }
+
+                    Divider()
+                }
+
+                if effectiveStatus.lowercased() != "vacant" {
                     Button(action: onClear) {
                         Label("เคลียร์โต๊ะ", systemImage: "eraser.fill")
                     }
@@ -4978,6 +5442,8 @@ struct InteractiveTableCardWrapper: View, Equatable {
     let onTap: () -> Void
     let onLongPress: () -> Void
     let onClear: () -> Void
+    let onPrintPreBill: () -> Void
+    let onQuickQR: () -> Void
     let onDragChanged: (DragGesture.Value) -> Void
     let onDragEnded: (DragGesture.Value) -> Void
     let onResizeChanged: (TableResizeCorner, DragGesture.Value) -> Void
@@ -5027,14 +5493,24 @@ struct InteractiveTableCardWrapper: View, Equatable {
         guard lhsIsSelected == rhsIsSelected else { return false }
 
         let lhsLeader = lhs.table.joinedParent ?? lhs.table
-        let lhsActiveSession = lhsLeader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
+        let lhsActiveSession = ([lhsLeader] + lhsLeader.joinedChildren).flatMap(\.sessions).first(where: { session in
+            guard let owner = session.table else { return false }
+            return session.isOperationallyActive(for: owner)
+        })
         let lhsItemCount = lhsActiveSession?.itemCount ?? 0
+        let lhsHasPayable = lhsActiveSession?.orders.contains(where: { !$0.isDeleted && !$0.isSettled && $0.status != "cancelled" }) ?? false
 
         let rhsLeader = rhs.table.joinedParent ?? rhs.table
-        let rhsActiveSession = rhsLeader.sessions.first(where: { $0.isActive && Calendar.current.isDateInToday($0.startedAt) })
+        let rhsActiveSession = ([rhsLeader] + rhsLeader.joinedChildren).flatMap(\.sessions).first(where: { session in
+            guard let owner = session.table else { return false }
+            return session.isOperationallyActive(for: owner)
+        })
         let rhsItemCount = rhsActiveSession?.itemCount ?? 0
+        let rhsHasPayable = rhsActiveSession?.orders.contains(where: { !$0.isDeleted && !$0.isSettled && $0.status != "cancelled" }) ?? false
 
-        guard lhsItemCount == rhsItemCount else { return false }
+        guard (lhsActiveSession != nil) == (rhsActiveSession != nil),
+              lhsItemCount == rhsItemCount,
+              lhsHasPayable == rhsHasPayable else { return false }
 
         return true
     }
@@ -5074,7 +5550,9 @@ struct InteractiveTableCardWrapper: View, Equatable {
                 isSelected: isSelected,
                 onTap: onTap,
                 onLongPress: onLongPress,
-                onClear: onClear
+                onClear: onClear,
+                onPrintPreBill: onPrintPreBill,
+                onQuickQR: onQuickQR
             )
             .scaleEffect(effectiveScale * feedbackScale, anchor: .topLeading)
             .tableDragGesture(isEditing: isEditingLayout && activeResizeCorner == nil, gesture: AnyGesture(tableDragGesture))
@@ -5160,21 +5638,28 @@ enum TableResizeCorner: String, CaseIterable, Identifiable, Equatable {
 
 struct EmptyCanvasOverlayView: View {
     @EnvironmentObject private var lm: LocalizationManager
+    var isLoading: Bool = false
     var onAddTable: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "square.grid.3x3.fill")
+            if isLoading {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.appAccent)
+            } else {
+                Image(systemName: "square.grid.3x3.fill")
                 .font(.system(size: 44))
                 .foregroundColor(.textTertiary)
-            Text("table_empty_canvas_title".t)
+            }
+            Text(isLoading ? "กำลังกู้ข้อมูลโต๊ะ…" : "table_empty_canvas_title".t)
                 .font(.headline)
                 .foregroundColor(.textSecondary)
-            Text("table_empty_canvas_subtitle".t)
+            Text(isLoading ? "กำลังดึงข้อมูลจาก Cloud กรุณารอสักครู่" : "table_empty_canvas_subtitle".t)
                 .font(.caption)
                 .foregroundColor(.textTertiary)
                 .multilineTextAlignment(.center)
-            if let onAddTable {
+            if !isLoading, let onAddTable {
                 Button(action: onAddTable) {
                     Label("table_empty_add_cta".t, systemImage: "plus.circle.fill")
                         .font(.subheadline.weight(.semibold))
