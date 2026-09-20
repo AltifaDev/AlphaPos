@@ -327,7 +327,7 @@ struct QueuedOrder: Codable, Identifiable {
     let itemsPayload: [[String: Any]]
     let sessionToken: String?
     let guestCount: Int
-    let orderType: String  // "takeaway", "delivery", "walk_in", "dine_in"
+    let orderType: String  // "take_out", "delivery", "walk_in", "dine_in"
     let createdAt: Date
     var retryCount: Int
     var lastError: String?
@@ -338,7 +338,7 @@ struct QueuedOrder: Codable, Identifiable {
         case id, orderNumber, tableNumber, total, itemsData, sessionToken, guestCount, orderType, createdAt, retryCount, lastError, requiresManualRetry
     }
 
-    init(id: String = UUID().uuidString, orderNumber: String, tableNumber: String, total: Double, itemsPayload: [[String: Any]], sessionToken: String? = nil, guestCount: Int = 1, orderType: String = "takeaway", createdAt: Date = Date(), retryCount: Int = 0, lastError: String? = nil, requiresManualRetry: Bool = false) {
+    init(id: String = UUID().uuidString, orderNumber: String, tableNumber: String, total: Double, itemsPayload: [[String: Any]], sessionToken: String? = nil, guestCount: Int = 1, orderType: String = "take_out", createdAt: Date = Date(), retryCount: Int = 0, lastError: String? = nil, requiresManualRetry: Bool = false) {
         self.id = id
         self.orderNumber = orderNumber
         self.tableNumber = tableNumber

@@ -61,6 +61,7 @@ struct TableDetailView: View {
     // Drives the "paper-plane sends the order away" animation on the serve-all
     // button: it slides right + fades, then resets once serving completes.
     @State private var serveAllLaunched = false
+    @State private var isPreparingCheckout = false
     @State private var didAppearAnimate = false
 
     @State private var serveFailedCount: Int = 0
@@ -1006,6 +1007,25 @@ struct TableDetailView: View {
                     .frame(height: 56)
                     .animation(.spring(response: 0.5, dampingFraction: 0.82), value: serveAllLaunched)
 
+                } else if isPreparingCheckout {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(coralRed)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("กำลังเตรียมชำระเงิน...")
+                                .font(.system(size: 15, weight: .bold))
+                            Text("กำลังยืนยันรายการกับเซิร์ฟเวอร์")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.textSecondary)
+                        }
+                        Spacer()
+                    }
+                    .foregroundColor(coralRed)
+                    .padding(.horizontal, 16)
+                    .frame(maxWidth: .infinity, minHeight: 56)
+                    .apLiquidGlass(tint: coralRed.opacity(0.12),
+                                   in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+
                 } else if isPaidAwaitingClear {
                     Button {
                         guard !isClearingTable else { return }
@@ -1058,7 +1078,7 @@ struct TableDetailView: View {
                     } label: {
                         primaryCTALabel(
                             icon: "plus.circle.fill",
-                            title: "add_food".localized(for: appLanguage),
+                            title: "add_item".localized(for: appLanguage),
                             subtitle: nil,
                             showChevron: true
                         )
@@ -1130,7 +1150,7 @@ struct TableDetailView: View {
                 cartItems.removeAll()
                 verifyShiftAndAddFood()
             } label: {
-                secondaryTileLabel(icon: "plus", title: "add_food".localized(for: appLanguage), tint: royalBlue)
+                secondaryTileLabel(icon: "plus", title: "add_item".localized(for: appLanguage), tint: royalBlue)
             }
             .buttonStyle(.plain)
 
@@ -1221,7 +1241,7 @@ struct TableDetailView: View {
                             .font(.system(size: 16, weight: .bold))
                     }
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("add_food".localized(for: appLanguage))
+                        Text("add_item".localized(for: appLanguage))
                             .font(.system(size: 15, weight: .bold))
                         Text("แตะเพื่อเพิ่มรายการอาหาร")
                             .font(.system(size: 10, weight: .medium))
@@ -1244,7 +1264,7 @@ struct TableDetailView: View {
                 VStack(spacing: 3) {
                     Image(systemName: "cart.badge.plus")
                         .font(.system(size: 17, weight: .bold))
-                    Text("add_food".localized(for: appLanguage))
+                    Text("add_item".localized(for: appLanguage))
                         .font(.system(size: 11, weight: .bold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -1351,6 +1371,41 @@ struct TableDetailView: View {
     // MARK: - Actions
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// Reflect a successful server response immediately. The network layer
+    /// refreshes the global cache, but that refresh can complete after this
+    /// view's fetch and briefly return the pre-serve snapshot. Updating both
+    /// sources prevents the checkout CTA from waiting for another poll cycle.
+    @MainActor
+    private func applyOptimisticServe(itemId: String, orderId: String) {
+        func update(_ source: inout [Order]) {
+            guard let orderIndex = source.firstIndex(where: { $0.id == orderId }),
+                  let itemIndex = source[orderIndex].items.firstIndex(where: { $0.id == itemId }) else { return }
+            source[orderIndex].items[itemIndex].status = "served"
+            source[orderIndex].items[itemIndex].servedBy = loggedInEmployeeName
+            let allServed = !source[orderIndex].items.isEmpty && source[orderIndex].items.allSatisfy {
+                $0.status == "served" || $0.status == "cancelled"
+            }
+            if allServed && source[orderIndex].status != "completed" {
+                source[orderIndex].status = "served"
+                isPreparingCheckout = true
+            }
+        }
+        update(&orders)
+        update(&networkService.orders)
+    }
+
+    private func scheduleOrderRefresh() {
+        Task {
+            // Let the row-version trigger/realtime event settle before the
+            // authoritative refresh; the CTA is already visible optimistically.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await MainActor.run {
+                if self.isAllServed { self.isPreparingCheckout = false }
+            }
+            await loadOrders()
+        }
+    }
+
     private func deleteItem(_ item: OrderItem, from order: Order) {
         Task { _ = try? await NetworkService.shared.deleteOrderItem(itemId: item.id) }
     }
@@ -1363,7 +1418,8 @@ struct TableDetailView: View {
         Task {
             do {
                 _ = try await NetworkService.shared.serveOrderItem(itemId: item.id, orderId: order.id, servedBy: loggedInEmployeeName)
-                await loadOrders()
+                await MainActor.run { applyOptimisticServe(itemId: item.id, orderId: order.id) }
+                scheduleOrderRefresh()
             } catch {
                 print("TableDetailView: failed to serve item — \(error)")
             }
@@ -1395,10 +1451,22 @@ struct TableDetailView: View {
         isServingAll = true
         for item in pending { servingItemIds.insert(item.id) }
         Task {
+            var succeeded = [OrderItem]()
             for item in pending {
-                _ = try? await NetworkService.shared.serveOrderItem(itemId: item.id, orderId: order.id, servedBy: loggedInEmployeeName)
+                do {
+                    _ = try await NetworkService.shared.serveOrderItem(itemId: item.id, orderId: order.id, servedBy: loggedInEmployeeName)
+                    succeeded.append(item)
+                } catch {
+                    print("TableDetailView [serveOrder]: item \(item.id) failed — \(error)")
+                }
             }
-            await loadOrders()
+            for item in succeeded {
+                // Only successful calls should be reflected locally.
+                // `serveOrderItem` is idempotent and may have committed before
+                // a transient conflict was retried.
+                await MainActor.run { applyOptimisticServe(itemId: item.id, orderId: order.id) }
+            }
+            scheduleOrderRefresh()
             await MainActor.run {
                 for item in pending { servingItemIds.remove(item.id) }
                 isServingAll = false
@@ -1437,17 +1505,22 @@ struct TableDetailView: View {
         for p in pending { servingItemIds.insert(p.item.id) }
         Task {
             var failCount = 0
+            var succeeded = [(item: OrderItem, order: Order)]()
             for p in pending {
                 // H-4 FIX: Use try/catch instead of try? to detect individual failures
                 do {
                     _ = try await NetworkService.shared.serveOrderItem(
                         itemId: p.item.id, orderId: p.order.id, servedBy: loggedInEmployeeName)
+                    succeeded.append(p)
                 } catch {
                     failCount += 1
                     print("TableDetailView [serveAll]: item \(p.item.id) failed — \(error)")
                 }
             }
-            await loadOrders()
+            for p in succeeded {
+                await MainActor.run { applyOptimisticServe(itemId: p.item.id, orderId: p.order.id) }
+            }
+            scheduleOrderRefresh()
             await MainActor.run {
                 for p in pending { servingItemIds.remove(p.item.id) }
                 isServingAll = false
@@ -1823,6 +1896,7 @@ struct EditOrderItemSheet: View {
     let royalBlue:   Color
     let elfGreen:    Color
     let coralRed:    Color
+    var allowsQuantityEdit: Bool = true
 
     @Environment(\.dismiss) private var dismiss
     @State private var quantity: Int    = 1
@@ -1846,7 +1920,9 @@ struct EditOrderItemSheet: View {
                     }
                     .padding(.top, 4)
 
-                    // Quantity stepper
+                    // Quantity stepper (disabled for Quick Order until the
+                    // server-side order-total mutation RPC is available).
+                    if allowsQuantityEdit {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("จำนวน")
                             .font(.subheadline.weight(.semibold)).foregroundColor(.textSecondary)
@@ -1884,6 +1960,7 @@ struct EditOrderItemSheet: View {
                             .stroke(Color.appBorderSubtle, lineWidth: 1))
                     }
                     .apCard()
+                    }
 
                     // Notes field
                     VStack(alignment: .leading, spacing: 8) {

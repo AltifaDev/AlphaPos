@@ -587,7 +587,15 @@ struct NotificationListView: View {
 
     private func openAlert(_ alert: StaffAlert) {
         APHaptic.trigger()
-        deepLinkRouter.navigate(to: .table(tableNumber: alert.tableNumber))
+        // Orders (including QUICK/takeaway orders) do not always have a real
+        // table. Route them by order ID so the existing order detail screen
+        // is used instead of opening an empty table sheet.
+        switch alert.type {
+        case .order(let order):
+            deepLinkRouter.navigate(to: .order(orderId: order.id))
+        case .serviceRequest:
+            deepLinkRouter.navigate(to: .table(tableNumber: alert.tableNumber))
+        }
     }
     
     private func resolvedLabel(for alert: StaffAlert) -> String {

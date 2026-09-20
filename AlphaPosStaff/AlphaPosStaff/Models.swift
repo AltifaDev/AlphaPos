@@ -225,6 +225,10 @@ struct Order: Codable, Identifiable, Hashable, Sendable {
         guard hasUnservedItems else { return false }
         let statusLower = status.lowercased()
         if ["cancelled", "completed", "served"].contains(statusLower) { return false }
+        // Self-service web orders are already accepted by the customer-order
+        // RPC. `pending` is the initial kitchen workflow state, not a second
+        // staff-approval gate.
+        if orderSource.lowercased() == "web" { return false }
         // Confirmed on any device → leave the approval queue (status may lag as pending).
         if isStaffConfirmed { return false }
         return statusLower == "pending" || orderSource.lowercased() == "web"

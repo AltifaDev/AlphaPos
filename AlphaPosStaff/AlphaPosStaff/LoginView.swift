@@ -36,11 +36,17 @@ struct LoginView: View {
     @State private var bioScannerMessage = "Ready to Scan"
     
     @State private var isLoading = false
+    @State private var profileLoadRetryCount = 0
+    @State private var profileLoadState: ProfileLoadState = .idle
     @State private var pairingAwaitingApproval = false
     @State private var errorMessage: String? = nil
     @State private var errorTitle = ""
     @State private var errorSystemImage = "server.rack"
     @State private var isStoreIdCopied = false
+
+    private enum ProfileLoadState {
+        case idle, loading, loaded, confirmedEmpty
+    }
 
     // ── Computed ─────────────────────────────────────────────────────────
     private var pairingCodeIsValid: Bool {
@@ -497,6 +503,8 @@ struct LoginView: View {
     private func completePairing(with uuid: String) {
         APHaptic.trigger()
         activeMerchantId = uuid
+        profileLoadRetryCount = 0
+        profileLoadState = .loading
         showingScannerSheet = false
         NotificationManager.shared.requestAuthorization()
         loadEmployees()
@@ -579,7 +587,7 @@ struct LoginView: View {
                     connectionIssueView(message: err)
                         .frame(maxHeight: .infinity)
                         .transition(.scale(scale: 0.94).combined(with: .opacity))
-                } else if employees.isEmpty {
+                } else if employees.isEmpty && profileLoadState == .confirmedEmpty {
                     emptyEmployeesView
                         .frame(maxHeight: .infinity)
                 } else {
@@ -745,19 +753,21 @@ struct LoginView: View {
                             .fill(Color.appAmber.opacity(0.15))
                             .frame(width: 80, height: 80)
                         
-                        Image(systemName: "exclamationmark.triangle.fill")
+                        Image(systemName: "person.2.fill")
                             .font(.system(size: 36))
-                            .foregroundStyle(APGradient.warning)
+                            .foregroundStyle(APGradient.accent)
                     }
                     .padding(.top, 8)
                     
-                    Text("no_staff_title".localized(for: appLanguage))
+                    Text(appLanguage == "th" ? "กำลังตรวจสอบข้อมูลพนักงาน" : "Staff profiles are being checked")
                         .font(.title3)
                         .fontWeight(.black)
                         .foregroundColor(.textPrimary)
                         .multilineTextAlignment(.center)
                     
-                    Text("no_staff_sub".localized(for: appLanguage))
+                    Text(appLanguage == "th"
+                         ? "ขณะนี้ยังไม่มีรายชื่อแสดงในอุปกรณ์ กรุณากดรีเฟรชเพื่อโหลดข้อมูลล่าสุด ระบบไม่ได้ลบหรือแก้ไขข้อมูลพนักงานของคุณ"
+                         : "No profiles are currently displayed on this device. Refresh to load the latest staff data. Your staff records have not been deleted or changed.")
                         .font(.subheadline)
                         .foregroundColor(.textSecondary)
                         .multilineTextAlignment(.center)
@@ -926,6 +936,7 @@ struct LoginView: View {
         // The server response below is the complete authoritative login list.
         employees = []
         isLoading = true
+        profileLoadState = .loading
         errorMessage = nil
         errorTitle = ""
         errorSystemImage = "server.rack"
@@ -951,12 +962,26 @@ struct LoginView: View {
                 // Load profiles only after the server grants staff-device access.
                 let list = try await NetworkService.shared.fetchEmployees()
                 await MainActor.run {
+                    // Pairing writes the branch claim and token immediately before
+                    // this request. Retry quietly if the first request lands while
+                    // that state is still settling, instead of showing a scary
+                    // "no staff" warning to the user.
+                    if list.isEmpty && self.profileLoadRetryCount < 2 {
+                        self.profileLoadRetryCount += 1
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            self.loadEmployees()
+                        }
+                        return
+                    }
                     self.employees = list
                     self.isLoading = false
+                    self.profileLoadState = list.isEmpty ? .confirmedEmpty : .loaded
+                    self.profileLoadRetryCount = 0
                 }
             } catch {
                 await MainActor.run {
                     self.isLoading = false
+                    self.profileLoadState = .idle
                     self.presentLoadError(error)
                 }
             }

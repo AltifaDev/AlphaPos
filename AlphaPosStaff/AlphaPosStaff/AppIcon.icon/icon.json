@@ -1,6 +1,6 @@
 {
   "fill" : {
-    "automatic-gradient" : "extended-srgb:0.00000,0.53333,1.00000,1.00000"
+    "automatic-gradient" : "extended-srgb:0.04314,0.47451,0.26667,1.00000"
   },
   "groups" : [
     {
@@ -8,7 +8,7 @@
         {
           "fill" : "automatic",
           "image-name" : "logoicon.png",
-          "name" : "AlphaPos Logo"
+          "name" : "AlphaPos Staff Logo"
         }
       ],
       "shadow" : {

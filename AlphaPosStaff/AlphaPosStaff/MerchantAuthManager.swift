@@ -57,6 +57,7 @@ final class MerchantAuthManager {
         deviceId: String,
         refreshToken: String
     ) {
+        refreshTimer?.invalidate()
         let expiryTimestamp = Date().timeIntervalSince1970 + Double(expiresIn)
         keychainSave(accessToken, forKey: keychainTokenKey)
         keychainSave(String(expiryTimestamp), forKey: keychainExpiryKey)
@@ -107,8 +108,18 @@ final class MerchantAuthManager {
             
             let (data, response) = try await URLSession.shared.data(for: request)
             
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode),
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw AuthError.invalidResponse
+            }
+
+            if [401, 403, 410].contains(httpResponse.statusCode) {
+                refreshTimer?.invalidate()
+                refreshTimer = nil
+                NotificationCenter.default.post(name: .merchantSessionRequiresRepairing, object: nil)
+                throw AuthError.tokenExpired
+            }
+
+            guard (200...299).contains(httpResponse.statusCode),
                   let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let newToken = json["access_token"] as? String,
                   let expiresIn = json["expires_in"] as? Int else {
@@ -225,4 +236,5 @@ enum AuthError: Error, LocalizedError {
 
 extension Notification.Name {
     static let merchantTokenDidRefresh = Notification.Name("merchantTokenDidRefresh")
+    static let merchantSessionRequiresRepairing = Notification.Name("merchantSessionRequiresRepairing")
 }

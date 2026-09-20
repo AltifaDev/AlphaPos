@@ -61,6 +61,7 @@ struct MainTabView: View {
                 
                 customTabBar()
             }
+            .id(appLanguage)
             .ignoresSafeArea(.all, edges: .bottom)
             .apColorScheme()
             
@@ -113,6 +114,24 @@ struct MainTabView: View {
             if let order = findOrder(byId: orderId) {
                 deepLinkOrder = order
                 showOrderTimeline = true
+            } else {
+                // A push can arrive before the periodic sync has populated the
+                // local cache. Fetch the exact order instead of leaving a
+                // blank sheet or silently doing nothing.
+                Task {
+                    do {
+                        if let order = try await networkService.fetchOrderById(orderId) {
+                            await MainActor.run {
+                                deepLinkOrder = order
+                                showOrderTimeline = true
+                            }
+                        }
+                    } catch {
+                        #if DEBUG
+                        print("MainTabView: Failed to load deep-linked order: \(error)")
+                        #endif
+                    }
+                }
             }
         }
         .onReceive(deepLinkRouter.$presentTableNumber.compactMap { $0 }) { tableNumber in

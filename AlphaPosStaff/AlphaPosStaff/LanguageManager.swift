@@ -546,7 +546,7 @@ final class LanguageManager {
         ],
         "add_item": [
             "en": "Add Item",
-            "th": "สั่งอาหารเพิ่ม",
+            "th": "เพิ่มรายการ",
             "lo": "ສັ່ງອາຫານເພີ່ມ",
             "km": "បន្ថែមមុខម្ហូប",
             "vi": "Thêm món",
@@ -2623,16 +2623,187 @@ final class LanguageManager {
         "supabase_server_url": ["en": "Supabase Server URL", "th": "URL เซิร์ฟเวอร์ Supabase", "lo": "URL ເຊີບເວີ Supabase"],
         "note_changing_server": ["en": "Note: Changing server requires re-pairing all devices.", "th": "หมายเหตุ: การเปลี่ยนเซิร์ฟเวอร์ต้องจับคู่อุปกรณ์ใหม่ทั้งหมด", "lo": "ໝາຍເຫດ: ການເປລີ່ຍນເຊີບເວີຕ້ອງຈັບຄູ່ອຸປກລໄໝ່ທັງໝົດ"],
         // ── NotificationListView extra strings (2026-06-28) ────────────────
-        "and_conjunction": ["en": " & ", "th": " และ ", "lo": " ແລະ "]
-        ,
+        "and_conjunction": ["en": " & ", "th": " และ ", "lo": " ແລະ "],
         // ── LoginView (2026-06-28) ──────────────────────────────────────────
         "invalid_uuid_format": ["en": "Invalid UUID format (e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)", "th": "รูปแบบ UUID ไม่ถูกต้อง (เช่น xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)", "lo": "ຮູບແບບ UUID ບໍ່ຖືກຕ້ອງ (ເຊ່ນ xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)"],
-        "load_shifts_failed": ["en": "Could not load shifts", "th": "โหลดกะงานไม่สำเร็จ", "lo": "ໂຫຼດກະງານບໍ່ສຳເລັດ"]
+        "load_shifts_failed": ["en": "Could not load shifts", "th": "โหลดกะงานไม่สำเร็จ", "lo": "ໂຫຼດກະງານບໍ່ສຳເລັດ"],
+        // ── Quick Order & Payment Parity (2026-09-17) ────────────────────────
+        "order_placed_success_sub": [
+            "en": "Your order has been placed successfully",
+            "th": "รายการของคุณถูกสั่งเรียบร้อยแล้ว",
+            "lo": "ລາຍການຂອງທ່ານຖືກສັ່ງຮຽບຮ້ອຍແລ້ວ"
+        ],
+        "queue_label": [
+            "en": "QUEUE",
+            "th": "คิวที่",
+            "lo": "ຄິວທີ"
+        ],
+        "card": [
+            "en": "Card",
+            "th": "บัตร",
+            "lo": "ບັດ"
+        ],
+        "cash_payment_title": [
+            "en": "Cash Payment",
+            "th": "ชำระด้วยเงินสด",
+            "lo": "ຊຳລະດ້ວຍເງິນສົດ"
+        ],
+        "exact_amount": [
+            "en": "Exact",
+            "th": "พอดี (Exact)",
+            "lo": "ພໍດີ (Exact)"
+        ],
+        "cash_received": [
+            "en": "Cash Received",
+            "th": "รับเงินมา",
+            "lo": "ຮັບເງິນມາ"
+        ],
+        "thai_chua_thai_plus": [
+            "en": "Thai Chua Thai Plus",
+            "th": "โครงการไทยช่วยไทย Plus",
+            "lo": "ໂຄງການໄທຊ່ວຍໄທ Plus"
+        ],
+        "split_payment": [
+            "en": "Split Payment",
+            "th": "แยกชำระหลายช่องทาง",
+            "lo": "ແຍກຊຳລະຫຼາຍຊ່ອງທາງ"
+        ],
+        // ── PushNotificationSettingsView strings ─────────────────────────────
+        "push_notification_settings": [
+            "en": "Push Notification Settings",
+            "th": "การตั้งค่าการแจ้งเตือน",
+            "lo": "ການຕັ້ງຄ່າການແຈ້ງເຕືອນ"
+        ],
+        "system_notifications": [
+            "en": "System Notification Permission",
+            "th": "สิทธิ์การแจ้งเตือนระบบ",
+            "lo": "ສິດການແຈ້ງເຕືອນລະບົບ"
+        ],
+        "status_permission": [
+            "en": "Status",
+            "th": "สถานะ",
+            "lo": "ສະຖານະ"
+        ],
+        "open_ios_settings": [
+            "en": "Open iOS Settings",
+            "th": "เปิดการตั้งค่า iOS",
+            "lo": "ເປີດການຕັ້ງຄ່າ iOS"
+        ],
+        "order_notifications": [
+            "en": "Order Notifications",
+            "th": "การแจ้งเตือนออเดอร์",
+            "lo": "ການແຈ້ງເຕືອນອໍເດີ"
+        ],
+        "customer_notifications": [
+            "en": "Customer Notifications",
+            "th": "การแจ้งเตือนลูกค้า",
+            "lo": "ການແຈ້ງເຕືອນລູກຄ້າ"
+        ],
+        "staff_operational_notifications": [
+            "en": "Staff & Operational Notifications",
+            "th": "การแจ้งเตือนพนักงานและการดำเนินงาน",
+            "lo": "ການແຈ້ງເຕືອນພະນັກງານ"
+        ],
+        "test_notification_delivery": [
+            "en": "Test Notification Delivery",
+            "th": "ทดสอบการส่งการแจ้งเตือน",
+            "lo": "ທົດສອບການແຈ້ງເຕືອນ"
+        ],
+        "send_test_push": [
+            "en": "Send Test Push",
+            "th": "ส่งการแจ้งเตือนทดสอบ",
+            "lo": "ສົ່ງການແຈ້ງເຕືອນທົດສອບ"
+        ],
+        "test_push_result": [
+            "en": "Test Push Result",
+            "th": "ผลการทดสอบการแจ้งเตือน",
+            "lo": "ຜົນການທົດສອບ"
+        ],
+        "recent_order_check": [
+            "en": "Recent Orders",
+            "th": "ตรวจสอบออเดอร์ล่าสุด",
+            "lo": "ກວດສອບອໍເດີລ່າສຸດ"
+        ],
+        "recent_order_notice": [
+            "en": "Compare customer's queue, items, and time with the top entry. If nothing matches, the order may not have been entered. Red indicates unpaid balance.",
+            "th": "เทียบเลขคิว รายการสินค้า และเวลาของลูกค้ากับรายการบนสุด หากไม่พบรายการที่ตรงกัน ออเดอร์อาจยังไม่ได้คีย์ ส่วนสถานะสีแดงหมายถึงยังมียอดค้างชำระ",
+            "lo": "ທຽບເລກຄິວ ລາຍການສິນຄ້າ ແລະເວລາລູກຄ້າກັບລາຍການເທິງສຸດ ຖ້າບໍ່ພົບອາດຍັງບໍ່ໄດ້ຄີຍ໌ ສ່ວນສີແດງແມ່ນຍັງຄ້າງຊຳລະ"
+        ],
+        "search_queue_order_item": [
+            "en": "Search queue, order, or item",
+            "th": "ค้นหาเลขคิว ออเดอร์ หรือสินค้า",
+            "lo": "ຄົ້ນຫາເລກຄິວ, ອໍເດີ ຫຼື ສິນຄ້າ"
+        ],
+        "payment_status": [
+            "en": "Payment Status",
+            "th": "สถานะชำระ",
+            "lo": "ສະຖານະຊຳລະ"
+        ],
+        "filter_all": [
+            "en": "All",
+            "th": "ทั้งหมด",
+            "lo": "ທັງໝົດ"
+        ],
+        "filter_unpaid": [
+            "en": "Unpaid",
+            "th": "ยังไม่ชำระ",
+            "lo": "ຍັງບໍ່ຊຳລະ"
+        ],
+        "filter_paid": [
+            "en": "Paid",
+            "th": "ชำระแล้ว",
+            "lo": "ຊຳລະແລ້ວ"
+        ],
+        "no_matching_orders": [
+            "en": "No matching orders",
+            "th": "ไม่พบออเดอร์ที่ตรงกัน",
+            "lo": "ບໍ່ພົບອໍເດີທີ່ກົງກັນ"
+        ],
+        "no_matching_orders_desc": [
+            "en": "Check the search or start a new order.",
+            "th": "ตรวจสอบคำค้นหรือเริ่มคีย์ออเดอร์ใหม่",
+            "lo": "ກວດສອບຄຳຄົ້ນຫາຫຼືເລີ່ມອໍເດີໃໝ່"
+        ],
+        "latest_orders_count": [
+            "en": "Latest %d orders",
+            "th": "ล่าสุด %d รายการ",
+            "lo": "ລ່າສຸດ %d ລາຍການ"
+        ],
+        "payment_completed_banner": [
+            "en": "Payment Completed",
+            "th": "ชำระเงินเรียบร้อยแล้ว",
+            "lo": "ຊຳລະເງິນຮຽບຮ້ອຍແລ້ວ"
+        ],
+        "due_amount": [
+            "en": "Due ",
+            "th": "ค้าง ",
+            "lo": "ຄ້າງ "
+        ]
     ]
     
     func translate(_ key: String, lang: String) -> String {
-        let activeLanguage = AppLanguage(rawValue: lang)?.rawValue ?? "en"
-        return translations[key]?[activeLanguage] ?? translations[key]?["en"] ?? key
+        let lower = lang.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized: String
+        if lower.hasPrefix("th") {
+            normalized = "th"
+        } else if lower.hasPrefix("lo") {
+            normalized = "lo"
+        } else {
+            normalized = AppLanguage(rawValue: lower)?.rawValue ?? "en"
+        }
+        return translations[key]?[normalized] ?? translations[key]?["en"] ?? key
+    }
+
+    static func defaultLanguageCode() -> String {
+        if let preferred = Locale.preferredLanguages.first?.lowercased() {
+            if preferred.hasPrefix("th") { return "th" }
+            if preferred.hasPrefix("lo") { return "lo" }
+        }
+        if let langCode = Locale.current.language.languageCode?.identifier.lowercased() {
+            if langCode.hasPrefix("th") { return "th" }
+            if langCode.hasPrefix("lo") { return "lo" }
+        }
+        return "en"
     }
 }
 

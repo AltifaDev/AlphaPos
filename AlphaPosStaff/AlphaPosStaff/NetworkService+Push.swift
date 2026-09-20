@@ -31,10 +31,19 @@ extension NetworkService {
         Task { try? await self.upsertPushDevice() }
     }
 
-    /// Call on employee logout to disassociate employee_id (keep token active for merchant-wide pushes).
+    /// Call on employee logout. A staff iPhone must not remain eligible for
+    /// merchant-wide operational pushes while no employee is signed in.
     func dissociatePushTokenEmployee() {
         UserDefaults.standard.removeObject(forKey: "apns_employee_id")
-        Task { try? await self.upsertPushDevice() }
+        Task {
+            guard let token = UserDefaults.standard.string(forKey: "apns_device_token"), !token.isEmpty else { return }
+            _ = try? await self.sendSupabaseRequest(
+                method: "PATCH", endpoint: "push_devices",
+                queryItems: [URLQueryItem(name: "device_token", value: "eq.\(token)")],
+                payload: ["employee_id": NSNull(), "is_active": false,
+                          "updated_at": ISO8601DateFormatter().string(from: Date())]
+            )
+        }
     }
 
     /// Mark this device's token as inactive (e.g., on full logout / uninstall callback).
@@ -65,6 +74,7 @@ extension NetworkService {
             "device_token": token,
             "app_id":       "staff",
             "platform":     "ios",
+            "language_code": UserDefaults.standard.string(forKey: "app_language") ?? "en",
             "is_active":    true,
             "updated_at":   ISO8601DateFormatter().string(from: Date())
         ]

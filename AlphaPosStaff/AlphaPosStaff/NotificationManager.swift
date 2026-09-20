@@ -51,6 +51,24 @@ import UIKit
     ///   - deduplicationKey: Unique key to prevent duplicate fires within 30s window.
     ///                       If nil, no deduplication is performed.
     func notify(title: String, body: String, type: NotificationType = .system, deduplicationKey: String? = nil, userInfo: [String: Any]? = nil) {
+        // Operational alerts are for on-duty staff only. The server applies
+        // the same rule for APNs; this local guard covers realtime/in-app
+        // notifications while the app is open or during a logout transition.
+        let isOperational: Bool
+        switch type {
+        case .order, .request, .tableStatus, .urgent: isOperational = true
+        case .system: isOperational = false
+        }
+        if isOperational {
+            let employeeId = StaffSessionContext.employeeId
+            let isClockedIn = UserDefaults.standard.bool(forKey: "staff_is_clocked_in")
+            guard !employeeId.isEmpty && isClockedIn else {
+                #if DEBUG
+                print("NotificationManager: operational notification suppressed — staff not on duty")
+                #endif
+                return
+            }
+        }
         // 1. Deduplication check
         if let key = deduplicationKey {
             let now = Date()
@@ -146,8 +164,14 @@ import UIKit
                  ?? ""
         
         let notifType = mapPushTypeToNotificationType(pushType)
-        
-        notify(title: title, body: body, type: notifType, deduplicationKey: nil, userInfo: userInfo as? [String: Any])
+        let stableId = (userInfo["order_id"] as? String)
+            ?? (userInfo["request_id"] as? String)
+            ?? (userInfo["table_number"] as? String)
+        let deduplicationKey = stableId.map { "push:\(pushType):\($0)" }
+
+        notify(title: title, body: body, type: notifType,
+               deduplicationKey: deduplicationKey,
+               userInfo: userInfo as? [String: Any])
     }
     
     private func mapPushTypeToNotificationType(_ pushType: String) -> NotificationType {

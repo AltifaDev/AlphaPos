@@ -9,6 +9,7 @@ import UserNotifications
 
 struct PushNotificationSettingsView: View {
     // ── State ──────────────────────────────────────────────────────────────────
+    @AppStorage("app_language") private var appLanguage = "en"
     @State private var systemAuthStatus: UNAuthorizationStatus = .notDetermined
     @State private var prefs = NetworkService.PushNotificationPreferences.current
     @State private var isTesting = false
@@ -31,11 +32,11 @@ struct PushNotificationSettingsView: View {
                     testSection
                 }
             }
-            .navigationTitle("Push Notifications")
+            .navigationTitle("push_notification_settings".localized(for: appLanguage))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
+                    Button("done".localized(for: appLanguage)) { dismiss() }
                 }
             }
             .task { await refreshAuthStatus() }
@@ -47,8 +48,8 @@ struct PushNotificationSettingsView: View {
             .onChange(of: prefs.shiftReminders)    { prefs.save() }
             .onChange(of: prefs.timecardReminders) { prefs.save() }
             .onChange(of: prefs.inventoryAlerts)   { prefs.save() }
-            .alert("Test Push Result", isPresented: $showTestResult) {
-                Button("OK", role: .cancel) { testResult = nil }
+            .alert("test_push_result".localized(for: appLanguage), isPresented: $showTestResult) {
+                Button("ok".localized(for: appLanguage), role: .cancel) { testResult = nil }
             } message: {
                 Text(testResult ?? "")
             }
@@ -76,7 +77,7 @@ struct PushNotificationSettingsView: View {
                 Spacer()
 
                 if systemAuthStatus == .denied {
-                    Button("Settings") {
+                    Button(appLanguage == "th" ? "ตั้งค่า" : "Settings") {
                         if let url = URL(string: UIApplication.openSettingsURLString) {
                             UIApplication.shared.open(url)
                         }
@@ -85,7 +86,7 @@ struct PushNotificationSettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                 } else if systemAuthStatus == .notDetermined {
-                    Button("Enable") {
+                    Button(appLanguage == "th" ? "เปิดใช้งาน" : "Enable") {
                         Task { await requestPermission() }
                     }
                     .font(.caption.weight(.semibold))
@@ -95,7 +96,7 @@ struct PushNotificationSettingsView: View {
             }
             .padding(.vertical, 4)
         } header: {
-            Text("System Permission")
+            Text("system_notifications".localized(for: appLanguage))
         }
     }
 
@@ -104,9 +105,9 @@ struct PushNotificationSettingsView: View {
             Toggle(isOn: $prefs.newOrders) {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("New Orders")
+                        Text(appLanguage == "th" ? "ออเดอร์ใหม่" : "New Orders")
                             .font(.subheadline)
-                        Text("Alert when a new order is placed")
+                        Text(appLanguage == "th" ? "แจ้งเตือนเมื่อมีออเดอร์เข้ามาใหม่" : "Alert when a new order is placed")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -119,9 +120,9 @@ struct PushNotificationSettingsView: View {
             Toggle(isOn: $prefs.orderReady) {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Order Ready")
+                        Text(appLanguage == "th" ? "ออเดอร์พร้อมเสิร์ฟ" : "Order Ready")
                             .font(.subheadline)
-                        Text("Alert when kitchen marks an order ready")
+                        Text(appLanguage == "th" ? "แจ้งเตือนเมื่อครัวทำอาหารเสร็จแล้ว" : "Alert when kitchen marks an order ready")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -134,9 +135,9 @@ struct PushNotificationSettingsView: View {
             Toggle(isOn: $prefs.webOrders) {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Web Orders")
+                        Text(appLanguage == "th" ? "ออเดอร์จากเว็บ/ลูกค้า" : "Web Orders")
                             .font(.subheadline)
-                        Text("Alert for customer self-ordering app orders")
+                        Text(appLanguage == "th" ? "แจ้งเตือนออเดอร์สั่งเองของลูกค้า" : "Alert for customer self-ordering app orders")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -146,7 +147,7 @@ struct PushNotificationSettingsView: View {
                 }
             }
         } header: {
-            Text("Orders")
+            Text("order_notifications".localized(for: appLanguage))
         }
     }
 
@@ -155,9 +156,9 @@ struct PushNotificationSettingsView: View {
             Toggle(isOn: $prefs.serviceRequests) {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Service Requests")
+                        Text(appLanguage == "th" ? "คำขอบริการจากลูกค้า" : "Service Requests")
                             .font(.subheadline)
-                        Text("Alert when customers request assistance")
+                        Text(appLanguage == "th" ? "แจ้งเตือนเมื่อลูกค้ากดเรียกพนักงาน" : "Alert when customers request assistance")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -170,9 +171,9 @@ struct PushNotificationSettingsView: View {
             Toggle(isOn: $prefs.tableStatus) {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Table Status Changes")
+                        Text(appLanguage == "th" ? "สถานะโต๊ะเปลี่ยนแปลง" : "Table Status Changes")
                             .font(.subheadline)
-                        Text("Alert when tables open or close sessions")
+                        Text(appLanguage == "th" ? "แจ้งเตือนเมื่อเปิดหรือปิดโต๊ะ" : "Alert when tables open or close sessions")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -182,7 +183,7 @@ struct PushNotificationSettingsView: View {
                 }
             }
         } header: {
-            Text("Customers")
+            Text("customer_notifications".localized(for: appLanguage))
         }
     }
 
@@ -191,9 +192,9 @@ struct PushNotificationSettingsView: View {
             Toggle(isOn: $prefs.shiftReminders) {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Shift Reminders")
+                        Text(appLanguage == "th" ? "เตือนเวลากะงาน" : "Shift Reminders")
                             .font(.subheadline)
-                        Text("Remind me 30 min before my shift starts")
+                        Text(appLanguage == "th" ? "เตือนล่วงหน้า 30 นาทีก่อนเริ่มกะงาน" : "Remind me 30 min before my shift starts")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -206,9 +207,9 @@ struct PushNotificationSettingsView: View {
             Toggle(isOn: $prefs.timecardReminders) {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Timecard Reminders")
+                        Text(appLanguage == "th" ? "เตือนลงเวลาเข้า-ออกงาน" : "Timecard Reminders")
                             .font(.subheadline)
-                        Text("Remind me to clock in/out for my shift")
+                        Text(appLanguage == "th" ? "เตือนให้ลงเวลาเข้าหรือออกงานตามกะ" : "Remind me to clock in/out for my shift")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -221,9 +222,9 @@ struct PushNotificationSettingsView: View {
             Toggle(isOn: $prefs.inventoryAlerts) {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Inventory Alerts")
+                        Text(appLanguage == "th" ? "เตือนสต็อกสินค้า" : "Inventory Alerts")
                             .font(.subheadline)
-                        Text("Alert when stock hits zero or is critically low")
+                        Text(appLanguage == "th" ? "แจ้งเตือนเมื่อสินค้าหมดหรือเหลือน้อยวิกฤต" : "Alert when stock hits zero or is critically low")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -233,7 +234,7 @@ struct PushNotificationSettingsView: View {
                 }
             }
         } header: {
-            Text("My Schedule")
+            Text("staff_operational_notifications".localized(for: appLanguage))
         }
     }
 
@@ -243,7 +244,7 @@ struct PushNotificationSettingsView: View {
                 Task { await sendTestPush() }
             } label: {
                 HStack {
-                    Label("Send Test Push", systemImage: "paperplane.fill")
+                    Label("send_test_push".localized(for: appLanguage), systemImage: "paperplane.fill")
                     Spacer()
                     if isTesting {
                         ProgressView()
@@ -253,9 +254,9 @@ struct PushNotificationSettingsView: View {
             }
             .disabled(isTesting)
         } header: {
-            Text("Test")
+            Text("test_notification_delivery".localized(for: appLanguage))
         } footer: {
-            Text("Sends a test push to this device via the AlphaPos server. Put the app in background first to see the system banner.")
+            Text(appLanguage == "th" ? "ส่งการแจ้งเตือนทดสอบมายังอุปกรณ์เครื่องนี้ผ่านเซิร์ฟเวอร์ AlphaPos ให้สลับแอปไปเบื้องหลังก่อนเพื่อดูแบนเนอร์ระบบ" : "Sends a test push to this device via the AlphaPos server. Put the app in background first to see the system banner.")
                 .font(.caption)
         }
     }
@@ -282,19 +283,27 @@ struct PushNotificationSettingsView: View {
 
     private var statusTitle: String {
         switch systemAuthStatus {
-        case .authorized:    return "Notifications Enabled"
-        case .provisional:   return "Provisional (Quiet)"
-        case .denied:        return "Notifications Disabled"
-        default:             return "Permission Not Requested"
+        case .authorized:
+            return appLanguage == "th" ? "เปิดใช้งานการแจ้งเตือนแล้ว" : (appLanguage == "lo" ? "ເປີດໃຊ້ການແຈ້ງເຕືອນແລ້ວ" : "Notifications Enabled")
+        case .provisional:
+            return appLanguage == "th" ? "แบบไม่รบกวน (เงียบ)" : (appLanguage == "lo" ? "ແບບງຽບ" : "Provisional (Quiet)")
+        case .denied:
+            return appLanguage == "th" ? "ปิดการแจ้งเตือนอยู่" : (appLanguage == "lo" ? "ປິດການແຈ້ງເຕືອນຢູ່" : "Notifications Disabled")
+        default:
+            return appLanguage == "th" ? "ยังไม่ได้ขอสิทธิ์" : (appLanguage == "lo" ? "ຍັງບໍ່ໄດ້ຂໍສິດ" : "Permission Not Requested")
         }
     }
 
     private var statusDescription: String {
         switch systemAuthStatus {
-        case .authorized:    return "You will receive all configured push alerts."
-        case .provisional:   return "Pushes appear silently in Notification Center only."
-        case .denied:        return "Enable in Settings → AlphaPos Staff → Notifications."
-        default:             return "Tap Enable to allow push notifications."
+        case .authorized:
+            return appLanguage == "th" ? "คุณจะได้รับการแจ้งเตือนทั้งหมดที่ตั้งค่าไว้" : (appLanguage == "lo" ? "ທ່ານຈະໄດ້ຮັບການແຈ້ງເຕືອນທັງໝົດທີ່ຕັ້ງໄວ້" : "You will receive all configured push alerts.")
+        case .provisional:
+            return appLanguage == "th" ? "การแจ้งเตือนจะแสดงเงียบๆ ในศูนย์การแจ้งเตือนเท่านั้น" : (appLanguage == "lo" ? "ການແຈ້ງເຕືອນຈະສະແດງງຽບໆ ໃນສູນແຈ້ງເຕືອນ" : "Pushes appear silently in Notification Center only.")
+        case .denied:
+            return appLanguage == "th" ? "เปิดใช้งานใน การตั้งค่า → AlphaPos Staff → การแจ้งเตือน" : (appLanguage == "lo" ? "ເປີດໃຊ້ໃນ ການຕັ້ງຄ່າ → AlphaPos Staff → ການແຈ້ງເຕືອນ" : "Enable in Settings → AlphaPos Staff → Notifications.")
+        default:
+            return appLanguage == "th" ? "กดเปิดใช้งานเพื่อรับการแจ้งเตือน" : (appLanguage == "lo" ? "ກົດເປີດໃຊ້ເພື່ອຮັບການແຈ້ງເຕືອນ" : "Tap Enable to allow push notifications.")
         }
     }
 

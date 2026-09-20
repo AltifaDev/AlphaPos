@@ -5,6 +5,7 @@ struct MoreMenuView: View {
     
     @AppStorage("app_language") private var appLanguage = "en"
     @AppStorage("enable_notifications") private var enableNotifications = true
+    @AppStorage(StaffSoundFeedback.enabledKey) private var soundFeedbackEnabled = true
     @AppStorage("active_merchant_id") private var activeMerchantId = ""
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @AppStorage("logged_in_employee_id") private var loggedInEmployeeId = ""
@@ -229,8 +230,24 @@ struct MoreMenuView: View {
                         NavigationLink {
                             PushNotificationSettingsView()
                         } label: {
-                            menuRow(icon: "bell.badge.fill", iconColor: .appPurple, title: "Push Notification Settings")
+                            menuRow(icon: "bell.badge.fill", iconColor: .appPurple, title: "push_notification_settings".localized(for: appLanguage))
                         }
+
+                        Divider().background(Color.appDivider).padding(.leading, 48)
+
+                        HStack(spacing: APSpacing.md) {
+                            iconContainer(name: soundFeedbackEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill", color: .appTeal)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(appLanguage == "th" ? "เสียงตอบสนองการกด" : "Button sounds")
+                                    .font(.subheadline).foregroundColor(.textPrimary)
+                                Text(appLanguage == "th" ? "ใช้เสียงมาตรฐานของ iOS สำหรับการสั่งซื้อและชำระเงิน" : "Use iOS system sounds for ordering and payment")
+                                    .font(.caption).foregroundColor(.textSecondary)
+                            }
+                            Spacer()
+                            Toggle("", isOn: Binding(get: { soundFeedbackEnabled }, set: { StaffSoundFeedback.setEnabled($0) }))
+                                .labelsHidden().tint(.appAccent)
+                        }
+                        .padding(.horizontal, APSpacing.md).padding(.vertical, 12)
                         
                         Divider().background(Color.appDivider).padding(.leading, 48)
                         
@@ -250,6 +267,10 @@ struct MoreMenuView: View {
                                 }
                             }
                             .pickerStyle(.segmented)
+                            .onChange(of: appLanguage) { _, _ in
+                                // Keep APNs content in sync with the language selected on this device.
+                                Task { try? await NetworkService.shared.upsertPushDevice() }
+                            }
                             .padding(.top, 4)
                         }
                         .padding(.horizontal, APSpacing.md)
@@ -455,6 +476,8 @@ struct MoreMenuView: View {
             Button("cancel".localized(for: appLanguage), role: .cancel) { }
             Button("log_out".localized(for: appLanguage), role: .destructive) {
                 APHaptic.trigger()
+                NetworkService.shared.dissociatePushTokenEmployee()
+                UserDefaults.standard.set(false, forKey: "staff_is_clocked_in")
                 loggedInEmployeeId = ""
                 loggedInEmployee = nil
             }
@@ -648,11 +671,16 @@ struct MoreMenuView: View {
                     }
                     self.attendanceLoadFailed = false
                     self.isLoadingAttendance = false
+                    UserDefaults.standard.set(
+                        self.todayTimecard.map { $0.clockOut == nil || $0.clockOut == 0 } ?? false,
+                        forKey: "staff_is_clocked_in"
+                    )
                 }
             } catch {
                 await MainActor.run {
                     self.attendanceLoadFailed = true
                     self.isLoadingAttendance = false
+                    UserDefaults.standard.set(false, forKey: "staff_is_clocked_in")
                 }
             }
         }

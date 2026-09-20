@@ -310,6 +310,7 @@ struct BillingView: View {
                 }
                 Spacer()
                 Button {
+                    StaffSoundFeedback.play()
                     APHaptic.trigger()
                     dismiss()
                 } label: {
@@ -536,6 +537,7 @@ struct BillingView: View {
                     icon: "banknote.fill",
                     tint: .appTeal
                 ) {
+                    StaffSoundFeedback.play()
                     APHaptic.trigger()
                     activePaymentModal = .cash
                 }
@@ -546,6 +548,7 @@ struct BillingView: View {
                     icon: "qrcode",
                     tint: Color.appPurple
                 ) {
+                    StaffSoundFeedback.play()
                     APHaptic.trigger()
                     activePaymentModal = .qrCode
                 }
@@ -556,6 +559,7 @@ struct BillingView: View {
                     icon: "creditcard.fill",
                     tint: Color.appRose
                 ) {
+                    StaffSoundFeedback.play()
                     APHaptic.trigger()
                     activePaymentModal = .creditCard
                 }
@@ -566,6 +570,7 @@ struct BillingView: View {
             HStack(spacing: 10) {
                 // โครงการไทยช่วยไทย Plus
                 Button {
+                    StaffSoundFeedback.play()
                     APHaptic.trigger()
                     activePaymentModal = .thaiChuaThaiPlus
                 } label: {
@@ -606,6 +611,7 @@ struct BillingView: View {
 
                 // แยกชำระหลายช่องทาง (Split Pay)
                 Button {
+                    StaffSoundFeedback.play()
                     APHaptic.trigger()
                     activePaymentModal = .splitPayment
                 } label: {
@@ -793,6 +799,7 @@ struct BillingView: View {
                     withAnimation(.spring(response: 0.6, dampingFraction: 0.78)) {
                         paymentSuccess = true
                     }
+                    StaffSoundFeedback.paymentSuccess()
                     APHaptic.trigger()
                     NotificationCenter.default.post(name: .checkoutCompleted, object: table.tableNumber)
                 }
@@ -860,6 +867,7 @@ struct BillingView: View {
                     withAnimation(.spring(response: 0.6, dampingFraction: 0.78)) {
                         paymentSuccess = true
                     }
+                    StaffSoundFeedback.paymentSuccess()
                     APHaptic.trigger()
                     NotificationCenter.default.post(name: .checkoutCompleted, object: table.tableNumber)
                 }
@@ -927,6 +935,7 @@ struct BillingView: View {
                     withAnimation(.spring(response: 0.6, dampingFraction: 0.78)) {
                         paymentSuccess = true
                     }
+                    StaffSoundFeedback.paymentSuccess()
                     APHaptic.trigger()
                     NotificationCenter.default.post(name: .checkoutCompleted, object: table.tableNumber)
                 }
@@ -1175,11 +1184,15 @@ struct StaffPreBillSheetView: View {
                             .interpolation(.none)
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 150, height: 150)
+                            .frame(width: 200, height: 200)
                             .padding(6)
                             .background(Color.white)
                             .overlay(Rectangle().stroke(Color.black, lineWidth: 1.5))
                     }
+
+                    Text(storeName)
+                        .font(.system(size: 12, weight: .black, design: .monospaced))
+                        .foregroundColor(.black)
 
                     Text("PromptPay: \(promptPayNumber)")
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
@@ -1334,6 +1347,7 @@ struct StaffCashPaymentModalView: View {
     }
 
     private func handleKeypadInput(_ input: String) {
+        StaffSoundFeedback.play()
         APHaptic.trigger()
         withAnimation(.spring(response: 0.2, dampingFraction: 0.65)) {
             if input == "⌫" {
@@ -2202,6 +2216,9 @@ struct StaffThaiQRPaymentFrame: View {
                 }
 
                 VStack(spacing: 2) {
+                    Text(storeName)
+                        .font(.system(size: 14, weight: .black, design: .rounded))
+                        .foregroundColor(.textPrimary)
                     Text(promptPayNumber)
                         .font(.system(size: 14, weight: .bold, design: .monospaced))
                         .foregroundColor(.textSecondary)

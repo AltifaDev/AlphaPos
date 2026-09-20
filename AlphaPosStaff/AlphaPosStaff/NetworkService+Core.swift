@@ -207,6 +207,8 @@ final class NetworkService {
             self.heartbeatTimer = nil
             self.pollingTimer?.invalidate()
             self.pollingTimer = nil
+            self.realtimeReconnectWorkItem?.cancel()
+            self.realtimeReconnectWorkItem = nil
             // Reset reconnect backoff so foreground gets immediate reconnect
             self.reconnectAttempt = 0
 
@@ -233,6 +235,8 @@ final class NetworkService {
             self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
             self.webSocketTask = nil
             self.realtimeJoinSucceeded = false
+            self.realtimeReconnectWorkItem?.cancel()
+            self.realtimeReconnectWorkItem = nil
         }
         
         // Observe JWT token refresh — reconnect WebSocket with the new token
@@ -250,8 +254,32 @@ final class NetworkService {
             self.realtimeJoinSucceeded = false
             self.heartbeatTimer?.invalidate()
             self.heartbeatTimer = nil
+            self.realtimeReconnectBlocked = false
+            self.realtimeReconnectWorkItem?.cancel()
+            self.realtimeReconnectWorkItem = nil
+            self.reconnectAttempt = 0
             self.startRealtimeSync()
             Task { try? await self.upsertPushDevice() }
+        }
+
+        // A revoked/expired device refresh credential cannot recover by retrying.
+        // Stop all background traffic until the user pairs the device again.
+        NotificationCenter.default.addObserver(
+            forName: .merchantSessionRequiresRepairing,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.realtimeReconnectBlocked = true
+            self.realtimeReconnectWorkItem?.cancel()
+            self.realtimeReconnectWorkItem = nil
+            self.heartbeatTimer?.invalidate()
+            self.heartbeatTimer = nil
+            self.pollingTimer?.invalidate()
+            self.pollingTimer = nil
+            self.webSocketTask?.cancel(with: .policyViolation, reason: nil)
+            self.webSocketTask = nil
+            self.realtimeJoinSucceeded = false
         }
     }
     
@@ -713,7 +741,11 @@ final class NetworkService {
     @ObservationIgnored
     var reconnectAttempt: Int = 0
     @ObservationIgnored
-    let maxReconnectDelay: TimeInterval = 30.0
+    let maxReconnectDelay: TimeInterval = 60.0
+    @ObservationIgnored
+    var realtimeReconnectWorkItem: DispatchWorkItem?
+    @ObservationIgnored
+    var realtimeReconnectBlocked = false
     
     // Debounce: Prevent rapid-fire refreshAll from multiple Realtime events
     @ObservationIgnored

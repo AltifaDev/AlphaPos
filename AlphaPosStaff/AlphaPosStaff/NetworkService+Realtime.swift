@@ -6,7 +6,10 @@ import UIKit
 
 extension NetworkService {
     func startRealtimeSync() {
-        guard webSocketTask == nil else { return }
+        guard webSocketTask == nil,
+              !realtimeReconnectBlocked,
+              MerchantAuthManager.shared.isAuthenticated,
+              !activeMerchantId.isEmpty else { return }
         realtimeJoinSucceeded = false
         
         let baseRealtimeURL = AppConfig.supabaseRealtimeURL.absoluteString
@@ -50,22 +53,33 @@ extension NetworkService {
                 self.heartbeatTimer?.invalidate()
                 self.heartbeatTimer = nil
                 
-                // Exponential backoff: 2s → 4s → 8s → 16s → 30s max
-                let delay = min(maxReconnectDelay, pow(2.0, Double(reconnectAttempt)) * 1.0)
-                // Add jitter (±25%) to prevent thundering herd
-                let jitter = delay * Double.random(in: -0.25...0.25)
-                let finalDelay = max(1.0, delay + jitter)
-                reconnectAttempt += 1
-                
-                #if DEBUG
-                print("NetworkService: Reconnecting in \(String(format: "%.1f", finalDelay))s (attempt \(reconnectAttempt))")
-                #endif
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + finalDelay) {
-                    self.startRealtimeSync()
-                }
+                self.scheduleRealtimeReconnect(reason: error.localizedDescription)
             }
         }
+    }
+
+    /// All disconnect paths share one bounded retry task. This prevents a
+    /// `phx_close` response and URLSession failure from creating parallel loops.
+    private func scheduleRealtimeReconnect(reason: String) {
+        guard !realtimeReconnectBlocked,
+              realtimeReconnectWorkItem == nil,
+              MerchantAuthManager.shared.isAuthenticated else { return }
+
+        let delay = min(maxReconnectDelay, pow(2.0, Double(reconnectAttempt)) * 2.0)
+        let finalDelay = max(2.0, delay * Double.random(in: 0.75...1.25))
+        reconnectAttempt += 1
+
+        #if DEBUG
+        print("NetworkService: \(reason). Reconnecting in \(String(format: "%.1f", finalDelay))s (attempt \(reconnectAttempt))")
+        #endif
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.realtimeReconnectWorkItem = nil
+            self.startRealtimeSync()
+        }
+        realtimeReconnectWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + finalDelay, execute: workItem)
     }
 
     private func joinRealtimeTopic() {
@@ -86,6 +100,7 @@ extension NetworkService {
                         ["event": "*", "schema": "public", "table": "service_requests", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "floor_plan_images", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "dining_areas", "filter": "merchant_id=eq.\(merchantId)"],
+                        ["event": "*", "schema": "public", "table": "payments", "filter": "merchant_id=eq.\(merchantId)"],
                         ["event": "*", "schema": "public", "table": "sync_outbox", "filter": "merchant_id=eq.\(merchantId)"]
                     ]
                 ],
@@ -144,19 +159,21 @@ extension NetworkService {
             }
             // ── WebSocket health check ────────────────────────────────────
             // ถ้า webSocketTask เป็น nil (disconnect โดยไม่มี error callback)
-            // ให้ reconnect ทันทีโดยไม่รอ backoff
-            if self.webSocketTask == nil {
+            // ให้เข้า retry coordinator เดียวกัน ห้าม reset backoff ทุกรอบ polling
+            if self.webSocketTask == nil && self.realtimeReconnectWorkItem == nil {
                 #if DEBUG
-                print("NetworkService [HealthCheck]: WebSocket nil — reconnecting...")
+                print("NetworkService [HealthCheck]: WebSocket nil — scheduling reconnect...")
                 #endif
-                self.reconnectAttempt = 0
-                self.startRealtimeSync()
+                self.scheduleRealtimeReconnect(reason: "WebSocket health check failed")
             }
         }
     }
 
     /// Force reconnect WebSocket ทันที — เรียกจาก outside (เช่น TablesView pull-to-refresh)
     func forceReconnect() {
+        guard !realtimeReconnectBlocked else { return }
+        realtimeReconnectWorkItem?.cancel()
+        realtimeReconnectWorkItem = nil
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         realtimeJoinSucceeded = false
@@ -248,8 +265,9 @@ extension NetworkService {
                     // Trigger instant alert if notifications are enabled
                     if notificationsEnabled && isCurrentEvent {
                         if type == "INSERT" {
-                            // Web orders arrive as "pending" (awaiting approval)
-                            // Staff orders arrive as "preparing" — both should notify
+                            // Web orders arrive as "pending" (accepted, awaiting
+                            // kitchen workflow). Staff orders arrive as
+                            // "preparing" — both should notify once.
                             let shouldNotifyInsert = isWebOrder
                                 ? statusLower == "pending"
                                 : (statusLower == "preparing" || statusLower == "ready")
@@ -257,7 +275,7 @@ extension NetworkService {
                                 if !notifiedOrderIds.contains(notificationKey) {
                                     self.markOrderAsNotified(key: notificationKey)
                                     let title = isWebOrder
-                                        ? "🌐 Web Order \(orderNumber) — อนุมัติด่วน!"
+                                        ? "🌐 Web Order \(orderNumber) — รับออเดอร์แล้ว"
                                         : (statusLower == "ready" ? "🍳 Order \(orderNumber) Ready!" : "🧾 New Order \(orderNumber)")
                                     NotificationManager.shared.notify(title: title, body: "Table \(tableNumber)", type: .order, deduplicationKey: notificationKey, userInfo: ["table_number": tableNumber, "type": "order", "order_id": id])
                                 }
@@ -288,6 +306,7 @@ extension NetworkService {
                                     } else {
                                         self.orders.insert(order, at: 0)
                                     }
+                                    NotificationCenter.default.post(name: NSNotification.Name("StaffOrderUpdated"), object: order)
                                 }
                             }
                         } catch {
@@ -393,10 +412,26 @@ extension NetworkService {
                                     // ให้เพิ่ม order เข้า self.orders เสมอ เพื่อให้ onChange ใน TableDetailView fire
                                     self.orders.insert(order, at: 0)
                                 }
+                                NotificationCenter.default.post(name: NSNotification.Name("StaffOrderUpdated"), object: order)
                             }
                         }
                     } catch {
                         print("NetworkService [Realtime fetchOrderById for order_items failed]: \(error)")
+                    }
+                }
+            } else if table == "payments" {
+                if let orderId = record["order_id"] as? String {
+                    Task {
+                        if let order = try? await NetworkService.shared.fetchOrderById(orderId) {
+                            await MainActor.run {
+                                if let idx = self.orders.firstIndex(where: { $0.id == order.id }) {
+                                    self.orders[idx] = order
+                                } else {
+                                    self.orders.insert(order, at: 0)
+                                }
+                                NotificationCenter.default.post(name: NSNotification.Name("StaffOrderUpdated"), object: order)
+                            }
+                        }
                     }
                 }
             } else if table == "order_item_modifiers" {
@@ -467,10 +502,7 @@ extension NetworkService {
             webSocketTask = nil
             heartbeatTimer?.invalidate()
             heartbeatTimer = nil
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                guard let self, self.webSocketTask == nil else { return }
-                self.startRealtimeSync()
-            }
+            scheduleRealtimeReconnect(reason: "Realtime channel closed")
             isPostgresChange = false
         } else {
             // Catch any other events that contain postgres change data in payload

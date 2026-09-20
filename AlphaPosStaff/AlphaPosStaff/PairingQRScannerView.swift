@@ -27,6 +27,7 @@ final class PairingQRScannerViewController: UIViewController, AVCaptureMetadataO
     private let sessionQueue = DispatchQueue(label: "alphapos.pairing.camera")
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var hasScanned = false
+    private var isStopping = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -62,7 +63,7 @@ final class PairingQRScannerViewController: UIViewController, AVCaptureMetadataO
         // Restart only when the session was already configured (inputs present)
         // but is not currently running — e.g. returning to this screen.
         guard !session.inputs.isEmpty, !session.isRunning else { return }
-        sessionQueue.async { [weak self] in self?.session.startRunning() }
+        sessionQueue.async { [self] in self.session.startRunning() }
     }
 
     private func configureCamera() {
@@ -87,7 +88,7 @@ final class PairingQRScannerViewController: UIViewController, AVCaptureMetadataO
             layer.frame = view.bounds
             view.layer.insertSublayer(layer, at: 0)
             previewLayer = layer
-            sessionQueue.async { [weak self] in self?.session.startRunning() }
+            sessionQueue.async { [self] in self.session.startRunning() }
         } catch {
             fail("Unable to start the camera scanner")
         }
@@ -102,18 +103,31 @@ final class PairingQRScannerViewController: UIViewController, AVCaptureMetadataO
               let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
               let value = object.stringValue else { return }
         hasScanned = true
-        onScan?(value)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            self?.hasScanned = false
+
+        // Do not mutate the SwiftUI sheet while AVCaptureSession is still
+        // delivering metadata. The old ordering dismissed the sheet first,
+        // then tore down the session asynchronously, which could race with
+        // the next view tree being created and terminate the app on device.
+        stopScanning { [weak self] in
+            DispatchQueue.main.async {
+                self?.onScan?(value)
+            }
         }
     }
 
-    func stopScanning() {
-        sessionQueue.async { [weak self] in
-            guard let self else { return }
-            if self.session.isRunning {
-                self.session.stopRunning()
-            }
+    func stopScanning(completion: (() -> Void)? = nil) {
+        guard !isStopping else {
+            completion?()
+            return
+        }
+        isStopping = true
+        // Retain the controller until the capture session is fully stopped and
+        // its inputs/outputs have been removed. Using a weak capture here can
+        // allow SwiftUI to release the controller while this queue is still
+        // tearing down AVFoundation, which produces an over-release warning and
+        // can terminate the app on a real device.
+        sessionQueue.async { [self] in
+            if self.session.isRunning { self.session.stopRunning() }
             // Fully tear the session down so the capture device is released.
             // Merely calling `stopRunning()` leaves the AVCaptureDeviceInput
             // holding the camera, which starves a subsequent UIImagePicker /
@@ -125,6 +139,8 @@ final class PairingQRScannerViewController: UIViewController, AVCaptureMetadataO
             for output in self.session.outputs {
                 self.session.removeOutput(output)
             }
+            self.isStopping = false
+            DispatchQueue.main.async { completion?() }
         }
     }
 

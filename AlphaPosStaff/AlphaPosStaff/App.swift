@@ -2,6 +2,29 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
+private enum StaffTextSize: String {
+    case system, small, normal, large
+
+    var dynamicTypeSize: DynamicTypeSize {
+        switch self {
+        case .system, .normal: return .large
+        case .small: return .small
+        case .large: return .accessibility1
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func staffTextSize(_ value: StaffTextSize) -> some View {
+        if value == .system {
+            self
+        } else {
+            self.dynamicTypeSize(value.dynamicTypeSize)
+        }
+    }
+}
+
 final class AlphaPosStaffAppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
@@ -62,6 +85,7 @@ struct AlphaPosStaffApp: App {
     @UIApplicationDelegateAdaptor(AlphaPosStaffAppDelegate.self) private var appDelegate
     @State private var loggedInEmployee: Employee? = nil
     @State private var isShowingSplash = true
+    @AppStorage("app_text_size") private var appTextSize = StaffTextSize.system.rawValue
 
     private static func migrateRetiredSupabaseURLIfNeeded() {
         let key = "dynamic_supabase_url"
@@ -91,6 +115,12 @@ struct AlphaPosStaffApp: App {
             diskPath: "supabase_product_images"
         )
         URLCache.shared = imageCache
+
+        // Initialize default app language if not set
+        if UserDefaults.standard.string(forKey: "app_language") == nil {
+            let defaultCode = LanguageManager.defaultLanguageCode()
+            UserDefaults.standard.set(defaultCode, forKey: "app_language")
+        }
     }
     
     var body: some Scene {
@@ -110,6 +140,7 @@ struct AlphaPosStaffApp: App {
                         .zIndex(10_000)
                 }
             }
+            .staffTextSize(StaffTextSize(rawValue: appTextSize) ?? .system)
             .onAppear {
                 // NOTE: DEBUG auto-login was removed. It created a fake Employee with a
                 // random UUID that did not exist in Supabase, so server-side PIN
@@ -127,8 +158,15 @@ struct AlphaPosStaffApp: App {
             .onChange(of: loggedInEmployee) { newEmp in
                 if let emp = newEmp {
                     StaffSessionContext.setEmployee(id: emp.id, name: "\(emp.firstName) \(emp.lastName)")
+                    Task {
+                        let isClockedIn = (try? await NetworkService.shared.hasActiveTimecard(for: emp.id)) ?? false
+                        await MainActor.run {
+                            UserDefaults.standard.set(isClockedIn, forKey: "staff_is_clocked_in")
+                        }
+                    }
                 } else {
                     StaffSessionContext.clearEmployee()
+                    UserDefaults.standard.set(false, forKey: "staff_is_clocked_in")
                 }
             }
             .overlay(alignment: .top) {
