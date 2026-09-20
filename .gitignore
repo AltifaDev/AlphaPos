@@ -22,6 +22,31 @@ venv/
 __pycache__/
 *.py[cod]
 
+# Xcode user state and generated build products
+xcuserdata/
+*.xcuserstate
+DerivedData/
+.build/
+build/
+*.xcarchive/
+*.ipa
+*.dSYM/
+*.dSYM.zip
+AppStoreBuild/
+ReleaseBuilds/
+
+# Local reports, scratch output, and backups
+output/
+outputs/
+tmp/
+backups/
+.search_results.txt
+*.build.log
+
+# Local environment/configuration (keep the .example templates)
+AlphaPos/Supporting Files/Config.plist
+AlphaPosStaff/AlphaPosStaff/Config.plist
+
 # System files
 .DS_Store
 Thumbs.db
