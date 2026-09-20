@@ -1,9 +1,9 @@
 import urllib.request
 import json
+import os
 
-rest_url = "https://your-supabase-project.supabase.co/rest/v1/restaurant_tables"
-anon_key = "your-anon-key"
-service_role = "your-service-role-key"
+rest_url = os.environ.get("SUPABASE_URL", "http://119.59.99.163").rstrip("/") + "/rest/v1/restaurant_tables"
+service_role = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 
 req_query = urllib.request.Request(
     rest_url,

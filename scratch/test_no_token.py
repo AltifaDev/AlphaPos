@@ -17,7 +17,7 @@ def run_no_token_test():
     driver = webdriver.Chrome(service=service, options=chrome_options)
     
     try:
-        url = "https://alphapos.altifadev.workers.dev/?table=5"
+        url = "https://sync.alphaposweb.com/?table=5"
         print(f"Navigating to: {url}")
         driver.get(url)
         

@@ -1,8 +1,9 @@
 import requests
 import json
+import os
 
-supabase_url = "https://your-supabase-project.supabase.co"
-supabase_key = "your-anon-key"
+supabase_url = os.environ.get("SUPABASE_URL", "http://119.59.99.163").rstrip("/")
+supabase_key = os.environ["SUPABASE_ANON_KEY"]
 
 headers = {
     "apikey": supabase_key,

@@ -1,10 +1,11 @@
 import urllib.request
 import json
 import uuid
+import os
 from datetime import datetime
 
-url = "https://your-supabase-project.supabase.co/rest/v1/"
-anon_key = "your-anon-key"
+url = os.environ.get("SUPABASE_URL", "http://119.59.99.163").rstrip("/") + "/rest/v1/"
+anon_key = os.environ["SUPABASE_ANON_KEY"]
 
 headers = {
     "apikey": anon_key,

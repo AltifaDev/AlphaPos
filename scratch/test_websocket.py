@@ -3,10 +3,14 @@ import json
 import threading
 import time
 import sys
+import os
+from urllib.parse import urlparse
 
-anonKey = "your-anon-key"
+anonKey = os.environ["SUPABASE_ANON_KEY"]
 merchantId = "your-merchant-uuid"
-wsURLString = f"wss://your-project-ref.supabase.co/realtime/v1/websocket?apikey={anonKey}&vsn=1.0.0"
+parsedURL = urlparse(os.environ.get("SUPABASE_URL", "http://119.59.99.163"))
+wsScheme = "wss" if parsedURL.scheme == "https" else "ws"
+wsURLString = f"{wsScheme}://{parsedURL.netloc}/realtime/v1/websocket?apikey={anonKey}&vsn=1.0.0"
 
 def on_message(ws, message):
     try:

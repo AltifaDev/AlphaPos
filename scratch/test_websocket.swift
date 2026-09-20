@@ -1,9 +1,22 @@
 import Foundation
 
-let anonKey = "your-anon-key"
+let environment = ProcessInfo.processInfo.environment
+guard let anonKey = environment["SUPABASE_ANON_KEY"] else {
+    fatalError("SUPABASE_ANON_KEY is required")
+}
 let merchantId = "your-merchant-uuid"
 
-let wsURLString = "wss://your-project-ref.supabase.co/realtime/v1/websocket?apikey=\(anonKey)&vsn=1.0.0"
+let supabaseURL = environment["SUPABASE_URL"] ?? "http://119.59.99.163"
+guard var components = URLComponents(string: supabaseURL) else {
+    fatalError("Invalid SUPABASE_URL")
+}
+components.scheme = components.scheme == "https" ? "wss" : "ws"
+components.path = "/realtime/v1/websocket"
+components.queryItems = [
+    URLQueryItem(name: "apikey", value: anonKey),
+    URLQueryItem(name: "vsn", value: "1.0.0")
+]
+let wsURLString = components.string ?? ""
 guard let url = URL(string: wsURLString) else {
     print("Invalid URL")
     exit(1)

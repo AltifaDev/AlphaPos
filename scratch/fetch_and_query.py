@@ -1,9 +1,11 @@
 import urllib.request
 import json
+import os
 
-ef_url = "https://your-supabase-project.supabase.co/functions/v1/issue-merchant-token"
-rest_url = "https://your-supabase-project.supabase.co/rest/v1/restaurant_tables"
-anon_key = "your-anon-key"
+supabase_url = os.environ.get("SUPABASE_URL", "http://119.59.99.163").rstrip("/")
+ef_url = f"{supabase_url}/functions/v1/issue-merchant-token"
+rest_url = f"{supabase_url}/rest/v1/restaurant_tables"
+anon_key = os.environ["SUPABASE_ANON_KEY"]
 
 auth_payload = {
     "merchant_id": "your-merchant-uuid",

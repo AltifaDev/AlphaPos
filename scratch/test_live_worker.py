@@ -18,7 +18,7 @@ def run_live_test():
     driver = webdriver.Chrome(service=service, options=chrome_options)
     
     try:
-        url = "https://alphapos.altifadev.workers.dev/?table=5&token=table-session-abcde"
+        url = "https://sync.alphaposweb.com/?table=5&token=table-session-abcde"
         print(f"Navigating to: {url}")
         driver.get(url)
         

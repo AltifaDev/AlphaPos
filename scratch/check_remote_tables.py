@@ -1,8 +1,9 @@
 import urllib.request
 import json
+import os
 
-url = "https://your-supabase-project.supabase.co/rest/v1/"
-anon_key = "your-anon-key"
+url = os.environ.get("SUPABASE_URL", "http://119.59.99.163").rstrip("/") + "/rest/v1/"
+anon_key = os.environ["SUPABASE_ANON_KEY"]
 merchant_id = "your-merchant-uuid"
 
 def query_endpoint(endpoint):

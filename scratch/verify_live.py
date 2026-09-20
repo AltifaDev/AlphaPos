@@ -19,7 +19,7 @@ def run_verify():
     driver = webdriver.Chrome(service=service, options=chrome_options)
     
     try:
-        url = "https://alphapos.altifadev.workers.dev/?table=3&autoOnboard=true&merchant=163350B0-056D-4D5E-B5D4-24E7AAC5AB6D"
+        url = "https://sync.alphaposweb.com/?table=3&autoOnboard=true&merchant=163350B0-056D-4D5E-B5D4-24E7AAC5AB6D"
         print(f"Navigating to: {url}")
         driver.get(url)
         
