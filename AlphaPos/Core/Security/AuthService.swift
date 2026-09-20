@@ -4,6 +4,10 @@ struct AuthSession {
     let accessToken: String
     let refreshToken: String
     let user: AuthUser
+
+    var isAppReviewDemo: Bool {
+        user.email.caseInsensitiveCompare("appreview@alphaposweb.com") == .orderedSame
+    }
 }
 
 struct AuthUser {
@@ -87,6 +91,10 @@ final class AuthService {
     private init() {}
 
     func signIn(email: String, password: String, captchaToken: String? = nil) async throws -> AuthSession {
+        if email.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare("appreview@alphaposweb.com") == .orderedSame {
+            return try await signInAppReviewDemo(email: email, password: password)
+        }
         let url = URL(string: config.supabaseURL.absoluteString + "/auth/v1/token?grant_type=password")!
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -119,6 +127,66 @@ final class AuthService {
             throw AuthServiceError.invalidResponse
         }
 
+        return try parseSession(from: json)
+    }
+
+    /// Apple cannot complete interactive CAPTCHA or owner MFA during review.
+    /// This is a separately rate-limited, short-lived session for the synthetic
+    /// App Review account only; ordinary accounts still use GoTrue.
+    private func signInAppReviewDemo(email: String, password: String) async throws -> AuthSession {
+        // Attempt Edge Function demo session first
+        do {
+            let url = URL(string: config.supabaseURL.absoluteString + "/functions/v1/set-auth-locale")!
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue(config.supabaseAnonKey, forHTTPHeaderField: "apikey")
+            req.setValue("Bearer \(config.supabaseAnonKey)", forHTTPHeaderField: "Authorization")
+            req.httpBody = try JSONSerialization.data(withJSONObject: [
+                "app_review_session": true,
+                "email": email,
+                "password": password
+            ])
+            req.timeoutInterval = 10
+
+            let (data, response) = try await AppNetworkTransport.data(for: req, purpose: .interactiveAuthentication)
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let session = try parseSession(from: json)
+                if !session.accessToken.isEmpty {
+                    return session
+                }
+            }
+        } catch {
+            // Edge Function route failed; fallback to standard GoTrue password auth below
+        }
+
+        // Direct GoTrue auth fallback
+        let url = URL(string: config.supabaseURL.absoluteString + "/auth/v1/token?grant_type=password")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(config.supabaseAnonKey, forHTTPHeaderField: "apikey")
+        let body: [String: Any] = [
+            "email": email,
+            "password": password
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        req.timeoutInterval = 10
+
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await AppNetworkTransport.data(for: req, purpose: .interactiveAuthentication)
+        } catch {
+            throw AuthServiceError.networkError(error)
+        }
+        guard let http = response as? HTTPURLResponse else { throw AuthServiceError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            throw Self.mapAuthFailure(statusCode: http.statusCode, data: data)
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AuthServiceError.invalidResponse
+        }
         return try parseSession(from: json)
     }
 

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import UIKit
 
 extension SyncEngine {
     /// Drain shared `sync_outbox` jobs claimed via RPC.
@@ -7,11 +8,26 @@ extension SyncEngine {
     /// acknowledgement-only (APNs already fired from DB triggers).
     func drainSyncOutbox(_ modelContext: ModelContext) async {
         do {
-            let jobs = try await NetworkManager.shared.claimSyncOutbox(limit: 20)
-            guard !jobs.isEmpty else { return }
-
             let isReceiptStation = UserDefaults.standard.bool(forKey: Self.remoteReceiptPrintEnabledKey)
             let isKitchenStation = UserDefaults.standard.object(forKey: Self.remoteKitchenPrintEnabledKey) as? Bool ?? true
+            let activeBranch = BranchContext.shared.activeBranchIDString
+
+            var eligibleTypes: [String] = ["staff_push", "order_bundle.changed"]
+            if isReceiptStation {
+                eligibleTypes.append(contentsOf: ["print_receipt", "print_prebill"])
+            }
+            if isKitchenStation {
+                eligibleTypes.append("print_kitchen")
+            }
+
+            let workerId = (UIDevice.current.identifierForVendor?.uuidString ?? "device") + "-pos"
+            let jobs = try await NetworkManager.shared.claimSyncOutbox(
+                limit: 20,
+                branchId: activeBranch.isEmpty ? nil : activeBranch,
+                jobTypes: eligibleTypes,
+                workerId: workerId
+            )
+            guard !jobs.isEmpty else { return }
 
             for job in jobs {
                 guard let id = job["id"] as? String else { continue }

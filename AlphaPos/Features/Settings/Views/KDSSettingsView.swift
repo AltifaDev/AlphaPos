@@ -3,6 +3,7 @@ import SwiftData
 
 struct KDSSettingsView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var lm: LocalizationManager
 
     // L-7: Category routing
     @AppStorage("kds_category_routing_json") private var kdsCategoryRoutingJson = "{}"
@@ -14,6 +15,10 @@ struct KDSSettingsView: View {
     @AppStorage("kds_show_kitchen") private var kdsShowKitchen = true
     @AppStorage("kds_show_bar") private var kdsShowBar = true
     @AppStorage("kitchen_workflow_required") private var kitchenWorkflowRequired = true
+    @AppStorage("kds_workflow_mode") private var kdsWorkflowMode = "full"
+    @AppStorage("kds_warning_minutes") private var kdsWarningMinutes = 15
+    @AppStorage("kds_delayed_minutes") private var kdsDelayedMinutes = 30
+    @AppStorage("kds_stale_minutes") private var kdsStaleMinutes = 60
 
     var body: some View {
         ZStack {
@@ -29,6 +34,30 @@ struct KDSSettingsView: View {
                             .tracking(1.0)
 
                         VStack(spacing: 14) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(lm.currentLanguage == .thai ? "รูปแบบการทำงานของครัว" : "Kitchen workflow")
+                                        .foregroundColor(.textPrimary)
+                                    Text(lm.currentLanguage == .thai ? "เลือกให้ตรงกับวิธีทำงานของร้าน" : "Match the store's actual workflow")
+                                        .font(.system(size: 12)).foregroundColor(.textSecondary)
+                                }
+                                Spacer()
+                                Picker("", selection: $kdsWorkflowMode) {
+                                    Text(lm.currentLanguage == .thai ? "จอครัวเต็มรูปแบบ" : "Full KDS").tag("full")
+                                    Text(lm.currentLanguage == .thai ? "แสดงอย่างเดียว" : "Display only").tag("display_only")
+                                    Text(lm.currentLanguage == .thai ? "พิมพ์ใบครัวเท่านั้น" : "Print only").tag("print_only")
+                                    Text(lm.currentLanguage == .thai ? "ไม่ใช้จอครัว" : "Disabled").tag("disabled")
+                                }
+                                .frame(maxWidth: 230)
+                                .onChange(of: kdsWorkflowMode) { _, mode in
+                                    kitchenWorkflowRequired = (mode == "full")
+                                    APHaptic.trigger()
+                                    Task { await SyncEngine.shared.syncAll(modelContext: modelContext) }
+                                }
+                            }
+
+                            Divider().background(Color.appDivider)
+
                             Toggle(isOn: $kdsShowKitchen) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("kds_show_kitchen_toggle".t)
@@ -77,6 +106,38 @@ struct KDSSettingsView: View {
                                     await SyncEngine.shared.syncAll(modelContext: modelContext)
                                 }
                             }
+                        }
+                        .apCard()
+                    }
+                    .padding(.horizontal)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(lm.currentLanguage == .thai ? "เกณฑ์เวลาบนจอครัว" : "KDS TIME THRESHOLDS")
+                            .font(.system(size: 12)).fontWeight(.bold)
+                            .foregroundColor(.appAccent).tracking(1.0)
+
+                        VStack(spacing: 12) {
+                            thresholdStepper(
+                                title: lm.currentLanguage == .thai ? "เริ่มเตือน" : "Warning",
+                                value: $kdsWarningMinutes,
+                                range: 5...60
+                            )
+                            Divider().background(Color.appDivider)
+                            thresholdStepper(
+                                title: lm.currentLanguage == .thai ? "ล่าช้า" : "Delayed",
+                                value: $kdsDelayedMinutes,
+                                range: 10...120
+                            )
+                            Divider().background(Color.appDivider)
+                            thresholdStepper(
+                                title: lm.currentLanguage == .thai ? "ค้างผิดปกติ (ย้ายออกจากคิวสด)" : "Stale (leave live queue)",
+                                value: $kdsStaleMinutes,
+                                range: 20...240
+                            )
+                            Text(lm.currentLanguage == .thai
+                                 ? "รายการชำระครบจะออกจากจอทันที ส่วนรายการเกินเวลาจะย้ายไปแท็บค้างผิดปกติ โดยไม่มีการลบข้อมูล"
+                                 : "Fully paid orders leave KDS immediately. Old tickets move to Stale; no sales data is deleted.")
+                                .font(.system(size: 11)).foregroundColor(.textTertiary)
                         }
                         .apCard()
                     }
@@ -199,6 +260,17 @@ struct KDSSettingsView: View {
               let json = String(data: data, encoding: .utf8) else { return }
         kdsCategoryRoutingJson = json
         APHaptic.trigger()
+    }
+
+    private func thresholdStepper(title: String, value: Binding<Int>, range: ClosedRange<Int>) -> some View {
+        Stepper(value: value, in: range, step: 5) {
+            HStack {
+                Text(title).foregroundColor(.textPrimary)
+                Spacer()
+                Text("\(value.wrappedValue) \(lm.currentLanguage == .thai ? "นาที" : "min")")
+                    .font(.system(size: 12, weight: .bold)).foregroundColor(.appAccent)
+            }
+        }
     }
 
     private func routePicker(selection: Binding<String>) -> some View {

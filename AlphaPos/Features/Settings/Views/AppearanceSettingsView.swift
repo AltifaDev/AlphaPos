@@ -1,5 +1,42 @@
 import SwiftUI
 
+enum AppTextSize: String, CaseIterable, Identifiable {
+    case system
+    case small
+    case normal
+    case large
+
+    var id: String { rawValue }
+
+    var dynamicTypeSize: DynamicTypeSize {
+        switch self {
+        case .system, .normal: return .large
+        case .small: return .small
+        case .large: return .xxxLarge
+        }
+    }
+
+    var localizedName: String {
+        switch self {
+        case .system: return "ตามระบบ / System Default"
+        case .small: return "เล็ก / Small"
+        case .normal: return "ปกติ / Default"
+        case .large: return "ใหญ่ / Large"
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func appTextSize(_ value: AppTextSize) -> some View {
+        if value == .system {
+            self
+        } else {
+            self.dynamicTypeSize(value.dynamicTypeSize)
+        }
+    }
+}
+
 struct AppearanceSettingsView: View {
     /// When true (iPad split detail), hide nav chrome — parent Settings banner provides context.
     var embedded: Bool = false
@@ -7,8 +44,9 @@ struct AppearanceSettingsView: View {
     @AppStorage("app_theme") private var appTheme = AppTheme.dark.rawValue
     @AppStorage("enable_pos_sound_effects") private var enablePOSSoundEffects = true
     @AppStorage("pos_sound_volume") private var posSoundVolume = 1.0
+    @AppStorage("app_text_size") private var appTextSize = AppTextSize.system.rawValue
 
-    private let barFont = Font.system(size: 12, weight: .regular)
+    private let barFont = Font.subheadline
 
     var body: some View {
         ZStack {
@@ -55,6 +93,40 @@ struct AppearanceSettingsView: View {
                         .padding(.vertical, 10)
                         .frame(minHeight: 40)
                     }
+                    .background(Color.primary.opacity(embedded ? 0.03 : 0.04), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
+
+                    Text(LocalizationManager.shared.currentLanguage == .thai ? "ขนาดตัวอักษร (Text Size)" : "Text Size")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                        .tracking(0.4)
+                        .padding(.top, 10)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker(
+                            LocalizationManager.shared.currentLanguage == .thai ? "ขนาดตัวอักษร" : "Text Size",
+                            selection: $appTextSize
+                        ) {
+                            ForEach(AppTextSize.allCases) { size in
+                                Text(size.localizedName).tag(size.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .font(.body)
+
+                        Text(LocalizationManager.shared.currentLanguage == .thai
+                             ? "ใช้ฟอนต์ระบบของ iOS/iPadOS และปรับขนาดตาม Dynamic Type โดยไม่ใช้ฟอนต์กำหนดเอง"
+                             : "Uses the iOS/iPadOS system font and Dynamic Type without a custom font.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
                     .background(Color.primary.opacity(embedded ? 0.03 : 0.04), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)

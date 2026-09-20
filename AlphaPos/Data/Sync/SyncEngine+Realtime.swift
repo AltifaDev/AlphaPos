@@ -242,6 +242,18 @@ extension SyncEngine {
                 )
             } else if ref == "1" {
                 reconnectAttempt = 0
+                // Postgres Changes does not replay events sent while this
+                // socket was disconnected.  The reconnect task also performs
+                // a full sync, but that can race the channel join and finish
+                // before the server has accepted this subscription.  Pull
+                // orders after the join acknowledgement so Quick Orders made
+                // on an iPhone are recovered even when the iPad missed the
+                // INSERT/UPDATE realtime event.
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.pullCustomerOrders(modelContext)
+                    await self.pullActiveSessions(modelContext)
+                }
             }
             return
         }

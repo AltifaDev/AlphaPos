@@ -15,6 +15,32 @@ enum KDSStation: String, CaseIterable, Codable {
     }
 }
 
+/// Display-only KDS policy. Ageing a ticket never deletes sales data; it only
+/// moves the ticket out of the live queue. Values are store/device settings.
+enum KDSDisplayPolicy {
+    static var warningMinutes: Int { max(1, UserDefaults.standard.integer(forKey: "kds_warning_minutes").nonZero(or: 15)) }
+    static var delayedMinutes: Int { max(warningMinutes, UserDefaults.standard.integer(forKey: "kds_delayed_minutes").nonZero(or: 30)) }
+    static var staleMinutes: Int { max(delayedMinutes, UserDefaults.standard.integer(forKey: "kds_stale_minutes").nonZero(or: 60)) }
+    static var maximumLiveTickets: Int { 100 }
+
+    static func isStale(_ order: Order, now: Date) -> Bool {
+        now.timeIntervalSince(order.createdAt) >= TimeInterval(staleMinutes * 60)
+    }
+
+    static func isVisibleInLiveQueue(_ order: Order, now: Date) -> Bool {
+        // Payment completion must not hide a ticket that still has cooking
+        // items. Quick Orders from AlphaPosStaff may be paid immediately after
+        // submission, and the KDS can otherwise miss the ticket entirely.
+        // Orders with no active cooking items are removed below after station
+        // routing, so completed/settled history remains out of the live queue.
+        return !isStale(order, now: now)
+    }
+}
+
+private extension Int {
+    func nonZero(or fallback: Int) -> Int { self == 0 ? fallback : self }
+}
+
 struct KDSTicket: Identifiable, Equatable {
     let order: Order
     let station: KDSStation
@@ -82,6 +108,7 @@ struct KitchenDisplayView: View {
     @AppStorage("kds_show_bar") private var kdsShowBar = true
     @AppStorage("kds_auto_complete_enabled") private var kdsAutoCompleteEnabled = false
     @AppStorage("kds_sound_enabled") private var kdsSoundEnabled = true
+    @AppStorage("kds_workflow_mode") private var kdsWorkflowMode = "full"
     // L-9: Physical KDS / Bump Bar — keyboard shortcut support
     @AppStorage("kds_keyboard_shortcuts_enabled") private var kdsKeyboardShortcutsEnabled = true
     @AppStorage("enable_table_system") private var tableSystemEnabled = true
@@ -125,7 +152,14 @@ struct KitchenDisplayView: View {
         let now = Date()
         let routing = categoryRouting  // L-7: category → station routing map
 
+        guard kdsWorkflowMode == "full" || kdsWorkflowMode == "display_only" else { return [] }
         for order in branchActiveOrders {
+            let isStale = KDSDisplayPolicy.isStale(order, now: now)
+            if selectedFilter == "stale" {
+                guard !order.isSettled && isStale else { continue }
+            } else {
+                guard KDSDisplayPolicy.isVisibleInLiveQueue(order, now: now) else { continue }
+            }
             // Skip orphaned / stale tickets whose table was already cleared.
             // Covers an inactive session AND a nullified (nil) session — the
             // latter stranded ticket #9619 on screen for 1,622 minutes.
@@ -157,7 +191,8 @@ struct KitchenDisplayView: View {
         }
 
         // Sort by order creation date (FIFO)
-        return tickets.sorted { $0.order.createdAt < $1.order.createdAt }
+        return Array(tickets.sorted { $0.order.createdAt < $1.order.createdAt }
+            .prefix(KDSDisplayPolicy.maximumLiveTickets))
     }
 
     /// Hint when SwiftData has live orders but filters/routing hide every ticket.
@@ -217,8 +252,9 @@ struct KitchenDisplayView: View {
         case "take_out":
             return order.orderType == "take_out"
         case "delayed":
-            let isOlderThan10Min = now.timeIntervalSince(order.createdAt) >= 600
-            return isOlderThan10Min
+            return now.timeIntervalSince(order.createdAt) >= TimeInterval(KDSDisplayPolicy.delayedMinutes * 60)
+        case "stale":
+            return KDSDisplayPolicy.isStale(order, now: now)
         default:
             return true
         }
@@ -228,6 +264,7 @@ struct KitchenDisplayView: View {
         let now = Date()
         return branchActiveOrders
             .filter { order in
+                guard KDSDisplayPolicy.isVisibleInLiveQueue(order, now: now) else { return false }
                 // Skip orphaned / stale tickets whose table was already cleared.
                 // Covers an inactive session AND a nullified (nil) session — the
                 // latter stranded ticket #9619 on screen for 1,622 minutes.
@@ -236,8 +273,7 @@ struct KitchenDisplayView: View {
                 let matchedItems = activeItems.filter { $0.shouldDisplay(showKitchen: kdsShowKitchen, showBar: kdsShowBar) }
                 guard !matchedItems.isEmpty else { return false }
 
-                let isOlderThan10Min = now.timeIntervalSince(order.createdAt) >= 600
-                return isOlderThan10Min
+                return now.timeIntervalSince(order.createdAt) >= TimeInterval(KDSDisplayPolicy.delayedMinutes * 60)
             }
             .first
     }
@@ -246,6 +282,12 @@ struct KitchenDisplayView: View {
         var count = 0
         let now = Date()
         for order in branchActiveOrders {
+            let isStale = KDSDisplayPolicy.isStale(order, now: now)
+            if filter == "stale" {
+                guard !order.isSettled && isStale else { continue }
+            } else {
+                guard KDSDisplayPolicy.isVisibleInLiveQueue(order, now: now) else { continue }
+            }
             // Skip orphaned / stale tickets whose table was already cleared.
             // Covers an inactive session AND a nullified (nil) session — the
             // latter stranded ticket #9619 on screen for 1,622 minutes.
@@ -703,6 +745,12 @@ struct KitchenDisplayView: View {
                     filterPill(title: "pos_dine_in".t, tag: "dine_in", count: countForFilter("dine_in"))
                     filterPill(title: "pos_take_out".t, tag: "take_out", count: countForFilter("take_out"))
                     filterPill(title: "kds_delayed_pill".t, tag: "delayed", count: countForFilter("delayed"), isDestructive: true)
+                    filterPill(
+                        title: lm.currentLanguage == .thai ? "ค้างผิดปกติ" : "Stale",
+                        tag: "stale",
+                        count: countForFilter("stale"),
+                        isDestructive: true
+                    )
                 }
             }
             .offset(x: isViewAppeared ? 0 : 40)
@@ -748,9 +796,11 @@ struct KitchenDisplayView: View {
                             ForEach(filteredTickets) { ticket in
                                 KitchenPremiumTicketCard(
                                     ticket: ticket,
+                                    now: currentSecond,
                                     isFocused: focusedTicket?.id == ticket.id,
                                     onSelect: { detailTicket = ticket }
                                 )
+                                    .allowsHitTesting(kdsWorkflowMode == "full")
                                     .transition(.asymmetric(
                                         insertion: .scale(scale: 0.9).combined(with: .opacity).combined(with: .move(edge: .bottom)),
                                         removal: .opacity
@@ -765,9 +815,11 @@ struct KitchenDisplayView: View {
                             ForEach(filteredTickets) { ticket in
                                 KitchenTicketView(
                                     ticket: ticket,
+                                    now: currentSecond,
                                     isFocused: focusedTicket?.id == ticket.id,
                                     onSelect: { detailTicket = ticket }
                                 )
+                                    .allowsHitTesting(kdsWorkflowMode == "full")
                                     .transition(.asymmetric(
                                         insertion: .scale(scale: 0.9).combined(with: .opacity),
                                         removal: .opacity
@@ -1019,6 +1071,7 @@ struct KitchenPremiumTicketCard: View {
     @EnvironmentObject private var lm: LocalizationManager
     @AppStorage("enable_table_system") private var tableSystemEnabled = true
     var ticket: KDSTicket
+    var now: Date
     var isFocused: Bool = false
     var onSelect: () -> Void
 
@@ -1033,9 +1086,8 @@ struct KitchenPremiumTicketCard: View {
         return station == .kitchen ? "kds_mark_kitchen_ready".t : "kds_mark_bar_ready".t
     }
 
-    @State private var elapsedTime = 0
-    @State private var elapsedSeconds = 0
-    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private var elapsedSeconds: Int { max(0, Int(now.timeIntervalSince(order.createdAt))) }
+    private var elapsedTime: Int { elapsedSeconds / 60 }
 
     var groupedItems: [(category: String, items: [OrderItem])] {
         let filtered = order.items.filter { item in
@@ -1076,7 +1128,7 @@ struct KitchenPremiumTicketCard: View {
                                 weight: identity.isQuickService ? .black : .bold,
                                 design: .rounded
                             ))
-                            .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .textSecondary)
+                            .foregroundColor(elapsedTime >= KDSDisplayPolicy.warningMinutes ? headerTextColor() : .textSecondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
                         Text(identity.orderLabel)
@@ -1085,7 +1137,7 @@ struct KitchenPremiumTicketCard: View {
                                 weight: identity.isQuickService ? .semibold : .black,
                                 design: identity.isQuickService ? .monospaced : .default
                             ))
-                            .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .textPrimary)
+                            .foregroundColor(elapsedTime >= KDSDisplayPolicy.warningMinutes ? headerTextColor() : .textPrimary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.65)
                     }
@@ -1095,10 +1147,10 @@ struct KitchenPremiumTicketCard: View {
                         Text(timeString(seconds: elapsedSeconds))
                     }
                     .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .appAccent)
+                    .foregroundColor(elapsedTime >= KDSDisplayPolicy.warningMinutes ? headerTextColor() : .appAccent)
                 }
 
-                if elapsedTime < 5 {
+                if elapsedTime < KDSDisplayPolicy.warningMinutes {
                     Rectangle()
                         .frame(height: 1.5)
                         .foregroundColor(station == .kitchen ? .appRose : .appTeal)
@@ -1244,16 +1296,6 @@ struct KitchenPremiumTicketCard: View {
         .onTapGesture(perform: onSelect)
         .accessibilityLabel("Order \(order.orderNumber), \(order.items.count) items")
         .accessibilityHint("Double-tap to view order details")
-        .onAppear(perform: updateElapsedTime)
-        .onReceive(timer) { _ in
-            updateElapsedTime()
-        }
-    }
-
-    private func updateElapsedTime() {
-        let diff = Date().timeIntervalSince(order.createdAt)
-        elapsedSeconds = Int(diff)
-        elapsedTime = Int(diff / 60)
     }
 
     private func timeString(seconds: Int) -> String {
@@ -1263,25 +1305,25 @@ struct KitchenPremiumTicketCard: View {
     }
 
     private func headerColor() -> Color {
-        if elapsedTime >= 10 { return .appRose }
-        if elapsedTime >= 5  { return .appAmber }
+        if elapsedTime >= KDSDisplayPolicy.delayedMinutes { return .appRose }
+        if elapsedTime >= KDSDisplayPolicy.warningMinutes { return .appAmber }
         return Color.appSurface
     }
 
     private func headerTextColor() -> Color {
-        if elapsedTime >= 5 && elapsedTime < 10 { return .black }
+        if elapsedTime >= KDSDisplayPolicy.warningMinutes && elapsedTime < KDSDisplayPolicy.delayedMinutes { return .black }
         return .white
     }
 
     private func borderColor() -> Color {
-        if elapsedTime >= 10 { return .appRose }
-        if elapsedTime >= 5  { return .appAmber }
+        if elapsedTime >= KDSDisplayPolicy.delayedMinutes { return .appRose }
+        if elapsedTime >= KDSDisplayPolicy.warningMinutes { return .appAmber }
         if station == .bar { return Color.appTeal.opacity(0.4) }
         return Color.appBorderSubtle
     }
 
     private func borderWidth() -> CGFloat {
-        if elapsedTime >= 5 { return 2 }
+        if elapsedTime >= KDSDisplayPolicy.warningMinutes { return 2 }
         return 1
     }
 
@@ -1322,6 +1364,7 @@ struct KitchenTicketView: View {
     @EnvironmentObject private var sessionManager: AppSessionManager
     @AppStorage("enable_table_system") private var tableSystemEnabled = true
     var ticket: KDSTicket
+    var now: Date
     var isFocused: Bool = false
     var onSelect: () -> Void
 
@@ -1342,8 +1385,7 @@ struct KitchenTicketView: View {
         return name.isEmpty ? nil : name
     }
 
-    @State private var elapsedTime = 0
-    private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+    private var elapsedTime: Int { max(0, Int(now.timeIntervalSince(order.createdAt) / 60)) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1374,7 +1416,7 @@ struct KitchenTicketView: View {
                                 weight: identity.isQuickService ? .black : .bold,
                                 design: .rounded
                             ))
-                            .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .textSecondary)
+                            .foregroundColor(elapsedTime >= KDSDisplayPolicy.warningMinutes ? headerTextColor() : .textSecondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
                         Text(identity.orderLabel)
@@ -1383,7 +1425,7 @@ struct KitchenTicketView: View {
                                 weight: identity.isQuickService ? .semibold : .black,
                                 design: identity.isQuickService ? .monospaced : .default
                             ))
-                            .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .textPrimary)
+                            .foregroundColor(elapsedTime >= KDSDisplayPolicy.warningMinutes ? headerTextColor() : .textPrimary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.65)
                     }
@@ -1396,10 +1438,10 @@ struct KitchenTicketView: View {
                         Text("\(elapsedTime)m")
                             .font(.system(size: 10, weight: .bold))
                     }
-                    .foregroundColor(elapsedTime >= 5 ? headerTextColor() : .appAccent)
+                    .foregroundColor(elapsedTime >= KDSDisplayPolicy.warningMinutes ? headerTextColor() : .appAccent)
                 }
 
-                if elapsedTime < 5 {
+                if elapsedTime < KDSDisplayPolicy.warningMinutes {
                     Rectangle()
                         .frame(height: 1.2)
                         .foregroundColor(station == .kitchen ? .appRose : .appTeal)
@@ -1584,37 +1626,28 @@ struct KitchenTicketView: View {
                 .stroke(isFocused ? Color.appAccent : borderColor(), lineWidth: isFocused ? 3 : borderWidth())
         )
         .shadow(color: Color.black.opacity(isFocused ? 0.22 : 0.15), radius: isFocused ? 8 : 4)
-        .onAppear(perform: updateElapsedTime)
-        .onReceive(timer) { _ in
-            updateElapsedTime()
-        }
-    }
-
-    private func updateElapsedTime() {
-        let diff = Date().timeIntervalSince(order.createdAt)
-        elapsedTime = Int(diff / 60)
     }
 
     private func headerColor() -> Color {
-        if elapsedTime >= 10 { return .appRose }
-        if elapsedTime >= 5  { return .appAmber }
+        if elapsedTime >= KDSDisplayPolicy.delayedMinutes { return .appRose }
+        if elapsedTime >= KDSDisplayPolicy.warningMinutes { return .appAmber }
         return Color.appSurface
     }
 
     private func headerTextColor() -> Color {
-        if elapsedTime >= 5 && elapsedTime < 10 { return .black }
+        if elapsedTime >= KDSDisplayPolicy.warningMinutes && elapsedTime < KDSDisplayPolicy.delayedMinutes { return .black }
         return .white
     }
 
     private func borderColor() -> Color {
-        if elapsedTime >= 10 { return .appRose }
-        if elapsedTime >= 5  { return .appAmber }
+        if elapsedTime >= KDSDisplayPolicy.delayedMinutes { return .appRose }
+        if elapsedTime >= KDSDisplayPolicy.warningMinutes { return .appAmber }
         if station == .bar { return Color.appTeal.opacity(0.4) }
         return Color.appBorderSubtle
     }
 
     private func borderWidth() -> CGFloat {
-        if elapsedTime >= 5 { return 2 }
+        if elapsedTime >= KDSDisplayPolicy.warningMinutes { return 2 }
         return 1
     }
 

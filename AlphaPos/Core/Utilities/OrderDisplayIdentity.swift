@@ -21,7 +21,11 @@ struct OrderDisplayIdentity {
         let trimmedQueue = order.queueNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
         let validQueue = trimmedQueue.flatMap { $0.isEmpty ? nil : $0 }
 
-        isQuickService = !tableSystemEnabled || trimmedTable?.uppercased() == "QUICK"
+        // Remote/mobile Quick Orders are represented by order types such as
+        // `take_out` and may not carry the legacy QUICK table sentinel. Use
+        // the canonical Order classification so their detail sheet exposes
+        // the direct payment action even when the main POS cart is empty.
+        isQuickService = order.isQuickServiceOrder
         queueNumber = validQueue
         tableNumber = validTable
         orderLabel = "order_number".t + order.orderNumber

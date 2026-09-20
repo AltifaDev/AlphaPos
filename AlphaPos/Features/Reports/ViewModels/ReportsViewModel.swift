@@ -1400,7 +1400,14 @@ final class ReportsViewModel {
             let allocationBase = activeItems.reduce(0.0) { partial, item in
                 partial + item.subtotal + item.modifiers.filter { !$0.isDeleted }.reduce(0.0) { $0 + $1.price * Double(item.quantity) }
             }
-            let channel = order.orderType == "delivery" ? "เดลิเวอรี" : "หน้าร้าน"
+            let channel: String = {
+                switch order.orderType {
+                case "delivery": return "เดลิเวอรี"
+                case "take_out": return "สั่งกลับบ้าน"
+                case "walk_in": return "Walk-in"
+                default: return "หน้าร้าน (Dine-in)"
+                }
+            }()
 
             for item in activeItems where menuProfitabilityScope != .addOns && (menuProfitabilityScope == .allUnits || item.resolvedLineType == .main) {
                 let itemName = item.itemName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1462,7 +1469,14 @@ final class ReportsViewModel {
             // line. Filtering the denominator by scope would duplicate the
             // whole discount in Main, Add-on, and All-units reports.
             let lineTotal = allActiveItems.reduce(0.0) { partial, item in partial + item.subtotal + item.modifiers.filter { !$0.isDeleted }.reduce(0.0) { $0 + $1.price * Double(item.quantity) } }
-            let channel = order.orderType == "delivery" ? "เดลิเวอรี" : "หน้าร้าน"
+            let channel: String = {
+                switch order.orderType {
+                case "delivery": return "เดลิเวอรี"
+                case "take_out": return "สั่งกลับบ้าน"
+                case "walk_in": return "Walk-in"
+                default: return "หน้าร้าน (Dine-in)"
+                }
+            }()
             for item in allActiveItems where productSalesScope != .addOns && (productSalesScope == .allUnits || item.resolvedLineType == .main) {
                 let menu = item.menuItem ?? catalog.values.first { $0.name == item.itemName }
                 let key = "\(channel)|main|\(menu?.id ?? item.itemName)"

@@ -34,6 +34,9 @@ struct DeviceManagementView: View {
     @State private var selectedDevice: MerchantDevice? = nil
     @State private var showAddDevice = false
     @State private var remoteActionInProgress: UUID? = nil
+    // Hide a device immediately after a remove action. SwiftData/@Query may
+    // refresh asynchronously, so the UI must not wait for the next sync pass.
+    @State private var locallyRemovedDeviceIDs: Set<UUID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -131,7 +134,7 @@ struct DeviceManagementView: View {
 
     private var deviceGridSection: some View {
         ScrollView {
-            if devices.filter({ !$0.isDeleted }).isEmpty {
+            if visibleDevices.isEmpty {
                 VStack(spacing: 18) {
                     ContentUnavailableView(
                         "devices_empty_title".t,
@@ -159,7 +162,7 @@ struct DeviceManagementView: View {
                     GridItem(.flexible(), spacing: 16),
                     GridItem(.flexible(), spacing: 16)
                 ], spacing: 16) {
-                    ForEach(devices.filter { !$0.isDeleted }, id: \.id) { device in
+                    ForEach(visibleDevices, id: \.id) { device in
                         deviceCard(
                             name: device.deviceName,
                             type: deviceType(from: device),
@@ -296,11 +299,15 @@ struct DeviceManagementView: View {
 
                         // Remove Device (soft-delete)
                         actionButton(icon: "trash", title: "device_remove_btn".t, color: .appRose) {
+                            // Update the view first. The remote operation is
+                            // intentionally best-effort and can complete later.
+                            locallyRemovedDeviceIDs.insert(device.id)
+                            selectedDevice = nil
+
                             device.isDeleted = true
                             device.isSynced = false
                             device.updatedAt = Date()
                             modelContext.saveWithLogging(label: "DeviceManagement.removeDevice")
-                            selectedDevice = nil
                             Task { _ = try? await NetworkManager.shared.uploadMerchantDevice(device) }
                         }
                     }
@@ -338,6 +345,12 @@ struct DeviceManagementView: View {
     }
 
     // MARK: - Helpers
+
+    private var visibleDevices: [MerchantDevice] {
+        devices.filter {
+            !$0.isDeleted && !locallyRemovedDeviceIDs.contains($0.id)
+        }
+    }
 
     private var onlineCount: Int {
         devices.filter { device in
@@ -698,11 +711,21 @@ struct AddDevicePairingView: View {
                 }
             } catch {
                 await MainActor.run {
-                    self.errorMessage = error.localizedDescription
+                    self.errorMessage = pairingErrorMessage(error)
                     self.isLoading = false
                 }
             }
         }
+    }
+
+    private func pairingErrorMessage(_ error: Error) -> String {
+        let raw = error.localizedDescription
+        let upper = raw.uppercased()
+        if upper.contains("PGRST002") || upper.contains("PGRST003")
+            || upper.contains("HTTP 502") || upper.contains("HTTP 503") || upper.contains("HTTP 504") {
+            return "เซิร์ฟเวอร์ฐานข้อมูลกำลังเริ่มต้นหรือมีการเชื่อมต่อหนาแน่น ระบบลองใหม่อัตโนมัติแล้ว กรุณากดลองอีกครั้งในไม่กี่วินาที"
+        }
+        return raw
     }
 
     @MainActor

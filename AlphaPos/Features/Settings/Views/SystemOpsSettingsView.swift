@@ -22,6 +22,7 @@ struct SystemOpsSettingsView: View {
     @State private var statusMessage = ""
     @State private var showingStatusAlert = false
     @State private var statusIsError = false
+    @State private var isRecoveringLocalCache = false
 
     // MARK: - Wipe Flow States
     @State private var isResettingTransactions = false
@@ -229,7 +230,7 @@ struct SystemOpsSettingsView: View {
                     badge: .localOnly
                 ) {
                     APHaptic.trigger()
-                    clearLocalCache()
+                    startCacheRecovery()
                 }
 
                 Divider().padding(.leading, 58)
@@ -593,6 +594,34 @@ struct SystemOpsSettingsView: View {
     /// SwiftData ไม่มี merchantId field ใน Order/TableSession/MenuItem
     /// ดังนั้น "local cache" หมายถึง ALL records ใน SQLite ของ device นี้
     /// (1 device = 1 merchant session เสมอ เพราะ active_merchant_id เป็น device-scoped)
+    private func startCacheRecovery() {
+        guard !isRecoveringLocalCache else { return }
+        isRecoveringLocalCache = true
+        statusMessage = "กำลังล้างและกู้ข้อมูลจาก Cloud…"
+        statusIsError = false
+
+        Task { @MainActor in
+            clearLocalCache()
+
+            // Online devices must hydrate the records again before reporting
+            // success. Without this, TableView observes an empty SwiftData
+            // store and incorrectly renders the first-table empty state.
+            if !usesLocalOnlyStorage,
+               TenantWorkspaceGuard.isAuthenticatedWorkspaceReady,
+               MerchantAuthManager.shared.isAuthenticated {
+                await SyncEngine.shared.syncAll(modelContext: modelContext)
+            }
+
+            isRecoveringLocalCache = false
+            statusMessage = usesLocalOnlyStorage
+                ? "ล้าง local cache เสร็จสิ้น\nข้อมูลแบบ Offline จะถูกสร้างใหม่เมื่อมีการเพิ่มข้อมูล"
+                : "ล้าง local cache และกู้ข้อมูลจาก Cloud เสร็จสิ้น"
+            statusIsError = SyncEngine.shared.syncStatus == .error
+            showingStatusAlert = true
+            loadRecentAuditLogs()
+        }
+    }
+
     private func clearLocalCache() {
         if let tables = try? modelContext.fetch(FetchDescriptor<RestaurantTable>()) {
             for t in tables { modelContext.delete(t) }
@@ -613,10 +642,8 @@ struct SystemOpsSettingsView: View {
 
         writeAuditLog(action: "system_ops_cache_clear", details: "Cleared local SwiftData cache (device-scoped)")
 
-        statusMessage = "ล้าง local cache เสร็จสิ้น\nข้อมูลใน Supabase ยังคงอยู่"
-        statusIsError = false
-        showingStatusAlert = true
-        loadRecentAuditLogs()
+        // Completion UI is intentionally handled by startCacheRecovery() after
+        // the online rehydration has finished.
     }
 
     // ─────────────────────────────────────────────────────────────────────────

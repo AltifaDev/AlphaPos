@@ -94,11 +94,21 @@ extension SyncEngine {
     // MARK: - Order Alerts
     
     /// Post alert for a new customer order (from QR web ordering, Staff iPhone, or Quick order)
-    func alertNewCustomerOrder(orderNumber: String, tableNumber: String, itemCount: Int) {
+    func alertNewCustomerOrder(orderNumber: String, tableNumber: String, itemCount: Int, queueNumber: String? = nil) {
         Task { @MainActor in
             // แยก label และ device ตาม source
-            let isQuickOrder = tableNumber.uppercased() == "QUICK"
-            let displayTable = isQuickOrder ? "Quick Order" : "\("table".t) \(tableNumber)"
+            let isQuickOrder = tableNumber.uppercased() == "QUICK" || tableNumber.isEmpty
+            let isThai = LocalizationManager.shared.currentLanguage == .thai
+            let displayTable: String
+            if isQuickOrder {
+                if let q = queueNumber, !q.isEmpty {
+                    displayTable = (isThai ? "คิว #" : "Queue #") + q
+                } else {
+                    displayTable = isThai ? "สั่งด่วน" : "Quick Order"
+                }
+            } else {
+                displayTable = "\("table".t) \(tableNumber)"
+            }
             let device = isQuickOrder ? "Staff iPhone" : "Customer Web / Staff"
             let itemSuffix = itemCount > 0 ? " — \(itemCount) " + "alert_items_suffix".t : ""
             NotificationStore.shared.postAlert(

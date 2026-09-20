@@ -548,7 +548,7 @@ final class NetworkManager {
             URLQueryItem(name: "status", value: "in.(pending,preparing,ready,served,completed,cancelled)"),
             URLQueryItem(name: "is_deleted", value: "eq.false"),
             URLQueryItem(name: "order", value: "created_at.desc"),
-            URLQueryItem(name: "limit", value: "50")
+            URLQueryItem(name: "limit", value: "150")
         ], timeoutOverride: 15.0)
 
         guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
@@ -572,6 +572,8 @@ final class NetworkManager {
             var mapped = dict
             mapped["orderNumber"] = dict["order_number"]
             mapped["tableNumber"] = dict["table_number"]
+            mapped["tableSessionId"] = dict["table_session_id"]
+            mapped["sessionToken"] = dict["session_token"]
             mapped["createdAt"] = dict["created_at"]
             mapped["readyAt"] = dict["ready_at"]
             mapped["updatedAt"] = dict["updated_at"]
@@ -716,11 +718,15 @@ final class NetworkManager {
         return Int(totalPart) ?? 0
     }
 
-    func claimSyncOutbox(limit: Int = 20) async throws -> [[String: Any]] {
+    func claimSyncOutbox(limit: Int = 20, branchId: String? = nil, jobTypes: [String]? = nil, workerId: String? = nil) async throws -> [[String: Any]] {
+        var payload: [String: Any] = ["p_limit": limit]
+        if let branchId, !branchId.isEmpty { payload["p_branch_id"] = branchId }
+        if let jobTypes, !jobTypes.isEmpty { payload["p_job_types"] = jobTypes }
+        if let workerId, !workerId.isEmpty { payload["p_worker_id"] = workerId }
         let data = try await sendSupabaseRequest(
             method: "POST",
             endpoint: "rpc/claim_sync_outbox",
-            payload: ["p_limit": limit]
+            payload: payload
         )
         return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
     }

@@ -29,14 +29,12 @@ enum PlatformOrderNumber {
     /// Max stored length matching DB `VARCHAR(80)`.
     static let maxLength = 80
 
-    /// Brand → fixed order-number prefix (e.g. GrabFood → GP-).
+    /// Brand → display prefix. GrabFood uses GF-; the other supported
+    /// platforms use a hash-labelled order number.
     static func prefix(for brand: String?) -> String? {
         switch brand {
-        case "GrabFood", "Grab": return "GP-"
-        case "LINE MAN": return "LM-"
-        case "ShopeeFood": return "SF-"
-        case "Foodpanda": return "FP-"
-        case "Robinhood": return "RH-"
+        case "GrabFood", "Grab": return "GF-"
+        case "LINE MAN", "ShopeeFood", "Foodpanda", "Robinhood": return "#"
         default: return nil
         }
     }
@@ -90,9 +88,9 @@ enum PlatformOrderNumber {
         return value
     }
 
-    /// Ensure the value uses the selected brand prefix (`GP-xxx`, `LM-xxx`, …).
+    /// Ensure the value uses the selected brand prefix (`GF-xxx` or `#xxx`).
     /// - Empty input → brand prefix only (ready for typing), or empty if no brand.
-    /// - Pasted bare numbers → `GP-12345`
+    /// - Pasted bare numbers → `GF-12345` or `#12345`
     /// - Switching brand rewrites an existing known prefix.
     static func applyBrandPrefix(_ raw: String, brand: String?) -> String {
         let normalized = normalize(raw)

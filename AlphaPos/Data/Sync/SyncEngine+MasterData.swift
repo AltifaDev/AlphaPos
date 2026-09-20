@@ -18,8 +18,28 @@ enum InventoryTransactionIdentityPolicy {
 }
 
 enum BranchParentSyncPolicy {
-    static func requiresUpload(localIsSynced: Bool, existsRemotely: Bool) -> Bool {
-        !localIsSynced || !existsRemotely
+    static func requiresUpload(localIsSynced: Bool, existsRemotely _: Bool) -> Bool {
+        // A branch that has already synced but is now absent remotely was hard-
+        // deleted by the server/admin. Re-uploading it makes a stale branch
+        // selection permanent and leaves branch-scoped screens empty.
+        // Only genuinely pending local creations/edits may upload.
+        !localIsSynced
+    }
+
+    static func isBootstrapPlaceholder(
+        name: String,
+        location: String?,
+        phone: String?,
+        hasDependentRecords: Bool,
+        matchingRemoteNameExists: Bool
+    ) -> Bool {
+        !hasDependentRecords
+            && matchingRemoteNameExists
+            && name.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare("Main Branch") == .orderedSame
+            && location?.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare("Headquarters") == .orderedSame
+            && (phone ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 import Combine
@@ -204,6 +224,9 @@ extension SyncEngine {
             __desclocals.fetchLimit = 500  // N3: prevent OOM
             let locals = (try? modelContext.fetch(__desclocals)) ?? []
             let localById = Dictionary(uniqueKeysWithValues: locals.map { ($0.id.uuidString.lowercased(), $0) })
+            let remoteIds = Set(remoteBranches.compactMap { remote in
+                (remote["id"] as? String)?.lowercased()
+            })
 
             for remote in remoteBranches {
                 guard let idStr = remote["id"] as? String,
@@ -228,7 +251,70 @@ extension SyncEngine {
                     modelContext.insert(branch)
                 }
             }
+
+
+            // Repair the empty synthetic branch created by older builds on a
+            // fresh/reinstalled device. The server branch is authoritative.
+            // Never retire a branch that already owns business records: those
+            // require an explicit identity migration instead of a destructive
+            // cascade through Branch relationships.
+            let remoteNames = Set(remoteBranches.compactMap { ($0["name"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+            let bootstrapPlaceholders = locals.filter {
+                !$0.isDeleted
+                    && !$0.isSynced
+                    && BranchParentSyncPolicy.isBootstrapPlaceholder(
+                        name: $0.name,
+                        location: $0.location,
+                        phone: $0.phone,
+                        hasDependentRecords: !$0.orders.isEmpty
+                            || !$0.inventoryItems.isEmpty
+                            || !$0.purchaseOrders.isEmpty,
+                        matchingRemoteNameExists: remoteNames.contains(
+                            $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        )
+                    )
+            }
+            let selectedPlaceholderWasRetired = bootstrapPlaceholders.contains {
+                $0.id == BranchContext.shared.activeBranchID
+            }
+            for branch in bootstrapPlaceholders {
+                branch.isDeleted = true
+                branch.isSynced = true
+            }
+
+            // `branches` uses hard deletes on Supabase. A device can therefore
+            // keep a previously-synced branch in SwiftData after that branch was
+            // removed on the server. If it remains selected, every branch-scoped
+            // pull (including restaurant_tables) legitimately returns zero rows
+            // while merchant-scoped menu data still appears complete.
+            //
+            // Only retire rows that were already synced. Unsynced local branches
+            // are pending creations and must still be allowed to upload.
+            let staleSyncedBranches = locals.filter {
+                !$0.isDeleted
+                    && $0.isSynced
+                    && !remoteIds.contains($0.id.uuidString.lowercased())
+            }
+            let selectedBranchWasRemoved = staleSyncedBranches.contains {
+                $0.id == BranchContext.shared.activeBranchID
+            }
+            for branch in staleSyncedBranches {
+                branch.isDeleted = true
+                branch.isSynced = true
+            }
             modelContext.saveWithLogging(label: #function)
+
+            if selectedBranchWasRemoved || selectedPlaceholderWasRetired,
+               let replacement = ((try? modelContext.fetch(FetchDescriptor<Branch>())) ?? [])
+                .filter({ !$0.isDeleted && remoteIds.contains($0.id.uuidString.lowercased()) })
+                .sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })
+                .first {
+                BranchContext.shared.select(replacement)
+                #if DEBUG
+                print("SyncEngine: selected server branch \(replacement.id) after retiring a stale local branch")
+                #endif
+            }
 
             // Older installs can contain a real server branch and a second
             // placeholder "Main Branch" created locally during bootstrap. If

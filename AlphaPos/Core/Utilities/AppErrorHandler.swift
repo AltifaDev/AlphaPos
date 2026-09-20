@@ -64,12 +64,14 @@ struct SyncRetryPolicy {
         jitterFraction:   0.1
     )
 
-    /// Calculate delay for attempt N (1-indexed).
+    /// Calculate delay for attempt N (1-indexed) with full jitter to avoid thundering-herd.
     func delay(for attempt: Int) -> Double {
-        let exponential = baseDelaySeconds * pow(2.0, Double(attempt - 1))
+        let exponential = baseDelaySeconds * pow(2.0, Double(max(0, attempt - 1)))
         let capped = min(exponential, maxDelaySeconds)
-        let jitter = capped * jitterFraction * Double.random(in: 0...1)
-        return capped + jitter
+        let jitterSpread = max(0.1, capped * jitterFraction)
+        let lower = max(0.1, capped - jitterSpread)
+        let upper = capped + jitterSpread
+        return Double.random(in: lower...upper)
     }
 }
 

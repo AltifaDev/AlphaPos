@@ -13,6 +13,7 @@ struct PrinterSettingsView: View {
     // Printer settings
     @AppStorage("receipt_printer_enabled") private var receiptPrinterEnabled = true
     @AppStorage("kitchen_printer_enabled") private var kitchenPrinterEnabled = true
+    @AppStorage("split_kitchen_print_by_category") private var splitKitchenPrintByCategory = true
     @AppStorage("printer_ip") private var printerIP = "192.168.1.201"
     // ── Shift auto-print toggles ──────────────────────────────────────────
     @AppStorage("print_open_shift")  private var printOpenShift  = false
@@ -259,6 +260,14 @@ struct PrinterSettingsView: View {
                             title: "printer_kitchen_enabled_title".t,
                             subtitle: "printer_kitchen_enabled_desc".t,
                             isOn: $kitchenPrinterEnabled)
+
+                        printDivider
+
+                        printToggleRow(
+                            icon: "rectangle.3.group", tint: .appAmber,
+                            title: "printer_split_kitchen_title".t,
+                            subtitle: "printer_split_kitchen_desc".t,
+                            isOn: $splitKitchenPrintByCategory)
 
                         printDivider
 
@@ -583,7 +592,8 @@ struct PrinterSettingsView: View {
         roles: Set<String>,
         isActive: Bool,
         emulation: String,
-        selectedCategories: Set<String>
+        selectedCategories: Set<String>,
+        typography: PrintTypographyProfile
     ) -> Bool {
         let selectedRoles: Set<String> = roles.isEmpty ? Set(["receipt"]) : roles
         let existingGroup = id.flatMap { existingPrinterGroup(for: $0) } ?? []
@@ -644,6 +654,7 @@ struct PrinterSettingsView: View {
                     printer.qrModuleSize = paperWidth == "58mm" ? 5 : 7
                 }
                 printer.role = role
+                printer.typographyProfile = typography
                 printer.isActive = isActive
                 printer.emulation = emulation
                 printer.isSynced = false
@@ -664,6 +675,7 @@ struct PrinterSettingsView: View {
                     isDeleted: false,
                     updatedAt: Date()
                 )
+                printer.typographyProfile = typography
                 modelContext.insert(printer)
             }
 
@@ -914,7 +926,7 @@ struct PrinterConfigSheet: View {
     var prefillEmulation: String? = nil
     var initialRoles: Set<String> = ["receipt"]
     var initialCategories: Set<String> = []
-    var onSave: (UUID?, String, String, String?, Int, String?, String, Set<String>, Bool, String, Set<String>) -> Bool
+    var onSave: (UUID?, String, String, String?, Int, String?, String, Set<String>, Bool, String, Set<String>, PrintTypographyProfile) -> Bool
     var onDelete: ((UUID) -> Bool)? = nil
     var appCategories: [Category]
 
@@ -928,6 +940,8 @@ struct PrinterConfigSheet: View {
     @State private var isActive: Bool
     @State private var emulation: String
     @State private var selectedCategories: Set<String>
+    @State private var bodyScale: Int
+    @State private var emphasisScale: Int
 
     init(
         isPresented: Binding<Bool>,
@@ -938,7 +952,7 @@ struct PrinterConfigSheet: View {
         prefillEmulation: String? = nil,
         initialRoles: Set<String> = ["receipt"],
         initialCategories: Set<String> = [],
-        onSave: @escaping (UUID?, String, String, String?, Int, String?, String, Set<String>, Bool, String, Set<String>) -> Bool,
+        onSave: @escaping (UUID?, String, String, String?, Int, String?, String, Set<String>, Bool, String, Set<String>, PrintTypographyProfile) -> Bool,
         onDelete: ((UUID) -> Bool)? = nil,
         appCategories: [Category]
     ) {
@@ -965,6 +979,8 @@ struct PrinterConfigSheet: View {
             _isActive = State(initialValue: printer.isActive)
             _emulation = State(initialValue: printer.emulation)
             _selectedCategories = State(initialValue: initialCategories)
+            _bodyScale = State(initialValue: printer.typographyProfile.body.scale)
+            _emphasisScale = State(initialValue: printer.typographyProfile.emphasis.scale)
         } else {
             _name = State(initialValue: prefillName ?? "")
             _connectionType = State(initialValue: prefillHost != nil ? "network" : "network")
@@ -976,6 +992,8 @@ struct PrinterConfigSheet: View {
             _isActive = State(initialValue: true)
             _emulation = State(initialValue: prefillEmulation ?? "epson")
             _selectedCategories = State(initialValue: initialCategories)
+            _bodyScale = State(initialValue: 1)
+            _emphasisScale = State(initialValue: 2)
         }
     }
 
@@ -1018,6 +1036,7 @@ struct PrinterConfigSheet: View {
                         if hasPrepJobs {
                             routingSection
                         }
+                        typographySection
 
                         // ── ACTIONS ──────────────────────────────────────────
                         VStack(spacing: 12) {
@@ -1290,7 +1309,14 @@ struct PrinterConfigSheet: View {
             selectedJobs,
             isActive,
             emulation,
-            selectedCategories
+            selectedCategories,
+            PrintTypographyProfile(
+                header: .init(scale: selectedJobs.contains("kitchen") || selectedJobs.contains("bar") ? emphasisScale : 1, bold: true),
+                metadata: .compact,
+                body: .init(scale: bodyScale, bold: selectedJobs.contains("kitchen") || selectedJobs.contains("bar")),
+                emphasis: .init(scale: emphasisScale, bold: true),
+                footer: .compact
+            )
         ) {
             isPresented = false
         } else {
@@ -1306,6 +1332,33 @@ struct PrinterConfigSheet: View {
 
     private var hasPrepJobs: Bool {
         !selectedJobs.isDisjoint(with: ["kitchen", "bar", "label"])
+    }
+
+    @ViewBuilder
+    private var typographySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Print Text Size")
+                .font(.headline)
+                .foregroundColor(.appAccent)
+            Text("กำหนดขนาดแยกตามส่วน โดยระบบจะรักษาความกว้างของกระดาษ 58/80mm")
+                .font(.footnote)
+                .foregroundColor(.textSecondary)
+            Picker("รายการสินค้า", selection: $bodyScale) {
+                Text("ปกติ").tag(1)
+                Text("ใหญ่").tag(2)
+            }
+            Picker("หัวเรื่อง / ยอดรวม", selection: $emphasisScale) {
+                Text("ปกติ").tag(1)
+                Text("ใหญ่").tag(2)
+            }
+            Button("Use Recommended Sizes") {
+                let profile = PrintTypographyProfile.recommended(for: selectedJobs.first ?? "receipt", paperWidth: paperWidth)
+                bodyScale = profile.body.scale
+                emphasisScale = profile.emphasis.scale
+            }
+            .font(.footnote.weight(.semibold))
+        }
+        .apCard()
     }
 }
 

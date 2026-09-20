@@ -17,6 +17,11 @@ private struct DashboardSection: Identifiable {
     let content: AnyView
 }
 
+private enum DashboardPresentationMode: String {
+    case simple
+    case full
+}
+
 /// Real-time KPI Dashboard showing live business metrics from SwiftData.
 /// This is the "home" landing page for the Master Device.
 ///
@@ -37,6 +42,7 @@ struct LiveDashboardView: View {
     @AppStorage(GovernmentSupportProgram.enabledSettingsKey) private var thaiChuaThaiPlusEnabled = true
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @AppStorage("enable_table_system") private var tableSystemEnabled = true
+    @AppStorage("dashboard_presentation_mode") private var presentationModeRawValue = DashboardPresentationMode.full.rawValue
 
     // MARK: - SwiftData Queries
 
@@ -281,6 +287,11 @@ struct LiveDashboardView: View {
             .init(id: "health", content: AnyView(dataHealthStrip.dashboardAppear(0.03)))
         ]
 
+        if presentationMode == .simple {
+            sections.append(.init(id: "simple-summary", content: AnyView(simpleDashboardSection.dashboardAppear(0.08))))
+            return sections
+        }
+
         if effectiveViewMode == .all || effectiveViewMode == .executive {
             sections.append(.init(id: "storewide-overview", content: AnyView(storewideOverviewSection.dashboardAppear(0.1))))
         }
@@ -332,6 +343,10 @@ struct LiveDashboardView: View {
             sections.append(.init(id: "activity", content: AnyView(activitySection.dashboardAppear(0.4))))
         }
         return sections
+    }
+
+    private var presentationMode: DashboardPresentationMode {
+        DashboardPresentationMode(rawValue: presentationModeRawValue) ?? .full
     }
 
     /// Subtle ambient background: base color with two soft radial glows that
@@ -449,6 +464,8 @@ struct LiveDashboardView: View {
         var deliveryOrdersCount: Int = 0
 
         var storefrontSalesTotal: Double = 0
+        var dineInSalesTotal: Double = 0
+        var takeOutSalesTotal: Double = 0
         var storefrontGrossSales: Double = 0
         var storefrontDiscounts: Double = 0
         var deliverySalesTotal: Double = 0
@@ -791,13 +808,18 @@ struct LiveDashboardView: View {
         m.todayRefunds = currentAccountingSummary.refunds
         // Channel totals use the same scoped events as the storewide net total,
         // including refunds of earlier orders and excluding later-shift refunds.
-        let deliveryOrderIds = Set(activeOrders.filter { $0.orderType == "delivery" }.map(\.id))
+        let orderTypeByID = Dictionary(uniqueKeysWithValues: activeOrders.map { ($0.id, $0.orderType) })
         for event in currentEvents {
             guard let amount = AccountingMath.recognizedAmount(eventType: event.eventType, amount: event.amount),
                   let orderId = event.orderId else { continue }
-            if deliveryOrderIds.contains(orderId) {
+            switch orderTypeByID[orderId] {
+            case "delivery":
                 m.deliverySalesTotal += amount
-            } else {
+            case "take_out":
+                m.takeOutSalesTotal += amount
+                m.storefrontSalesTotal += amount
+            default:
+                m.dineInSalesTotal += amount
                 m.storefrontSalesTotal += amount
             }
         }
@@ -1293,6 +1315,8 @@ struct LiveDashboardView: View {
     private var todayCOGS: Double { metrics.todayCOGS }
     private var grossMargin: Double { metrics.grossMargin }
     private var storefrontSalesTotal: Double { metrics.storefrontSalesTotal }
+    private var dineInSalesTotal: Double { metrics.dineInSalesTotal }
+    private var takeOutSalesTotal: Double { metrics.takeOutSalesTotal }
     private var storefrontGrossSales: Double { metrics.storefrontGrossSales }
     private var storefrontDiscounts: Double { metrics.storefrontDiscounts }
     private var deliverySalesTotal: Double { metrics.deliverySalesTotal }
@@ -1635,6 +1659,15 @@ struct LiveDashboardView: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(.textPrimary)
                 Spacer()
+                Picker("", selection: $presentationModeRawValue) {
+                    Label(lm.currentLanguage == .thai ? "แบบง่าย" : "Simple", systemImage: "rectangle.grid.1x2")
+                        .tag(DashboardPresentationMode.simple.rawValue)
+                    Label(lm.currentLanguage == .thai ? "แบบเต็ม" : "Full", systemImage: "rectangle.grid.2x2")
+                        .tag(DashboardPresentationMode.full.rawValue)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 210)
+                .accessibilityLabel(lm.currentLanguage == .thai ? "รูปแบบการแสดงแดชบอร์ด" : "Dashboard display mode")
                 // Role-based Auto Identification Badge
                 HStack(spacing: 6) {
                     Image(systemName: effectiveViewMode == .operations ? "person.badge.shield.checkmark.fill" : "crown.fill")
@@ -2328,6 +2361,135 @@ struct LiveDashboardView: View {
         }
         let top = deliveryAddOnBreakdown.prefix(2).map { "\($0.name) (\($0.quantity))" }.joined(separator: ", ")
         return (lm.currentLanguage == .thai ? "ขายดี: " : "Top: ") + top
+    }
+
+    // MARK: - Simple Dashboard
+
+    private var simpleDashboardSection: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(lm.currentLanguage == .thai ? "สรุปยอดขาย" : "Sales summary")
+                    .font(.title2.bold())
+                    .foregroundColor(.textPrimary)
+                Text(lm.currentLanguage == .thai
+                     ? "ดูยอดรวม ช่องทางขาย และการรับชำระที่สำคัญในหน้าเดียว"
+                     : "Your essential sales, channels, and payments at a glance")
+                    .font(.subheadline)
+                    .foregroundColor(.textSecondary)
+            }
+
+            HStack(spacing: 14) {
+                SimpleDashboardCard(
+                    title: lm.currentLanguage == .thai ? "ยอดขายสุทธิ" : "Net sales",
+                    value: isSelectedLedgerComplete ? dashboardMoney(todayRevenue) : "—",
+                    detail: "\(completedTodayOrders.count) " + (lm.currentLanguage == .thai ? "บิลสำเร็จ" : "completed bills"),
+                    icon: "banknote.fill",
+                    color: Color(hex: "10B981"),
+                    isPrimary: true
+                )
+                SimpleDashboardCard(
+                    title: lm.currentLanguage == .thai ? "ยอดเฉลี่ยต่อบิล" : "Average per bill",
+                    value: dashboardMoney(avgOrderValue),
+                    detail: lm.currentLanguage == .thai ? "เฉลี่ยจากทุกช่องทาง" : "Across all channels",
+                    icon: "receipt.fill",
+                    color: Color(hex: "3B82F6")
+                )
+                SimpleDashboardCard(
+                    title: lm.currentLanguage == .thai ? "จำนวนสินค้าที่ขาย" : "Items sold",
+                    value: "\(itemsSold)",
+                    detail: lm.currentLanguage == .thai ? "รายการเมนูหลัก" : "main menu items",
+                    icon: "shippingbox.fill",
+                    color: Color(hex: "8B5CF6")
+                )
+            }
+
+            simpleSectionHeader(
+                title: lm.currentLanguage == .thai ? "ขายผ่านช่องทางไหน" : "Sales by channel",
+                subtitle: lm.currentLanguage == .thai ? "ยอดสุทธิและจำนวนบิล" : "Net sales and bill count",
+                icon: "square.grid.3x1.below.line.grid.1x2"
+            )
+
+            HStack(spacing: 14) {
+                SimpleDashboardCard(
+                    title: lm.currentLanguage == .thai ? "หน้าร้าน / ทานที่ร้าน" : "Dine-in",
+                    value: dashboardMoney(dineInSalesTotal),
+                    detail: "\(dineInOrderCount) " + (lm.currentLanguage == .thai ? "บิล" : "bills"),
+                    icon: "storefront.fill",
+                    color: Color(hex: "3B82F6")
+                )
+                SimpleDashboardCard(
+                    title: lm.currentLanguage == .thai ? "สั่งกลับบ้าน" : "Takeaway",
+                    value: dashboardMoney(takeOutSalesTotal),
+                    detail: "\(takeOutOrderCount) " + (lm.currentLanguage == .thai ? "บิล" : "bills"),
+                    icon: "takeoutbag.and.cup.and.straw.fill",
+                    color: Color(hex: "F59E0B")
+                )
+                SimpleDashboardCard(
+                    title: lm.currentLanguage == .thai ? "เดลิเวอรี" : "Delivery",
+                    value: dashboardMoney(deliverySalesTotal),
+                    detail: "\(completedDeliveryOrders.count) " + (lm.currentLanguage == .thai ? "บิล" : "bills"),
+                    icon: "box.truck.fill",
+                    color: Color(hex: "06B6D4")
+                )
+            }
+
+            simpleSectionHeader(
+                title: lm.currentLanguage == .thai ? "ลูกค้าชำระอย่างไร" : "Payments received",
+                subtitle: lm.currentLanguage == .thai ? "ยอดรับแยกตามวิธีชำระเงิน" : "Collected by payment method",
+                icon: "creditcard.fill"
+            )
+
+            if todayPaymentMix.isEmpty {
+                ContentUnavailableView(
+                    lm.currentLanguage == .thai ? "ยังไม่มีรายการชำระเงิน" : "No payments yet",
+                    systemImage: "creditcard",
+                    description: Text(lm.currentLanguage == .thai ? "รายการชำระเงินจะแสดงที่นี่เมื่อมีการขาย" : "Payments will appear here after a sale")
+                )
+                .frame(maxWidth: .infinity, minHeight: 130)
+                .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
+                    ForEach(Array(todayPaymentMix.enumerated()), id: \.offset) { _, payment in
+                        SimpleDashboardCard(
+                            title: payment.method,
+                            value: dashboardMoney(payment.amount),
+                            detail: "\(payment.count) " + (lm.currentLanguage == .thai ? "รายการชำระ" : "payments"),
+                            icon: paymentIcon(payment.method),
+                            color: paymentMethodColor(payment.method)
+                        )
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var dineInOrderCount: Int {
+        completedTodayOrders.filter { $0.orderType != "delivery" && $0.orderType != "take_out" }.count
+    }
+
+    private var takeOutOrderCount: Int {
+        completedTodayOrders.filter { $0.orderType == "take_out" }.count
+    }
+
+    private func paymentIcon(_ method: String) -> String {
+        let normalized = method.lowercased()
+        if normalized.contains("cash") || normalized.contains("เงินสด") { return "banknote.fill" }
+        if normalized.contains("promptpay") || normalized.contains("qr") { return "qrcode" }
+        if normalized.contains("card") || normalized.contains("บัตร") { return "creditcard.fill" }
+        if normalized.contains("wallet") || normalized.contains("true") { return "wallet.bifold.fill" }
+        return "creditcard.and.123"
+    }
+
+    private func simpleSectionHeader(title: String, subtitle: String, icon: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .foregroundColor(.appAccent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.headline).foregroundColor(.textPrimary)
+                Text(subtitle).font(.caption).foregroundColor(.textSecondary)
+            }
+        }
     }
 
     // MARK: - Tier 1: Storewide Overview (ภาพรวมยอดขายทั้งร้าน)
@@ -3717,6 +3879,59 @@ private extension View {
 
 // MARK: - KPI Card Component
 
+private struct SimpleDashboardCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let title: String
+    let value: String
+    let detail: String
+    let icon: String
+    let color: Color
+    var isPrimary = false
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: isPrimary ? 24 : 20, weight: .semibold))
+                .foregroundColor(color)
+                .frame(width: isPrimary ? 50 : 44, height: isPrimary ? 50 : 44)
+                .background(color.opacity(0.13), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.textSecondary)
+                    .lineLimit(1)
+                Text(value)
+                    .font(.system(size: isPrimary ? 27 : 23, weight: .bold, design: .rounded))
+                    .foregroundColor(.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+                    .contentTransition(.numericText())
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(.textTertiary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: isPrimary ? 112 : 104, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [color.opacity(colorScheme == .dark ? 0.13 : 0.08), Color.appSurface],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(color.opacity(0.22), lineWidth: 1)
+        )
+        .shadow(color: color.opacity(colorScheme == .dark ? 0.08 : 0.06), radius: 8, x: 0, y: 3)
+    }
+}
+
 private struct DashboardBreakdownCard: View {
     @Environment(\.colorScheme) private var colorScheme
     let title: String
@@ -4320,7 +4535,7 @@ private struct DeliveryOrderQuickEditSheet: View {
                     HStack {
                         Text(lm.currentLanguage == .thai ? "เลขออเดอร์เดลิเวอรี" : "Platform Order #")
                         Spacer()
-                        TextField("GP-...", text: $platformOrderNumber)
+                        TextField("#12345 / GF-123", text: $platformOrderNumber)
                             .multilineTextAlignment(.trailing)
                             .font(.system(.body, design: .monospaced))
                     }

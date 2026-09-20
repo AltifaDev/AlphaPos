@@ -3,11 +3,12 @@ import Combine
 import SwiftUI
 import AVFoundation
 import UIKit
+import AudioToolbox
 
 // MARK: - In-App Notification Model
 
 /// ประเภทการแจ้งเตือนภายในแอป (ไม่ใช้ Native Push)
-enum InAppNotificationType {
+enum InAppNotificationType: Equatable {
     case newOrder           // ออเดอร์ใหม่จากลูกค้า
     case serviceRequest     // ลูกค้าเรียก Staff
     case cookingAlert       // รายการอาหารค้างคิวนานเกิน
@@ -58,6 +59,7 @@ struct InAppNotification: Identifiable {
     let title: String
     let body: String
     let tableNumber: String?   // สำหรับ navigate ไปโต๊ะที่เกี่ยวข้อง
+    let orderNumber: String?   // สำหรับ navigate ไปดูออเดอร์
     let dedupeKey: String?
     let createdAt: Date = Date()
 
@@ -66,18 +68,21 @@ struct InAppNotification: Identifiable {
         title: String,
         body: String,
         tableNumber: String?,
+        orderNumber: String? = nil,
         dedupeKey: String? = nil
     ) {
         self.type = type
         self.title = title
         self.body = body
         self.tableNumber = tableNumber
+        self.orderNumber = orderNumber
         self.dedupeKey = dedupeKey
     }
 
     /// แสดงผลอยู่นานแค่ไหน (วินาที)
     var displayDuration: TimeInterval {
         switch type {
+        case .newOrder:       return 6
         case .staleShift:     return 8
         case .printerAlert:   return 7
         case .cookingAlert,
@@ -101,6 +106,7 @@ final class InAppNotificationManager: ObservableObject {
     /// แจ้งเตือนล่าสุด — สำหรับ views ที่ต้องการแค่ตัวล่าสุด
     @Published var latestNotification: InAppNotification? = nil
     private var recentlyDelivered: [String: Date] = [:]
+    private let speechSynthesizer = AVSpeechSynthesizer()
 
     private init() {}
 
@@ -141,6 +147,28 @@ final class InAppNotificationManager: ObservableObject {
             AudioServicesPlaySystemSound(soundID)
         }
 
+        let speechEnabled = UserDefaults.standard.object(
+            forKey: "enable_in_app_notification_speech"
+        ) as? Bool ?? true
+        if speechEnabled, notification.type == .newOrder {
+            // Announce the location so staff can react without looking at the
+            // screen. The table number is supplied by both QR/web customer
+            // orders and staff-iPhone orders. Quick orders have no table, so
+            // announce their queue number instead.
+            let speechText: String
+            if let tableNumber = notification.tableNumber,
+               !tableNumber.isEmpty {
+                speechText = "ออร์เดอร์ใหม่ โต๊ะ (tableNumber) เข้ามาค่ะ"
+            } else {
+                speechText = "ออร์เดอร์ใหม่เข้ามาค่ะ"
+            }
+            let utterance = AVSpeechUtterance(string: speechText)
+            utterance.voice = AVSpeechSynthesisVoice(language: "th-TH")
+            utterance.rate = 0.48
+            speechSynthesizer.stopSpeaking(at: .immediate)
+            speechSynthesizer.speak(utterance)
+        }
+
         // ลบออกหลัง displayDuration วินาที
         let id = notification.id
         let duration = notification.displayDuration
@@ -173,12 +201,37 @@ final class InAppNotificationManager: ObservableObject {
 
     // MARK: - Convenience Helpers (เรียกจาก SyncEngine)
 
-    func postNewOrder(orderNumber: String, tableNumber: String) {
+    func postNewOrder(orderNumber: String, tableNumber: String, queueNumber: String? = nil, orderType: String? = nil) {
+        let isQuick = tableNumber.uppercased() == "QUICK" || tableNumber.isEmpty
+        let title: String
+        let body: String
+        if isQuick {
+            let isThai = LocalizationManager.shared.currentLanguage == .thai
+            let typeLabel: String
+            switch orderType {
+            case "delivery":
+                typeLabel = isThai ? "เดลิเวอรี" : "Delivery"
+            case "walk_in":
+                typeLabel = isThai ? "ซื้อหน้าร้าน" : "Walk-in"
+            default:
+                typeLabel = isThai ? "สั่งกลับบ้าน" : "Takeaway"
+            }
+            title = "alert_new_order_title".t + " (\(typeLabel))"
+            if let q = queueNumber, !q.isEmpty {
+                body = (isThai ? "คิว #" : "Queue #") + "\(q) — #\(orderNumber)"
+            } else {
+                body = "#\(orderNumber)"
+            }
+        } else {
+            title = "alert_new_order_title".t
+            body = "\("table".t) \(tableNumber) \("notif_placed_order".t) #\(orderNumber.suffix(4))"
+        }
         post(InAppNotification(
             type: .newOrder,
-            title: "alert_new_order_title".t,
-            body: "\("table".t) \(tableNumber) \("notif_placed_order".t) #\(orderNumber.suffix(4))",
-            tableNumber: tableNumber,
+            title: title,
+            body: body,
+            tableNumber: isQuick ? nil : tableNumber,
+            orderNumber: orderNumber,
             dedupeKey: "order:\(orderNumber)"
         ))
     }
@@ -241,8 +294,8 @@ struct InAppNotificationBanner: View {
     @ObservedObject private var manager = InAppNotificationManager.shared
     @State private var isVisible = false
 
-    /// Callback เมื่อแตะ banner — navigate ไปยังโต๊ะที่เกี่ยวข้อง
-    var onTap: ((String?) -> Void)?
+    /// Callback เมื่อแตะ banner — navigate ไปยังโต๊ะหรือออเดอร์ที่เกี่ยวข้อง (tableNumber, orderNumber)
+    var onTap: ((String?, String?) -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -250,7 +303,7 @@ struct InAppNotificationBanner: View {
                 bannerView(for: notification)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .onTapGesture {
-                        onTap?(notification.tableNumber)
+                        onTap?(notification.tableNumber, notification.orderNumber)
                         manager.dismiss(notification.id)
                     }
             }
@@ -261,13 +314,13 @@ struct InAppNotificationBanner: View {
     private func bannerView(for notification: InAppNotification) -> some View {
         HStack(spacing: 12) {
             Image(systemName: notification.type.icon)
-                .font(.title3)
+                .font(.title2)
                 .foregroundColor(notification.type.accentColor)
                 .frame(width: 32)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(notification.title)
-                    .font(.subheadline)
+                    .font(.headline)
                     .fontWeight(.semibold)
                     .foregroundColor(.textPrimary)
                 Text(notification.body)

@@ -140,6 +140,7 @@ extension NetworkManager {
         let defaults = UserDefaults.standard
         let defaultsByKey = [
             "receipt_printer_enabled": true, "kitchen_printer_enabled": true,
+            "split_kitchen_print_by_category": true,
             "print_open_shift": false, "print_close_shift": true,
             "auto_print_receipt_on_payment": true,
             "auto_open_cash_drawer_on_cash_payment": true,

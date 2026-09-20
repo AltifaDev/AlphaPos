@@ -1593,7 +1593,10 @@ final class InventoryViewModel {
         let branchDesc = FetchDescriptor<Branch>()
         let existingBranches = (try? modelContext.fetch(branchDesc)) ?? []
         
-        if existingBranches.isEmpty {
+        // Online branches are canonical server records. Creating one here while
+        // the initial pull is still settling can split one store into two UUIDs.
+        // Local seeding is reserved for the deliberately offline product.
+        if existingBranches.isEmpty && OfflineSyncModeController.isOfflineSubscriptionPlan {
             let mainBranch = Branch(name: "Main Branch", location: "Headquarters", phone: "02-123-4567")
             modelContext.insert(mainBranch)
             
@@ -1609,7 +1612,7 @@ final class InventoryViewModel {
             
             modelContext.saveWithLogging(label: #function)
             BranchContext.shared.select(mainBranch)
-        } else {
+        } else if !existingBranches.isEmpty {
             _ = try? BranchContext.shared.bootstrap(in: modelContext, createDefaultIfEmpty: false)
         }
     }

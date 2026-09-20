@@ -38,7 +38,7 @@ final class BranchContext: ObservableObject {
     }
 
     @discardableResult
-    func bootstrap(in context: ModelContext, createDefaultIfEmpty: Bool = true) throws -> Branch? {
+    func bootstrap(in context: ModelContext, createDefaultIfEmpty: Bool = false) throws -> Branch? {
         var branches = try context.fetch(FetchDescriptor<Branch>()).filter { !$0.isDeleted }
         if branches.isEmpty, createDefaultIfEmpty {
             let branch = Branch(name: "Main Branch", location: "Headquarters")

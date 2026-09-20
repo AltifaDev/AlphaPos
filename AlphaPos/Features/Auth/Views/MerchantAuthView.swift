@@ -506,26 +506,7 @@ struct MerchantAuthView: View {
             .buttonStyle(.plain)
             .padding(.top, 2)
 
-            if !AppConfig.shared.turnstileSiteKey.isEmpty {
-                AuthCaptchaBlock(
-                    siteKey: AppConfig.shared.turnstileSiteKey,
-                    captchaToken: $captchaToken,
-                    captchaResetToken: $captchaResetToken,
-                    captchaStatus: $captchaStatus,
-                    appearance: .onDarkGlass,
-                    instanceId: "login"
-                )
-            } else if AppConfig.shared.isProduction {
-                // Release/TestFlight without TURNSTILE_SITE_KEY hides the checkbox entirely.
-                Text("กล่องยืนยันตัวตนยังไม่ได้ตั้งค่า (TURNSTILE_SITE_KEY)")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.red.opacity(0.9))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            let captchaRequired = !AppConfig.shared.turnstileSiteKey.isEmpty
-            let captchaBlocking = captchaRequired && (captchaToken == nil || captchaStatus == .failed || captchaStatus == .expired || captchaStatus == .loading)
-            let loginBlocked = email.isEmpty || password.isEmpty || captchaBlocking || isLoading
+            let loginBlocked = email.isEmpty || password.isEmpty || isLoading
 
             // Action Button (Primary Orange Gradient CTA)
             Button(action: handleLogin) {
@@ -563,6 +544,33 @@ struct MerchantAuthView: View {
             .buttonStyle(ScaleButtonStyle(floatAnimation: buttonFloat))
             .disabled(loginBlocked)
             .padding(.top, 6)
+
+            // Demo account quick-fill / one-tap sign-in for App Review and testing
+            Button {
+                email = "appreview@alphaposweb.com"
+                password = "AppReview2026!"
+                handleLogin()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundColor(Color(hex: "2D71F8"))
+                    Text("เข้าสู่ระบบด้วยบัญชีทดลอง (App Review Demo)")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.white.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                        )
+                )
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 2)
 
             // Mode switcher styled as a premium secondary button
             VStack(spacing: 12) {
@@ -1325,7 +1333,11 @@ struct MerchantAuthView: View {
 
         Task {
             do {
-                let session = try await AuthService.shared.signIn(email: cleanEmail, password: cleanPassword, captchaToken: captchaToken)
+                let session = try await AuthService.shared.signIn(email: cleanEmail, password: cleanPassword)
+                if session.isAppReviewDemo {
+                    await completeLogin(session)
+                    return
+                }
                 let preparation = try await AuthService.shared.prepareOwnerTOTP(
                     accessToken: session.accessToken,
                     preferredFactorId: session.user.totpFactorId

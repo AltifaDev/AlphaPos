@@ -31,7 +31,11 @@ extension NetworkManager {
             "p_branch_id": branchId.uuidString.lowercased()
         ]
 
-        let data = try await sendSupabaseRequest(
+        // PGRST002/PGRST003 mean PostgREST is temporarily unable to load its
+        // schema or acquire a database connection. A short bounded retry makes
+        // QR generation recover after a service restart without duplicating
+        // retries for authentication or validation failures.
+        let data = try await sendPairingRequest(
             method: "POST",
             endpoint: "rpc/create_device_pairing",
             payload: payload
@@ -77,7 +81,7 @@ extension NetworkManager {
     /// - Code path: first returns pending (`isTrusted=false`), then trusted after Approve.
     func checkPairingStatus(token: String) async throws -> PairedDeviceInfo? {
         guard !OfflineSyncModeController.isEnabled else { throw NetworkError.offline }
-        let data = try await sendSupabaseRequest(
+        let data = try await sendPairingRequest(
             method: "GET",
             endpoint: "merchant_devices",
             queryItems: [
@@ -125,6 +129,41 @@ extension NetworkManager {
             endpoint: "rpc/reject_pending_device_pairing",
             payload: ["p_device_id": id.uuidString.lowercased()]
         )
+    }
+
+    private func sendPairingRequest(
+        method: String,
+        endpoint: String,
+        queryItems: [URLQueryItem]? = nil,
+        payload: Any? = nil
+    ) async throws -> Data {
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                return try await sendSupabaseRequest(
+                    method: method,
+                    endpoint: endpoint,
+                    queryItems: queryItems,
+                    payload: payload,
+                    timeoutOverride: 12.0
+                )
+            } catch {
+                lastError = error
+                guard attempt < 2, isTransientPairingError(error) else { throw error }
+                let delay = UInt64(500_000_000 * (attempt + 1))
+                try await Task.sleep(nanoseconds: delay)
+            }
+        }
+        throw lastError ?? NetworkError.serverError("Pairing request failed")
+    }
+
+    private func isTransientPairingError(_ error: Error) -> Bool {
+        let message = error.localizedDescription.uppercased()
+        return message.contains("PGRST002")
+            || message.contains("PGRST003")
+            || message.contains("HTTP 502")
+            || message.contains("HTTP 503")
+            || message.contains("HTTP 504")
     }
 
     struct PairedDeviceInfo {

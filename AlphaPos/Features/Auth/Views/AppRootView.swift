@@ -127,12 +127,18 @@ struct AppRootView: View {
             // ไม่ใช้ Native Push — ทำงานโดยไม่ต้องการ Push Notifications capability
             if sessionManager.route == .dashboard {
                 VStack {
-                    InAppNotificationBanner(onTap: { tableNumber in
-                        if let table = tableNumber {
+                    InAppNotificationBanner(onTap: { tableNumber, orderNumber in
+                        if let table = tableNumber, table.uppercased() != "QUICK", !table.isEmpty {
                             NotificationCenter.default.post(
                                 name: .openTableNotification,
                                 object: nil,
                                 userInfo: ["table_number": table]
+                            )
+                        } else if let order = orderNumber, !order.isEmpty {
+                            NotificationCenter.default.post(
+                                name: .openOrderNotification,
+                                object: nil,
+                                userInfo: ["order_number": order, "table_number": tableNumber ?? "QUICK"]
                             )
                         }
                     })
@@ -155,7 +161,12 @@ struct AppRootView: View {
         .animation(.easeInOut(duration: 0.3), value: lm.isReloading)
         .task {
             await sessionManager.bootstrap(modelContext: modelContext)
-            _ = try? BranchContext.shared.bootstrap(in: modelContext)
+            // The online branch is server-owned and is pulled during the initial
+            // reconciliation. Never manufacture a second UUID on a fresh device.
+            _ = try? BranchContext.shared.bootstrap(
+                in: modelContext,
+                createDefaultIfEmpty: OfflineSyncModeController.isOfflineSubscriptionPlan
+            )
             if TenantWorkspaceGuard.isAuthenticatedWorkspaceReady {
                 let merchantId = MerchantAuthManager.shared.merchantId
                     ?? UserDefaults.standard.string(forKey: "active_merchant_id")

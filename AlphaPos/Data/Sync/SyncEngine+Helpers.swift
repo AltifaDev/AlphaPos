@@ -349,6 +349,30 @@ extension SyncEngine {
         }
         return decision
     }
+
+    /// Order-specific reconciliation adds optimistic-concurrency versions to
+    /// the shared timestamp/strategy policy. A remote snapshot with an older
+    /// known server revision can never roll a local order backwards; an
+    /// unsynced local mutation is still protected by the configured strategy.
+    func shouldApplyRemoteOrderUpdate(
+        localIsSynced: Bool,
+        localUpdatedAt: Date,
+        localRowVersion: Int,
+        remoteUpdatedAt: Date,
+        remoteRowVersion: Int,
+        source: String = #fileID
+    ) -> RemoteApplyDecision {
+        if localRowVersion > 0, remoteRowVersion > 0,
+           remoteRowVersion < localRowVersion {
+            return .keepLocal
+        }
+        return shouldApplyRemoteUpdate(
+            localIsSynced: localIsSynced,
+            localUpdatedAt: localUpdatedAt,
+            remoteUpdatedAt: remoteUpdatedAt,
+            source: source
+        )
+    }
 }
 
 extension Notification.Name {

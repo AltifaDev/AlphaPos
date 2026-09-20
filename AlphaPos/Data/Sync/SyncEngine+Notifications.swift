@@ -64,11 +64,13 @@ extension SyncEngine {
     // MARK: - In-App Notification Triggers (แทนที่ UNUserNotificationCenter)
 
     /// แจ้งเตือนออเดอร์ใหม่จากลูกค้า — ทำงานเฉพาะเมื่อแอปเปิดอยู่
-    func triggerLocalNotification(orderNumber: String, tableNumber: String) {
+    func triggerLocalNotification(orderNumber: String, tableNumber: String, queueNumber: String? = nil, orderType: String? = nil) {
         Task { @MainActor in
             InAppNotificationManager.shared.postNewOrder(
                 orderNumber: orderNumber,
-                tableNumber: tableNumber
+                tableNumber: tableNumber,
+                queueNumber: queueNumber,
+                orderType: orderType
             )
         }
     }
@@ -229,6 +231,13 @@ extension SyncEngine {
 
         // ─── Stage 1: Pushes (Sequential to respect foreign key & relationship constraints) ───
         await syncMerchant()
+        // Resolve the server-owned branch identity before any branch-scoped
+        // push. Older builds could manufacture an empty "Main Branch" with a
+        // new UUID during bootstrap; pushing it first caused HTTP 400 and then
+        // left kitchen/order children pointing at a parent that did not exist.
+        failuresAreSoft = true
+        await pullBranchesFromSupabase(modelContext)
+        failuresAreSoft = false
         // Branches and floor-plan records are parents of sessions, orders and
         // other branch-scoped data. A newly created table must reach the server
         // before a session or order can reference it.

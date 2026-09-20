@@ -25,6 +25,7 @@ struct SystemFeatureConfigView: View {
     @AppStorage("auto_disable_oos_menu") private var autoDisableOOSMenu = false
     @AppStorage("enable_inventory_staff_push") private var enableInventoryStaffPush = true
     @AppStorage("enable_in_app_notification_sounds") private var enableInAppNotificationSounds = true
+    @AppStorage("enable_in_app_notification_speech") private var enableInAppNotificationSpeech = true
 
     // ── Kitchen Display System (KDS) ──────────────────────────────────
     @AppStorage("kds_show_kitchen") private var kdsShowKitchen = true
@@ -209,6 +210,13 @@ struct SystemFeatureConfigView: View {
                         title: "notif_sound_toggle_title".t,
                         subtitle: "notif_sound_toggle_desc".t,
                         isOn: $enableInAppNotificationSounds
+                    )
+                    sectionDivider
+
+                    toggleRow(
+                        title: "เสียงพูดแจ้งเตือนออเดอร์",
+                        subtitle: "พูดว่า ออเดอร์มาแล้ว เมื่อมี Quick Order ใหม่",
+                        isOn: $enableInAppNotificationSpeech
                     )
                 }
                 .apCard()

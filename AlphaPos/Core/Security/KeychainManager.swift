@@ -20,7 +20,7 @@ final class KeychainManager {
 
     @discardableResult
     func save(_ value: String, forKey key: String) -> Bool {
-        #if TEST_RUNNER
+        #if TEST_RUNNER || DEBUG
         memoryFallback[key] = value
         #endif
 
@@ -46,7 +46,7 @@ final class KeychainManager {
 
         guard status == errSecSuccess else {
             logFailure(operation: "save", key: key, status: status)
-            #if TEST_RUNNER
+            #if TEST_RUNNER || DEBUG
             return true
             #else
             return false
@@ -57,7 +57,7 @@ final class KeychainManager {
     }
 
     func retrieve(forKey key: String) -> String? {
-        #if TEST_RUNNER
+        #if TEST_RUNNER || DEBUG
         if let mem = memoryFallback[key] { return mem }
         #endif
 
@@ -90,7 +90,7 @@ final class KeychainManager {
         if legacyStatus != errSecSuccess && legacyStatus != errSecItemNotFound {
             logFailure(operation: "delete legacy", key: key, status: legacyStatus)
         }
-        #if TEST_RUNNER
+        #if TEST_RUNNER || DEBUG
         return true
         #else
         return succeeded

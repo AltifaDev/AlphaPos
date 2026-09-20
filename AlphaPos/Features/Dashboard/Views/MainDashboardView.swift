@@ -9,6 +9,7 @@ import Combine
 
 
 struct MainDashboardView: View {
+    @AppStorage("app_text_size") private var appTextSize = AppTextSize.system.rawValue
     @Environment(\.modelContext) private var modelContext
     // รับ LocalizationManager จาก App.swift → trigger re-render เมื่อภาษาเปลี่ยน
     @EnvironmentObject private var lm: LocalizationManager
@@ -37,6 +38,8 @@ struct MainDashboardView: View {
     @State private var showDeferredOwnerPinSetup = false
     @State private var showSubscriptionPaywall = false
     @State private var showAttendanceModal = false
+    @State private var showTopBarHelp = false
+    @State private var showPaymentCorrections = false
     // The sidebar only renders low-stock warnings. Materializing the complete
     // inventory catalogue here made every tab pay that cost.
     @Query(
@@ -45,6 +48,10 @@ struct MainDashboardView: View {
         },
         sort: \InventoryItem.name
     ) private var lowStockInventoryItems: [InventoryItem]
+    @Query(filter: #Predicate<Order> {
+        !$0.isDeleted && $0.orderType != "dine_in" &&
+        $0.status != "completed" && $0.status != "cancelled"
+    }) private var pendingQuickOrders: [Order]
     @ObservedObject private var syncEngine = SyncEngine.shared
 
     // Manual connect/cancel prevents timer leak when view leaves hierarchy
@@ -164,7 +171,11 @@ struct MainDashboardView: View {
             case .dashboard:     return "dashboard_nav".t
             case .notifications: return "notifications_nav".t
             case .tables:        return L.Nav.tabTables.t
-            case .pos:           return L.Nav.tabPOS.t
+            case .pos:
+                // This destination is the tableless counter-order workflow.
+                // Keep its name stable so it cannot be confused with the
+                // separate Table Management destination when that feature is on.
+                return LocalizationManager.shared.currentLanguage == .thai ? "ออเดอร์ด่วน" : "Quick Order"
             case .kitchen:       return L.Nav.tabKitchen.t
             case .inventory:     return L.Nav.tabInventory.t
             case .cashDrawer:    return L.Nav.tabCashDrawer.t
@@ -317,6 +328,17 @@ struct MainDashboardView: View {
         }
     }
 
+    private var restoreOfferAlertPresented: Binding<Bool> {
+        Binding(
+            get: { restoreOfferMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    restoreOfferMessage = nil
+                }
+            }
+        )
+    }
+
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -331,6 +353,29 @@ struct MainDashboardView: View {
                     if canAccess(.timecard) {
                         ToolbarItem(placement: .topBarTrailing) {
                             attendanceToolbarButton
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                APHaptic.trigger()
+                                showPaymentCorrections = true
+                            } label: {
+                                Image(systemName: "arrow.triangle.2.circlepath.circle")
+                            }
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.circle)
+                            .accessibilityLabel("แก้ไขช่องทางชำระเงิน")
+                            .accessibilityHint("เปิดรายการบิลที่ชำระแล้วเพื่อแก้ไขช่องทางชำระเงิน")
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                APHaptic.trigger()
+                                showTopBarHelp = true
+                            } label: {
+                                Image(systemName: "questionmark.circle")
+                            }
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.circle)
+                            .accessibilityLabel("คำอธิบายปุ่มแถบด้านบน")
                         }
                     }
                 }
@@ -375,6 +420,12 @@ struct MainDashboardView: View {
             .presentationDragIndicator(.visible)
             .modelContext(modelContext)
         }
+        .sheet(isPresented: $showTopBarHelp) {
+            TopBarHelpSheet(isThai: lm.currentLanguage == .thai)
+        }
+        .sheet(isPresented: $showPaymentCorrections) {
+            PaymentCorrectionOrdersSheet()
+        }
         .task(id: activeMerchantIdForBackupOffer) {
             await checkForCloudRestoreOffer()
         }
@@ -393,10 +444,7 @@ struct MainDashboardView: View {
                 Text("Backup วันที่ \(restoreOffer.createdAt.formatted(date: .abbreviated, time: .shortened)) • App \(restoreOffer.appVersion) • \(restoreOffer.recordCounts.values.reduce(0, +)) รายการ")
             }
         }
-        .alert("Cloud Restore", isPresented: Binding(
-            get: { restoreOfferMessage != nil },
-            set: { if !$0 { restoreOfferMessage = nil } }
-        )) {
+        .alert("Cloud Restore", isPresented: restoreOfferAlertPresented) {
             Button("ตกลง", role: .cancel) {}
         } message: {
             Text(restoreOfferMessage ?? "")
@@ -547,6 +595,14 @@ struct MainDashboardView: View {
             withAnimation(.easeInOut(duration: 0.2)) {
                 selectedTab = .pos
                 columnVisibility = .detailOnly
+            }
+        }
+        // A table session and Quick Order are mutually exclusive POS contexts.
+        // Keep the table context authoritative while SwiftUI is switching tabs;
+        // otherwise a stale Quick Order flag can make POS clear the table cart.
+        .onChange(of: posTableSession?.id) { _, newSessionID in
+            if newSessionID != nil, posQuickOrderMode {
+                posQuickOrderMode = false
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .reopenStoreSetupChecklistNotification)) { _ in
@@ -746,6 +802,7 @@ struct MainDashboardView: View {
             }
         }
         .listStyle(.sidebar)
+        .appTextSize(AppTextSize(rawValue: appTextSize) ?? .system)
     }
 
     // MARK: - Section Header
@@ -753,7 +810,7 @@ struct MainDashboardView: View {
     private func sectionHeader(_ title: String) -> some View {
         HStack {
             Text(title)
-                .font(.system(size: 9, weight: .bold))
+                .font(.caption.weight(.bold))
                 .foregroundColor(.textTertiary)
                 .tracking(1.2)
             Spacer()
@@ -919,16 +976,41 @@ struct MainDashboardView: View {
     }
 
     // MARK: - Sidebar Row Helper
+    private func isSidebarTabSelected(_ tab: DashboardTab) -> Bool {
+        if enableTableSystem {
+            // เมื่อเปิดระบบโต๊ะ:
+            // 1. ถ้ามี active table session อยู่ (กำลังสั่งอาหารให้โต๊ะ)
+            //    ให้ไฮไลต์อยู่ที่แท็บ .tables ("โต๊ะ") เสมอ ไม่กระโดดไปไฮไลต์ที่ .pos ("ออเดอร์ด่วน")
+            if posTableSession != nil {
+                return tab == .tables
+            }
+            // 2. ถ้าอยู่ในหน้า POS โดยไม่มี table session (โหมดออเดอร์ด่วน)
+            //    ให้ไฮไลต์ที่แท็บ .pos ("ออเดอร์ด่วน")
+            if selectedTab == .pos {
+                return tab == .pos
+            }
+            return selectedTab == tab
+        } else {
+            return selectedTab == tab
+        }
+    }
+
     private func sidebarRow(_ tab: DashboardTab) -> some View {
-        SidebarTabRow(tab: tab, isSelected: selectedTab == tab)
+        SidebarTabRow(
+            tab: tab,
+            isSelected: isSidebarTabSelected(tab),
+            quickOrderCount: pendingQuickOrders.count
+        )
             .onTapGesture {
                 sessionManager.touchActivity()
                 let selectTab = {
-                    // Orders is the direct entry point for counter/Quick
-                    // Order. Only a table selected from Table Management
-                    // should put POS into table-service mode.
-                    if tab == .pos, posTableSession == nil {
+                    if tab == .pos {
+                        // แตะแท็บ "ออเดอร์ด่วน" จากแถบข้าง เข้าสู่โหมดออเดอร์ด่วน / คิว iPhone
+                        posTableSession = nil
                         posQuickOrderMode = true
+                    } else if tab == .tables {
+                        // แตะแท็บ "โต๊ะ" กลับมาดูผังโต๊ะ
+                        posQuickOrderMode = false
                     }
                     if selectedTab == tab {
                         navigationPath = NavigationPath()
@@ -1172,7 +1254,7 @@ struct MainDashboardView: View {
             case .dashboard:     LiveDashboardView(columnVisibility: $columnVisibility)
             case .notifications: NotificationCenterView()
             // Operations
-            case .tables:        TableView(selectedTab: $selectedTab, activeSession: $posTableSession, columnVisibility: $columnVisibility)
+            case .tables:        TableView(selectedTab: $selectedTab, activeSession: $posTableSession, columnVisibility: $columnVisibility, quickOrderMode: $posQuickOrderMode)
             case .pos:           POSView(
                 activeSession: $posTableSession,
                 selectedTab: $selectedTab,
@@ -1215,11 +1297,68 @@ struct MainDashboardView: View {
     }
 }
 
+private struct TopBarHelpSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let isThai: Bool
+
+    private var items: [(String, String, String)] {
+        isThai ? [
+            ("faceid", "ลงเวลาพนักงาน", "สแกนใบหน้าเพื่อบันทึกเวลาเข้างานหรือออกงาน"),
+            ("takeoutbag.and.cup.and.straw.fill", "คิวด่วน (กำลังทำ)", "เปิดรายการออเดอร์ Quick Service ที่กำลังดำเนินการ ไม่ใช่จำนวนแจ้งเตือน"),
+            ("clock.arrow.circlepath", "ออเดอร์ล่าสุด", "แสดงคิวล่าสุดและเวลาที่บันทึกไว้เพื่ออ่านตรวจสอบเท่านั้น"),
+            ("printer.fill", "เครื่องพิมพ์", "เลือกเครื่องพิมพ์และสั่งพิมพ์ใบเสร็จหรือรายการเข้าครัว"),
+            ("arrow.uturn.backward", "ย้อนกลับ", "กลับไปยังหน้าหรือโต๊ะก่อนหน้าโดยไม่ลบบิลที่กำลังทำอยู่")
+        ] : [
+            ("faceid", "Staff attendance", "Scan a face to clock in or clock out."),
+            ("takeoutbag.and.cup.and.straw.fill", "Quick queue", "Open pending Quick Service orders."),
+            ("clock.arrow.circlepath", "Recent orders", "Shows the latest queue and timestamp for read-only reference."),
+            ("printer.fill", "Printer", "Choose a printer and print receipts or kitchen tickets."),
+            ("arrow.uturn.backward", "Back", "Return to the previous page or table without deleting the current bill.")
+        ]
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section(isThai ? "ปุ่มบนแถบการทำงาน" : "Toolbar actions") {
+                    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                        Label {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.1).font(.subheadline.weight(.semibold))
+                                Text(item.2).font(.caption).foregroundColor(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: item.0).foregroundColor(.accentColor)
+                        }
+                        .padding(.vertical, 5)
+                    }
+                }
+                Section(isThai ? "การแก้ไขช่องทางชำระเงิน" : "Payment corrections") {
+                    Text(isThai
+                         ? "เปิด ‘ออเดอร์ล่าสุด’ แล้วเลือกรายการที่ชำระแล้ว จากนั้นกด ‘แก้ไขช่องทางชำระเงิน’ ระบบจะยกเลิกรายการเดิม สร้างรายการใหม่ และบันทึกประวัติการอนุมัติ โดยไม่เปลี่ยนยอดขายรวม"
+                         : "Open Recent orders, select a paid bill, then choose Correct payment method. The original payment is voided, replaced, and audited without changing total sales.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle(isThai ? "วิธีใช้ปุ่มด้านบน" : "Toolbar guide")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isThai ? "เสร็จสิ้น" : "Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
 // MARK: - Sidebar Tab Row
 
 private struct SidebarTabRow: View {
     let tab:        MainDashboardView.DashboardTab
     let isSelected: Bool
+    let quickOrderCount: Int
     @State private var isHovered = false
     // LINE-style unread badge + animated bell for the Notifications tab
     @ObservedObject private var notificationStore = NotificationStore.shared
@@ -1228,6 +1367,10 @@ private struct SidebarTabRow: View {
     /// Unread count driving the badge (only meaningful for the notifications tab)
     private var unreadCount: Int {
         tab == .notifications ? notificationStore.unreadCount : 0
+    }
+
+    private var quickOrders: Int {
+        tab == .pos ? quickOrderCount : 0
     }
 
     var body: some View {
@@ -1240,12 +1383,12 @@ private struct SidebarTabRow: View {
                     .shadow(color: isSelected ? tab.iconColor.opacity(0.5) : .clear, radius: 8, x: 0, y: 2)
 
                 Image(systemName: tab.icon)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.body.weight(.semibold))
                     .foregroundColor(isSelected ? .white : tab.iconColor.opacity(0.7))
                     // Gentle bell shake when there are unread notifications
-                    .rotationEffect(.degrees(bellWiggle && unreadCount > 0 ? 10 : 0), anchor: .top)
+                    .rotationEffect(.degrees(bellWiggle && (unreadCount > 0 || quickOrders > 0) ? 10 : 0), anchor: .top)
                     .animation(
-                        unreadCount > 0
+                        unreadCount > 0 || quickOrders > 0
                             ? .easeInOut(duration: 0.15).repeatCount(4, autoreverses: true)
                             : .default,
                         value: bellWiggle
@@ -1254,21 +1397,22 @@ private struct SidebarTabRow: View {
 
             HStack(spacing: 6) {
                 Text(tab.localizedName)
-                    .font(.system(size: 13))
+                    .font(.body)
                     .fontWeight(isSelected ? .semibold : .regular)
                     .foregroundColor(isSelected ? .textPrimary : .textSecondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.9)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 // Notifications tab: show a LINE-style numeric unread badge
                 // (overrides the "New" badge) when there are unread alerts.
-                if tab == .notifications && unreadCount > 0 {
-                    Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
-                        .font(.system(size: 10, weight: .bold))
+                if (tab == .notifications && unreadCount > 0) || (tab == .pos && quickOrders > 0) {
+                    let count = tab == .notifications ? unreadCount : quickOrders
+                    Text(count > 99 ? "99+" : "\(count)")
+                        .font(.caption.weight(.bold))
                         .foregroundColor(.white)
                         .padding(.horizontal, unreadCount > 9 ? 5 : 0)
                         .frame(minWidth: 18, minHeight: 18)
-                        .background(Color(hex: "EF4444"))
+                        .background(tab == .notifications ? Color(hex: "EF4444") : Color.appAmber)
                         .clipShape(Capsule())
                         .shadow(color: Color(hex: "EF4444").opacity(0.45), radius: 3, x: 0, y: 1)
                 } else {
@@ -1276,7 +1420,7 @@ private struct SidebarTabRow: View {
                 switch tab.badge {
                 case .beta:
                     Text("sidebar_badge_beta".t)
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.caption2.weight(.bold))
                         .foregroundColor(.textSecondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -1285,7 +1429,7 @@ private struct SidebarTabRow: View {
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.appBorderSubtle, lineWidth: 1))
                 case .new:
                     Text("sidebar_badge_new".t)
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.caption2.weight(.bold))
                         .foregroundColor(Color(hex: "854D0E"))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -1330,8 +1474,8 @@ private struct SidebarTabRow: View {
         // Gentle, recurring wiggle while unread alerts remain. The task is
         // keyed on unreadCount so it restarts when the count changes and is
         // automatically cancelled by SwiftUI when the row leaves the view.
-        .task(id: unreadCount) {
-            guard tab == .notifications, unreadCount > 0 else { return }
+        .task(id: unreadCount + quickOrders) {
+            guard (tab == .notifications && unreadCount > 0) || (tab == .pos && quickOrders > 0) else { return }
             // Wiggle once immediately, then repeat every 3s as a soft reminder.
             triggerBellWiggle()
             while unreadCount > 0 {

@@ -3,6 +3,7 @@ import SwiftUI
 struct TableSystemSettingsView: View {
     @AppStorage("enable_table_system") private var enableTableSystem = true
     @AppStorage("enable_web_ordering") private var enableWebOrdering = true
+    @AppStorage("enable_table_cleaning_after_checkout") private var enableTableCleaningAfterCheckout = true
     @AppStorage("offline_sync_mode") private var offlineSyncMode = false
     @AppStorage("table_qr_print_mode") private var qrPrintMode = "permanent"
     @AppStorage("enable_pos_sound_effects") private var enablePOSSoundEffects = true
@@ -38,6 +39,26 @@ struct TableSystemSettingsView: View {
                             .onChange(of: enableTableSystem) { oldValue, _ in
                                 guard !isRollingBack else { return }
                                 pushFeatureFlags { enableTableSystem = oldValue }
+                            }
+
+                            if enableTableSystem {
+                                Divider()
+                                    .background(Color.appDivider)
+
+                                Toggle(isOn: $enableTableCleaningAfterCheckout) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(LocalizationManager.shared.currentLanguage == .thai
+                                             ? "สถานะทำความสะอาดหลังชำระเงิน"
+                                             : "Cleaning status after checkout")
+                                            .foregroundColor(.textPrimary)
+                                        Text(LocalizationManager.shared.currentLanguage == .thai
+                                             ? "เมื่อเปิด โต๊ะจะรอในสถานะทำความสะอาดจนกว่าพนักงานจะกดให้ว่าง เมื่อปิด โต๊ะจะว่างทันทีหลังชำระเงิน"
+                                             : "When on, the table stays in Cleaning until staff marks it vacant. When off, it becomes vacant immediately after payment.")
+                                            .font(.system(size: 12))
+                                            .foregroundColor(.textSecondary)
+                                    }
+                                }
+                                .tint(.appAccent)
                             }
                             
                             Divider()

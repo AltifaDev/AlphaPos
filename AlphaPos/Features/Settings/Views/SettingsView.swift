@@ -45,6 +45,7 @@ struct SettingsView: View {
 
     // Theme selection setting (needed for preview/theme operations if any, but main theme config is in subview)
     @AppStorage("app_theme") private var appTheme = AppTheme.dark.rawValue
+    @AppStorage("app_text_size") private var appTextSize = AppTextSize.system.rawValue
 
     // Localization
     @AppStorage("app_language") private var appLanguageCode = "en"
@@ -108,10 +109,10 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 0) {
                                 HStack(spacing: 8) {
                                     Image(systemName: "gearshape.fill")
-                                        .font(.system(size: 12, weight: .semibold))
+                                        .font(.body.weight(.semibold))
                                         .foregroundStyle(.secondary)
                                     Text(L.Nav.tabSettings.t)
-                                        .font(.system(size: 12, weight: .semibold))
+                                        .font(.body.weight(.semibold))
                                         .foregroundStyle(.primary)
                                     Spacer(minLength: 0)
                                     categorySidebarToggleButton(collapsed: false)
@@ -250,6 +251,7 @@ struct SettingsView: View {
         .onDisappear {
             isAnimated = false
         }
+        .appTextSize(AppTextSize(rawValue: appTextSize) ?? .system)
     }
 
     private var settingsAmbientBackground: some View {
@@ -461,17 +463,17 @@ struct SettingsView: View {
                             .fill(Color.appSurfaceHigh)
                             .frame(width: 34, height: 34)
                         Text(initials)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.body.weight(.semibold))
                             .foregroundColor(.textSecondary)
                     }
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(sessionManager.currentStaffSession?.displayName ?? loggedInName)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.body.weight(.semibold))
                             .foregroundColor(.textPrimary)
-                            .lineLimit(1)
+                            .lineLimit(2)
                         Text(loggedInEmail)
-                            .font(.system(size: 12))
+                            .font(.caption)
                             .foregroundColor(.textSecondary)
                             .lineLimit(1)
                     }
@@ -481,7 +483,7 @@ struct SettingsView: View {
 
                 HStack(spacing: 8) {
                     Text(sessionManager.currentStaffSession?.roleName ?? L.Account.storeOwner.t)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.caption.weight(.medium))
                         .foregroundColor(.textSecondary)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
@@ -496,9 +498,9 @@ struct SettingsView: View {
                         HStack(spacing: 5) {
                             let currentLang = AppLanguage(rawValue: lm.languageCode) ?? .english
                             Text(currentLang.flag)
-                                .font(.system(size: 12))
+                                .font(.body)
                             Text(currentLang.displayName)
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.body.weight(.medium))
                         }
                         .foregroundColor(.textSecondary)
                         .padding(.horizontal, 8)
@@ -583,8 +585,8 @@ struct SettingsView: View {
             selectTopic(topic)
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .medium))
+                        Image(systemName: icon)
+                    .font(.body.weight(.medium))
                     .foregroundStyle(.secondary)
                     .frame(width: 24, height: 24)
                     .background(
@@ -593,9 +595,10 @@ struct SettingsView: View {
                     )
 
                 Text(title)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .font(.body.weight(isSelected ? .semibold : .regular))
                     .foregroundStyle(.primary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
             }

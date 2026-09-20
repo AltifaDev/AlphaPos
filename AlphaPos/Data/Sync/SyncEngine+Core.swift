@@ -216,7 +216,11 @@ extension SyncEngine {
                     if success { log.isSynced = true }
                 }
             } catch {
-                encounteredSyncError = true
+                // Audit logging is ancillary telemetry. A policy/auth mismatch
+                // on audit_logs must not mark the operational sync as failed or
+                // prevent orders from reaching the KDS. Keep the local row
+                // unsynced so it can be retried after credentials/policy are
+                // repaired, but let orders, payments, and order_items finish.
                 print("SyncEngine [AuditLog Sync Error]: \(error.localizedDescription)")
             }
         }
@@ -224,6 +228,38 @@ extension SyncEngine {
     }
 
     func syncOrders(_ modelContext: ModelContext) async {
+        // Repair legacy/offline records before uploading. A stale local
+        // dine-in order can retain a deleted table number (for example 222),
+        // which the server correctly rejects and which otherwise poisons every
+        // subsequent sync attempt. Preserve the sale/items, but normalize an
+        // orphaned tableless record as a Quick Order.
+        let localTables = (try? modelContext.fetch(FetchDescriptor<RestaurantTable>())) ?? []
+        let localOrders = (try? modelContext.fetch(FetchDescriptor<Order>())) ?? []
+        var repairedLegacyQuickOrders = 0
+        for order in localOrders where !order.isDeleted && !order.isSynced && order.orderType == "dine_in" {
+            let tableNumber = order.floorTableNumber
+                ?? order.tableSession?.table?.tableNumber
+                ?? ""
+            let normalizedTable = tableNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+            let orderBranchId = order.branch.id.uuidString.lowercased()
+            let hasLocalTable = !normalizedTable.isEmpty && localTables.contains(where: { (table: RestaurantTable) in
+                !table.isDeleted && table.branchId.lowercased() == orderBranchId && table.tableNumber == normalizedTable
+            })
+            let hasLiveSession = order.tableSession?.isActive == true && order.tableSession?.table != nil
+            if normalizedTable.uppercased() == "QUICK" || (!hasLocalTable && !hasLiveSession) {
+                order.orderType = "take_out"
+                order.tableSession = nil
+                order.floorTableNumber = nil
+                order.updatedAt = Date()
+                order.isSynced = false
+                repairedLegacyQuickOrders += 1
+            }
+        }
+        if repairedLegacyQuickOrders > 0 {
+            modelContext.saveWithLogging(label: "repairLegacyQuickOrders")
+            print("SyncEngine [Order Repair]: normalized \(repairedLegacyQuickOrders) orphaned dine-in order(s) to take_out")
+        }
+
         var descriptor = FetchDescriptor<Order>(
             predicate: #Predicate<Order> { $0.isSynced == false }
         )
@@ -249,7 +285,9 @@ extension SyncEngine {
         for order in orders {
             if order.isDeleted {
                 do {
-                    let success = try await NetworkManager.shared.deleteOrderOnServer(id: order.id)
+                    let success = try await NetworkManager.shared.deleteOrderOnServer(
+                        id: order.id, expectedRowVersion: order.rowVersion
+                    )
                     if success {
                         modelContext.delete(order)
                         try modelContext.save()
@@ -264,14 +302,23 @@ extension SyncEngine {
             }
 
             do {
+                let sentOrderUpdatedAt = order.updatedAt
+                let sentItemVersions = Dictionary(uniqueKeysWithValues: order.items.map { ($0.id, $0.updatedAt) })
                 let success = try await NetworkManager.shared.uploadOrder(order: order)
 
                 if success {
-                    order.isSynced = true
+                    // Local edits may arrive while the network request is in
+                    // flight. Only mark the exact snapshot sent to the server
+                    // as synced; newer edits must stay in the next sync cycle.
+                    let itemsUnchanged = order.items.count == sentItemVersions.count &&
+                        order.items.allSatisfy { sentItemVersions[$0.id] == $0.updatedAt }
+                    let snapshotUnchanged = !order.isDeleted &&
+                        order.updatedAt == sentOrderUpdatedAt && itemsUnchanged
+                    order.isSynced = snapshotUnchanged
                     for item in order.items {
-                        item.isSynced = true
+                        item.isSynced = snapshotUnchanged
                     }
-                    order.updatedAt = Date()
+                    if snapshotUnchanged { order.updatedAt = Date() }
                     try modelContext.save()
                 } else {
                     reportSyncFailure("Order upload returned false (\(order.id.uuidString.prefix(8)))", soft: false)
@@ -586,8 +633,10 @@ extension SyncEngine {
 
                 let createdAt = parseISO8601Date(createdAtStr)
 
+                let isNewOrder: Bool
                 let existingOrder: Order
                 if let existingOrders = try? modelContext.fetch(descriptor), let order = existingOrders.first {
+                    isNewOrder = false
                     existingOrder = order
                     existingOrder.status = status
                     existingOrder.total = total
@@ -616,6 +665,7 @@ extension SyncEngine {
                     existingOrder.registerSessionId = registerSessionId
                     existingOrder.isSynced = true
                 } else {
+                    isNewOrder = true
                     existingOrder = Order(
                         id: orderId,
                         orderNumber: orderNumber,
@@ -650,7 +700,15 @@ extension SyncEngine {
                 }
 
                 // Add or update remote items
-                if let remoteItems = remoteOrder["order_items"] as? [[String: Any]] ?? remoteOrder["orderItems"] as? [[String: Any]] {
+                // fetchCustomerOrders normalizes the joined response to `items`.
+                // Keep the legacy keys as fallbacks for older callers, but do
+                // not omit items when inserting a brand-new order. Previously
+                // the new-order path only checked `order_items`/`orderItems`,
+                // so Quick Orders arrived with a valid header but an empty cart
+                // and a zero payable total until a later refresh.
+                if let remoteItems = remoteOrder["items"] as? [[String: Any]]
+                    ?? remoteOrder["order_items"] as? [[String: Any]]
+                    ?? remoteOrder["orderItems"] as? [[String: Any]] {
                     for remoteItem in remoteItems {
                         let itemIdStr = remoteItem["id"] as? String ?? ""
                         guard let itemId = UUID(uuidString: itemIdStr) else { continue }
@@ -738,8 +796,33 @@ extension SyncEngine {
                         AccountingLedgerService.recordCapturedPayment(ledgerPayment, order: existingOrder, in: modelContext)
                     }
                 }
+
+                if isNewOrder && NotificationDeliveryPolicy.shouldDeliverPulledEvent(
+                    isFirstSync: self.isFirstSync,
+                    createdAt: createdAt
+                ) {
+                    let tNumber = (remoteOrder["table_number"] as? String)
+                        ?? (remoteOrder["tableNumber"] as? String)
+                        ?? "QUICK"
+                    self.triggerLocalNotification(
+                        orderNumber: orderNumber,
+                        tableNumber: tNumber,
+                        queueNumber: queueNumber,
+                        orderType: orderType
+                    )
+                    let remoteItemsCount = (remoteOrder["items"] as? [[String: Any]]
+                        ?? remoteOrder["order_items"] as? [[String: Any]]
+                        ?? remoteOrder["orderItems"] as? [[String: Any]])?.count ?? existingOrder.items.count
+                    self.alertNewCustomerOrder(
+                        orderNumber: orderNumber,
+                        tableNumber: tNumber,
+                        itemCount: remoteItemsCount,
+                        queueNumber: queueNumber
+                    )
+                }
             }
             modelContext.saveWithLogging(label: #function)
+            self.refreshLiveOperationalAlerts(modelContext: modelContext)
         } catch {
             encounteredSyncError = true
             print("SyncEngine [CompletedOrders Pull Error]: \(error.localizedDescription)")
