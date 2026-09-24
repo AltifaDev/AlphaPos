@@ -2675,14 +2675,14 @@ class AlphaPosApp {
             let mediaHtml;
             if (isFeatured && item.videoUrl) {
                 mediaHtml = `
-                    <video class="featured-item-img" autoplay loop muted playsinline style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                    <video class="featured-item-img" autoplay loop muted playsinline preload="metadata" poster="${resolvedImg}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
                         <source src="${escapeHtml(item.videoUrl)}" type="video/mp4">
-                        <img class="featured-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" onerror="${imgFallback}">
+                        <img class="featured-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" decoding="async" onerror="${imgFallback}">
                     </video>
-                    <img class="featured-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" style="display:none;" onerror="${imgFallback}">
+                    <img class="featured-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" decoding="async" style="display:none;" onerror="${imgFallback}">
                 `;
             } else {
-                mediaHtml = `<img class="featured-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" onerror="${imgFallback}">`;
+                mediaHtml = `<img class="featured-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" decoding="async" fetchpriority="${index === 0 ? 'high' : 'auto'}" onerror="${imgFallback}">`;
             }
 
             if (isFeatured) {
@@ -2714,15 +2714,11 @@ class AlphaPosApp {
                 let mediaHtml;
                 if (item.videoUrl) {
                     mediaHtml = `
-                        <video class="list-item-img" autoplay loop muted playsinline style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-                            <source src="${escapeHtml(item.videoUrl)}" type="video/mp4">
-                            <img class="list-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" onerror="${imgFallback}">
-                        </video>
-                        <img class="list-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" style="display:none;" onerror="${imgFallback}">
+                        <img class="list-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" loading="lazy" decoding="async" onerror="${imgFallback}">
                     `;
                 } else {
                     mediaHtml = `
-                        <img class="list-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" onerror="${imgFallback}">
+                        <img class="list-item-img" src="${resolvedImg}" data-fallback="${resolvedImg}" alt="${escapeHtml(this.getItemName(item))}" loading="lazy" decoding="async" onerror="${imgFallback}">
                     `;
                 }
 
@@ -2778,44 +2774,7 @@ class AlphaPosApp {
         // Sync toggle buttons
         this.setMenuView(this.menuViewMode);
 
-        // Warm the browser cache with detail images so the product modal
-        // shows its hero image instantly (no flash) when a card is tapped.
-        this.prefetchMenuImages();
         this.refreshMotionTargets();
-    }
-
-    /**
-     * Preloads menu item images in the background so they are cached before
-     * the user opens the product detail modal. Runs during idle time and
-     * skips URLs that have already been requested.
-     */
-    prefetchMenuImages() {
-        if (!this.menuItems || !this.menuItems.length) return;
-        this._prefetchedImages = this._prefetchedImages || new Set();
-
-        const urls = [];
-        for (const item of this.menuItems) {
-            const url = item.imageUrl;
-            if (!url) continue;
-            if (!(url.startsWith('http://') || url.startsWith('https://'))) continue;
-            if (this._prefetchedImages.has(url)) continue;
-            this._prefetchedImages.add(url);
-            urls.push(url);
-        }
-        if (!urls.length) return;
-
-        const run = () => {
-            urls.forEach(url => {
-                const img = new Image();
-                img.decoding = "async";
-                img.src = url;
-            });
-        };
-        if (typeof requestIdleCallback === "function") {
-            requestIdleCallback(run, { timeout: 2000 });
-        } else {
-            setTimeout(run, 300);
-        }
     }
 
     /**
