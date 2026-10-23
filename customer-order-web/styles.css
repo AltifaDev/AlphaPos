@@ -9694,6 +9694,11 @@ body.dark-theme .item-note-modal-textarea {
 .cart-bar-container.show .cart-bar-content {
     animation: none !important;
 }
+#menuView .featured-item-card,
+#menuView .list-item-card {
+    opacity: 1 !important;
+    transform: none !important;
+}
 [data-motion="reveal"] {
     opacity: 1;
     transform: none;
