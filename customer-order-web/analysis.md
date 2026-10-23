@@ -5,8 +5,11 @@
 
 ## Current architecture and trust boundary
 
-1. A QR code contains an opaque active table-session token. The browser exchanges
-   it with `issue-customer-session-token` for a short-lived, branch-scoped JWT.
+1. A permanent table QR contains an opaque table key, not a bill/session token.
+   The browser exchanges it with `issue-customer-session-token`; the backend
+   reuses the active table session or creates a new one after the previous bill
+   was closed, then returns a short-lived, branch-scoped JWT. No staff approval
+   is required for the self-service permanent QR flow.
 2. PostgreSQL RLS derives merchant, branch, table, and session authority from that
    signed JWT. URL parameters and browser storage are not authorization sources.
 3. `create_customer_order` is the only customer order-write path. It validates

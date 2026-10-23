@@ -1,3 +1,4 @@
+import { fadeContent } from './js/motion.js';
 import { translations } from './js/i18n.js';
 import { defaultMenuItems } from './js/data.js';
 import { clearCart, loadCart, saveCart } from './js/cart.js';
@@ -1113,36 +1114,10 @@ class AlphaPosApp {
     }
 
     initMotionSystem() {
-        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-            document.documentElement.classList.add('reduce-motion');
-            return;
-        }
-        if (!this._motionObserver) {
-            this._motionObserver = new IntersectionObserver((entries) => {
-                entries.forEach(entry => {
-                    if (!entry.isIntersecting) return;
-                    entry.target.classList.add('motion-visible');
-                    this._motionObserver.unobserve(entry.target);
-                });
-            }, { rootMargin: '0px 0px -8% 0px', threshold: 0.08 });
-        }
-        this.refreshMotionTargets();
-        requestAnimationFrame(() => document.body.classList.add('motion-ready'));
+        // Menu content stays readable during scrolling and data refreshes.
     }
 
-    refreshMotionTargets() {
-        if (!this._motionObserver) return;
-        const targets = document.querySelectorAll(
-            '.featured-item-card:not([data-motion]), .list-item-card:not([data-motion]), ' +
-            '.category-tab:not([data-motion]), .status-item-card:not([data-motion]), ' +
-            '.service-capsule:not([data-motion])'
-        );
-        targets.forEach((element, index) => {
-            element.dataset.motion = 'reveal';
-            element.style.setProperty('--motion-index', String(index % 8));
-            this._motionObserver.observe(element);
-        });
-    }
+    refreshMotionTargets() {}
 
     async autoOnboardIfRequested() {
         const urlParams = new URLSearchParams(window.location.search);
@@ -2504,6 +2479,7 @@ class AlphaPosApp {
 
         this.categories.forEach(category => {
             const tab = document.createElement("button");
+            tab.dataset.categoryId = category.id;
             tab.className = `category-tab ${this.currentCategory === category.id ? 'active' : ''}`;
             const iconHtml = categoryIcons[category.id] || categoryIcons["foods"];
             const labelText = this.translate('category_' + category.id, category.name);
@@ -2833,9 +2809,16 @@ class AlphaPosApp {
      * Switches active category tab
      */
     switchCategory(categoryId) {
+        if (this.currentCategory === categoryId) return;
         this.currentCategory = categoryId;
-        this.renderCategories();
+        document.querySelectorAll('#categoryTabs .category-tab').forEach(tab => {
+            const selected = tab.dataset.categoryId === categoryId;
+            tab.classList.toggle('active', selected);
+            tab.setAttribute('aria-pressed', String(selected));
+        });
         this.renderMenuItems();
+        fadeContent(document.getElementById('menuGrid'));
+        fadeContent(document.getElementById('featuredMenuGrid'));
     }
 
     /**
@@ -3236,7 +3219,9 @@ class AlphaPosApp {
      */
     renderDrawerCartList() {
         const container = document.getElementById("cartItemsList");
-        container.innerHTML = "";
+        const existingRows = new Map(Array.from(container.querySelectorAll('[data-cart-key]'), row => [row.dataset.cartKey, row]));
+        container.querySelector('.empty-state')?.remove();
+        const retainedKeys = new Set();
 
         const cartKeys = Object.keys(this.cart);
         const itemCount = cartKeys.reduce((total, key) => {
@@ -3294,9 +3279,21 @@ class AlphaPosApp {
                    </div>`
                 : "";
 
-            const row = document.createElement("div");
+            retainedKeys.add(cartKey);
+            const existing = existingRows.get(cartKey);
+            const row = existing || document.createElement("div");
             row.className = "cart-item-row";
-            row.style.setProperty('--cart-row-index', container.children.length);
+            row.dataset.cartKey = cartKey;
+            const details = `
+                <div class="cart-item-name">${escapeHtml(this.getItemName(item))}</div>
+                ${modifierHtml}${notesHtml}
+                <div class="cart-item-price-sum">฿${singlePrice.toFixed(2)} × ${qty} = ฿${rowTotal.toFixed(2)}</div>`;
+            if (existing) {
+                if (row._details !== details) row.querySelector('.cart-item-details').innerHTML = details;
+                row.querySelector('.qty-value').textContent = qty;
+                row._details = details;
+                return;
+            }
             row.innerHTML = `
                 <div class="cart-item-details">
                      <div class="cart-item-name">${escapeHtml(this.getItemName(item))}</div>
@@ -3310,7 +3307,11 @@ class AlphaPosApp {
                     <button class="qty-btn" onclick="app.updateCartQuantity('${cartKey}', 1)">+</button>
                 </div>
             `;
+            row._details = details;
             container.appendChild(row);
+        });
+        existingRows.forEach((row, key) => {
+            if (!retainedKeys.has(key)) row.remove();
         });
     }
 
@@ -3334,15 +3335,7 @@ class AlphaPosApp {
      * Animate cart bar on new item additions
      */
     jiggleCartNotification() {
-        const cartContent = document.querySelector(".cart-bar-content");
-        if (cartContent) {
-            cartContent.classList.remove("jiggle");
-            void cartContent.offsetWidth; // Force DOM reflow
-            cartContent.classList.add("jiggle");
-            setTimeout(() => {
-                cartContent.classList.remove("jiggle");
-            }, 400);
-        }
+        fadeContent(document.querySelector('.cart-bar-content'));
     }
 
     switchView(viewName) {
@@ -3384,11 +3377,9 @@ class AlphaPosApp {
             if (requestBtn) requestBtn.style.display = viewName === "service" ? "none" : "flex";
         };
 
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        const canTransition = typeof document.startViewTransition === 'function'
-            && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        if (canTransition) document.startViewTransition(commitView);
-        else commitView();
+        commitView();
+        window.scrollTo({ top: 0, behavior: 'instant' });
+        fadeContent(document.querySelector('.view-panel.active'));
     }
 
     async fetchOrderHistory({ showLoading = true } = {}) {

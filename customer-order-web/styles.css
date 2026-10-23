@@ -9680,3 +9680,146 @@ body.dark-theme .item-note-modal-textarea {
     color: #f8fafc;
 }
 
+
+/* Ordering motion: one moving surface, with content ready to read. */
+#menuView .category-tab,
+#menuView .category-tab .category-icon,
+#menuView .featured-item-card,
+#menuView .list-item-card,
+.product-modal-overlay .modal-hero-img,
+.product-modal-overlay .modal-title,
+.product-modal-overlay .modal-desc,
+.product-modal-overlay .modal-footer,
+.cart-drawer-overlay .cart-item-row,
+.cart-bar-container.show .cart-bar-content {
+    animation: none !important;
+}
+[data-motion="reveal"] {
+    opacity: 1;
+    transform: none;
+    transition: none;
+}
+.product-modal-overlay,
+.cart-drawer-overlay {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    transition: opacity .22s ease, visibility .22s ease !important;
+}
+.product-modal-overlay .product-modal-content,
+.cart-drawer-overlay .cart-drawer {
+    animation: none !important;
+    background: #fff !important;
+    transition: transform .3s cubic-bezier(.2, .7, .2, 1) !important;
+}
+body.dark-theme .product-modal-content,
+body.dark-theme .cart-drawer {
+    background: #1e293b !important;
+}
+.product-modal-overlay:not(.active) .product-modal-content {
+    transform: translateY(32px);
+    transition-duration: .22s !important;
+}
+.cart-drawer-overlay:not(.show) .cart-drawer {
+    transition-duration: .22s !important;
+}
+.add-btn-only:active,
+.pill-qty-btn:active,
+.modal-qty-btn:active {
+    animation: none !important;
+    transform: scale(.97) !important;
+}
+.add-btn-only, .pill-qty-btn, .modal-qty-btn {
+    transition: transform .12s ease, background-color .12s ease !important;
+}
+#menuView .category-tab, #menuView .category-tab.active .category-icon {
+    transform: none !important;
+}
+.promo-placeholder-bg, .app-header::before {
+    animation: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+    .product-modal-overlay .product-modal-content,
+    .cart-drawer-overlay .cart-drawer,
+    .product-modal-overlay, .cart-drawer-overlay {
+        transition: none !important;
+    }
+    .add-btn-only:active, .pill-qty-btn:active, .modal-qty-btn:active {
+        transform: none !important;
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .cart-drawer-overlay.show .cart-drawer {
+        transform: translateX(-50%) !important;
+    }
+}
+
+/* Keep featured item content inside each card at every viewport width. */
+#menuView .featured-menu-grid .featured-item-card,
+#menuView .featured-menu-grid.scrollable .featured-item-card {
+    box-sizing: border-box !important;
+    flex: 0 0 clamp(190px, 22vw, 240px) !important;
+    width: clamp(190px, 22vw, 240px) !important;
+    min-width: 0 !important;
+}
+#menuView .featured-menu-grid .featured-item-content {
+    box-sizing: border-box !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    flex: 1 1 auto !important;
+    padding: 8px 10px 10px !important;
+    gap: 5px !important;
+}
+#menuView .featured-menu-grid .featured-item-title {
+    display: -webkit-box !important;
+    white-space: normal !important;
+    overflow: hidden !important;
+    overflow-wrap: anywhere !important;
+    text-overflow: ellipsis !important;
+    -webkit-box-orient: vertical !important;
+    -webkit-line-clamp: 2 !important;
+    line-height: 1.25 !important;
+    min-height: 2.5em !important;
+    font-size: 14px !important;
+}
+#menuView .featured-menu-grid .featured-item-price-action {
+    box-sizing: border-box !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    justify-content: flex-start !important;
+    gap: 7px !important;
+    margin-top: auto !important;
+    padding-top: 4px !important;
+}
+#menuView .featured-menu-grid .featured-item-price {
+    font-size: 15px !important;
+    line-height: 1.2 !important;
+}
+#menuView .featured-menu-grid .featured-item-action,
+#menuView .featured-menu-grid .featured-item-action .quantity-control-pill,
+#menuView .featured-menu-grid .featured-item-action .add-btn-only {
+    box-sizing: border-box !important;
+    width: 100% !important;
+    max-width: 100% !important;
+}
+#menuView .featured-menu-grid .featured-item-action .quantity-control-pill {
+    min-width: 0 !important;
+    justify-content: space-between !important;
+}
+#menuView .featured-menu-grid .featured-item-action .pill-qty-btn {
+    flex: 0 0 32px !important;
+    width: 32px !important;
+    min-width: 32px !important;
+}
+#menuView .featured-menu-grid .featured-item-action .add-btn-only {
+    min-height: 36px !important;
+    height: 36px !important;
+}
+@media (max-width: 480px) {
+    #menuView .featured-menu-grid .featured-item-card,
+    #menuView .featured-menu-grid.scrollable .featured-item-card {
+        flex-basis: min(72vw, 240px) !important;
+        width: min(72vw, 240px) !important;
+    }
+}
