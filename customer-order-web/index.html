@@ -6,14 +6,6 @@
     <title>Restaurant | Order Online</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2230%22 fill=%22%232d71f8%22/><text x=%2250%22 y=%2268%22 font-size=%2255%22 font-family=%22Outfit, sans-serif%22 font-weight=%22800%22 fill=%22%23ffffff%22 text-anchor=%22middle%22>A</text></svg>">
     <link rel="stylesheet" href="styles.css?v=44">
-    <!-- Import map for bare module specifiers in browser native ES modules -->
-    <script type="importmap">
-    {
-      "imports": {
-        "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm"
-      }
-    }
-    </script>
     <!-- AlphaPos Runtime Config (served dynamically by Cloudflare Worker with HTTPS URLs) -->
     <script src="/config.js"></script>
 </head>
@@ -304,15 +296,16 @@
                 </div>
                 
                 <div class="service-grid">
-                    <button class="service-capsule anim-fade-in-up anim-delay-1" onclick="app.sendServiceRequest('Bill (Cash)')">
+                    <!-- Payment options hidden: payment is handled exclusively through AlphaPos POS -->
+                    <button id="paymentOptionCash" class="service-capsule anim-fade-in-up anim-delay-1 hide" hidden style="display:none;" onclick="app.sendServiceRequest('Bill (Cash)')">
                         <span class="service-icon app-icon icon-cash" aria-hidden="true"></span>
                         <span class="service-label" data-translate-key="payCash">Pay Cash</span>
                     </button>
-                    <button class="service-capsule anim-fade-in-up anim-delay-2" onclick="app.sendServiceRequest('Bill (Card)')">
+                    <button id="paymentOptionCard" class="service-capsule anim-fade-in-up anim-delay-2 hide" hidden style="display:none;" onclick="app.sendServiceRequest('Bill (Card)')">
                         <span class="service-icon app-icon icon-card" aria-hidden="true"></span>
                         <span class="service-label" data-translate-key="payCard">Pay Card</span>
                     </button>
-                    <button class="service-capsule anim-fade-in-up anim-delay-3" onclick="app.sendServiceRequest('Bill (QR)')">
+                    <button id="paymentOptionQR" class="service-capsule anim-fade-in-up anim-delay-3 hide" hidden style="display:none;" onclick="app.sendServiceRequest('Bill (QR)')">
                         <span class="service-icon app-icon icon-phone" aria-hidden="true"></span>
                         <span class="service-label" data-translate-key="payQR">Pay QR</span>
                     </button>
@@ -388,12 +381,12 @@
                             <span id="breakdownDiscountLabel" data-translate-key="discount">Discount</span>
                             <span id="breakdownDiscount">-฿0.00</span>
                         </div>
-                        <div class="breakdown-row">
-                            <span data-translate-key="serviceCharge">Service Charge (10%)</span>
+                        <div class="breakdown-row" id="breakdownServiceRow">
+                            <span id="breakdownServiceLabel" data-translate-key="serviceCharge">Service Charge (10%)</span>
                             <span id="breakdownService">฿0.00</span>
                         </div>
-                        <div class="breakdown-row">
-                            <span data-translate-key="vat">Vat (7%)</span>
+                        <div class="breakdown-row" id="breakdownTaxRow">
+                            <span id="breakdownTaxLabel" data-translate-key="vat">Vat (7%)</span>
                             <span id="breakdownTax">฿0.00</span>
                         </div>
                         <hr class="breakdown-divider">
@@ -529,6 +522,22 @@
 
     <!-- Allergen Detail Bottom Sheet -->
     <div id="allergenDetailSheet" class="allergen-sheet" role="dialog" aria-modal="true" aria-label="Allergen information">
+    </div>
+
+    <!-- In-App Order Item Note Modal -->
+    <div id="itemNoteModal" class="item-note-modal-overlay hide" onclick="app.closeItemNoteModal()" role="dialog" aria-modal="true" aria-labelledby="itemNoteModalTitle">
+        <div class="item-note-modal-card" onclick="event.stopPropagation()">
+            <div class="item-note-modal-header">
+                <h3 id="itemNoteModalTitle" data-translate-key="addNoteBtn">เพิ่มโน้ต</h3>
+                <button type="button" class="close-drawer-btn" aria-label="Close note dialog" onclick="app.closeItemNoteModal()">✕</button>
+            </div>
+            <p id="itemNoteModalSubtitle" class="item-note-modal-subtitle"></p>
+            <textarea id="itemNoteModalInput" class="item-note-modal-textarea" rows="3" data-translate-key="specialInstructionsPlaceholder" placeholder="เช่น เผ็ดน้อย, ไม่ใส่ผัก, หวานน้อย..."></textarea>
+            <div class="item-note-modal-actions">
+                <button type="button" class="item-note-cancel-btn" onclick="app.closeItemNoteModal()" data-translate-key="cancelReservation">ยกเลิก</button>
+                <button type="button" class="item-note-save-btn" onclick="app.confirmItemNoteModal()" data-translate-key="done">เสร็จสิ้น</button>
+            </div>
+        </div>
     </div>
 
     <script type="module" src="app.js?v=44"></script>

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'alphapos-customer-web-v52';
+const CACHE_NAME = 'alphapos-customer-web-v53';
 // Do NOT precache config.js — it is merchant/runtime-specific and always network-only.
 const ASSETS_TO_CACHE = [
     './index.html'
@@ -72,9 +72,14 @@ self.addEventListener('fetch', (event) => {
                 .catch(async () => {
                     const cached = await caches.match(event.request);
                     if (cached) return cached;
-                    const fallbackHtml = await caches.match('./index.html') || await caches.match('/');
+                    const fallbackHtml = await caches.match('./index.html') ||
+                        await caches.match('/index.html') ||
+                        await caches.match('/');
                     if (fallbackHtml) return fallbackHtml;
-                    return fetch(event.request);
+                    return new Response('Offline', {
+                        status: 503,
+                        headers: { 'Content-Type': 'text/plain' }
+                    });
                 })
         );
         return;
@@ -97,7 +102,10 @@ self.addEventListener('fetch', (event) => {
                     }
                     return networkResponse;
                 } catch (err) {
-                    return caches.match(event.request);
+                    return caches.match(event.request).then((cached) => cached || new Response('Offline', {
+                        status: 503,
+                        headers: { 'Content-Type': 'text/plain' }
+                    }));
                 }
             })
     );

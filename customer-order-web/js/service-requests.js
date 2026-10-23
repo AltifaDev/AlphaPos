@@ -4,7 +4,26 @@
  * Uses PostgreSQL RPC create_customer_service_request with idempotency keys.
  */
 
+export function isMerchantTenderEnabled(settings, key) {
+    const value = settings?.[key];
+    return value === undefined || value === null
+        || !['false', '0', 'off', 'no'].includes(String(value).toLowerCase());
+}
+
 export const ServiceRequestsMixin = {
+    applyMerchantPaymentOptions() {
+        const options = [
+            ['paymentOptionCash', 'payment_method_cash_enabled'],
+            ['paymentOptionCard', 'payment_method_card_enabled'],
+            ['paymentOptionQR', 'payment_method_qr_enabled']
+        ];
+        for (const [elementId, settingKey] of options) {
+            const button = document.getElementById(elementId);
+            if (!button) continue;
+            button.classList.toggle('hide', !isMerchantTenderEnabled(this.merchantSettings, settingKey));
+        }
+    },
+
     async sendServiceRequest(rawType) {
         const canonicalTypeMap = {
             'call_staff': 'General Help',
@@ -23,6 +42,15 @@ export const ServiceRequestsMixin = {
         const canonicalType = canonicalTypeMap[rawType] || rawType;
         const validTypes = new Set(['Bill (Cash)', 'Bill (Card)', 'Bill (QR)', 'Ice/Water', 'Extra Utensils', 'General Help']);
         const requestType = validTypes.has(canonicalType) ? canonicalType : 'General Help';
+        const tenderSetting = {
+            'Bill (Cash)': 'payment_method_cash_enabled',
+            'Bill (Card)': 'payment_method_card_enabled',
+            'Bill (QR)': 'payment_method_qr_enabled'
+        }[requestType];
+        if (tenderSetting && !isMerchantTenderEnabled(this.merchantSettings, tenderSetting)) {
+            this._showToast?.(this.translate('paymentMethodUnavailable', 'This payment method is unavailable. Please ask staff for help.'), 5000);
+            return;
+        }
 
         const labelKeyMap = {
             'Bill (Cash)': 'payCash',

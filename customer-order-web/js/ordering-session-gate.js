@@ -61,6 +61,13 @@ export class OrderingSessionGate {
         this.toggleOrderingButton(false);
     }
 
+    /** Re-enable ordering after a permanent QR has issued a new session. */
+    clearSessionClosed() {
+        this._sessionClosed = false;
+        this.isValid = true;
+        this.toggleOrderingButton(true);
+    }
+
     /** @deprecated Use markSessionClosed() — kept for older call sites */
     markPaymentCompleted() {
         this.markSessionClosed();

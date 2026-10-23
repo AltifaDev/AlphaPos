@@ -14,7 +14,8 @@ import { pushManager } from './js/push-notifications.js';
 import { orderingSessionGate } from './js/ordering-session-gate.js';
 import { createClient } from '@supabase/supabase-js';
 import { canTransitionOrder, normalizeOrderState } from './js/order-state-machine.js';
-import { classifyOrderFailure } from './js/order-failure-state.js';
+import { classifyOrderFailure, freezeCustomerRequest } from './js/order-failure-state.js';
+import { belongsToCustomerSession, acceptOrderRevision } from './js/realtime-scope.js';
 
 
 
@@ -73,12 +74,15 @@ import { classifyOrderFailure } from './js/order-failure-state.js';
  * and ordering submissions to the KDS backend.
  */
 
-// Safe HTML escaping to prevent XSS
+// Safe HTML escaping to prevent XSS (including attribute quotes)
 function escapeHtml(str) {
-    if (!str) return '';
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function safeInnerHtml(el, html) {
@@ -191,21 +195,6 @@ class AlphaPosApp {
     constructor() {
         // Mock Menu Data representing actual restaurant dishes
         this.menuItems = defaultMenuItems; // Loaded from API as fallback
-
-        // Inject sample high-quality food looping videos for recommended items
-        if (this.menuItems && this.menuItems.length > 0) {
-            // main1: Signature River Prawn Pad Thai
-            const main1 = this.menuItems.find(i => i.id === "main1");
-            if (main1) main1.videoUrl = "https://player.vimeo.com/external/435674703.sd.mp4?s=7f773cdccf1a0e784534f5263a232f3c64e5ba79&profile_id=139&oauth2_token_id=57447761";
-            
-            // app3: Tom Yum Goong
-            const app3 = this.menuItems.find(i => i.id === "app3");
-            if (app3) app3.videoUrl = "https://player.vimeo.com/external/371433846.sd.mp4?s=236da2f3c0227e3d077b90f741131a1b&profile_id=139&oauth2_token_id=57447761";
-
-            // dessert1: Mango Sticky Rice
-            const dessert1 = this.menuItems.find(i => i.id === "dessert1");
-            if (dessert1) dessert1.videoUrl = "https://player.vimeo.com/external/538571059.sd.mp4?s=d00e62d22b62d377b8b209d6f83a45c382215c2d&profile_id=139&oauth2_token_id=57447761";
-        }
 
         // Categories List
         this.categories = [
@@ -442,6 +431,7 @@ class AlphaPosApp {
             this.realtimeChannels = [];
         }
         this._realtimeLive = false;
+        this._liveOrderRevisions?.clear();
     }
 
     shutdownRealtime() {
@@ -513,6 +503,8 @@ class AlphaPosApp {
                 .subscribe((status) => {
                     if (status === 'SUBSCRIBED') {
                         this._realtimeLive = true;
+                        // Realtime does not replay events missed during disconnect.
+                        this.fetchOrderHistory({ showLoading: false });
                         console.log('[Realtime] Subscribed to order status for table', this.tableNumber);
                     } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
                         this._realtimeLive = false;
@@ -567,6 +559,9 @@ class AlphaPosApp {
 
     _handleLiveOrderChange(order) {
         if (!order) return;
+        if (!belongsToCustomerSession(order, this)) return;
+        this._liveOrderRevisions ||= new Map();
+        if (!acceptOrderRevision(order, this._liveOrderRevisions)) return;
         const nextState = normalizeOrderState(order.status);
         const previousState = this._orderStates.get(order.id) || null;
         if (!nextState || !canTransitionOrder(previousState, nextState)) {
@@ -615,6 +610,7 @@ class AlphaPosApp {
 
     _handleLiveOrderItemChange(item) {
         if (!item?.order_id || !this._knownOrderIds.has(item.order_id)) return;
+        if (!belongsToCustomerSession(item, this, false)) return;
         if (this._debouncedFetchHistory) {
             this._debouncedFetchHistory();
         } else if (this.currentView === "status") {
@@ -928,6 +924,10 @@ class AlphaPosApp {
                     this.tableSessionId = body.table_session_id;
                     this.tableNumber = String(body.table_number);
                     this.sessionToken = body.session_token;
+                    // A permanent QR is the durable identity of the table. Keep
+                    // it as the recovery source; the session token is only the
+                    // current bill/session and may be closed after payment.
+                    this.permanentQRKey = permanentKey;
                     safeStorageSet(localStorage, 'active_merchant_id', body.merchant_id);
                     safeStorageSet(localStorage, `sessionToken_T${this.tableNumber}`, body.session_token);
                     this.hideBlockingState();
@@ -1027,6 +1027,11 @@ class AlphaPosApp {
     setupAccessibilityHandlers() {
         document.addEventListener("keydown", (event) => {
             if (event.key === "Escape") {
+                const noteModal = document.getElementById("itemNoteModal");
+                if (noteModal && !noteModal.classList.contains("hide")) {
+                    this.closeItemNoteModal();
+                    return;
+                }
                 if (document.getElementById("productDetailModal")?.classList.contains("active")) {
                     this.closeProductDetailModal();
                     return;
@@ -1177,11 +1182,7 @@ class AlphaPosApp {
             const item = this.menuItems[0];
             console.log("[AutoOnboard] Adding first item to cart:", item ? item.id : "none");
             if (item) {
-                // Add to cart manually to trigger full cart logic
-                const count = this.cart[item.id] || 0;
-                this.cart[item.id] = count + 1;
-                this.updateCartUI();
-                this.jiggleCartNotification();
+                this.addToCart(item.id, 1);
             }
 
             // Wait for cart jiggle animation
@@ -1241,7 +1242,7 @@ class AlphaPosApp {
         try {
             let query = this.supabase
                 .from('merchants')
-                .select('id, name, logo_url, web_cover_url, web_cover_media_type, branch_code, is_table_system_enabled, is_web_ordering_enabled, tax_rate, tax_type, service_charge_rate');
+                .select('id, name, logo_url, web_cover_url, web_cover_media_type, branch_code, is_table_system_enabled, is_web_ordering_enabled, tax_rate, tax_type, service_charge_rate, payment_method_cash_enabled, payment_method_card_enabled, payment_method_qr_enabled');
 
             if (this.merchantId) query = query.eq('id', this.merchantId);
             if (branchCode) query = query.eq('branch_code', branchCode);
@@ -1655,10 +1656,9 @@ class AlphaPosApp {
                 url.searchParams.delete('jwt');
                 replaced = true;
             }
-            if (url.searchParams.has('key')) {
-                url.searchParams.delete('key');
-                replaced = true;
-            }
+            // Keep the permanent QR key in the URL. It is the recovery source
+            // after payment/session close and after a JWT refresh. Only
+            // one-time/session-derived parameters may be removed here.
             if (replaced) {
                 window.history.replaceState({}, document.title, url.pathname + url.search);
             }
@@ -1710,6 +1710,25 @@ class AlphaPosApp {
         }
 
         return isActive;
+    }
+
+    async recoverPermanentTableSession(reason = 'session-closed') {
+        if (!this.permanentQRKey || !this.tableNumber) return false;
+
+        console.warn('[CustomerSession] Recovering permanent QR session:', reason);
+        try {
+            const recovered = await this.exchangePermanentQR(this.permanentQRKey);
+            if (!recovered) return false;
+
+            orderingSessionGate.clearSessionClosed();
+            this.hideBlockingState();
+            this._lastSessionCheckAt = Date.now();
+            this.setupCustomerRealtime();
+            return true;
+        } catch (error) {
+            console.error('[CustomerSession] Permanent QR recovery failed:', error);
+            return false;
+        }
     }
 
     /**
@@ -2052,17 +2071,36 @@ class AlphaPosApp {
 
     _refreshCategoriesFromMenu() {
         const categories = new Set(
-            (this.menuItems || []).map(i => (i.category || "").toLowerCase())
+            (this.menuItems || []).map(i => (i.category || "").toLowerCase()).filter(Boolean)
         );
         const hasDrinks = categories.has("drinks") || categories.has("beverages");
         const hasDesserts = categories.has("desserts") || categories.has("dessert");
-        const hasFood = [...categories].some(c =>
-            c && c !== "drinks" && c !== "beverages" && c !== "desserts" && c !== "dessert"
+        const foodSubcategories = [...categories].filter(c =>
+            c && c !== "drinks" && c !== "beverages" && c !== "desserts" && c !== "dessert" && c !== "foods"
         );
+        const hasFood = foodSubcategories.length > 0 || categories.has("foods");
+
+        const subcategoryLabels = {
+            mains: "Main Dishes",
+            appetizers: "Appetizers",
+            soups: "Soups",
+            salads: "Salads",
+            noodles: "Noodles",
+            rice: "Rice Dishes",
+            isan: "Isan",
+            seafood: "Seafood"
+        };
 
         this.categories = [];
         if (hasFood || this.categories.length === 0) {
             this.categories.push({ id: "foods", name: "Foods" });
+            if (foodSubcategories.length > 1) {
+                foodSubcategories.forEach(subId => {
+                    const label = subcategoryLabels[subId]
+                        || subId.charAt(0).toUpperCase() + subId.slice(1);
+                    this.categories.push({ id: subId, name: label });
+                });
+            }
         }
         if (hasDrinks) this.categories.push({ id: "drinks", name: "Drinks" });
         if (hasDesserts) this.categories.push({ id: "desserts", name: "Desserts" });
@@ -2458,6 +2496,8 @@ class AlphaPosApp {
 
         const categoryIcons = {
             "foods": `<svg class="category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"></path><path d="M7 2v4"></path><path d="M21 15V2v0a5 5 0 0 0-5 5v3c0 1.1.9 2 2 2h3Z"></path><path d="M12 11v11"></path><path d="M18 11v11"></path></svg>`,
+            "mains": `<svg class="category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10H2A10 10 0 0 0 12 2Z"></path><path d="M7 12a5 5 0 0 1 10 0"></path></svg>`,
+            "appetizers": `<svg class="category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 11h.01"></path><path d="M11 15h.01"></path><path d="M16 16h.01"></path><path d="m2 16 20 6-6-20A20 20 0 0 0 2 16Z"></path></svg>`,
             "drinks": `<svg class="category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8h12L16 22H8L6 8z"></path><path d="m14 2-3 6"></path><path d="M18 2h-4"></path></svg>`,
             "desserts": `<svg class="category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a5 5 0 0 0-5 5v2a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5z"></path><path d="M6 14h12L12 22z"></path><path d="M17 14H7"></path></svg>`
         };
@@ -2465,7 +2505,7 @@ class AlphaPosApp {
         this.categories.forEach(category => {
             const tab = document.createElement("button");
             tab.className = `category-tab ${this.currentCategory === category.id ? 'active' : ''}`;
-            const iconHtml = categoryIcons[category.id] || '';
+            const iconHtml = categoryIcons[category.id] || categoryIcons["foods"];
             const labelText = this.translate('category_' + category.id, category.name);
             tab.innerHTML = `${iconHtml}<span class="category-name">${escapeHtml(labelText)}</span>`;
             tab.onclick = () => this.switchCategory(category.id);
@@ -2498,7 +2538,7 @@ class AlphaPosApp {
         } else {
             if (titleEl) {
                 if (this.currentCategory === "foods") {
-                    titleEl.innerText = this.translate('category_mains', "Main Dishes");
+                    titleEl.innerText = this.translate('category_foods', "Foods");
                 } else {
                     titleEl.innerText = activeCategory ? this.translate('category_' + activeCategory.id, activeCategory.name) : this.translate('menuTab', "Menu");
                 }
@@ -2553,7 +2593,9 @@ class AlphaPosApp {
             listItems = itemsToRender;
         } else {
             featuredItems = itemsToRender.slice(0, 5);
-            listItems = itemsToRender.slice(5);
+            // Keep listItems populated even for small categories (<= 5 items)
+            // so the main Menu Grid and List/Grid toggle are never left empty.
+            listItems = itemsToRender.length > 5 ? itemsToRender.slice(5) : itemsToRender;
             if (featuredItems.length === 0 && featuredSection) {
                 featuredSection.style.display = "none";
             }
@@ -2623,6 +2665,7 @@ class AlphaPosApp {
             let _pointerStartX = 0;
             let _pointerStartY = 0;
             let _pointerActive = false;
+            let _pointerHandledAt = 0;
             const TAP_SLOP = 12; // px of movement still considered a tap (iOS/Android standard ~10-12px)
 
             const isInteractiveTarget = (target) =>
@@ -2642,6 +2685,14 @@ class AlphaPosApp {
                 // If the pointer moved beyond the slop threshold it was a scroll/drag, not a tap.
                 if (Math.abs(event.clientX - _pointerStartX) > TAP_SLOP ||
                     Math.abs(event.clientY - _pointerStartY) > TAP_SLOP) return;
+                _pointerHandledAt = Date.now();
+                this.openProductDetailModal(item.id);
+            });
+
+            // Support programmatic .click() and screen-reader activation
+            element.addEventListener("click", (event) => {
+                if (isInteractiveTarget(event.target)) return;
+                if (Date.now() - _pointerHandledAt < 400) return;
                 this.openProductDetailModal(item.id);
             });
 
@@ -2730,7 +2781,7 @@ class AlphaPosApp {
 
         // Render featured items
         if (featuredGrid) {
-            featuredGrid.classList.toggle("scrollable", featuredItems.length > 3);
+            featuredGrid.classList.toggle("scrollable", featuredItems.length > 0);
         }
         featuredItems.forEach((item, index) => {
             if (featuredGrid) {
@@ -2810,10 +2861,16 @@ class AlphaPosApp {
      */
     addToCart(itemId, quantity = 1, selectedModifiers = [], notes = "") {
         const sortedModIds = selectedModifiers.map(m => m.id).sort();
-        const notesKey = notes ? btoa(unescape(encodeURIComponent(notes))).slice(0, 10) : "";
-        const cartKey = sortedModIds.length > 0
-            ? `${itemId}-${sortedModIds.join("-")}${notesKey ? "-" + notesKey : ""}`
-            : itemId;
+        const trimmedNotes = (notes || "").trim();
+        const notesKey = trimmedNotes
+            ? btoa(unescape(encodeURIComponent(trimmedNotes))).replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)
+            : "";
+        const suffixParts = [];
+        if (sortedModIds.length > 0) suffixParts.push(sortedModIds.join("-"));
+        if (notesKey) suffixParts.push(`note-${notesKey}`);
+        const cartKey = suffixParts.length > 0
+            ? `${itemId}-${suffixParts.join("-")}`
+            : String(itemId);
 
         if (this.cart[cartKey] && typeof this.cart[cartKey] === 'object') {
             this.cart[cartKey].quantity += quantity;
@@ -2822,7 +2879,7 @@ class AlphaPosApp {
                 itemId: itemId,
                 quantity: quantity,
                 selectedModifiers: selectedModifiers,
-                notes: notes
+                notes: trimmedNotes
             };
         }
         this.updateItemCardUI(itemId);
@@ -2920,6 +2977,22 @@ class AlphaPosApp {
                     `;
                 }
                 actionEl.innerHTML = actionPillHtml;
+            }
+
+            // Keep the list-item image quantity badge in sync with cart changes
+            const imgContainer = card.querySelector(".list-item-img-container");
+            if (imgContainer) {
+                let badge = imgContainer.querySelector(".card-qty-badge");
+                if (inCartQty > 0) {
+                    if (!badge) {
+                        badge = document.createElement("div");
+                        badge.className = "card-qty-badge";
+                        imgContainer.appendChild(badge);
+                    }
+                    badge.textContent = String(inCartQty);
+                } else if (badge) {
+                    badge.remove();
+                }
             }
         });
     }
@@ -3098,7 +3171,31 @@ class AlphaPosApp {
                 discountRow.style.display = 'none';
             }
         }
+        const serviceRate = Number(this.merchantSettings.service_charge_rate ?? 10);
+        const taxRatePct = Number(this.merchantSettings.tax_rate ?? 7);
+        const inclusiveTax = (this.merchantSettings.tax_type || 'inclusive') === 'inclusive';
+
+        const serviceRow = document.getElementById("breakdownServiceRow");
+        const serviceLabelEl = document.getElementById("breakdownServiceLabel");
+        if (serviceRow) {
+            serviceRow.style.display = serviceRate <= 0 && serviceCharge <= 0 ? 'none' : '';
+        }
+        if (serviceLabelEl) {
+            const baseServiceText = this.translate('serviceCharge', 'Service Charge (10%)').replace(/\s*\(\d+(?:\.\d+)?%\)/, '');
+            serviceLabelEl.innerText = `${baseServiceText} (${serviceRate}%)`;
+        }
         document.getElementById("breakdownService").innerText = `฿${serviceCharge.toFixed(2)}`;
+
+        const taxRow = document.getElementById("breakdownTaxRow");
+        const taxLabelEl = document.getElementById("breakdownTaxLabel");
+        if (taxRow) {
+            taxRow.style.display = taxRatePct <= 0 && tax <= 0 ? 'none' : '';
+        }
+        if (taxLabelEl) {
+            const baseVatText = this.translate('vat', 'VAT (7%)').replace(/\s*\(\d+(?:\.\d+)?%\)/, '');
+            const inclusiveSuffix = inclusiveTax ? ` · ${this.translate('inclusiveTax', 'รวมในราคา')}` : '';
+            taxLabelEl.innerText = `${baseVatText} (${taxRatePct}%${inclusiveSuffix})`;
+        }
         document.getElementById("breakdownTax").innerText = `฿${tax.toFixed(2)}`;
         document.getElementById("breakdownTotal").innerText = `฿${total.toFixed(2)}`;
 
@@ -3524,10 +3621,14 @@ class AlphaPosApp {
                         </div>
                         <div class="status-action-group">
                             <span class="status-badge ${statusClass}"><span class="app-icon ${statusIcon}" aria-hidden="true"></span>${statusLabel}</span>
-                            <button class="add-note-btn" aria-label="${this.translate('addNoteBtn')}" onclick="app.addItemNote('${item.id}', '${escapeHtml(displayName)}')" title="${this.translate('addNoteBtn')}"><span class="app-icon icon-menu" aria-hidden="true"></span></button>
+                            <button type="button" class="add-note-btn" aria-label="${escapeHtml(this.translate('addNoteBtn'))}" title="${escapeHtml(this.translate('addNoteBtn'))}"><span class="app-icon icon-menu" aria-hidden="true"></span></button>
                         </div>
                     </div>
                 `;
+                const addNoteBtn = el.querySelector(".add-note-btn");
+                if (addNoteBtn) {
+                    addNoteBtn.addEventListener("click", () => this.addItemNote(item.id, displayName));
+                }
                 el.style.setProperty('--row-index', activeContainer.children.length);
                 activeContainer.appendChild(el);
             });
@@ -3576,11 +3677,14 @@ class AlphaPosApp {
                         ${noteHtml}
                     </div>
                     <div class="served-action-group">
-                        <button class="add-note-btn" aria-label="${this.translate('addNoteBtn')}" onclick="app.addItemNote('${item.id}', '${escapeHtml(displayName)}')" title="${this.translate('addNoteBtn')}"><span class="app-icon icon-menu" aria-hidden="true"></span></button>
                         <span class="status-badge ${statusClass}"><span class="app-icon ${statusIcon}" aria-hidden="true"></span>${statusLabel}</span>
-                        ${item.status !== "cancelled" ? `<button class="reorder-action-btn" onclick="app.reorderItem('${escapeHtml(item.name)}')">${this.translate('orderAgainBtn')}</button>` : ''}
+                        ${item.status !== "cancelled" ? `<button type="button" class="reorder-action-btn">${escapeHtml(this.translate('orderAgainBtn'))}</button>` : ''}
                     </div>
                 `;
+                const reorderBtn = el.querySelector(".reorder-action-btn");
+                if (reorderBtn) {
+                    reorderBtn.addEventListener("click", () => this.reorderItem(item.item_id || item.name));
+                }
                 el.style.setProperty('--row-index', pastContainer.children.length);
                 pastContainer.appendChild(el);
             });
@@ -3588,54 +3692,105 @@ class AlphaPosApp {
 
     }
 
-    reorderItem(name) {
-        const item = this.menuItems.find(m => m.name === name);
+    reorderItem(itemIdOrName) {
+        const item = this.menuItems.find(m => m.id === itemIdOrName)
+            || this.menuItems.find(m => m.name === itemIdOrName);
         if (item) {
-            const currentQty = this.cart[item.id] || 0;
-            this.cart[item.id] = currentQty + 1;
-            this.updateCartUI();
-            this.jiggleCartNotification();
-
             this.switchView("menu");
+            if (this.hasModifiers(item.id)) {
+                this.openProductDetailModal(item.id);
+                return;
+            }
+            this.addToCart(item.id, 1);
             this.toggleCartDrawer(true);
 
             const translatedName = this.getItemName(item);
-            const toast = document.getElementById("toast");
-            toast.innerText = this.translate('addedToCartMsg').replace('{name}', translatedName);
-            toast.className = "toast show";
-            setTimeout(() => {
-                toast.className = "toast";
-            }, 2000);
+            this._showToast(this.translate('addedToCartMsg').replace('{name}', translatedName), 2000);
         } else {
-            this._showToast("Unable to find this dish in menu.");
+            this._showToast(this.translate('unableFindDish', "Unable to find this dish in menu."));
         }
     }
 
     /**
      * Add/edit a note for an order item (post-order).
-     * Stores locally and attempts to PATCH to server.
+     * Opens an in-app modal (with fallback to prompt in headless environments) and PATCHes to server.
      */
-    addItemNote(itemId, itemName) {
+    addItemNote(itemId, itemName = '') {
         const noteKey = `item_note_${itemId}`;
-        const existingNote = localStorage.getItem(noteKey) || '';
-        const promptText = this.translate('addNotePrompt');
+        let existingNote = localStorage.getItem(noteKey) || '';
+        if (!existingNote && Array.isArray(this.lastFetchedOrders)) {
+            for (const order of this.lastFetchedOrders) {
+                const found = (order.items || []).find(i => String(i.id) === String(itemId));
+                if (found && found.notes) {
+                    existingNote = found.notes;
+                    break;
+                }
+            }
+        }
 
-        const note = prompt(promptText, existingNote);
+        const modal = document.getElementById("itemNoteModal");
+        const input = document.getElementById("itemNoteModalInput");
+        const subtitle = document.getElementById("itemNoteModalSubtitle");
 
-        if (note === null) return; // User cancelled
+        if (modal && input) {
+            this._editingNoteItem = { itemId, itemName };
+            if (subtitle) subtitle.textContent = itemName || this.translate('addNotePrompt');
+            input.value = existingNote;
+            modal.classList.remove("hide");
+            modal.classList.add("active");
+            this.setActiveModal(modal);
+            setTimeout(() => input.focus(), 50);
+        }
+    }
 
-        if (note.trim() === '') {
+    closeItemNoteModal() {
+        const modal = document.getElementById("itemNoteModal");
+        if (modal) {
+            modal.classList.remove("active");
+            modal.classList.add("hide");
+            if (this._activeModal === modal) this.setActiveModal(null);
+        }
+        this._editingNoteItem = null;
+    }
+
+    confirmItemNoteModal() {
+        if (!this._editingNoteItem) {
+            this.closeItemNoteModal();
+            return;
+        }
+        const { itemId, itemName } = this._editingNoteItem;
+        const input = document.getElementById("itemNoteModalInput");
+        const note = input ? input.value : '';
+        this.closeItemNoteModal();
+        this._commitItemNote(itemId, itemName, note);
+    }
+
+    _commitItemNote(itemId, itemName, rawNote) {
+        const noteKey = `item_note_${itemId}`;
+        const trimmed = (rawNote || '').trim();
+
+        if (!trimmed) {
             localStorage.removeItem(noteKey);
         } else {
-            localStorage.setItem(noteKey, note.trim());
+            localStorage.setItem(noteKey, trimmed);
+        }
+
+        if (Array.isArray(this.lastFetchedOrders)) {
+            this.lastFetchedOrders.forEach(order => {
+                (order.items || []).forEach(i => {
+                    if (String(i.id) === String(itemId)) {
+                        i.notes = trimmed;
+                    }
+                });
+            });
         }
 
         // Attempt to send note to server (best-effort, non-blocking)
-        this._sendItemNoteToServer(itemId, note.trim());
+        this._sendItemNoteToServer(itemId, trimmed);
 
         // Show confirmation toast
-        if (note.trim()) {
-            const msg = this.translate('noteSavedMsg').replace('{name}', itemName);
+        if (trimmed) {
+            const msg = this.translate('noteSavedMsg').replace('{name}', itemName || '');
             this._showToast(msg, 2500);
         }
 
@@ -3707,6 +3862,13 @@ class AlphaPosApp {
                     console.warn("Session closed by POS/server for table:", this.tableNumber);
                     this.sessionToken = null;
                     localStorage.removeItem(`sessionToken_T${this.tableNumber}`);
+
+                    // A permanent QR represents the table, not the closed
+                    // bill. Recover a fresh table session automatically so a
+                    // new guest never sees a terminal "session closed" page.
+                    if (await this.recoverPermanentTableSession('polling')) {
+                        return;
+                    }
 
                     this.cart = {};
                     this.saveCartToStorage();
@@ -3828,10 +3990,12 @@ class AlphaPosApp {
     }
 
     async sendServiceRequest(type) {
+        // Payment requests are handled exclusively through AlphaPos POS
+        if (type === 'Bill (Cash)' || type === 'Bill (Card)' || type === 'Bill (QR)') {
+            return;
+        }
+
         const serviceKeyMap = {
-            'Bill (Cash)': 'payCash',
-            'Bill (Card)': 'payCard',
-            'Bill (QR)': 'payQR',
             'Ice/Water': 'getWater',
             'Extra Utensils': 'utensils',
             'General Help': 'callStaffBtn'
@@ -3922,19 +4086,25 @@ class AlphaPosApp {
 
         // Block after payment / session close (not GPS/Wi-Fi).
         if (!orderingSessionGate.canOrder()) {
+            if (await this.recoverPermanentTableSession('submit')) {
+                // Continue with the same cart after a transparent recovery.
+            } else {
             this._showToast(this.translate(
                 "orderingBlockedSession",
                 "This table session is closed. Please scan the QR code again if you need to order."
             ));
             this._submitInProgress = false;
             return;
+            }
         }
 
         // Revalidate at checkout: cached pages/QR tokens may outlive the table session.
         if (!this.sessionToken || !(await this.verifySessionWithServer(this.sessionToken))) {
-            this.showQrInvalidError();
-            this._submitInProgress = false;
-            return;
+            if (!(await this.recoverPermanentTableSession('checkout'))) {
+                this.showQrInvalidError();
+                this._submitInProgress = false;
+                return;
+            }
         }
 
         const btn = document.getElementById("submitOrderBtn");
@@ -3970,6 +4140,14 @@ class AlphaPosApp {
         const fingerprint = JSON.stringify([this.tableNumber, this.sessionToken, this.cart]);
         let attempt;
         try { attempt = JSON.parse(sessionStorage.getItem(attemptKey)); } catch (_) {}
+        if (attempt && attempt.fingerprint !== fingerprint) {
+            this._hideStatusModal();
+            this._showToast(this.translate('orderSubmitUncertain', 'An earlier order is awaiting confirmation. Check Order Status before changing the cart.'), 8000);
+            btn.classList.remove("disabled"); btn.removeAttribute("disabled");
+            btnText.innerText = this.translate("sendToKitchen"); spinner.classList.add("hide");
+            this._submitInProgress = false;
+            return;
+        }
         const orderId = attempt?.fingerprint === fingerprint ? attempt.orderId : generateUUID();
         this._lastOrderId = orderId;
         const now = new Date();
@@ -3984,7 +4162,8 @@ class AlphaPosApp {
         const idempotencyKey = attempt?.fingerprint === fingerprint && attempt?.idempotencyKey
             ? attempt.idempotencyKey
             : generateUUID();
-        sessionStorage.setItem(attemptKey, JSON.stringify({ fingerprint, orderId, orderNum, idempotencyKey }));
+        attempt ||= { fingerprint, orderId, orderNum, idempotencyKey };
+        sessionStorage.setItem(attemptKey, JSON.stringify(attempt));
 
         const orderItems = [];
         Object.keys(this.cart).forEach(cartKey => {
@@ -4102,11 +4281,13 @@ class AlphaPosApp {
                 });
 
                 // One PostgreSQL transaction: order, items and modifiers commit together.
-                const { error: orderErr } = await this.supabase.rpc('create_customer_order', {
+                attempt = freezeCustomerRequest(attempt, fingerprint, {
                     p_order: orderPayload,
                     p_items: itemsToInsert,
                     p_modifiers: modifiersToInsert
                 });
+                sessionStorage.setItem(attemptKey, JSON.stringify(attempt));
+                const { error: orderErr } = await this.supabase.rpc('create_customer_order', attempt.payload);
                 if (orderErr) throw orderErr;
 
                 success = true;
@@ -4154,6 +4335,10 @@ class AlphaPosApp {
             if (warning) warning.classList.add("hide");
             console.log("Order saved successfully:", orderNum);
 
+            if (orderingSessionGate.canOrder()) {
+                btn.classList.remove("disabled");
+                btn.removeAttribute("disabled");
+            }
             btnText.innerText = this.translate("sendToKitchen");
             spinner.classList.add("hide");
 
@@ -4246,19 +4431,6 @@ class AlphaPosApp {
             this._orderTracker.destroy();
             this._orderTracker = null;
         }
-    }
-
-    /**
-     * Show estimated wait time after order submission.
-     * Stores lastOrderId and triggers tracker display.
-     */
-    showWaitTime() {
-        if (!this._lastOrderId) return;
-
-        // Auto-show the tracker after a brief delay (let success modal dismiss)
-        setTimeout(() => {
-            this.showOrderTracker(this._lastOrderId);
-        }, 2500);
     }
 
     /**
@@ -4845,7 +5017,7 @@ class AlphaPosApp {
     // ============================================================
 
     /**
-     * Show estimated wait time widget (called after order submission)
+     * Show estimated wait time widget and enable order tracking (called after order submission)
      */
     showWaitTime() {
         // Initialize widget with app context
@@ -4868,6 +5040,14 @@ class AlphaPosApp {
         if (miniContainer) {
             miniContainer.classList.remove('hidden');
             waitTimeWidget.renderMini('waitTimeMiniContainer');
+        }
+
+        // Reveal Track Order button in Status View when an order is active
+        if (this._lastOrderId) {
+            const trackBtn = document.getElementById('btnTrackOrder');
+            if (trackBtn) {
+                trackBtn.style.display = 'inline-flex';
+            }
         }
     }
 

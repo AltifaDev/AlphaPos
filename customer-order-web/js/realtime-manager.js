@@ -4,6 +4,7 @@
  */
 
 import { pushManager } from './push-notifications.js';
+import { belongsToCustomerSession } from './realtime-scope.js';
 
 export const RealtimeManagerMixin = {
     setupRealtimeSubscriptions() {
@@ -20,12 +21,13 @@ export const RealtimeManagerMixin = {
                     event: 'UPDATE',
                     schema: 'public',
                     table: 'orders',
-                    filter: `table_number=eq.${this.tableNumber}`
+                    filter: `session_token=eq.${this.sessionToken}`
                 }, (payload) => {
+                    if (!belongsToCustomerSession(payload.new, this)) return;
                     console.log('[Realtime] Order status change:', payload.new?.status);
                     this._handleOrderStatusChange(payload.new);
                 })
-                .subscribe();
+                .subscribe((status) => this._handleRealtimeStatus('status-changes', status));
             this.realtimeChannels.push(statusChannel);
 
             // Subscribe to new orders for this table
@@ -35,11 +37,12 @@ export const RealtimeManagerMixin = {
                     event: 'INSERT',
                     schema: 'public',
                     table: 'orders',
-                    filter: `table_number=eq.${this.tableNumber}`
+                    filter: `session_token=eq.${this.sessionToken}`
                 }, (payload) => {
+                    if (!belongsToCustomerSession(payload.new, this)) return;
                     console.log('[Realtime] New order:', payload.new?.order_number);
                 })
-                .subscribe();
+                .subscribe((status) => this._handleRealtimeStatus('orders-changes', status));
             this.realtimeChannels.push(ordersChannel);
 
             // Subscribe to menu changes
@@ -53,7 +56,7 @@ export const RealtimeManagerMixin = {
                     console.log('[Realtime] Menu updated, reloading...');
                     this.loadMenuFromServer();
                 })
-                .subscribe();
+                .subscribe((status) => this._handleRealtimeStatus('menu-changes', status));
             this.realtimeChannels.push(menuChannel);
 
             console.log('[Realtime] ✅ Subscribed to 3 channels');
@@ -70,13 +73,35 @@ export const RealtimeManagerMixin = {
         }, 10000); // 10s
     },
 
+    _handleRealtimeStatus(channelName, status) {
+        this._realtimeFailedChannels ||= new Set();
+        if (status === 'SUBSCRIBED') {
+            this._realtimeFailedChannels.delete(channelName);
+            if (channelName === 'status-changes') this._pollForUpdates();
+            if (this._realtimeFailedChannels.size === 0 && this.pollingInterval) {
+                clearInterval(this.pollingInterval);
+                this.pollingInterval = null;
+            }
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            this._realtimeFailedChannels.add(channelName);
+            console.warn(`[Realtime] Channel ${status}; enabling polling fallback`);
+            this.startPollingFallback();
+        }
+    },
+
     async _pollForUpdates() {
         try {
-            const response = await fetch(`/v1/orders?table_number=${this.tableNumber}&status=preparing`);
+            if (!this.tableNumber || !this.sessionToken) return;
+            const query = new URLSearchParams({
+                table: this.tableNumber,
+                token: this.sessionToken
+            });
+            const response = await fetch(`/v1/orders?${query.toString()}`);
             if (response.ok) {
                 const orders = await response.json();
-                // Check for status changes
-                orders.forEach(order => this._handleOrderStatusChange(order));
+                // Reconcile every returned status, including ready, served,
+                // and cancelled. The endpoint scopes results to this session.
+                (Array.isArray(orders) ? orders : [orders]).forEach(order => this._handleOrderStatusChange(order));
             }
         } catch (e) {
             // Silent fail for polling
